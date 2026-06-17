@@ -191,14 +191,19 @@ impl DatabaseManager {
         Ok(Self { pool, config })
     }
 
-    /// Run database migrations using embedded migrations
+    /// Run database migrations.
+    ///
+    /// Migrations are service-local: each service bundles its own
+    /// `migrations/` directory and runs them from its own
+    /// `DatabaseManager`. The shared pool helper has no migrations
+    /// attached, so a request to run them here is a configuration
+    /// error rather than a silent no-op.
     async fn run_migrations_on_pool(_pool: &PgPool) -> Result<(), ConfigError> {
-        info!("Running database migrations");
-
-        // For now, we'll skip migrations since the migration structure needs to be set up
-        // TODO: Set up proper sqlx migrations directory structure
-        info!("Database migrations skipped - migration system needs setup");
-        Ok(())
+        Err(ValidationError::InvalidValue {
+            field: "database.run_migrations".to_string(),
+            message: "shared_config does not bundle migrations; run them from the service's own DatabaseManager".to_string(),
+        }
+        .into())
     }
 
     /// Get the database connection pool
