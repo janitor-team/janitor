@@ -278,6 +278,10 @@ pub struct DebianBuildConfig {
     #[serde(rename = "last-build-version")]
     pub last_build_version: Option<debversion::Version>,
     pub chroot: Option<String>,
+    // Campaigns that ship no `lintian:` block (e.g. multiarch-fixes,
+    // some fresh-* configs) would otherwise fail deserialisation with
+    // "missing field `lintian`" before the run could start.
+    #[serde(default)]
     pub lintian: LintianConfig,
     #[serde(rename = "base-apt-repository")]
     pub apt_repository: Option<String>,
@@ -467,5 +471,35 @@ mod tests {
         assert_eq!(assignment.skip_setup_validation, false);
         assert_eq!(assignment.branch.vcs_type, VcsType::Git);
         assert!(assignment.resume.is_none());
+    }
+
+    #[cfg(feature = "debian")]
+    #[test]
+    fn test_debian_build_config_lintian_missing() {
+        let json = r#"{
+            "build-distribution": "unstable",
+            "chroot": "unstable-amd64-sbuild"
+        }"#;
+        let cfg: DebianBuildConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.build_distribution.as_deref(), Some("unstable"));
+        assert_eq!(cfg.lintian.profile, None);
+        assert_eq!(cfg.lintian.suppress_tags, None);
+    }
+
+    #[cfg(feature = "debian")]
+    #[test]
+    fn test_debian_build_config_lintian_present() {
+        let json = r#"{
+            "lintian": {
+                "profile": "debian",
+                "suppress-tags": ["malformed-debian-changelog-version"]
+            }
+        }"#;
+        let cfg: DebianBuildConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.lintian.profile.as_deref(), Some("debian"));
+        assert_eq!(
+            cfg.lintian.suppress_tags.as_deref(),
+            Some(&["malformed-debian-changelog-version".to_string()][..])
+        );
     }
 }
