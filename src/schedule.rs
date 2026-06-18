@@ -44,6 +44,9 @@ pub async fn iter_schedule_requests_from_candidates(
     codebases: Option<Vec<&str>>,
     campaign: Option<&str>,
 ) -> Result<impl Iterator<Item = ScheduleRequest>, sqlx::Error> {
+    // named_publish_policy.per_branch_policy is an array of
+    // branch_publish_policy composite rows; unnest it in a correlated
+    // subquery to pull out the mode column for each per-branch entry.
     let mut query = sqlx::QueryBuilder::new(
         r###"
 SELECT
@@ -53,14 +56,17 @@ SELECT
   candidate.context AS context,
   candidate.value AS value,
   candidate.success_chance AS success_chance,
-  array_agg(named_publish_policy.per_branch_policy.mode) AS publish_modes,
+  (
+    SELECT array_agg(p.mode::text)
+    FROM unnest(named_publish_policy.per_branch_policy) p
+  ) AS publish_modes,
   candidate.command AS command,
   candidate.change_set AS change_set
 FROM candidate
 INNER JOIN codebase on codebase.name = candidate.codebase
 INNER JOIN named_publish_policy ON
     named_publish_policy.name = candidate.publish_policy
-INNER JOIN branch_publish_policy ON branch_publish_policy.role = ANY(named_publish_policy.per_branch_policy)
+WHERE TRUE
 "###,
     );
     if let Some(codebases) = codebases {
@@ -82,7 +88,9 @@ INNER JOIN branch_publish_policy ON branch_publish_policy.role = ANY(named_publi
         use sqlx::Row;
         let mut req = ScheduleRequest::from_row(&row).unwrap();
 
-        let pm = row.get::<Vec<String>, _>("publish_modes");
+        let pm = row
+            .get::<Option<Vec<String>>, _>("publish_modes")
+            .unwrap_or_default();
 
         req.value += pm
             .iter()
