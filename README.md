@@ -92,6 +92,13 @@ Several container images are provided
  * [ghcr.io/jelmer/janitor/bzr_store](https://github.com/users/jelmer/packages/container/package/janitor%2Fbzr_store) - storage for Bazaar
  * [ghcr.io/jelmer/janitor/worker](https://github.com/users/jelmer/packages/container/package/janitor%2Fworker) - Base for workers
 
+Usage
+=====
+
+See [docs/usage.md](docs/usage.md) for a guide to using an instance,
+whether you're browsing as a visitor, checking on your own package,
+setting up a new instance, or administering an existing one.
+
 Contributing
 ============
 
