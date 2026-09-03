@@ -92,12 +92,3 @@ Status and Automatically Publish buttons on the publish history page,
 the Reprocess Logs sidebar link, and the closed/abandoned/applied/
 rejected status dropdown on a merge proposal page.
 
-Two of these controls are UI-only, without a matching server-side check:
-`GET /cupboard/reprocess-logs` itself is not admin-gated - only the two
-POST endpoints above are, so a non-admin can load the empty form, they
-just cannot submit it - and the extra publish modes `publish_buttons`
-exposes to an admin ("Create fork with changes", "Push", "Create merge
-proposal") all post to the same unguarded
-`POST /{campaign}/c/{codebase}/publish` as the plain "Publish now"
-button. Nothing on the server stops a request that already knows the
-`mode` parameter from using them without being an admin.
