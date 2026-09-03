@@ -1662,6 +1662,11 @@ async def publish_request(request):
     if mode:
         branches = [(r, mode) for r in roles]
     else:
+        if publish_policy is None:
+            return web.json_response(
+                {"reason": f"no publish policy for {codebase}/{campaign}"},
+                status=404,
+            )
         branches = [(r, publish_policy.get(r, (MODE_SKIP, None))[0]) for r in roles]
 
     publish_ids = {}
