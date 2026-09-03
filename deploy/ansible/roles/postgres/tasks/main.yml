@@ -1,0 +1,155 @@
+---
+# Postgres cannot be AWS RDS (or an equivalent managed Postgres): the
+# Debian schema requires the debversion extension, an apt package, not
+# something a managed service supports.
+#
+# postgresql-contrib doesn't exist as a package on trixie - pgcrypto (which
+# schema/state.sql's CREATE EXTENSION needs) now ships directly in the
+# versioned postgresql-<N> package that plain "postgresql" depends on.
+# dpkg -L postgresql-17 shows pgcrypto.control/pgcrypto.so are
+# already there with just "postgresql" installed. Adding the old
+# postgresql-contrib name back would fail this task outright with "no
+# package matching" on a fresh trixie box.
+- name: Install Postgres + debversion extension
+  apt:
+    name:
+      - postgresql
+      # community.postgresql's modules (postgresql_user/_db/_query/_script
+      # below) need this importable by ansible's own Python interpreter on
+      # the target - nothing else in this playbook pulls it in, and its
+      # absence isn't obvious until the first become_user: postgres task
+      # actually runs.
+      - python3-psycopg2
+    state: present
+
+- name: Find installed Postgres version's debversion package
+  # Package name is versioned (postgresql-17-debversion etc); resolve the
+  # major version actually installed rather than hardcoding one.
+  shell: |
+    set -o pipefail
+    pg_lsclusters --no-header | awk '{print $1}' | head -1
+  args:
+    executable: /bin/bash
+  register: pg_version
+  changed_when: false
+
+- name: Install debversion for the installed Postgres major version
+  apt:
+    name: "postgresql-{{ pg_version.stdout }}-debversion"
+    state: present
+
+- name: Bump max_connections
+  # Several janitor services each open an asyncpg pool (default min_size=10)
+  # concurrently on cold boot - default max_connections=100 loses that race.
+  lineinfile:
+    path: "/etc/postgresql/{{ pg_version.stdout }}/main/postgresql.conf"
+    regexp: "^max_connections ="
+    line: "max_connections = {{ postgres_max_connections }}\t\t\t# (change requires restart)"
+  notify: restart postgresql
+
+- meta: flush_handlers
+
+- name: Grant postgres traverse access into the deploy user's home directory
+  # /home/{{ ansible_user }} is 0700 by default - postgresql_script below
+  # runs as the postgres OS user and reads schema/state.sql directly off
+  # disk, which fails with EACCES before it can even reach janitor_home,
+  # regardless of that file's own (world-readable) permissions. Grant
+  # postgres specifically, not everyone, since acl (needed for this) is
+  # already required by roles/base for become_user's own temp-file ACLs.
+  command: setfacl -m u:postgres:--x /home/{{ ansible_user }}
+  changed_when: true
+
+- name: Create janitor Postgres role
+  become_user: postgres
+  community.postgresql.postgresql_user:
+    name: janitor
+    password: "{{ janitor_db_password }}"
+    role_attr_flags: CREATEDB
+
+- name: Create janitor database
+  # Must run before the schema-loaded check below - on a genuinely fresh
+  # Postgres install, "janitor" doesn't exist yet, so querying it first
+  # (the original order) fails outright, and a failed_when: false there
+  # would mask that: the downstream schema check's result never gets a
+  # query_result key, and "Load state schema" crashes trying to read it.
+  # postgresql_db is idempotent, so running this unconditionally is safe
+  # when the database already exists too.
+  become_user: postgres
+  community.postgresql.postgresql_db:
+    name: janitor
+    owner: janitor
+
+- name: Check whether the janitor schema is already loaded
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    db: janitor
+    query: "SELECT to_regclass('public.codebase') IS NOT NULL AS loaded"
+  register: schema_check
+
+- name: Load state schema
+  # Undocumented anywhere in janitor's own repo outside CI - without this
+  # every service connects fine and fails silently on its first real query.
+  become_user: postgres
+  community.postgresql.postgresql_script:
+    db: janitor
+    path: "{{ janitor_home }}/schema/state.sql"
+  when: not schema_check.query_result[0].loaded
+
+- name: Load debian schema
+  become_user: postgres
+  community.postgresql.postgresql_script:
+    db: janitor
+    path: "{{ janitor_home }}/schema/debian/debian.sql"
+  when: not schema_check.query_result[0].loaded
+
+# state.sql/debian.sql run as become_user: postgres (needed for their
+# CREATE EXTENSION calls), so every table they create is owned by
+# postgres, not janitor - "Create janitor database" making janitor the
+# database's owner doesn't cascade down to tables a different role
+# created inside it. Without this, the runner 500s with
+# "InsufficientPrivilegeError: permission denied for table worker" the
+# first time a worker actually polls for an assignment. Runs
+# unconditionally (not gated on schema_check) since it's idempotent and
+# cheap either way.
+- name: Grant janitor privileges on the tables state.sql/debian.sql created
+  become_user: postgres
+  community.postgresql.postgresql_privs:
+    db: janitor
+    type: table
+    objs: ALL_IN_SCHEMA
+    schema: public
+    role: janitor
+    privs: ALL
+    state: present
+
+- name: Grant janitor privileges on sequences (SERIAL/IDENTITY columns)
+  become_user: postgres
+  community.postgresql.postgresql_privs:
+    db: janitor
+    type: sequence
+    objs: ALL_IN_SCHEMA
+    schema: public
+    role: janitor
+    privs: ALL
+    state: present
+
+- name: Register the worker (HTTP Basic Auth against the worker table)
+  # Completely undocumented in janitor's own repo - per worker_creds.py.
+  # worker.password is pgcrypto crypt()'d, checked via
+  # "password = crypt($2, password)" in check_worker_creds().
+  #
+  # no_log: positional_args isn't a module arg Ansible's automatic
+  # sensitive-name redaction recognizes (unlike a "password:" keyed arg
+  # elsewhere in this role), so worker_password would otherwise show up
+  # in plaintext in -v output.
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    db: janitor
+    query: >
+      INSERT INTO worker (name, password)
+      VALUES (%s, crypt(%s, gen_salt('bf')))
+      ON CONFLICT (name) DO UPDATE SET password = EXCLUDED.password
+    positional_args:
+      - "{{ worker_name }}"
+      - "{{ worker_password }}"
+  no_log: true

@@ -1,0 +1,29 @@
+# Applied only to hosts in [control] (see ../inventory.ini) - the runner,
+# site, postgres, redis, etc., everything except the worker itself (see
+# group_vars/worker.yml). Same list as group_vars/all.yml's own
+# janitor_services default minus "worker".
+#
+# Not meant to be combined with the same host also being in [worker] -
+# Ansible resolves same-depth group_vars files alphabetically when a host
+# is in more than one group ("control" before "worker"), so worker.yml's
+# janitor_services: [worker] would win outright and this list would never
+# apply. Put a single-host instance in [control] and [worker] as two
+# different aliases only if this precedence is accounted for elsewhere;
+# untested here - see docs/multi-host-deployment.md for what was actually
+# verified (control and worker as two distinct hosts).
+janitor_services:
+  - git_store
+  - bzr_store
+  - differ
+  - archive
+  - auto_upload
+  - runner
+  - publish
+  - site
+
+# Only meaningful when [worker] is a different host from this one - see
+# group_vars/all.yml for what each of these actually controls. Leave at
+# the group_vars/all.yml defaults (loopback) for a single-host instance.
+git_store_bind_address: CHANGEME    # this host's address, reachable from the worker host
+git_store_public_address: CHANGEME  # same address, as the worker host resolves it
+runner_bind_address: CHANGEME       # this host's address, reachable from the worker host

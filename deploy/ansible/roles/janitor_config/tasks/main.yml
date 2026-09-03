@@ -1,0 +1,73 @@
+---
+- name: Create data directories
+  # Guarded by deploy_janitor_conf (group_vars/all.yml, false for
+  # group_vars/worker.yml): nothing on a worker-only host reads
+  # janitor_home/data/* or janitor.conf below - the worker container takes
+  # its config entirely via --base-url/--external-address/env, not a
+  # mounted config file (see janitor_quadlet/templates/worker.container.j2).
+  file:
+    path: "{{ janitor_home }}/data/{{ item }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0755"
+  loop:
+    - logs
+    - artifacts
+    - cache
+    - dists
+    - git
+    - bzr
+  when: deploy_janitor_conf
+
+- name: Deploy janitor.conf
+  # NOT tracked by git - janitor.conf's protobuf-text format has no
+  # separate secrets mechanism, and this file contains the DB password
+  # and OAuth client secret in plaintext.
+  template:
+    src: janitor.conf.j2
+    dest: "{{ janitor_home }}/janitor.conf"
+    owner: "{{ ansible_user }}"
+    mode: "0600"
+  no_log: true
+  when: deploy_janitor_conf
+
+- name: Create breezy config directory
+  file:
+    path: "/home/{{ ansible_user }}/.config/breezy"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0700"
+
+- name: Deploy breezy authentication.conf
+  # Undocumented in janitor's own repo - publish/runner delegate GitHub
+  # API auth to breezy's own config file, not janitor.conf.
+  # retrieve_github_token() reads private_token, not token - both keys
+  # included to be safe, per breezy's own source.
+  template:
+    src: authentication.conf.j2
+    dest: "/home/{{ ansible_user }}/.config/breezy/authentication.conf"
+    owner: "{{ ansible_user }}"
+    mode: "0600"
+  no_log: true
+
+- name: Deploy breezy ignore file
+  # worker.container mounts this whole directory :ro (to protect
+  # authentication.conf above from the worker). breezy's ignores.py tries to
+  # write a default ignore file here the first time any codemod runs
+  # (get_user_ignores() -> _set_user_ignores()) and hard-panics on the
+  # read-only mount instead of handling ENOENT/EROFS gracefully. Pre-seeding
+  # it with breezy's own USER_DEFAULTS list means it never needs to write.
+  copy:
+    src: breezy-ignore
+    dest: "/home/{{ ansible_user }}/.config/breezy/ignore"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+
+- name: Deploy breezy whoami
+  # Same read-only-mount reasoning as the ignore file above. Without this,
+  # the worker panics with NoWhoami on its first real commit.
+  template:
+    src: breezy.conf.j2
+    dest: "/home/{{ ansible_user }}/.config/breezy/breezy.conf"
+    owner: "{{ ansible_user }}"
+    mode: "0644"

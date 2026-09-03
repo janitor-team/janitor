@@ -1,0 +1,65 @@
+---
+# Split into two plays for a distributed deployment (worker on its own
+# host, talking to the control host's runner over the network instead of
+# localhost) as well as the original single-host case (control and worker
+# groups both resolving to the same box - see inventory.ini). Each host
+# only gets the roles/services relevant to it via janitor_services
+# (group_vars/control.yml vs group_vars/worker.yml); group_vars/all.yml's
+# own janitor_services stays the full single-host list as the default for
+# any host in neither group.
+- name: Validate secret vars
+  hosts: janitor
+  become: true
+  tasks:
+    - name: Validate secret vars don't contain characters that break their downstream use
+      # janitor_db_password/worker_password get spliced unescaped into a
+      # Postgres connection URI (postgresql://janitor:PASSWORD@host/db) -
+      # @, :, / are URI-structural delimiters there. breezy_github_token/
+      # oauth_client_id/oauth_client_secret get spliced into breezy's
+      # authentication.conf and janitor.conf's own text-proto config -
+      # quote characters and whitespace are similarly unsafe there. All
+      # of group_vars/all.yml's secret vars fail confusingly deep in a
+      # later role (postgres/janitor_config) instead of here, at the
+      # start, with a clear message naming the actual bad var.
+      #
+      # breezy_whoami is deliberately excluded from this loop: its own
+      # required shape ("Name <email>") legitimately contains @ and
+      # whitespace by design, so the same forbidden-character rule would
+      # reject every valid value for it.
+      assert:
+        that:
+          - not (lookup('vars', item, default='') | regex_search("[@:/%'\"\\s]"))
+        fail_msg: >
+          {{ item }} contains one of the forbidden characters @ : / % ' " or
+          whitespace - these get spliced unescaped into a Postgres connection
+          URI, breezy's authentication.conf, or janitor.conf's text-proto
+          config, and will break parsing there. Pick a value without them.
+        quiet: true
+      loop:
+        - janitor_db_password
+        - worker_password
+        - breezy_github_token
+        - oauth_client_id
+        - oauth_client_secret
+      when: (lookup('vars', item, default='') | length) > 0
+
+- name: Deploy janitor-team/janitor (control services - everything but the worker)
+  hosts: control
+  become: true
+  roles:
+    - base
+    - janitor_source   # clones + builds images; postgres role below needs schema/*.sql from the clone
+    - postgres
+    - redis
+    - caddy
+    - janitor_config
+    - janitor_quadlet
+
+- name: Deploy janitor-team/janitor (worker only)
+  hosts: worker
+  become: true
+  roles:
+    - base
+    - janitor_source
+    - janitor_config
+    - janitor_quadlet

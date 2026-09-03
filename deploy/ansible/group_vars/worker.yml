@@ -1,0 +1,15 @@
+# Applied only to hosts in [worker] (see ../inventory.ini). See the
+# precedence note in group_vars/control.yml if a single host is ever put
+# in both groups - not the case this was built and verified against
+# (control and worker as two distinct hosts).
+janitor_services:
+  - worker
+
+deploy_janitor_conf: false
+
+# Only meaningful when [control] is a different host from this one - see
+# group_vars/all.yml for what each of these actually controls. Leave at
+# the group_vars/all.yml defaults (loopback) for a single-host instance.
+runner_base_url_host: CHANGEME      # the control host's address, reachable from here
+worker_listen_address: CHANGEME     # this host's address, reachable from the control host
+worker_external_address: CHANGEME   # same address, as the control host resolves it
