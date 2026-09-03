@@ -3,11 +3,12 @@
     {% include "cupboard/sidebar.html" %}
 {% endblock sidebar %}
 {% block page_title %}
-    Cupboard - Review
+    Cupboard - Review{% if not publishable_only %} (no publish policy that allows publishing){% endif %}
 {% endblock page_title %}
 {% block body %}
     <div class="section" id="review">
-        <h1>Review</h1>
+        <h1>Review{% if not publishable_only %} (no publish policy that allows publishing){% endif %}</h1>
+        <p><em>{% if not publishable_only %}Manually review runs the Janitor has no publish policy allowing publication for yet - reviewing them will not create a merge proposal or push, but helps catch missing or restrictive policy configuration.{% else %}Manually review runs awaiting a decision before they are published.{% endif %}</em></p>
         <p>
             <a href="/cupboard/c/{{ codebase }}/{{ run_id }}/" id="full-run-link">Full Run</a>
             {% if review_instructions_url %}<a href="{{ review_instructions_url }}">Review Instructions</a>{% endif %}
@@ -74,7 +75,7 @@
                     {% if not publishable_only %}
                         $('.branch').replaceWith('All done!');
                     {% else %}
-                        $('.branch').replaceWith('All done! <a href="/cupboard/review?publishable_only=false">Review unpublishable</a>');
+                        $('.branch').replaceWith('All done! <a href="/cupboard/review?publishable_only=false" title="Also review runs the Janitor has no publish policy allowing publication for yet - reviewing them will not create a merge proposal or push, but helps catch missing or restrictive policy configuration.">Review runs with no publish policy that allows publishing</a>');
                     {% endif %}
                     $('#evaluate').replaceWith('');
                     $('#options').remove();
@@ -172,7 +173,8 @@
                    id="publishable-only"
                    {% if publishable_only %}checked{% endif %}
                    onchange="$('#options').submit()" />
-            <label for="publishable_only">Publishable only</label>
+            <label for="publishable_only"
+                   title="Only show runs the Janitor can actually act on: at least one branch is configured to be proposed or pushed. Runs with no publish policy that allows publishing are hidden.">Publishable only</label>
         </form>
     </div>
 {% endblock body %}
