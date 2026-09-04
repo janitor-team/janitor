@@ -45,6 +45,12 @@ ansible-galaxy install -r requirements.yml
 ansible-playbook site.yml
 ```
 
+The first run generates an SSH keypair for the bot account and prints its
+public key (`roles/janitor_config`'s "Remind the operator to register the
+SSH key" task) - add it to the bot account at
+https://github.com/settings/keys before publish tries to open or resume
+its first merge proposal, or that step will fail.
+
 Real instances default to `use_prebuilt_images: false` (source builds).
 `roles/janitor_source`'s image-build task tags each image with the
 checkout's commit SHA and skips the rebuild when every expected image

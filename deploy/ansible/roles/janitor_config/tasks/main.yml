@@ -71,3 +71,70 @@
     dest: "/home/{{ ansible_user }}/.config/breezy/breezy.conf"
     owner: "{{ ansible_user }}"
     mode: "0644"
+
+# publish-only: breezy_github_token above covers the HTTPS push path, but
+# opening/resuming an *existing* merge proposal branch goes through
+# dulwich's git+ssh transport regardless of that - see openssh-client in
+# Dockerfile_publish. Without a registered key, that step hangs mid
+# handshake and surfaces as a generic ConnectionResetError("Connection
+# closed early") with nothing more specific in the log - traced by
+# reproducing end-to-end against a real forge and finding a bare
+# "Connection closed by ... [preauth]" on the forge's own SSH server log,
+# i.e. no key was offered because none existed.
+- name: Ensure ~/.ssh directory exists
+  file:
+    path: "/home/{{ ansible_user }}/.ssh"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0700"
+  when: "'publish' in janitor_services"
+
+- name: Generate an SSH keypair for the bot account
+  # creates: makes this idempotent - re-running the playbook never
+  # regenerates (and so never invalidates) an already-registered key.
+  command:
+    cmd: >-
+      ssh-keygen -t ed25519 -f /home/{{ ansible_user }}/.ssh/id_ed25519
+      -N "" -C "{{ janitor_github_org }}-publish"
+    creates: "/home/{{ ansible_user }}/.ssh/id_ed25519"
+  become: true
+  become_user: "{{ ansible_user }}"
+  when: "'publish' in janitor_services"
+
+- name: Fetch GitHub's official SSH host keys
+  # Pinned from GitHub's own HTTPS-authenticated API rather than a bare
+  # ssh-keyscan against github.com - keyscan's TOFU has no way to tell a
+  # real host key from one presented by an on-path attacker; this endpoint
+  # is exactly what GitHub's own docs recommend for automation.
+  uri:
+    url: https://api.github.com/meta
+    return_content: true
+  register: github_meta
+  when: "'publish' in janitor_services"
+
+- name: Pin GitHub's SSH host keys in known_hosts
+  copy:
+    dest: "/home/{{ ansible_user }}/.ssh/known_hosts"
+    content: "{{ github_meta.json.ssh_keys | map('regex_replace', '^', 'github.com ') | join('\n') }}\n"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  when: "'publish' in janitor_services"
+
+- name: Read the bot's SSH public key
+  command: cat /home/{{ ansible_user }}/.ssh/id_ed25519.pub
+  register: bot_ssh_pubkey
+  changed_when: false
+  when: "'publish' in janitor_services"
+
+- name: Remind the operator to register the SSH key
+  # One-time manual step, deliberately not automated: registering it via
+  # GitHub's API needs a broader token scope than breezy_github_token's
+  # documented repo + workflow (see group_vars/all.yml), and silently
+  # adding an SSH key to a real bot account isn't something to do without
+  # a human looking at it.
+  debug:
+    msg: >-
+      Add this public key to the {{ janitor_github_org }} bot account
+      (https://github.com/settings/keys) so publish can open and resume
+      merge proposal branches over git+ssh: {{ bot_ssh_pubkey.stdout }}
+  when: "'publish' in janitor_services"

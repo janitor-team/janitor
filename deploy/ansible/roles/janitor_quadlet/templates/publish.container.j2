@@ -17,6 +17,10 @@ Network=host
 Exec=--listen-address 127.0.0.1 --config /mnt/janitor/janitor.conf --differ-url http://localhost:9920/ --external-url {{ 'http' if 'vagrant' in group_names else 'https' }}://{{ janitor_domain }}/
 Volume={{ janitor_home }}:/mnt/janitor:rw
 Volume=/home/{{ ansible_user }}/.config/breezy:/root/.config/breezy:ro
+# roles/janitor_config generates this keypair and pins github.com's host
+# key into it - see the comment above that role's "Ensure ~/.ssh directory
+# exists" task for why publish needs an SSH identity at all.
+Volume=/home/{{ ansible_user }}/.ssh:/root/.ssh:ro
 
 # Already pulled this exact image explicitly in roles/janitor_source
 # - never re-check the registry on every service start (quadlet's default
