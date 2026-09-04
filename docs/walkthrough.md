@@ -128,12 +128,12 @@ $ curl http://localhost:8090/api/active-runs/<run-id>/log/worker.log
 The index endpoint content-negotiates on `Accept`: `application/json`
 gets you the raw filename list, `text/plain` gets one filename per line,
 and `text/html` (the default in a browser) renders the same list as a
-page. The per-file endpoint streams the live file as `text/plain` as it's
-written - it's a genuine tail, not a static fetch of a snapshot, so if the
-run isn't finished yet the response can still be growing when you receive
-it. Once the run finishes and the worker goes away, both endpoints 404 -
-that's the signal to switch to the finished-run logs below, not a sign that
-something broke.
+page. The per-file endpoint streams the log file's contents as `text/plain`
+as of that request - each call gets you whatever's been written so far, not
+a held-open connection that keeps growing, so poll it again for later
+output. Once the run finishes and the worker goes away, these endpoints
+stop working - that's the signal to switch to the finished-run logs below,
+not a sign that something broke.
 
 ## Once it's finished
 
