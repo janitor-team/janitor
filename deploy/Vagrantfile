@@ -79,6 +79,15 @@ Vagrant.configure("2") do |config|
     ansible.groups = {
       "janitor" => ["default"],
       "vagrant" => ["default"],
+      # Without these, site.yml's "hosts: control" and "hosts: worker"
+      # plays match nothing at all ("Could not match supplied host
+      # pattern") and silently do nothing beyond the "Validate secret
+      # vars" play - reproduced with `ansible-playbook --list-hosts`
+      # against this exact groups set before this line existed. Mirrors
+      # ../ansible/inventory.ini's own single-host recipe: one host in
+      # both [control] and [worker].
+      "control" => ["default"],
+      "worker" => ["default"],
     }
     ansible.extra_vars = {
       use_prebuilt_images: USE_PREBUILT,

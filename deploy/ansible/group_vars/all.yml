@@ -1,3 +1,4 @@
+---
 # Core deployment variables. Real secret VALUES are never written here or
 # anywhere in this repo - supply them at run time via ansible-vault or -e,
 # e.g.:

@@ -1,3 +1,4 @@
+---
 # Overrides applied only to hosts in the "vagrant" inventory group (the
 # local test VM - see ../../Vagrantfile). Never used for an instance -
 # instances only have the "janitor" group, not "vagrant".
