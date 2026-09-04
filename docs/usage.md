@@ -85,9 +85,8 @@ If you already operate an instance, day-to-day admin actions live in
 build logs, mass-rescheduling runs matching a result code, forcing an
 autopublish pass or a merge-proposal status rescan, and setting a merge
 proposal's terminal status by hand. [roles.md](roles.md) lists each of
-these with the exact route it calls, including two cases where the
-admin-only control in the UI is not backed by an equivalent server-side
-check.
+these with the exact route it calls, every one of them enforced
+server-side regardless of what the UI shows.
 
 The `qa_reviewer_group` in the same config block controls whose review
 verdicts on `/cupboard/review` actually change a run's publish status,

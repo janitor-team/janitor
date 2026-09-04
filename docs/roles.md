@@ -73,9 +73,13 @@ Every one of the following requires admin group membership and returns
 * `POST /api/merge-proposal` - change a merge proposal's status
   (closed, abandoned, applied, rejected).
 * `POST /api/active-runs/{run_id}/kill` - kill a running worker job.
+* `POST /{campaign}/c/{codebase}/publish` with an explicit `mode` - create
+  a fork, push directly, or open a merge proposal. The plain "Publish now"
+  click leaves `mode` unset and needs no admin check, as noted above.
 * `POST /cupboard/api/mass-reschedule` - bulk-reschedule runs matching
   a result code and description regex.
-* `POST /cupboard/api/run/{run_id}/reprocess-logs` and
+* `GET /cupboard/reprocess-logs` (the page itself),
+  `POST /cupboard/api/run/{run_id}/reprocess-logs`, and
   `POST /cupboard/api/reprocess-logs` - reprocess stored build logs for
   one run or in bulk.
 * `POST /cupboard/api/publish/autopublish` and
@@ -86,7 +90,8 @@ Every one of the following requires admin group membership and returns
   register a new one with a generated password, and remove one.
 
 Templates hide the corresponding controls from non-admins: the Kill
-button and Admin column in the queue, the mass-reschedule form on the
+button and Admin column in the queue, the fork/push/create-merge-proposal
+buttons on a run page, the mass-reschedule form on the
 result-code and never-processed pages, the Refresh Merge Proposal
 Status and Automatically Publish buttons on the publish history page,
 the Reprocess Logs sidebar link, and the closed/abandoned/applied/
