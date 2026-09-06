@@ -39,9 +39,7 @@ import aioredlock
 import aiozipkin
 import asyncpg
 import asyncpg.pool
-import breezy.plugins.github  # noqa: F401
-import breezy.plugins.gitlab  # noqa: F401
-import breezy.plugins.launchpad  # noqa: F401
+import breezy.plugin
 import gpg
 from aiohttp import ClientSession, web
 from aiohttp.web_middlewares import normalize_path_middleware
@@ -97,6 +95,7 @@ from .schedule import CandidateUnavailable, do_schedule, do_schedule_control
 from .vcs import VcsManager, get_vcs_managers_from_config
 
 override_launchpad_consumer_name()
+breezy.plugin.load_plugins()
 
 
 EXISTING_RUN_RETRY_INTERVAL = 30
