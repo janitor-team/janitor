@@ -17,6 +17,7 @@
 
 import asyncio
 import os
+import time
 from datetime import datetime, timedelta
 from io import BytesIO
 
@@ -41,6 +42,7 @@ from janitor.runner import (
     is_log_filename,
     store_change_set,
     store_run,
+    to_thread_timeout,
 )
 from janitor.vcs import get_vcs_managers
 
@@ -994,3 +996,40 @@ async def test_schedule_unknown_run_id_returns_404(aiohttp_client, db, tmp_path)
     resp = await client.post("/schedule", json={"run_id": "nonexistent"})
     assert resp.status == 404
     await qp.stop()
+
+
+async def test_to_thread_timeout_bounds_a_hanging_call():
+    def hangs_forever():
+        # Simulates a synchronous VCS/network call (e.g.
+        # additional_colocated_branches against a remote that never
+        # responds) that asyncio.to_thread alone would wait on
+        # indefinitely, since cancelling the awaiting coroutine does not
+        # stop the underlying thread. Bounded to 2s rather than an unset
+        # threading.Event().wait(): asyncio.to_thread runs this on the
+        # default (non-daemon) ThreadPoolExecutor, and a thread that
+        # never returns blocks interpreter shutdown forever, hanging the
+        # whole test run instead of just this test.
+        time.sleep(2)
+
+    start = time.monotonic()
+    with pytest.raises(asyncio.TimeoutError):
+        # The outer 5s wait_for is only a safety net so a regression
+        # fails the test instead of hanging the suite; the assertion
+        # below is what actually proves to_thread_timeout enforced its
+        # own, much shorter timeout.
+        await asyncio.wait_for(to_thread_timeout(0.1, hangs_forever), timeout=5.0)
+    assert time.monotonic() - start < 1.0
+
+
+async def test_to_thread_timeout_returns_result():
+    def quick():
+        return 42
+
+    assert await to_thread_timeout(5.0, quick) == 42
+
+
+async def test_to_thread_timeout_none_disables_timeout():
+    def quick():
+        return "no timeout"
+
+    assert await to_thread_timeout(None, quick) == "no timeout"

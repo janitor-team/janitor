@@ -2645,9 +2645,18 @@ async def next_item(
                 active_run.vcs_info["branch_url"] = full_branch_url(main_branch).rstrip(
                     "/"
                 )
-                additional_colocated_branches = await asyncio.to_thread(
-                    builder.additional_colocated_branches, main_branch
-                )
+                try:
+                    additional_colocated_branches = await to_thread_timeout(
+                        REMOTE_BRANCH_OPEN_TIMEOUT,
+                        builder.additional_colocated_branches,
+                        main_branch,
+                    )
+                except asyncio.TimeoutError:
+                    logging.debug(
+                        "Timeout listing colocated branches for %s",
+                        vcs_info["branch_url"],
+                    )
+                    additional_colocated_branches = None
                 vcs_type = get_branch_vcs_type(main_branch)
                 if not item.refresh:
                     with span.new_child("resume-branch:open"):
