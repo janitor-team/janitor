@@ -292,7 +292,8 @@ SELECT
   finish_time - start_time as duration,
   result_code,
   description,
-  failure_details
+  failure_details,
+  change_set
 FROM run
 WHERE
   (result_code = 'build-failed' OR
