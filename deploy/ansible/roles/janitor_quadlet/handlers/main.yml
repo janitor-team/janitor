@@ -1,0 +1,9 @@
+---
+- name: reload user systemd
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  systemd:
+    scope: user
+    daemon_reload: true

@@ -1,0 +1,34 @@
+---
+# Applied only to hosts in [worker] (see ../inventory.ini). This file
+# wins ties with group_vars/control.yml outright for a host in both
+# groups (same-depth group_vars, resolved alphabetically, "worker" after
+# "control") - the single-host default (one host in both [control] and
+# [worker], see ../inventory.ini). Confirmed live: even
+# group_vars/control.yml's own guarded janitor_services never took effect
+# for such a host, since this plain list below always won regardless -
+# every key in this file needs its own group_names check for the same
+# reason, not just the one in group_vars/control.yml.
+janitor_services: >-
+  {{ ['worker'] if 'control' not in group_names
+     else ['git_store', 'bzr_store', 'differ', 'archive', 'auto_upload',
+           'runner', 'publish', 'worker', 'site'] }}
+
+# false only for a genuinely worker-only split host (docs/multi-host-
+# deployment.md) - nothing there reads janitor_home/data/* or
+# janitor.conf (see roles/janitor_config). true whenever this host is
+# also in [control] (single-host default), which does need both -
+# unguarded, this resolved to false even during the *control* play on a
+# single-host inventory, confirmed live with `ansible-inventory --host`.
+deploy_janitor_conf: "{{ 'control' in group_names }}"
+
+# Only meaningful when [control] is a different host from this one - see
+# group_vars/all.yml for what each of these actually controls and for the
+# loopback/localhost literals repeated below (duplicated rather than
+# referenced - a var can't fall back to a lower-precedence definition of
+# its own name from inside a same- or higher-precedence one).
+# the control host's address, reachable from here
+runner_base_url_host: "{{ 'CHANGEME' if 'control' not in group_names else 'localhost' }}"
+# this host's address, reachable from the control host
+worker_listen_address: "{{ 'CHANGEME' if 'control' not in group_names else '127.0.0.1' }}"
+# same address, as the control host resolves it
+worker_external_address: "{{ 'CHANGEME' if 'control' not in group_names else 'localhost' }}"

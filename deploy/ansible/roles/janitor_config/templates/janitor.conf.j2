@@ -1,0 +1,38 @@
+logs_location: "{{ janitor_home }}/data/logs"
+artifact_location: "{{ janitor_home }}/data/artifacts"
+database_location: "postgresql://janitor:{{ janitor_db_password }}@localhost:5432/janitor"
+redis_location: "redis://localhost"
+git_location: "http://localhost:9923"
+bzr_location: "http://localhost:9929"
+committer: "Janitor Bot <noreply@{{ janitor_domain }}>"
+origin: "{{ janitor_github_org }}"
+
+distribution {
+  name: "unstable"
+  archive_mirror_uri: "http://deb.debian.org/debian"
+  component: "main"
+  chroot: "unstable-amd64-sbuild"
+  lintian_profile: "debian"
+  build_command: "sbuild -Asv --no-clean-source"
+  vendor: "debian"
+}
+
+campaign {
+  name: "lintian-fixes"
+  command: "lintian-brush"
+  branch_name: "lintian-fixes"
+  debian_build {
+    build_distribution: "lintian-fixes"
+    build_suffix: "jan+lint"
+    base_distribution: "unstable"
+    build_command: "sbuild -Asv --no-clean-source"
+  }
+}
+
+{% if oauth_client_id is defined %}
+oauth2_provider {
+  client_id: "{{ oauth_client_id }}"
+  client_secret: "{{ oauth_client_secret }}"
+  base_url: "https://github.com"
+}
+{% endif %}

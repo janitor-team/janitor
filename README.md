@@ -76,7 +76,7 @@ Installation
 There are two common ways of deploying a new janitor instance.
 
  * On top of kubernetes (see the configuration for the Debian & Upstream janitor)
- * Using e.g. ansible and/or a venv
+ * Using e.g. ansible and/or a venv - see [deploy/](deploy/) for an Ansible playbook that deploys a full instance onto a single host
 
 Docker
 ------

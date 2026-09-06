@@ -1,0 +1,140 @@
+---
+- name: Create data directories
+  # Guarded by deploy_janitor_conf (group_vars/all.yml, false for
+  # group_vars/worker.yml): nothing on a worker-only host reads
+  # janitor_home/data/* or janitor.conf below - the worker container takes
+  # its config entirely via --base-url/--external-address/env, not a
+  # mounted config file (see janitor_quadlet/templates/worker.container.j2).
+  file:
+    path: "{{ janitor_home }}/data/{{ item }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0755"
+  loop:
+    - logs
+    - artifacts
+    - cache
+    - dists
+    - git
+    - bzr
+  when: deploy_janitor_conf
+
+- name: Deploy janitor.conf
+  # NOT tracked by git - janitor.conf's protobuf-text format has no
+  # separate secrets mechanism, and this file contains the DB password
+  # and OAuth client secret in plaintext.
+  template:
+    src: janitor.conf.j2
+    dest: "{{ janitor_home }}/janitor.conf"
+    owner: "{{ ansible_user }}"
+    mode: "0600"
+  no_log: true
+  when: deploy_janitor_conf
+
+- name: Create breezy config directory
+  file:
+    path: "/home/{{ ansible_user }}/.config/breezy"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0700"
+
+- name: Deploy breezy authentication.conf
+  # Undocumented in janitor's own repo - publish/runner delegate GitHub
+  # API auth to breezy's own config file, not janitor.conf.
+  # retrieve_github_token() reads private_token, not token - both keys
+  # included to be safe, per breezy's own source.
+  template:
+    src: authentication.conf.j2
+    dest: "/home/{{ ansible_user }}/.config/breezy/authentication.conf"
+    owner: "{{ ansible_user }}"
+    mode: "0600"
+  no_log: true
+
+- name: Deploy breezy ignore file
+  # worker.container mounts this whole directory :ro (to protect
+  # authentication.conf above from the worker). breezy's ignores.py tries to
+  # write a default ignore file here the first time any codemod runs
+  # (get_user_ignores() -> _set_user_ignores()) and hard-panics on the
+  # read-only mount instead of handling ENOENT/EROFS gracefully. Pre-seeding
+  # it with breezy's own USER_DEFAULTS list means it never needs to write.
+  copy:
+    src: breezy-ignore
+    dest: "/home/{{ ansible_user }}/.config/breezy/ignore"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+
+- name: Deploy breezy whoami
+  # Same read-only-mount reasoning as the ignore file above. Without this,
+  # the worker panics with NoWhoami on its first real commit.
+  template:
+    src: breezy.conf.j2
+    dest: "/home/{{ ansible_user }}/.config/breezy/breezy.conf"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+
+# publish-only: breezy_github_token above covers the HTTPS push path, but
+# opening/resuming an *existing* merge proposal branch goes through
+# dulwich's git+ssh transport regardless of that - see openssh-client in
+# Dockerfile_publish. Without a registered key, that step hangs mid
+# handshake and surfaces as a generic ConnectionResetError("Connection
+# closed early") with nothing more specific in the log - traced by
+# reproducing end-to-end against a real forge and finding a bare
+# "Connection closed by ... [preauth]" on the forge's own SSH server log,
+# i.e. no key was offered because none existed.
+- name: Ensure ~/.ssh directory exists
+  file:
+    path: "/home/{{ ansible_user }}/.ssh"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0700"
+  when: "'publish' in janitor_services"
+
+- name: Generate an SSH keypair for the bot account
+  # creates: makes this idempotent - re-running the playbook never
+  # regenerates (and so never invalidates) an already-registered key.
+  command:
+    cmd: >-
+      ssh-keygen -t ed25519 -f /home/{{ ansible_user }}/.ssh/id_ed25519
+      -N "" -C "{{ janitor_github_org }}-publish"
+    creates: "/home/{{ ansible_user }}/.ssh/id_ed25519"
+  become: true
+  become_user: "{{ ansible_user }}"
+  when: "'publish' in janitor_services"
+
+- name: Fetch GitHub's official SSH host keys
+  # Pinned from GitHub's own HTTPS-authenticated API rather than a bare
+  # ssh-keyscan against github.com - keyscan's TOFU has no way to tell a
+  # real host key from one presented by an on-path attacker; this endpoint
+  # is exactly what GitHub's own docs recommend for automation.
+  uri:
+    url: https://api.github.com/meta
+    return_content: true
+  register: github_meta
+  when: "'publish' in janitor_services"
+
+- name: Pin GitHub's SSH host keys in known_hosts
+  copy:
+    dest: "/home/{{ ansible_user }}/.ssh/known_hosts"
+    content: "{{ github_meta.json.ssh_keys | map('regex_replace', '^', 'github.com ') | join('\n') }}\n"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  when: "'publish' in janitor_services"
+
+- name: Read the bot's SSH public key
+  command: cat /home/{{ ansible_user }}/.ssh/id_ed25519.pub
+  register: bot_ssh_pubkey
+  changed_when: false
+  when: "'publish' in janitor_services"
+
+- name: Remind the operator to register the SSH key
+  # One-time manual step, deliberately not automated: registering it via
+  # GitHub's API needs a broader token scope than breezy_github_token's
+  # documented repo + workflow (see group_vars/all.yml), and silently
+  # adding an SSH key to a real bot account isn't something to do without
+  # a human looking at it.
+  debug:
+    msg: >-
+      Add this public key to the {{ janitor_github_org }} bot account
+      (https://github.com/settings/keys) so publish can open and resume
+      merge proposal branches over git+ssh: {{ bot_ssh_pubkey.stdout }}
+  when: "'publish' in janitor_services"

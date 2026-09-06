@@ -1,0 +1,48 @@
+---
+# apt_key shells out to the apt-key binary, which Debian dropped outright as
+# of trixie (deprecated since bullseye) - the module has no fallback and
+# just fails "command not found". Fetch + gpg --dearmor by hand instead,
+# the way apt-key itself used to.
+- name: Download Caddy's official GPG key
+  get_url:
+    url: https://dl.cloudsmith.io/public/caddy/stable/gpg.key
+    dest: /tmp/caddy-stable-archive-keyring.gpg.key
+    mode: "0644"
+    # TLS covers transport, but pinning the checksum catches a compromised
+    # or silently-rotated key at the source too. Stable across two
+    # independent fetches on 2026-08-30 - if Cloudsmith ever rotates
+    # this key, this task starts failing loudly instead of silently
+    # trusting whatever's there - update the checksum deliberately, don't
+    # just delete this line.
+    checksum: sha256:783dfee04b19e851a928cd87b34710213ebbe7628f98d9f34595ab83be578c00
+
+- name: Dearmor Caddy's GPG key into the trusted keyring
+  command: gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg /tmp/caddy-stable-archive-keyring.gpg.key
+  args:
+    creates: /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+
+- name: Add Caddy apt source
+  # apt_repository is deprecated as of ansible-core 2.21 in favor of
+  # deb822_repository, slated for removal in 2.25 - not broken yet, worth
+  # revisiting (with a Vagrant re-validation) before that lands.
+  apt_repository:
+    repo: "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main"
+    filename: caddy-stable
+    state: present
+
+- name: Install Caddy
+  apt:
+    name: caddy
+    state: present
+    update_cache: true
+
+- name: Deploy Caddyfile
+  template:
+    src: Caddyfile.j2
+    dest: /etc/caddy/Caddyfile
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart caddy
+
+- meta: flush_handlers
