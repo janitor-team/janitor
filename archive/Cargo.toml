@@ -3,9 +3,42 @@ name = "janitor-archive"
 version.workspace = true
 edition.workspace = true
 
+[[bin]]
+name = "janitor-archive"
+path = "src/main.rs"
+
 [dependencies]
 futures = "0.3.31"
 tokio = { workspace = true, features = ["full"] }
 tracing = "0.1.41"
 deb822-fast = "0.2"
 debian-control.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+thiserror = "2.0"
+bytes = "1.0"
+tempfile = "3.0"
+async-stream = "0.3"
+async-trait = "0.1"
+num_cpus = "1.0"
+sqlx = { workspace = true, features = ["postgres", "chrono", "uuid", "migrate", "macros", "runtime-tokio", "tls-native-tls"] }
+janitor = { path = ".." }
+# Reading .deb file trees in-process (for Contents-<arch>): outer
+# ar archive, inner data.tar.{,gz,bz2,xz,zst}.
+ar = "0.9"
+tar = "0.4"
+flate2 = "1.0"
+bzip2 = "0.4"
+xz2 = "0.1"
+zstd = "0.13"
+apt-repository = { path = "../apt-repository" }
+axum.workspace = true
+tower = "0.4"
+tower-http = { version = "0.6", features = ["cors", "trace", "validate-request"] }
+hyper = "1.0"
+tokio-util = "0.7"
+redis = { workspace = true, features = ["tokio-comp", "connection-manager"] }
+uuid = { version = "1.6", features = ["v4", "serde"] }
+clap = { version = "4.4", features = ["derive", "env"] }
+tracing-subscriber = "0.3"
