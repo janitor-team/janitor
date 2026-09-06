@@ -131,7 +131,7 @@ CREATE TABLE IF NOT EXISTS publish (
    change_set text not null references change_set(id),
    source_branch_url text,
    source_branch_web_url text,
-   target_branch_url text not null,
+   target_branch_url text,
    target_branch_web_url text,
    subpath text,
    branch_name text,
