@@ -127,16 +127,17 @@ async def handle_run_reschedule(request):
     }
     url = URL(request.app["runner_url"]) / "schedule"
     try:
-        async with request.app["http_client_session"].post(
-            url, json=json, raise_for_status=True
-        ) as resp:
-            return web.json_response(await resp.json())
+        async with request.app["http_client_session"].post(url, json=json) as resp:
+            ret = await resp.json()
+            if resp.status >= 400:
+                return web.json_response(ret, status=resp.status)
     except ContentTypeError as e:
         return web.json_response(
             {"error": f"runner returned error {e.code}"}, status=400
         )
     except ClientConnectorError:
         return web.json_response({"error": "unable to contact runner"}, status=502)
+    return web.json_response(ret)
 
 
 @response_schema(ScheduleResultSchema())
