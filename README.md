@@ -47,7 +47,9 @@ Several permanently running jobs:
 * the *differ* takes care of running e.g. debdiff or diffoscope between binary runs
 
 Each instance of the janitor should somehow upload "codebase" entries and
-"candidates", which describe where to find code and what to do with it.
+"candidates", which describe where to find code and what to do with it. See
+[docs/walkthrough.md](docs/walkthrough.md) for a full walkthrough of
+submitting a codebase and candidate, watching it run, and finding its logs.
 
 There are no requirements that these jobs run on the same machine, but they are
 expected to have secure network access to each other.
