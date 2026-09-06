@@ -17,6 +17,7 @@
 
 from datetime import datetime, timedelta
 
+import pytest
 from aiohttp import web
 from jinja2 import Environment
 from yarl import URL
@@ -315,6 +316,13 @@ async def test_run_redirect_unknown_run_returns_404(aiohttp_client, db):
     client = await create_client(aiohttp_client, db)
     resp = await client.get("/cupboard/run/nonexistent/", allow_redirects=False)
     assert resp.status == 404
+
+
+async def test_evaluate_unknown_run_returns_404(db):
+    from janitor.site.cupboard.review import generate_evaluate
+
+    with pytest.raises(web.HTTPNotFound):
+        await generate_evaluate(db, {}, None, None, "nonexistent", None)
 
 
 ADMIN_USER = {"email": "admin@example.com", "groups": []}
