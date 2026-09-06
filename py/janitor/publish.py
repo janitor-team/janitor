@@ -3479,6 +3479,10 @@ async def refresh_bucket_mp_counts(db, bucket_rate_limiter):
              GROUP BY 1, 2
              """
         ):
+            if row["rate_limit_bucket"] is None:
+                # No bucket assigned, nothing to rate-limit against.
+                # Passing None through here crashes on the Rust side.
+                continue
             per_bucket.setdefault(row["status"], {})[row["rate_limit_bucket"]] = row[
                 "c"
             ]
