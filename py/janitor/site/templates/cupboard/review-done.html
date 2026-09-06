@@ -3,15 +3,16 @@
     {% include "cupboard/sidebar.html" %}
 {% endblock sidebar %}
 {% block page_title %}
-    Cupboard - Reviews Completed
+    Cupboard - Reviews Completed{% if not publishable_only %} (no publish policy that allows publishing){% endif %}
 {% endblock page_title %}
 {% block body %}
     <div class="section" id="review">
-        <h1>Review</h1>
+        <h1>Review{% if not publishable_only %} (no publish policy that allows publishing){% endif %}</h1>
+        <p><em>{% if not publishable_only %}Manually review runs the Janitor has no publish policy allowing publication for yet - reviewing them will not create a merge proposal or push, but helps catch missing or restrictive policy configuration.{% else %}Manually review runs awaiting a decision before they are published.{% endif %}</em></p>
         <p>All done!</p>
         {% if publishable_only %}
             <p>
-                <a href="/cupboard/review?publishable_only=false">Review unpublishable</a>
+                <a href="/cupboard/review?publishable_only=false" title="Also review runs the Janitor has no publish policy allowing publication for yet - reviewing them will not create a merge proposal or push, but helps catch missing or restrictive policy configuration.">Review runs with no publish policy that allows publishing</a>
             </p>
         {% endif %}
     </div>
