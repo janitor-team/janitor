@@ -2486,7 +2486,7 @@ async def handle_queue(request):
         limit = None
     async with queue_processor.database.acquire() as conn:
         queue = Queue(conn)
-        for entry in await queue.iter_queue(limit=limit):
+        async for entry in queue.iter_queue(limit=limit):
             response_obj.append(
                 {
                     "queue_id": entry.id,
