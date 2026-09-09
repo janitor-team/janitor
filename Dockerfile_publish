@@ -31,6 +31,9 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 COPY . /code
 
+RUN cargo build --release --manifest-path /code/publish/Cargo.toml --bin janitor-publish-one \
+ && cp /code/target/release/janitor-publish-one /usr/local/bin/janitor-publish-one
+
 RUN pip3 install --upgrade "/code[gcp,publish]" \
  && rm -rf /code
 

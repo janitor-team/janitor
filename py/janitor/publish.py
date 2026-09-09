@@ -42,7 +42,6 @@ import asyncpg.pool
 import breezy.plugins.github  # noqa: F401
 import breezy.plugins.gitlab  # noqa: F401
 import breezy.plugins.launchpad  # noqa: F401
-import gpg
 from aiohttp import ClientSession, web
 from aiohttp.web_middlewares import normalize_path_middleware
 from aiohttp_apispec import setup_aiohttp_apispec
@@ -350,7 +349,7 @@ class PublishWorker:
             "allow_create_proposal": allow_create_proposal,
             "external_url": self.external_url,
             "differ_url": self.differ_url,
-            "revision": revision.decode("utf-8"),
+            "revision_id": revision.decode("utf-8"),
             "reviewers": reviewers,
             "commit_message_template": commit_message_template,
             "title_template": title_template,
@@ -362,7 +361,7 @@ class PublishWorker:
         else:
             request["tags"] = {}
 
-        args = [sys.executable, "-m", "janitor.publish_one"]
+        args = ["janitor-publish-one"]
 
         if self.template_env_path:
             args.append(f"--template-env-path={self.template_env_path}")
@@ -1770,6 +1769,10 @@ async def create_app(
         middlewares=[trailing_slash_redirect, state.asyncpg_error_middleware]
     )
     app.router.add_routes(routes)
+    # python3-gpg is only packaged for the system Python, so import it here
+    # rather than at module scope; the rest of this module works without it.
+    import gpg
+
     app["gpg"] = gpg.Context(armor=True)
     app["publish_worker"] = publish_worker
     app["vcs_managers"] = vcs_managers

@@ -30,6 +30,10 @@ sqlx = { workspace = true, features = ["chrono"] }
 maplit.workspace = true
 prometheus = "0.14.0"
 
+[[bin]]
+name = "janitor-publish-one"
+path = "src/bin/publish-one.rs"
+
 [dev-dependencies]
 maplit = { workspace = true }
 protobuf = "3"
