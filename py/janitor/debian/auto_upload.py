@@ -136,6 +136,19 @@ async def upload_build_result(
             )
 
 
+def is_debian_upload_target(result: dict, distributions: Optional[list[str]]) -> bool:
+    # a non-success run publishes "target": {}, so "code" has to be
+    # checked before "target"["name"] to avoid a KeyError
+    if result["code"] != "success":
+        return False
+    if result["target"]["name"] != "debian":
+        return False
+    return (
+        not distributions
+        or result["target"]["details"]["build_distribution"] in distributions
+    )
+
+
 async def listen_to_runner(
     redis,
     artifact_manager,
@@ -147,12 +160,7 @@ async def listen_to_runner(
     async def handle_result_message(msg):
         result = json.loads(msg["data"])
 
-        if result["target"]["name"] != "debian":
-            return
-        if (
-            not distributions
-            or result["target"]["details"]["build_distribution"] in distributions
-        ):
+        if is_debian_upload_target(result, distributions):
             await upload_build_result(
                 result["log_id"],
                 artifact_manager,
