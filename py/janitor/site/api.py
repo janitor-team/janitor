@@ -63,6 +63,8 @@ async def handle_publish(request):
     mode = post.get("mode")
     if mode not in (None, "push-derived", "push", "propose", "attempt-push"):
         return web.json_response({"error": "Invalid mode", "mode": mode}, status=400)
+    if mode is not None:
+        check_admin(request)
     url = URL(publisher_url) / campaign / codebase / "publish"
     if request["user"]:
         try:

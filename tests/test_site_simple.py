@@ -154,3 +154,22 @@ async def test_candidates_with_multiple_unscored_does_not_500(
     client = await aiohttp_client(app)
     resp = await client.get("/lintian-fixes/candidates")
     assert resp.status == 200
+
+
+async def test_codebase_publish_explicit_mode_requires_admin(aiohttp_client):
+    _private_app, app = await create_app(config=create_config(), redis=FakeRedis())
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/lintian-fixes/c/foo/publish", data={"mode": "propose"}
+    )
+    assert resp.status == 401
+
+
+async def test_codebase_publish_without_mode_does_not_require_admin(aiohttp_client):
+    _private_app, app = await create_app(config=create_config(), redis=FakeRedis())
+    client = await aiohttp_client(app)
+    resp = await client.post("/lintian-fixes/c/foo/publish", data={})
+    # No publisher configured in this test app, so the request fails trying
+    # to reach it - the point here is it fails past the admin check, not at
+    # it (a 401 would mean the no-mode case wrongly started requiring admin).
+    assert resp.status != 401
