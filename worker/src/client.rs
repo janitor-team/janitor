@@ -33,6 +33,7 @@ pub async fn get_assignment_raw(
     jenkins_build_url: Option<&Url>,
     codebase: Option<&str>,
     campaign: Option<&str>,
+    exclude_hosts: &[String],
 ) -> Result<serde_json::Value, AssignmentError> {
     let assign_url = base_url
         .join("active-runs")
@@ -53,6 +54,9 @@ pub async fn get_assignment_raw(
         "codebase": codebase,
         "campaign": campaign,
     });
+    if !exclude_hosts.is_empty() {
+        json["exclude_hosts"] = serde_json::json!(exclude_hosts);
+    }
     json["backchannel"] = if let Some(ref url) = my_url {
         serde_json::json!({
             "kind": "http",
@@ -144,6 +148,8 @@ pub async fn get_assignment_raw(
 /// * `jenkins_build_url` - The URL of the Jenkins build.
 /// * `codebase` - Request an assignment for a specific codebase.
 /// * `campaign` - Request an assignment for a specific campaign.
+/// * `exclude_hosts` - Hosts this worker has recently been rate limited by;
+///   the runner will skip candidates targeting these hosts for this request.
 ///
 /// # Returns
 ///
@@ -157,6 +163,7 @@ pub async fn get_assignment(
     jenkins_build_url: Option<&Url>,
     codebase: Option<&str>,
     campaign: Option<&str>,
+    exclude_hosts: &[String],
 ) -> Result<Assignment, AssignmentError> {
     let assignment = get_assignment_raw(
         session,
@@ -167,6 +174,7 @@ pub async fn get_assignment(
         jenkins_build_url,
         codebase,
         campaign,
+        exclude_hosts,
     )
     .await?;
     serde_json::from_value(assignment)
@@ -268,6 +276,7 @@ impl Client {
         jenkins_build_url: Option<&Url>,
         codebase: Option<&str>,
         campaign: Option<&str>,
+        exclude_hosts: &[String],
     ) -> Result<Assignment, AssignmentError> {
         get_assignment(
             &self.client,
@@ -278,6 +287,7 @@ impl Client {
             jenkins_build_url,
             codebase,
             campaign,
+            exclude_hosts,
         )
         .await
     }
@@ -289,6 +299,7 @@ impl Client {
         jenkins_build_url: Option<&Url>,
         codebase: Option<&str>,
         campaign: Option<&str>,
+        exclude_hosts: &[String],
     ) -> Result<serde_json::Value, AssignmentError> {
         get_assignment_raw(
             &self.client,
@@ -299,6 +310,7 @@ impl Client {
             jenkins_build_url,
             codebase,
             campaign,
+            exclude_hosts,
         )
         .await
     }
