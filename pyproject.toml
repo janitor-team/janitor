@@ -31,6 +31,9 @@ module = [
     "boto3.*",
     "pytest_asyncio.*",
     "silver_platter.*",
+    # site-extra only (pyproject.toml [project.optional-dependencies] site)
+    # - not installed in the mypy job's base env
+    "buildlog_consultant.*",
 ]
 ignore_missing_imports = true
 
@@ -137,6 +140,11 @@ runner = [
 # Janitor service (./Dockerfile_site)
 site = [
     "python-debian",
+    # pinned: 0.0.39+ needs debian-control 0.1.x, whose relations module
+    # was rewritten onto a proper parser (debian-parsers#455), dropping
+    # relations::Relations. No Cargo.lock ships in the sdist, so a fresh
+    # build pulls that newer API. 0.0.38 has no debian-control dep at all.
+    "buildlog-consultant==0.0.38",
 ]
 
 # djlint ($ make djlint)
