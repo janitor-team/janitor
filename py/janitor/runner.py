@@ -29,7 +29,7 @@ import sys
 import tempfile
 import uuid
 import warnings
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -1744,12 +1744,18 @@ class QueueProcessor:
         await self.redis.hset("rate-limit-hosts", host, retry_after.isoformat())
 
     async def next_queue_item(
-        self, conn, codebase: Optional[str] = None, campaign: Optional[str] = None
+        self,
+        conn,
+        codebase: Optional[str] = None,
+        campaign: Optional[str] = None,
+        exclude_hosts: Optional[Iterable[str]] = None,
     ) -> tuple[Optional[QueueItem], dict[str, str]]:
         queue = Queue(conn)
-        exclude_hosts = set(self.avoid_hosts)
+        combined_exclude_hosts = set(self.avoid_hosts)
+        if exclude_hosts:
+            combined_exclude_hosts.update(exclude_hosts)
         async for host, _retry_after in self.rate_limited_hosts():
-            exclude_hosts.add(host)
+            combined_exclude_hosts.add(host)
         assigned_queue_items = {
             int(i.decode("utf-8"))
             for i in await self.redis.hkeys("assigned-queue-items")
@@ -1758,7 +1764,7 @@ class QueueProcessor:
             campaign=campaign,
             codebase=codebase,
             assigned_queue_items=assigned_queue_items,
-            exclude_hosts=exclude_hosts,
+            exclude_hosts=combined_exclude_hosts,
         )
 
 
@@ -2391,6 +2397,7 @@ async def handle_assign(request):
             backchannel=json.get("backchannel"),
             codebase=json.get("codebase"),
             campaign=json.get("campaign"),
+            exclude_hosts=json.get("exclude_hosts"),
         )
     except QueueEmpty:
         return web.json_response({"reason": "queue empty"}, status=503)
@@ -2429,6 +2436,7 @@ async def handle_public_assign(request):
             backchannel=json.get("backchannel"),
             codebase=json.get("codebase"),
             campaign=json.get("campaign"),
+            exclude_hosts=json.get("exclude_hosts"),
         )
     except QueueEmpty:
         return web.json_response({"reason": "queue empty"}, status=503)
@@ -2521,6 +2529,7 @@ async def next_item(
     backchannel: Optional[dict[str, str]] = None,
     codebase: Optional[str] = None,
     campaign: Optional[str] = None,
+    exclude_hosts: Optional[Iterable[str]] = None,
 ):
     possible_transports: list[Transport] = []
     possible_forges: list[Forge] = []
@@ -2542,7 +2551,10 @@ async def next_item(
         while item is None:
             with span.new_child("sql:queue-item"):
                 item, vcs_info = await queue_processor.next_queue_item(
-                    conn, codebase=codebase, campaign=campaign
+                    conn,
+                    codebase=codebase,
+                    campaign=campaign,
+                    exclude_hosts=exclude_hosts,
                 )
             if item is None:
                 queue_empty_count.inc()

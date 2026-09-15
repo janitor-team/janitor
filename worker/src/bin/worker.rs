@@ -86,6 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         assignment: None,
         output_directory: None,
         metadata: None,
+        ..Default::default()
     }));
 
     let global_config = breezyshim::config::global_stack().unwrap();

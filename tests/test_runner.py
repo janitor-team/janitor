@@ -445,6 +445,48 @@ async def test_submit_candidate(aiohttp_client, db, tmp_path):
     await qp.stop()
 
 
+async def test_active_runs_exclude_hosts(aiohttp_client, db, tmp_path):
+    vcs = tmp_path / "vcs"
+    vcs.mkdir()
+    qp = await create_queue_processor(db, vcs_managers=get_vcs_managers(str(vcs)))
+    client = await create_client(aiohttp_client, qp, campaigns=["mycampaign"])
+    resp = await client.post(
+        "/codebases",
+        json=[
+            {"name": "foo", "branch_url": "https://example.com/foo.git"},
+            {"name": "bar", "branch_url": "https://example.org/bar.git"},
+        ],
+    )
+    assert resp.status == 200
+    resp = await client.post(
+        "/candidates",
+        json=[
+            {"campaign": "mycampaign", "codebase": "foo", "command": "true"},
+            {"campaign": "mycampaign", "codebase": "bar", "command": "true"},
+        ],
+    )
+    assert resp.status == 200
+
+    # foo is on example.com. A request that excludes example.com skips it
+    # and gets bar instead, even though foo would otherwise be picked first
+    # (lower queue id).
+    resp = await client.post("/active-runs", json={"exclude_hosts": ["example.com"]})
+    assert resp.status == 201
+    assignment = await resp.json()
+    assert assignment["branch"]["url"] == "https://example.org/bar.git"
+
+    # The exclusion applied only to the request above, not globally: a
+    # second request with no exclude_hosts still gets the foo candidate.
+    resp = await client.post("/active-runs", json={})
+    assert resp.status == 201
+    assignment = await resp.json()
+    assert assignment["branch"]["url"] == "https://example.com/foo.git"
+
+    assert [x async for x in qp.rate_limited_hosts()] == []
+
+    await qp.stop()
+
+
 async def test_submit_unknown_candidate_codebase(aiohttp_client, db):
     qp = await create_queue_processor(db)
     client = await create_client(aiohttp_client, qp, campaigns=["mycampaign"])

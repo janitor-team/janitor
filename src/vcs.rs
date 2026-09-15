@@ -305,6 +305,7 @@ mod tests {
         let err = BranchOpenError::Unavailable {
             url: Url::parse("https://anonscm.debian.org/repo").unwrap(),
             description: "Connection refused".to_string(),
+            http_status: None,
         };
         let failure =
             convert_branch_exception(&Url::parse("https://anonscm.debian.org/repo").unwrap(), err);
@@ -315,11 +316,55 @@ mod tests {
     fn test_convert_branch_exception_unavailable_401() {
         let err = BranchOpenError::Unavailable {
             url: Url::parse("https://example.com/repo").unwrap(),
-            description: "Unable to handle http code 401: Unauthorized".to_string(),
+            description:
+                "Unexpected HTTP status: https://example.com/repo/info/refs?service=git-upload-pack \
+                 401: Unable to handle http code: Unauthorized"
+                    .to_string(),
+            http_status: Some(401),
         };
         let failure =
             convert_branch_exception(&Url::parse("https://example.com/repo").unwrap(), err);
         assert_eq!(failure.code, "401-unauthorized");
+    }
+
+    #[test]
+    fn test_convert_branch_exception_unavailable_503() {
+        // Captured from live retries against salsa.debian.org rate-limiting
+        // bsdgames/lolcat. http_status comes from breezy's own structured
+        // status code (silver-platter#642), not scraped from this text.
+        let err = BranchOpenError::Unavailable {
+            url: Url::parse("https://salsa.debian.org/debian/lolcat.git").unwrap(),
+            description:
+                "Unexpected HTTP status: https://salsa.debian.org/debian/lolcat.git/info/refs\
+                 ?service=git-upload-pack 503: Unable to handle http code: Service Unavailable"
+                    .to_string(),
+            http_status: Some(503),
+        };
+        let failure = convert_branch_exception(
+            &Url::parse("https://salsa.debian.org/debian/lolcat.git").unwrap(),
+            err,
+        );
+        assert_eq!(failure.code, "too-many-requests");
+    }
+
+    #[test]
+    fn test_convert_branch_exception_unavailable_429() {
+        // Same live shape as the 503 case above. http_status comes from
+        // breezy's own structured status code (silver-platter#642), not
+        // scraped from this text.
+        let err = BranchOpenError::Unavailable {
+            url: Url::parse("https://salsa.debian.org/debian/bsdgames.git").unwrap(),
+            description:
+                "Unexpected HTTP status: https://salsa.debian.org/debian/bsdgames.git/info/refs\
+                 ?service=git-upload-pack 429: Unable to handle http code: Too Many Requests"
+                    .to_string(),
+            http_status: Some(429),
+        };
+        let failure = convert_branch_exception(
+            &Url::parse("https://salsa.debian.org/debian/bsdgames.git").unwrap(),
+            err,
+        );
+        assert_eq!(failure.code, "too-many-requests");
     }
 
     #[test]
@@ -524,19 +569,20 @@ fn convert_branch_exception(vcs_url: &Url, e: BranchOpenError) -> BranchOpenFail
             retry_after: retry_after.map(|x| chrono::Duration::seconds(x as i64)),
         },
         BranchOpenError::Unavailable {
-            ref description, ..
+            ref description,
+            http_status,
+            ..
         } => {
-            let code = if description.contains("http code 429: Too Many Requests") {
+            let status = http_status;
+            let code = if matches!(status, Some(429)) && description.contains("Too Many Requests")
+                || matches!(status, Some(503)) && description.contains("Service Unavailable")
+            {
                 "too-many-requests"
             } else if is_alioth_url(vcs_url) {
                 "hosted-on-alioth"
-            } else if description.contains("Unable to handle http code 401: Unauthorized")
-                || description.contains("Unexpected HTTP status 401 for ")
-            {
+            } else if matches!(status, Some(401)) && description.contains("Unauthorized") {
                 "401-unauthorized"
-            } else if description.contains("Unable to handle http code 502: Bad Gateway")
-                || description.contains("Unexpected HTTP status 502 for ")
-            {
+            } else if matches!(status, Some(502)) && description.contains("Bad Gateway") {
                 "502-bad-gateway"
             } else if description.contains("Subversion branches are not yet") {
                 "unsupported-vcs-svn"
@@ -608,9 +654,9 @@ fn convert_branch_exception(vcs_url: &Url, e: BranchOpenError) -> BranchOpenFail
                 retry_after: None,
             }
         }
-        BranchOpenError::Other(description) => BranchOpenFailure {
+        BranchOpenError::Other(ref description) => BranchOpenFailure {
             code: "unknown".to_string(),
-            description,
+            description: description.clone(),
             retry_after: None,
         },
     }

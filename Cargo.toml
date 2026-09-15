@@ -86,8 +86,13 @@ tokio = "1"
 tokio-stream = "0.1"
 axum = "0.8"
 maplit = "1"
-#silver-platter = { git = "https://github.com/jelmer/silver-platter" }
-silver-platter = { version = "0.8.4" }
+# Pinned to the caretaker-janitor fork's real fix for a genuine
+# upstream bug (jelmer/silver-platter#642, not yet merged):
+# BranchOpenError::from_err had no match arm for
+# BrzError::UnexpectedHttpStatus, so the numeric HTTP status code
+# breezy already carries structurally was discarded into the
+# free-text description instead of being exposed as a field.
+silver-platter = { git = "https://github.com/caretaker-janitor/silver-platter", branch = "fix-branch-open-error-http-status" }
 ognibuild = { version = "0.2.12", default-features = false, features = ["debian", "breezy"] }
 shlex = ">=1,<3"
 buildlog-consultant = "0.1.8"

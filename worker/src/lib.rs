@@ -45,11 +45,63 @@ pub mod web;
 
 mod tee;
 
+/// Result codes that mean a host rate limited this worker specifically,
+/// as opposed to some other branch-open failure. Kept in sync with the
+/// codes convert_branch_exception() in src/vcs.rs can produce.
+const RATE_LIMITED_RESULT_CODES: [&str; 2] =
+    ["too-many-requests", "worker-resume-branch-rate-limited"];
+
+/// How long to exclude a host after a rate-limited result with no
+/// retry_after of its own.
+const DEFAULT_RATE_LIMIT_BACKOFF: std::time::Duration = std::time::Duration::from_secs(60);
+
 #[derive(Clone, Default)]
 pub struct AppState {
     pub output_directory: Option<std::path::PathBuf>,
     pub assignment: Option<janitor::api::worker::Assignment>,
     pub metadata: Option<Metadata>,
+    /// Hosts this worker has itself seen a 429/503 from, and until when to
+    /// keep asking the runner to exclude them from this worker's own
+    /// assignment requests. Per-process only: does not need to survive a
+    /// worker restart, and is never reported to the runner directly.
+    pub rate_limited_hosts: HashMap<String, std::time::Instant>,
+}
+
+impl AppState {
+    /// Record that `host` rate limited this worker just now, so it gets
+    /// excluded from this worker's own future assignment requests until
+    /// `retry_after` elapses (or DEFAULT_RATE_LIMIT_BACKOFF if not given).
+    pub fn record_rate_limited_host(
+        &mut self,
+        host: String,
+        retry_after: Option<std::time::Duration>,
+    ) {
+        let until = std::time::Instant::now() + retry_after.unwrap_or(DEFAULT_RATE_LIMIT_BACKOFF);
+        self.rate_limited_hosts.insert(host, until);
+    }
+
+    /// Hosts to exclude from the next assignment request: everything
+    /// recorded above whose backoff hasn't expired yet. Expired entries are
+    /// dropped.
+    pub fn active_rate_limited_hosts(&mut self) -> Vec<String> {
+        let now = std::time::Instant::now();
+        self.rate_limited_hosts.retain(|_, until| *until > now);
+        self.rate_limited_hosts.keys().cloned().collect()
+    }
+}
+
+/// Pull a retry_after out of a WorkerFailure's `details`, as reported by
+/// convert_branch_exception() (a whole number of seconds) or
+/// silver_platter::vcs::BranchOpenError::RateLimited (fractional seconds).
+/// A missing, zero, or negative value means "no explicit retry_after".
+fn retry_after_from_failure_details(
+    details: Option<&serde_json::Value>,
+) -> Option<std::time::Duration> {
+    details
+        .and_then(|d| d.get("retry_after"))
+        .and_then(|v| v.as_f64())
+        .filter(|secs| *secs > 0.0)
+        .map(std::time::Duration::from_secs_f64)
 }
 
 pub async fn is_gce_instance() -> bool {
@@ -181,6 +233,108 @@ pub trait Target {
     ) -> Result<Box<dyn silver_platter::CodemodResult>, WorkerFailure>;
 }
 
+/// Translate the result of opening the resume branch into either the
+/// opened branch or a WorkerFailure, mirroring the resume branch onto
+/// metadata.branch_url on a rate limit hit.
+///
+/// Pulled out of run_worker so the rate-limited arm - the one
+/// process_single_item() actually cares about, since it reads
+/// metadata.branch_url to pick which host to pass to
+/// record_rate_limited_host() - can be exercised directly in a test
+/// without opening a real branch over the network.
+fn handle_resume_branch_open(
+    result: Result<breezyshim::branch::GenericBranch, silver_platter::vcs::BranchOpenError>,
+    metadata: &mut Metadata,
+) -> Result<Option<breezyshim::branch::GenericBranch>, WorkerFailure> {
+    match result {
+        Err(silver_platter::vcs::BranchOpenError::TemporarilyUnavailable { url, description }) => {
+            let display = sanitise_url_for_log(&url);
+            log::info!(
+                "Resume branch URL {} temporarily unavailable: {}",
+                display,
+                description
+            );
+            Err(WorkerFailure {
+                code: "worker-resume-branch-temporarily-unavailable".to_owned(),
+                description,
+                stage: vec!["setup".to_owned()],
+                transient: Some(true),
+                details: Some(serde_json::json!({
+                    "url": display,
+                })),
+            })
+        }
+        Err(silver_platter::vcs::BranchOpenError::RateLimited {
+            url,
+            description,
+            retry_after,
+        }) => {
+            let display = sanitise_url_for_log(&url);
+            log::info!(
+                "Resume branch URL {} rate limited: {}",
+                display,
+                description
+            );
+            // The resume branch, not the main branch set earlier in
+            // run_worker, is what actually got rate limited here.
+            metadata.branch_url = Some(display.clone());
+            Err(WorkerFailure {
+                code: "worker-resume-branch-rate-limited".to_owned(),
+                description,
+                stage: vec!["setup".to_owned()],
+                transient: Some(true),
+                details: Some(serde_json::json!({
+                    "url": display,
+                    "retry_after": retry_after,
+                })),
+            })
+        }
+        Err(silver_platter::vcs::BranchOpenError::Unavailable {
+            url, description, ..
+        }) => {
+            let display = sanitise_url_for_log(&url);
+            log::info!("Resume branch URL {} unavailable: {}", display, description);
+            Err(WorkerFailure {
+                code: "worker-resume-branch-unavailable".to_owned(),
+                description,
+                stage: vec!["setup".to_owned()],
+                transient: Some(false),
+                details: Some(serde_json::json!({
+                    "url": display
+                })),
+            })
+        }
+        Err(silver_platter::vcs::BranchOpenError::Missing { url, description }) => {
+            let display = sanitise_url_for_log(&url);
+            log::info!("Resume branch URL {} missing: {}", display, description);
+            Err(WorkerFailure {
+                code: "worker-resume-branch-missing".to_owned(),
+                description,
+                stage: vec!["setup".to_owned()],
+                transient: Some(false),
+                details: Some(serde_json::json!({
+                    "url": display
+                })),
+            })
+        }
+        Err(silver_platter::vcs::BranchOpenError::Unsupported { .. }) => Err(WorkerFailure {
+            code: "worker-resume-branch-unsupported".to_owned(),
+            description: "Unsupported resume branch URL".to_owned(),
+            stage: vec!["setup".to_owned()],
+            transient: Some(false),
+            details: None,
+        }),
+        Err(silver_platter::vcs::BranchOpenError::Other(..)) => Err(WorkerFailure {
+            code: "worker-resume-branch-error".to_owned(),
+            description: "Error opening resume branch".to_owned(),
+            stage: vec!["setup".to_owned()],
+            transient: Some(false),
+            details: None,
+        }),
+        Ok(b) => Ok(Some(b)),
+    }
+}
+
 pub fn run_worker(
     codebase: &str,
     campaign: &str,
@@ -250,7 +404,7 @@ pub fn run_worker(
                     code: code.clone(),
                     description,
                     stage: vec!["setup".to_owned()],
-                    transient: Some(code.contains("temporarily")),
+                    transient: Some(code.contains("temporarily") || code == "too-many-requests"),
                     details: Some(serde_json::json!({
                         "url": main_branch_url,
                         "retry_after": retry_after.map(|r| r.num_seconds()),
@@ -323,7 +477,9 @@ pub fn run_worker(
                 None
             }
             Err(
-                silver_platter::vcs::BranchOpenError::Unavailable { url, description }
+                silver_platter::vcs::BranchOpenError::Unavailable {
+                    url, description, ..
+                }
                 | silver_platter::vcs::BranchOpenError::TemporarilyUnavailable { url, description },
             ) => {
                 log::info!(
@@ -356,7 +512,7 @@ pub fn run_worker(
         );
         let probers =
             silver_platter::probers::select_probers(vcs_type.map(|v| v.to_string()).as_deref());
-        match silver_platter::vcs::open_branch(
+        let result = silver_platter::vcs::open_branch(
             resume_branch_url,
             possible_transports.as_mut(),
             Some(
@@ -367,95 +523,8 @@ pub fn run_worker(
                     .as_slice(),
             ),
             None,
-        ) {
-            Err(silver_platter::vcs::BranchOpenError::TemporarilyUnavailable {
-                url,
-                description,
-            }) => {
-                let display = sanitise_url_for_log(&url);
-                log::info!(
-                    "Resume branch URL {} temporarily unavailable: {}",
-                    display,
-                    description
-                );
-                return Err(WorkerFailure {
-                    code: "worker-resume-branch-temporarily-unavailable".to_owned(),
-                    description,
-                    stage: vec!["setup".to_owned()],
-                    transient: Some(true),
-                    details: Some(serde_json::json!({
-                        "url": display,
-                    })),
-                });
-            }
-            Err(silver_platter::vcs::BranchOpenError::RateLimited {
-                url,
-                description,
-                retry_after,
-            }) => {
-                let display = sanitise_url_for_log(&url);
-                log::info!(
-                    "Resume branch URL {} rate limited: {}",
-                    display,
-                    description
-                );
-                return Err(WorkerFailure {
-                    code: "worker-resume-branch-rate-limited".to_owned(),
-                    description,
-                    stage: vec!["setup".to_owned()],
-                    transient: Some(true),
-                    details: Some(serde_json::json!({
-                        "url": display,
-                        "retry_after": retry_after,
-                    })),
-                });
-            }
-            Err(silver_platter::vcs::BranchOpenError::Unavailable { url, description }) => {
-                let display = sanitise_url_for_log(&url);
-                log::info!("Resume branch URL {} unavailable: {}", display, description);
-                return Err(WorkerFailure {
-                    code: "worker-resume-branch-unavailable".to_owned(),
-                    description,
-                    stage: vec!["setup".to_owned()],
-                    transient: Some(false),
-                    details: Some(serde_json::json!({
-                        "url": display
-                    })),
-                });
-            }
-            Err(silver_platter::vcs::BranchOpenError::Missing { url, description }) => {
-                let display = sanitise_url_for_log(&url);
-                log::info!("Resume branch URL {} missing: {}", display, description);
-                return Err(WorkerFailure {
-                    code: "worker-resume-branch-missing".to_owned(),
-                    description,
-                    stage: vec!["setup".to_owned()],
-                    transient: Some(false),
-                    details: Some(serde_json::json!({
-                        "url": display
-                    })),
-                });
-            }
-            Err(silver_platter::vcs::BranchOpenError::Unsupported { .. }) => {
-                return Err(WorkerFailure {
-                    code: "worker-resume-branch-unsupported".to_owned(),
-                    description: "Unsupported resume branch URL".to_owned(),
-                    stage: vec!["setup".to_owned()],
-                    transient: Some(false),
-                    details: None,
-                });
-            }
-            Err(silver_platter::vcs::BranchOpenError::Other(..)) => {
-                return Err(WorkerFailure {
-                    code: "worker-resume-branch-error".to_owned(),
-                    description: "Error opening resume branch".to_owned(),
-                    stage: vec!["setup".to_owned()],
-                    transient: Some(false),
-                    details: None,
-                });
-            }
-            Ok(b) => Some(b),
-        }
+        );
+        handle_resume_branch_open(result, metadata)?
     } else {
         None
     };
@@ -983,8 +1052,16 @@ pub async fn process_single_item(
     output_directory_base: Option<&std::path::Path>,
     state: std::sync::Arc<std::sync::RwLock<AppState>>,
 ) -> Result<(), SingleItemError> {
+    let exclude_hosts = state.write().unwrap().active_rate_limited_hosts();
     let assignment = client
-        .get_assignment(my_url, node_name, jenkins_build_url, codebase, campaign)
+        .get_assignment(
+            my_url,
+            node_name,
+            jenkins_build_url,
+            codebase,
+            campaign,
+            &exclude_hosts,
+        )
         .await?;
 
     state.write().unwrap().assignment = Some(assignment.clone());
@@ -1147,6 +1224,24 @@ pub async fn process_single_item(
     })
     .await
     .map_err(|e| SingleItemError::JobPanicked(e.to_string()))?;
+
+    if let Some(code) = metadata.code.as_deref() {
+        if RATE_LIMITED_RESULT_CODES.contains(&code) {
+            if let Some(host) = metadata.branch_url.as_ref().and_then(|u| u.host_str()) {
+                let retry_after =
+                    retry_after_from_failure_details(metadata.failure_details.as_ref());
+                log::info!(
+                    "Rate limited by {} ({}); excluding it from this worker's own assignment requests",
+                    host,
+                    code
+                );
+                state
+                    .write()
+                    .unwrap()
+                    .record_rate_limited_host(host.to_string(), retry_after);
+            }
+        }
+    }
 
     let result = client
         .upload_results(&assignment.id, &metadata, Some(output_directory.path()))
@@ -1364,6 +1459,114 @@ mod tests {
                 details: None,
                 transient: None,
             }
+        );
+    }
+
+    #[test]
+    fn test_app_state_rate_limited_hosts() {
+        let mut state = AppState::default();
+        assert_eq!(state.active_rate_limited_hosts(), Vec::<String>::new());
+
+        state.record_rate_limited_host(
+            "salsa.debian.org".to_string(),
+            Some(std::time::Duration::from_secs(60)),
+        );
+        assert_eq!(
+            state.active_rate_limited_hosts(),
+            vec!["salsa.debian.org".to_string()]
+        );
+
+        // An already-expired backoff is excluded and dropped.
+        state.record_rate_limited_host(
+            "expired.example".to_string(),
+            Some(std::time::Duration::from_secs(0)),
+        );
+        assert_eq!(
+            state.active_rate_limited_hosts(),
+            vec!["salsa.debian.org".to_string()]
+        );
+        assert!(!state.rate_limited_hosts.contains_key("expired.example"));
+    }
+
+    #[test]
+    fn test_app_state_record_rate_limited_host_defaults_backoff() {
+        let mut state = AppState::default();
+        state.record_rate_limited_host("example.com".to_string(), None);
+        assert_eq!(
+            state.active_rate_limited_hosts(),
+            vec!["example.com".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_handle_resume_branch_open_rate_limited_records_resume_branch_host() {
+        // Regression for the resume-branch-rate-limited path recording the
+        // wrong host. metadata.branch_url starts out holding the main
+        // branch's URL, same as run_worker leaves it after opening the
+        // main branch earlier in the function. If handle_resume_branch_open
+        // doesn't overwrite it on a rate limit hit, process_single_item()
+        // goes on to call record_rate_limited_host() with the main
+        // branch's host instead of the one that was actually rate limited.
+        let mut metadata = Metadata {
+            branch_url: Some(Url::parse("https://main.example/repo").unwrap()),
+            ..Metadata::default()
+        };
+        let err = silver_platter::vcs::BranchOpenError::RateLimited {
+            url: Url::parse("https://ratelimited.example/repo").unwrap(),
+            description: "429: Too Many Requests".to_string(),
+            retry_after: Some(30.0),
+        };
+
+        let result = handle_resume_branch_open(Err(err), &mut metadata);
+
+        let failure = match result {
+            Err(failure) => failure,
+            Ok(_) => panic!("rate limit must surface as a WorkerFailure"),
+        };
+        assert_eq!(failure.code, "worker-resume-branch-rate-limited");
+
+        // What process_single_item() actually reads, verbatim: RESULT_CODES
+        // check -> metadata.branch_url.host_str() -> record_rate_limited_host().
+        metadata.update(&failure);
+        let mut state = AppState::default();
+        if RATE_LIMITED_RESULT_CODES.contains(&metadata.code.as_deref().unwrap()) {
+            if let Some(host) = metadata.branch_url.as_ref().and_then(|u| u.host_str()) {
+                state.record_rate_limited_host(host.to_string(), None);
+            }
+        }
+        assert_eq!(
+            state.active_rate_limited_hosts(),
+            vec!["ratelimited.example".to_string()],
+            "must record the branch that was actually rate limited, not the main branch"
+        );
+    }
+
+    #[test]
+    fn test_retry_after_from_failure_details() {
+        // convert_branch_exception()'s style: a whole number of seconds.
+        assert_eq!(
+            retry_after_from_failure_details(Some(&serde_json::json!({"retry_after": 30}))),
+            Some(std::time::Duration::from_secs(30))
+        );
+        // silver_platter's RateLimited style: fractional seconds.
+        assert_eq!(
+            retry_after_from_failure_details(Some(&serde_json::json!({"retry_after": 30.5}))),
+            Some(std::time::Duration::from_secs_f64(30.5))
+        );
+        // No retry_after, no details, and a non-positive retry_after all
+        // mean "fall back to the caller's default".
+        assert_eq!(
+            retry_after_from_failure_details(Some(&serde_json::json!({"url": "x"}))),
+            None
+        );
+        assert_eq!(retry_after_from_failure_details(None), None);
+        assert_eq!(
+            retry_after_from_failure_details(Some(&serde_json::json!({"retry_after": 0}))),
+            None
+        );
+        assert_eq!(
+            retry_after_from_failure_details(Some(&serde_json::json!({"retry_after": -5}))),
+            None
         );
     }
 
