@@ -31,7 +31,13 @@ from jinja2 import select_autoescape
 from janitor.site import template_loader
 from janitor.vcs import get_vcs_managers_from_config
 
-from .. import check_admin, check_logged_in, is_admin, is_qa_reviewer, worker_link_is_global
+from .. import (
+    check_admin,
+    check_logged_in,
+    is_admin,
+    is_qa_reviewer,
+    worker_link_is_global,
+)
 from ..common import html_template
 from ..pkg import MergeProposalUserUrlResolver
 from ..setup import setup_postgres
