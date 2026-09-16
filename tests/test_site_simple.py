@@ -163,7 +163,9 @@ async def test_codebase_publish_explicit_mode_requires_admin(
         config=create_config(database_location), redis=FakeRedis()
     )
     client = await aiohttp_client(app)
-    resp = await client.post("/lintian-fixes/c/foo/publish", data={"mode": "propose"})
+    resp = await client.post(
+        "/api/lintian-fixes/c/foo/publish", data={"mode": "propose"}
+    )
     assert resp.status == 401
 
 
@@ -174,7 +176,7 @@ async def test_codebase_publish_without_mode_does_not_require_admin(
         config=create_config(database_location), redis=FakeRedis()
     )
     client = await aiohttp_client(app)
-    resp = await client.post("/lintian-fixes/c/foo/publish", data={})
+    resp = await client.post("/api/lintian-fixes/c/foo/publish", data={})
     # No publisher configured in this test app, so the request fails trying
     # to reach it - the point here is it fails past the admin check, not at
     # it (a 401 would mean the no-mode case wrongly started requiring admin).
