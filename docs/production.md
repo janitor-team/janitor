@@ -12,6 +12,9 @@ $ sudo apt install \
 $ make build-all
 ```
 
+To run workers on separate hosts from the other services, see
+[Multi-host deployment](multi-host-deployment.md).
+
 ## PostgreSQL
 
 The services share a single PostgreSQL database. Before starting anything,
