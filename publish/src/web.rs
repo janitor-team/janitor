@@ -13,16 +13,16 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-async fn get_merge_proposals_by_campaign() {
-    unimplemented!()
+async fn get_merge_proposals_by_campaign() -> StatusCode {
+    StatusCode::NOT_IMPLEMENTED
 }
 
-async fn get_merge_proposals_by_codebase() {
-    unimplemented!()
+async fn get_merge_proposals_by_codebase() -> StatusCode {
+    StatusCode::NOT_IMPLEMENTED
 }
 
-async fn post_merge_proposal() {
-    unimplemented!()
+async fn post_merge_proposal() -> StatusCode {
+    StatusCode::NOT_IMPLEMENTED
 }
 
 async fn absorbed() {

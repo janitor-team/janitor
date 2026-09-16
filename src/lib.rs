@@ -19,6 +19,7 @@ pub mod schedule;
 pub mod schema;
 pub mod security;
 pub mod shared_config;
+pub mod site_client;
 pub mod state;
 pub mod tracing;
 pub mod utils;
