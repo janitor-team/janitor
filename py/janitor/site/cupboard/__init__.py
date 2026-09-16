@@ -72,7 +72,22 @@ ORDER BY finish_time DESC"""
 @routes.get("/cupboard/reprocess-logs", name="reprocess-logs")
 @html_template("cupboard/reprocess-logs.html")
 async def handle_reprocess_logs(request):
-    return {}
+    async with request.app["pool"].acquire() as conn:
+        count = await conn.fetchval(
+            """
+SELECT count(*) FROM run
+WHERE
+  (result_code = 'build-failed' OR
+   result_code LIKE 'build-failed-stage-%' OR
+   result_code LIKE 'autopkgtest-%' OR
+   result_code LIKE 'build-%' OR
+   result_code LIKE 'dist-%' OR
+   result_code LIKE 'unpack-%' OR
+   result_code LIKE 'create-session-%' OR
+   result_code LIKE 'missing-%')
+"""
+        )
+    return {"matching_run_count": count}
 
 
 @routes.get("/cupboard/workers", name="workers")

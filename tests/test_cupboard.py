@@ -459,3 +459,25 @@ async def test_workers_delete_unknown(aiohttp_client, db):
     client = await create_api_client(aiohttp_client, db, user=ADMIN_USER)
     resp = await client.delete("/workers/nonexistent")
     assert resp.status == 404
+
+
+async def test_reprocess_logs_bulk(aiohttp_client, db):
+    client = await create_api_client(aiohttp_client, db, user=ADMIN_USER)
+    async with db.acquire() as conn:
+        await _insert_codebase(conn, "foo")
+        now = datetime.utcnow()
+        await _insert_run(
+            conn,
+            run_id="somerun",
+            codebase="foo",
+            start_time=now - timedelta(minutes=30),
+            finish_time=now,
+        )
+        await conn.execute(
+            "UPDATE run SET result_code = 'build-failed' WHERE id = 'somerun'"
+        )
+
+    resp = await client.post("/reprocess-logs", data={"dry_run": "yes"})
+    assert resp.status == 200
+    body = await resp.json()
+    assert body == [{"codebase": "foo", "campaign": "mycampaign", "log_id": "somerun"}]
