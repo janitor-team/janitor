@@ -20,8 +20,7 @@ import shlex
 from pathlib import Path
 from urllib.request import build_opener, install_opener
 
-from breezy.transport import http as _mod_http
-from breezy.transport.http import urllib as _mod_urllib
+from dromedary.http import set_user_agent as _dromedary_set_user_agent
 
 __version__ = (0, 1, 0)
 version_string = ".".join(map(str, __version__))
@@ -43,8 +42,7 @@ def get_debian_schema() -> str:
 def set_user_agent(user_agent):
     if user_agent is None:
         user_agent = f"janitor/{version_string}"
-    _mod_http.default_user_agent = lambda: user_agent
-    _mod_urllib.AbstractHTTPHandler._default_headers["User-agent"] = user_agent
+    _dromedary_set_user_agent(user_agent)
     opener = build_opener()
     opener.addheaders = [("User-agent", user_agent)]
     install_opener(opener)

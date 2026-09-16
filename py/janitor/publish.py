@@ -56,7 +56,6 @@ from aiohttp_openmetrics import (
 from aiojobs.aiohttp import setup as setup_aiojobs
 from aiojobs.aiohttp import spawn
 from breezy import urlutils
-from breezy.errors import PermissionDenied, RedirectRequested, UnexpectedHttpStatus
 from breezy.forge import (
     Forge,
     ForgeLoginRequired,
@@ -67,6 +66,7 @@ from breezy.forge import (
     iter_forge_instances,
 )
 from breezy.transport import Transport
+from dromedary.errors import PermissionDenied, RedirectRequested, UnexpectedHttpStatus
 from redis.asyncio import Redis
 from silver_platter import (
     BranchMissing,
