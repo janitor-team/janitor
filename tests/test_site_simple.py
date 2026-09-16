@@ -21,6 +21,7 @@ from pathlib import Path
 import asyncpg
 import pytest_asyncio
 import testing.postgresql
+from aiohttp import web
 from fakeredis.aioredis import FakeRedis
 
 from janitor.config import read_string as read_config_string
@@ -42,14 +43,27 @@ async def database_location():
         yield postgresql.url()
 
 
-def create_config(database_location=None):
+def create_config(database_location=None, admin_group=None):
     return read_config_string(f"""
 campaign {{
   name: "lintian-fixes"
 }}
 artifact_location: "{tempfile.mkdtemp()}"
 {f'database_location: "{database_location}"' if database_location else ""}
+{f'oauth2_provider {{ admin_group: "{admin_group}" }}' if admin_group else ""}
 """)
+
+
+def _user_middleware(user):
+    @web.middleware
+    async def middleware(request, handler):
+        request["user"] = user
+        return await handler(request)
+
+    return middleware
+
+
+NON_ADMIN_USER = {"email": "user@example.com", "groups": []}
 
 
 async def test_create_app():
@@ -208,25 +222,32 @@ async def test_merge_proposal_without_url_returns_400(
     assert await resp.text() == "no url specified"
 
 
+async def _logged_in_non_admin_client(aiohttp_client, database_location):
+    _private_app, app = await create_app(
+        config=create_config(database_location, admin_group="admins"),
+        redis=FakeRedis(),
+    )
+    # Appended so it runs after the openid middleware, which would otherwise
+    # reset request["user"] to None for a request without a session cookie.
+    app.middlewares.append(_user_middleware(NON_ADMIN_USER))
+    return await aiohttp_client(app)
+
+
 async def test_codebase_publish_explicit_mode_requires_admin(
     aiohttp_client, database_location
 ):
-    _private_app, app = await create_app(
-        config=create_config(database_location), redis=FakeRedis()
+    client = await _logged_in_non_admin_client(aiohttp_client, database_location)
+    resp = await client.post(
+        "/api/lintian-fixes/c/foo/publish", data={"mode": "propose"}
     )
-    client = await aiohttp_client(app)
-    resp = await client.post("/lintian-fixes/c/foo/publish", data={"mode": "propose"})
     assert resp.status == 401
 
 
 async def test_codebase_publish_without_mode_does_not_require_admin(
     aiohttp_client, database_location
 ):
-    _private_app, app = await create_app(
-        config=create_config(database_location), redis=FakeRedis()
-    )
-    client = await aiohttp_client(app)
-    resp = await client.post("/lintian-fixes/c/foo/publish", data={})
+    client = await _logged_in_non_admin_client(aiohttp_client, database_location)
+    resp = await client.post("/api/lintian-fixes/c/foo/publish", data={})
     # No publisher configured in this test app, so the request fails trying
     # to reach it - the point here is it fails past the admin check, not at
     # it (a 401 would mean the no-mode case wrongly started requiring admin).
