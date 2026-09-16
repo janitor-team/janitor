@@ -1,0 +1,33 @@
+[Unit]
+Description=janitor differ (tier 1)
+After=network-online.target janitor-git_store.service janitor-bzr_store.service
+Wants=network-online.target
+
+[Container]
+Image=ghcr.io/jelmer/janitor/differ:latest
+ContainerName=janitor-differ
+Network=host
+# --listen-address 127.0.0.1 overrides the image's own baked-in
+# --listen-address=0.0.0.0 (Dockerfile_differ's ENTRYPOINT) - see
+# worker.container.j2's own comment for why this needs overriding rather
+# than an Entrypoint replacement, and why the override itself is safe
+# (argparse keeps the last occurrence of a repeated flag). Reached only
+# by other janitor services over loopback (Caddy doesn't proxy this
+# one); nothing external needs this reachable beyond the host.
+Exec=--listen-address 127.0.0.1 --config /mnt/janitor/janitor.conf --cache-path /mnt/janitor/data/cache
+Volume={{ janitor_home }}:/mnt/janitor:rw
+
+# Already pulled this exact image explicitly in roles/janitor_source
+# - never re-check the registry on every service start (quadlet's default
+# for a :latest tag). That re-check was slow enough on this network to
+# blow TimeoutStartSec below, failing the start outright even though the
+# image was already present locally.
+Pull=never
+
+[Service]
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+
+[Install]
+WantedBy=default.target

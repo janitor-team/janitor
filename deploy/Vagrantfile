@@ -1,0 +1,114 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+#
+# Local VM for testing ansible/site.yml before running it against a real
+# instance. Provisions the same playbook used for real instances, targeting
+# this VM instead. See ../README.md for usage and the JANITOR_* environment
+# variable overrides read below.
+
+USE_PREBUILT = ENV.fetch("JANITOR_USE_PREBUILT", "true") == "true"
+VM_CPUS = ENV.fetch("JANITOR_VM_CPUS", "4").to_i
+VM_MEMORY = ENV.fetch("JANITOR_VM_MEMORY", USE_PREBUILT ? "4096" : "8192").to_i
+VM_IP = ENV.fetch("JANITOR_VM_IP", "192.168.56.10")
+
+JANITOR_REPO = ENV.fetch("JANITOR_REPO", "https://github.com/janitor-team/janitor.git")
+JANITOR_BRANCH = ENV.fetch("JANITOR_BRANCH", "main")
+
+Vagrant.configure("2") do |config|
+  # trixie64, not bookworm64: a real target instance runs Debian 13 (trixie),
+  # and it matters - postgresql-contrib doesn't exist as a package on trixie
+  # (pgcrypto now ships directly in postgresql-<N>), a bug in
+  # roles/postgres that a bookworm VM would never have caught. Only ships a
+  # libvirt provider on Vagrant Cloud, not virtualbox - override
+  # config.vm.box below if you need virtualbox and accept the OS-version
+  # mismatch.
+  config.vm.box = "debian/trixie64"
+  config.vm.hostname = "janitor-vagrant"
+
+  config.vm.network "private_network", ip: VM_IP
+
+  # Caddy serves plain HTTP for a bare IP/localhost (no ACME attempt) - see
+  # group_vars/vagrant.yml, which points janitor_domain at VM_IP.
+  #
+  # vagrant-libvirt does not implement forwarded ports at all ("vagrant port"
+  # says so outright) - this line is silently ignored under the libvirt
+  # provider used above, it only does anything under virtualbox. Under
+  # libvirt, http://localhost:8080/ just hits whatever unrelated process
+  # already happens to own that host port, nothing to do with this VM. Use
+  # http://{VM_IP}/ (the private-network IP above) to reach the site under
+  # libvirt; this forwarded_port only helps if you've overridden
+  # config.vm.box to a virtualbox-provider box.
+  config.vm.network "forwarded_port", guest: 80, host: 8080, auto_correct: true
+
+  config.vm.provider "libvirt" do |lv|
+    lv.cpus = VM_CPUS
+    lv.memory = VM_MEMORY
+    # source builds pull/compile every image with zero shared layer cache
+    # (buildah build --no-cache) plus podman/buildah's own storage overhead
+    # on top of the base Debian install - needs real headroom. Grows the
+    # backing volume; the guest's own filesystem still needs to claim the
+    # new space, which the box's cloud-init growpart/resize should do
+    # automatically on first boot - if `df -h /` inside the VM doesn't show
+    # the full size after `vagrant up`, run `sudo growpart /dev/vda 1 &&
+    # sudo resize2fs /dev/vda1` (or the equivalent for this box's device
+    # naming) by hand.
+    lv.machine_virtual_size = USE_PREBUILT ? 20 : 60
+  end
+
+  # No virtualbox provider block: debian/trixie64 doesn't publish one. If
+  # you need virtualbox, pick a Debian box on Vagrant Cloud whose current
+  # release still publishes a virtualbox provider (this changes over time -
+  # trixie64 itself may pick one up later), set config.vm.box to it above,
+  # and add a `config.vm.provider "virtualbox" do |vb| vb.cpus = VM_CPUS;
+  # vb.memory = VM_MEMORY end` block here - just be aware an older Debian
+  # release's package set may differ from the real target (see the
+  # postgresql-contrib note above).
+
+  # trixie's Python is PEP-668 "externally managed" - ansible_local's
+  # default pip-based install (curl get-pip.py | sudo python) refuses to
+  # run. Installing ansible-core via apt sidesteps that entirely; ansible_local
+  # skips its own install step once it finds ansible-playbook already on PATH.
+  config.vm.provision "shell", inline: "apt-get update -qq && apt-get install -y -qq ansible-core"
+
+  # ansible_local, not ansible: runs ansible inside the VM itself rather
+  # than requiring it pre-installed on whatever host runs `vagrant up`.
+  config.vm.provision "ansible_local" do |ansible|
+    ansible.playbook = "ansible/site.yml"
+    ansible.galaxy_role_file = "ansible/requirements.yml"
+    ansible.compatibility_mode = "2.0"
+    ansible.groups = {
+      "janitor" => ["default"],
+      "vagrant" => ["default"],
+      # Without these, site.yml's "hosts: control" and "hosts: worker"
+      # plays match nothing at all ("Could not match supplied host
+      # pattern") and silently do nothing beyond the "Validate secret
+      # vars" play - reproduced with `ansible-playbook --list-hosts`
+      # against this exact groups set before this line existed. Mirrors
+      # ../ansible/inventory.ini's own single-host recipe: one host in
+      # both [control] and [worker].
+      "control" => ["default"],
+      "worker" => ["default"],
+    }
+    ansible.extra_vars = {
+      use_prebuilt_images: USE_PREBUILT,
+      # Every role uses {{ ansible_user }} as the deploy account (home dir,
+      # loginctl enable-linger, quadlet ownership, ...). For an instance
+      # this comes from inventory.ini's ansible_user; ansible_local's local
+      # connection has no SSH negotiation to derive it from, so it's
+      # supplied directly here - "vagrant" is the account this box boots
+      # with.
+      ansible_user: "vagrant",
+      # extra_vars beats group_vars/all.yml's own janitor_repo/janitor_branch
+      # defaults - see the JANITOR_REPO/JANITOR_BRANCH ENV.fetch above.
+      janitor_repo: JANITOR_REPO,
+      janitor_branch: JANITOR_BRANCH,
+      # Overrides group_vars/vagrant.yml's own static janitor_domain
+      # fallback with the actual VM_IP this run used - matters if
+      # JANITOR_VM_IP was overridden above.
+      janitor_domain: VM_IP,
+    }
+    # Vagrant's own generated inventory takes precedence over
+    # ansible/ansible.cfg's inventory.ini for this run - no CHANGEME
+    # editing needed for local testing.
+  end
+end

@@ -1,0 +1,108 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+#
+# Two-host janitor-team/janitor deployment: "control" runs everything except the
+# worker (runner, site, postgres, redis, differ, git_store, publish,
+# archive, auto_upload, caddy, bzr_store); "worker" runs only the worker,
+# talking to control's runner over the private network below instead of
+# localhost. Forked from janitor-deploy/Vagrantfile (the single-host
+# version of this same playbook, PR #1232's deploy/ansible) - see
+# docs/multi-host-deployment.md in the janitor checkout for what actually
+# differs.
+#
+# Usage:
+#   vagrant up                              # fast path: pull pre-built images from ghcr.io
+#   JANITOR_USE_PREBUILT=false vagrant up   # slow path: build all images from source (several hours)
+#   vagrant provision                       # re-run both playbooks without recreating either VM
+#   vagrant ssh control / vagrant ssh worker
+#   vagrant destroy
+
+USE_PREBUILT = ENV.fetch("JANITOR_USE_PREBUILT", "true") == "true"
+VM_CPUS = ENV.fetch("JANITOR_VM_CPUS", "4").to_i
+VM_MEMORY = ENV.fetch("JANITOR_VM_MEMORY", USE_PREBUILT ? "4096" : "8192").to_i
+CONTROL_IP = ENV.fetch("JANITOR_CONTROL_IP", "192.168.60.11")
+WORKER_IP = ENV.fetch("JANITOR_WORKER_IP", "192.168.60.12")
+JANITOR_REPO = ENV.fetch("JANITOR_REPO", "https://github.com/janitor-team/janitor.git")
+JANITOR_BRANCH = ENV.fetch("JANITOR_BRANCH", "main")
+STORAGE_POOL = ENV.fetch("JANITOR_STORAGE_POOL", "janitor-multivm-ssd")
+
+Vagrant.configure("2") do |config|
+  # trixie64, not bookworm64: matches janitor-deploy/Vagrantfile -
+  # postgresql-contrib doesn't exist as a package on trixie (pgcrypto now
+  # ships directly in postgresql-<N>), which a bookworm VM would never
+  # catch. Only ships a libvirt provider on Vagrant Cloud.
+  config.vm.box = "debian/trixie64"
+
+  config.vm.provider "libvirt" do |lv|
+    lv.cpus = VM_CPUS
+    lv.memory = VM_MEMORY
+    lv.storage_pool_name = STORAGE_POOL
+    lv.machine_virtual_size = USE_PREBUILT ? 20 : 60
+  end
+
+  # trixie's Python is PEP-668 "externally managed" - ansible_local's
+  # default pip-based install refuses to run. Installing ansible-core via
+  # apt sidesteps that entirely.
+  config.vm.provision "shell", inline: "apt-get update -qq && apt-get install -y -qq ansible-core"
+
+  config.vm.define "control" do |control|
+    control.vm.hostname = "janitor-control"
+    control.vm.network "private_network", ip: CONTROL_IP, libvirt__network_name: "janitor-multivm", libvirt__forward_mode: "none"
+
+    control.vm.provision "ansible_local" do |ansible|
+      ansible.playbook = "ansible/site.yml"
+      ansible.galaxy_role_file = "ansible/requirements.yml"
+      ansible.compatibility_mode = "2.0"
+      ansible.groups = {
+        "janitor" => ["control"],
+        "control" => ["control"],
+        "vagrant" => ["control", "worker"],
+      }
+      ansible.limit = "control"
+      ansible.extra_vars = {
+        use_prebuilt_images: USE_PREBUILT,
+        ansible_user: "vagrant",
+        janitor_repo: JANITOR_REPO,
+        janitor_branch: JANITOR_BRANCH,
+        # Overrides group_vars/vagrant.yml's own ansible_default_ipv4-based
+        # fallback, which would otherwise resolve to whichever NIC comes
+        # first (the NAT'd management interface, not the private-network
+        # one below that the worker actually needs to reach).
+        janitor_domain: CONTROL_IP,
+        # control's own address, reachable from worker over the private
+        # network above - see group_vars/control.yml.
+        git_store_bind_address: CONTROL_IP,
+        git_store_public_address: CONTROL_IP,
+        runner_bind_address: CONTROL_IP,
+      }
+    end
+  end
+
+  config.vm.define "worker" do |worker|
+    worker.vm.hostname = "janitor-worker"
+    worker.vm.network "private_network", ip: WORKER_IP, libvirt__network_name: "janitor-multivm", libvirt__forward_mode: "none"
+
+    worker.vm.provision "ansible_local" do |ansible|
+      ansible.playbook = "ansible/site.yml"
+      ansible.galaxy_role_file = "ansible/requirements.yml"
+      ansible.compatibility_mode = "2.0"
+      ansible.groups = {
+        "janitor" => ["worker"],
+        "worker" => ["worker"],
+        "vagrant" => ["control", "worker"],
+      }
+      ansible.limit = "worker"
+      ansible.extra_vars = {
+        use_prebuilt_images: USE_PREBUILT,
+        ansible_user: "vagrant",
+        janitor_repo: JANITOR_REPO,
+        janitor_branch: JANITOR_BRANCH,
+        # control's address, reachable from here, and this worker's own
+        # address, reachable from control - see group_vars/worker.yml.
+        runner_base_url_host: CONTROL_IP,
+        worker_listen_address: WORKER_IP,
+        worker_external_address: WORKER_IP,
+      }
+    end
+  end
+end

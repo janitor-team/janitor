@@ -1,0 +1,19 @@
+# Vagrant's janitor_domain is a bare IP (see group_vars/vagrant.yml) - a
+# bare hostname/IP address here triggers Caddy's automatic-HTTPS/ACME
+# machinery, which can never issue a real cert for a private VM IP - it
+# triggers a 308 redirect to https, followed by a TLS handshake failure.
+# A port-only address matches any Host on plain HTTP, no ACME attempt,
+# and works by IP without DNS. Real deployments get a real domain in
+# janitor_domain, so Caddy gets a real cert and serves HTTPS - matching
+# the https://{{ janitor_domain }}/ URLs the other roles already build.
+{{ ':80' if 'vagrant' in group_names else janitor_domain }} {
+	handle /git/* {
+		reverse_proxy localhost:9924
+	}
+	handle /bzr/* {
+		reverse_proxy localhost:9930
+	}
+	handle {
+		reverse_proxy localhost:8090
+	}
+}

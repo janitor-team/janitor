@@ -1,0 +1,35 @@
+[Unit]
+Description=janitor bzr_store (tier 0)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=ghcr.io/jelmer/janitor/bzr_store:latest
+ContainerName=janitor-bzr-store
+Network=host
+# --listen-address overrides the image's own baked-in
+# --listen-address=0.0.0.0 (Dockerfile_bzr_store's ENTRYPOINT) - see
+# worker.container.j2's own comment for why this needs overriding rather
+# than an Entrypoint replacement, and why the override itself is safe
+# (argparse keeps the last occurrence of a repeated flag). Reuses
+# git_store_bind_address (group_vars/all.yml) rather than its own var -
+# same host, same reasoning as git_store.container.j2, and nothing
+# currently plumbs a separate --public-vcs-location equivalent for bzr the
+# way runner.container.j2 does for git.
+Exec=--listen-address {{ git_store_bind_address }} --port=9929 --public-port=9930 --config /mnt/janitor/janitor.conf --vcs-path /mnt/janitor/data/bzr
+Volume={{ janitor_home }}:/mnt/janitor:rw
+
+# Already pulled this exact image explicitly in roles/janitor_source
+# - never re-check the registry on every service start (quadlet's default
+# for a :latest tag). That re-check was slow enough on this network to
+# blow TimeoutStartSec below, failing the start outright even though the
+# image was already present locally.
+Pull=never
+
+[Service]
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,50 @@
+---
+- name: Install base packages
+  apt:
+    name:
+      - podman
+      - buildah
+      - git
+      - make
+      - curl
+      - ca-certificates
+      - gnupg
+      - jq
+      # Without setfacl/getfacl available, Ansible's become_user (used
+      # throughout roles/postgres and roles/janitor_quadlet to drop from
+      # root to an unprivileged user) falls back to a BSD/NFSv4-style ACL
+      # chmod syntax Debian's coreutils chmod doesn't understand, failing
+      # with "chmod: invalid mode: 'A+user:...:allow'".
+      - acl
+    state: present
+    update_cache: true
+
+- name: Enable lingering for the deploy user
+  # Without this, systemd tears down the user's session scope (including
+  # detached podman containers / user-level systemd units) once no login
+  # session remains open - containers die ~4 min after the last SSH session
+  # closes. Must happen before any container or quadlet unit is started.
+  command: loginctl enable-linger {{ ansible_user }}
+  changed_when: false
+
+- name: Get deploy user's uid (needed for XDG_RUNTIME_DIR with user-scope systemd)
+  getent:
+    database: passwd
+    key: "{{ ansible_user }}"
+
+- name: Start the deploy user's D-Bus session bus
+  # dbus.socket isn't pulled in by lingering alone on a minimal server
+  # image (nothing here ever does an interactive/desktop login to trigger
+  # it). Without it, /run/user/{uid}/bus never exists, so podman can't
+  # reach systemd over D-Bus and silently falls back to raw cgroupfs
+  # writes for exec - which then fail outright with "crun: write file
+  # .../cgroup.procs: Permission denied" the first time anything execs
+  # into an already-running container (podman itself starting a NEW
+  # container still works, since that goes through systemd's own
+  # ExecStart, not a raw write).
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  command: systemctl --user enable --now dbus.socket
+  changed_when: true
