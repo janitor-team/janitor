@@ -526,7 +526,11 @@ def test_serialize_active_run():
 
 
 async def create_dummy_run(
-    conn, campaign="mycampaign", run_id="run-id", codebase="foo"
+    conn,
+    campaign="mycampaign",
+    run_id="run-id",
+    codebase="foo",
+    main_branch_revision=b"some-revid",
 ):
     await store_change_set(conn, "run-id", campaign="mycampaign")
     await store_run(
@@ -541,7 +545,7 @@ async def create_dummy_run(
         command="true",
         result_code="missing-result-code",
         codemod_result={},
-        main_branch_revision=b"some-revid",
+        main_branch_revision=main_branch_revision,
         revision=b"revid",
         description="Did a thing",
         context=None,
@@ -608,6 +612,29 @@ async def test_tweak_unknown_run(aiohttp_client, db, tmp_path):
 
     resp = await client.post("/runs/run-id", json={"publish_status": "approved"})
     assert resp.status == 404
+
+
+async def test_schedule_control_no_main_branch_revision(aiohttp_client, db, tmp_path):
+    # regression: handle_schedule_control unconditionally called
+    # main_branch_revision.encode(), crashing with AttributeError on a run
+    # that never reached that stage.
+    vcs = tmp_path / "vcs"
+    vcs.mkdir()
+    qp = await create_queue_processor(db, vcs_managers=get_vcs_managers(str(vcs)))
+    client = await create_client(aiohttp_client, qp, campaigns=["mycampaign"])
+    resp = await client.post(
+        "/codebases",
+        json=[{"name": "foo", "branch_url": "https://example.com/foo.git"}],
+    )
+    assert resp.status == 200
+
+    async with db.acquire() as conn:
+        run_id = await create_dummy_run(conn, main_branch_revision=None)
+
+    resp = await client.post(
+        "/schedule-control", json={"run_id": run_id, "requester": "test"}
+    )
+    assert resp.status == 400
 
 
 async def test_assignment_with_only_vcs(aiohttp_client, db, tmp_path):
