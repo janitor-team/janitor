@@ -293,6 +293,8 @@ async def test_submit_codebase_multiple(aiohttp_client, db):
 async def test_candidate_invalid_value(aiohttp_client, db, tmp_path):
     vcs = tmp_path / "vcs"
     vcs.mkdir()
+    (vcs / "git").mkdir()
+    (vcs / "bzr").mkdir()
     qp = await create_queue_processor(db, vcs_managers=get_vcs_managers(str(vcs)))
     client = await create_client(aiohttp_client, qp, campaigns=["mycampaign"])
     resp = await client.post(
@@ -319,6 +321,8 @@ async def test_candidate_invalid_value(aiohttp_client, db, tmp_path):
 async def test_submit_candidate(aiohttp_client, db, tmp_path):
     vcs = tmp_path / "vcs"
     vcs.mkdir()
+    (vcs / "git").mkdir()
+    (vcs / "bzr").mkdir()
     qp = await create_queue_processor(db, vcs_managers=get_vcs_managers(str(vcs)))
     client = await create_client(aiohttp_client, qp, campaigns=["mycampaign"])
     resp = await client.post(
@@ -352,6 +356,17 @@ async def test_submit_candidate(aiohttp_client, db, tmp_path):
     resp = await client.post("/active-runs", json={})
     assert resp.status == 201
     assignment = await resp.json()
+
+    # example.com doesn't actually serve foo.git, so the branch never opens
+    # and vcs_type is never resolved for this codebase (no cached db value
+    # either). branch.vcs_type still falls back to DEFAULT_VCS_TYPE since
+    # it's a required field worker-side (Branch.vcs_type: VcsType), but
+    # target_repository.vcs_type is left honestly unresolved rather than
+    # assuming git, and there is no cached branch to report since we don't
+    # know which vcs_type's store to look in.
+    assert assignment["target_repository"]["url"] is not None
+    assert assignment["target_repository"]["url"].endswith("/foo")
+    del assignment["target_repository"]["url"]
     assert assignment == {
         "branch": {
             "additional_colocated_branches": None,
@@ -359,7 +374,7 @@ async def test_submit_candidate(aiohttp_client, db, tmp_path):
             "default-empty": True,
             "subpath": "",
             "url": "https://example.com/foo.git",
-            "vcs_type": None,
+            "vcs_type": "git",
         },
         "build": {
             "config": {
@@ -389,7 +404,7 @@ async def test_submit_candidate(aiohttp_client, db, tmp_path):
         "queue_id": 1,
         "resume": None,
         "skip-setup-validation": False,
-        "target_repository": {"url": None, "vcs_type": None},
+        "target_repository": {"vcs_type": None},
     }
 
     ts = datetime.utcnow().isoformat()
@@ -558,6 +573,8 @@ async def create_dummy_run(
 async def test_tweak_run(aiohttp_client, db, tmp_path):
     vcs = tmp_path / "vcs"
     vcs.mkdir()
+    (vcs / "git").mkdir()
+    (vcs / "bzr").mkdir()
     qp = await create_queue_processor(db, vcs_managers=get_vcs_managers(str(vcs)))
     campaign = "mycampaign"
     codebase = "foo"
@@ -600,6 +617,8 @@ async def test_tweak_run(aiohttp_client, db, tmp_path):
 async def test_tweak_unknown_run(aiohttp_client, db, tmp_path):
     vcs = tmp_path / "vcs"
     vcs.mkdir()
+    (vcs / "git").mkdir()
+    (vcs / "bzr").mkdir()
     qp = await create_queue_processor(db, vcs_managers=get_vcs_managers(str(vcs)))
     client = await create_client(aiohttp_client, qp, campaigns=["mycampaign"])
 
@@ -613,6 +632,8 @@ async def test_tweak_unknown_run(aiohttp_client, db, tmp_path):
 async def test_assignment_with_only_vcs(aiohttp_client, db, tmp_path):
     vcs = tmp_path / "vcs"
     vcs.mkdir()
+    (vcs / "git").mkdir()
+    (vcs / "bzr").mkdir()
     qp = await create_queue_processor(db, vcs_managers=get_vcs_managers(str(vcs)))
     client = await create_client(aiohttp_client, qp, campaigns=["mycampaign"])
     resp = await client.post(
@@ -651,6 +672,16 @@ async def test_assignment_with_only_vcs(aiohttp_client, db, tmp_path):
     resp = await client.post("/active-runs", json={})
     assert resp.status == 201, await resp.json()
     assignment = await resp.json()
+
+    # "hg" is not a resolvable vcs manager (only git/bzr are registered by
+    # get_vcs_managers), so this exercises the KeyError fallback path for
+    # both target_repository.url and branch.vcs_type. Both are non-Option
+    # fields worker-side (TargetRepository.url: Url, Branch.vcs_type:
+    # VcsType) - a None/missing value here crashes the worker's assignment
+    # deserialization instead of just failing that one run normally.
+    assert assignment["target_repository"]["url"] is not None
+    del assignment["target_repository"]["url"]
+
     assert assignment == {
         "branch": {
             "additional_colocated_branches": None,
@@ -688,8 +719,38 @@ async def test_assignment_with_only_vcs(aiohttp_client, db, tmp_path):
         "queue_id": 1,
         "resume": None,
         "skip-setup-validation": False,
-        "target_repository": {"url": None, "vcs_type": "hg"},
+        "target_repository": {"vcs_type": "hg"},
     }
+    await qp.stop()
+
+
+async def test_assignment_no_vcs_manager_configured(aiohttp_client, db):
+    # No git/bzr managers configured at all - a deployment missing
+    # git_location entirely. vcs_type is never resolved for this codebase
+    # (no branch_url, no cached db value), so DEFAULT_VCS_TYPE ("git") is
+    # not even a manager this deployment has. public_vcs_managers[DEFAULT_VCS_TYPE]
+    # used to KeyError uncaught here. target_repository.url is a required
+    # field worker-side (Url, not Option<Url>), so there is nothing left to
+    # fall back to - the run gets aborted with a clear reason instead of
+    # shipping an assignment the worker can't deserialize.
+    qp = await create_queue_processor(db, vcs_managers={})
+    client = await create_client(aiohttp_client, qp, campaigns=["mycampaign"])
+    resp = await client.post("/codebases", json=[{"name": "foo"}])
+    assert resp.status == 200
+    resp = await client.post(
+        "/candidates",
+        json=[
+            {
+                "campaign": "mycampaign",
+                "codebase": "foo",
+                "command": "true",
+            }
+        ],
+    )
+    assert resp.status == 200
+
+    resp = await client.post("/active-runs", json={})
+    assert resp.status == 500
     await qp.stop()
 
 
@@ -875,6 +936,8 @@ async def test_schedule_response_includes_queue_position(aiohttp_client, db, tmp
     # handle_schedule didn't populate queue_position/queue_wait_time
     vcs = tmp_path / "vcs"
     vcs.mkdir()
+    (vcs / "git").mkdir()
+    (vcs / "bzr").mkdir()
     qp = await create_queue_processor(db, vcs_managers=get_vcs_managers(str(vcs)))
     await _register_dummy_active_run(qp)
     client = await create_client(aiohttp_client, qp, campaigns=["mycampaign"])
@@ -956,6 +1019,8 @@ async def test_estimate_wait_with_no_active_runs(aiohttp_client, db, tmp_path):
 async def test_schedule_by_run_id_includes_queue_position(aiohttp_client, db, tmp_path):
     vcs = tmp_path / "vcs"
     vcs.mkdir()
+    (vcs / "git").mkdir()
+    (vcs / "bzr").mkdir()
     qp = await create_queue_processor(db, vcs_managers=get_vcs_managers(str(vcs)))
     campaign = "mycampaign"
     codebase = "foo"
@@ -1018,6 +1083,8 @@ async def test_handle_queue_returns_entries(aiohttp_client, db, tmp_path):
 async def test_schedule_unknown_run_id_returns_404(aiohttp_client, db, tmp_path):
     vcs = tmp_path / "vcs"
     vcs.mkdir()
+    (vcs / "git").mkdir()
+    (vcs / "bzr").mkdir()
     qp = await create_queue_processor(db, vcs_managers=get_vcs_managers(str(vcs)))
     client = await create_client(aiohttp_client, qp, campaigns=["mycampaign"])
 
