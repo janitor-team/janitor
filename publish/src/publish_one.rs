@@ -588,10 +588,24 @@ pub fn publish(
         }
     };
 
-    let target_lock = target_branch.lock_read();
-    let source_lock = source_branch.lock_read();
+    // Read locks for the conflict check only: publish_changes() write-locks the target.
+    let target_lock = target_branch
+        .lock_read()
+        .map_err(|e| PublishError::Failure {
+            code: "merge-conflict-check-failed".to_string(),
+            description: format!("Failed to lock target branch: {}", e),
+        })?;
+    let source_lock = source_branch
+        .lock_read()
+        .map_err(|e| PublishError::Failure {
+            code: "merge-conflict-check-failed".to_string(),
+            description: format!("Failed to lock source branch: {}", e),
+        })?;
+    let conflicts = merge_conflicts(&target_branch, &source_branch, stop_revision);
+    std::mem::drop(source_lock);
+    std::mem::drop(target_lock);
 
-    match merge_conflicts(&target_branch, &source_branch, stop_revision) {
+    match conflicts {
         Ok(true) => {
             return Err(PublishError::Failure {
                 code: "merge-conflict".to_string(),
@@ -727,20 +741,16 @@ pub fn publish(
             code: "empty-merge-proposal".to_string(),
             description: "No changes to propose; changes made independently upstream?".to_string(),
         }),
-        Ok(publish_result) => {
-            std::mem::drop(target_lock);
-            std::mem::drop(source_lock);
-            Ok((
-                PublishOneResult {
-                    mode,
-                    proposal: publish_result.proposal,
-                    is_new: publish_result.is_new,
-                    target_branch,
-                    forge: publish_result.forge,
-                },
-                derived_branch_name.to_string(),
-            ))
-        }
+        Ok(publish_result) => Ok((
+            PublishOneResult {
+                mode,
+                proposal: publish_result.proposal,
+                is_new: publish_result.is_new,
+                target_branch,
+                forge: publish_result.forge,
+            },
+            derived_branch_name.to_string(),
+        )),
         Err(e) => Err(PublishError::Failure {
             description: format!("Publish error: {}", e),
             code: "publish-error".to_string(),
