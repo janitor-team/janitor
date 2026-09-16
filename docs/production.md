@@ -97,6 +97,12 @@ unset:
 For a Janitor instance, you probably want a custom website in combination with
 the Janitor API. See the existing instances for inspiration.
 
+[`deploy/`](https://github.com/janitor-team/janitor/tree/main/deploy) has an
+Ansible playbook that deploys a full instance for you, either onto one
+host or with the worker split onto its own - see its own
+[README](https://github.com/janitor-team/janitor/tree/main/deploy/README.md)
+for details.
+
 ## Registering workers
 
 Workers authenticate to the site with a name and password stored in the `worker`

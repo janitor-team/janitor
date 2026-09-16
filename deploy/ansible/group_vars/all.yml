@@ -1,0 +1,141 @@
+---
+# Core deployment variables. Real secret VALUES are never written here or
+# anywhere in this repo - supply them at run time via ansible-vault or -e,
+# e.g.:
+#   ansible-playbook site.yml --ask-vault-pass -e @secrets/instance2.vault.yml
+# Required secret vars (see roles/postgres, roles/janitor_config):
+#   janitor_db_password       - password for the postgres "janitor" role
+#   breezy_github_token       - GitHub PAT, used by publish/runner via breezy's
+#                                authentication.conf (needs repo + workflow scopes
+#                                on the bot account doing the pushes). Templated as
+#                                both user/password (HTTP Basic Auth, required for
+#                                git clone/fetch over https - a bare "token" field
+#                                sends Authorization: Bearer, which GitHub's git
+#                                smart-HTTP endpoint rejects with 401) and
+#                                private_token (whatever breezy.plugins.github's
+#                                own API-level auth expects).
+#   worker_password           - password for the first registered worker (HTTP
+#                                Basic Auth against the `worker` table)
+#   breezy_whoami              - "Name <email>" string breezy attaches as the commit
+#                                 author on every codemod it applies (its equivalent
+#                                 of git's user.name/user.email). Unset panics with
+#                                 NoWhoami on the worker's first real commit.
+# Optional secret vars:
+#   oauth_client_id           - GitHub OAuth app client ID (site login).
+#   oauth_client_secret         Omit both to run the site without OAuth login -
+#                                janitor_config/templates/janitor.conf.j2 leaves
+#                                the whole oauth2_provider block out when unset.
+# All of the above get spliced unescaped into a Postgres connection URI,
+# text-proto strings, or a systemd Environment= line - avoid @, :, /, %,
+# quote characters, and whitespace in these values.
+
+worker_name: worker-1   # CHANGEME if running more than one worker
+# To add more workers: add entries to a `workers` list var (name + a
+# per-worker password var) and loop roles/janitor_quadlet's worker task/
+# template over it - not yet generalized here, so a second worker on the
+# same instance currently has to be hand-deployed outside this playbook.
+
+janitor_repo: https://github.com/janitor-team/janitor.git
+janitor_branch: main   # override to test against a fork/branch carrying unmerged fixes
+janitor_home: "/home/{{ ansible_user }}/janitor"
+janitor_domain: CHANGEME        # CHANGEME per instance, e.g. janitor.example.com
+janitor_github_org: CHANGEME    # CHANGEME per instance - GitHub org/user the bot pushes/opens PRs as
+
+postgres_max_connections: 300   # default 100 is too tight for several services opening pools concurrently on cold boot
+
+# Which services get a quadlet unit deployed (roles/janitor_quadlet) - the
+# order here is tier-ordered and doubles as the start order the "Start
+# janitor services in dependency tiers" task loops over; each unit's own
+# After= is what actually enforces the dependency, this order just keeps
+# first-boot logs readable.
+janitor_services:
+  - git_store
+  - bzr_store
+  - differ
+  - archive
+  - auto_upload
+  - runner
+  - publish
+  - worker
+  - site
+
+# false: build all images from source (make build-all, several hours on a
+# modest instance). true: pull the same ghcr.io/jelmer/janitor/<name>:latest
+# tag pre-built instead - minutes, not hours, but only reflects whatever's
+# currently published upstream rather than janitor_branch's actual commit.
+# Real instances default to source builds (matches historical behavior); the
+# Vagrant VM (../../Vagrantfile) overrides this per-run via -e.
+use_prebuilt_images: false
+
+# The Dockerfile_* images (ls Dockerfile_* | sed 's/Dockerfile_//') - a
+# superset of janitor_services above: ognibuild_dep and mail_filter are
+# real images make build-all also produces, but neither runs as a
+# standalone service here (no quadlet unit), so roles/janitor_source only
+# uses this full list for the post-build "did make build-all actually
+# finish" sanity check - the faster pull path loops over janitor_services
+# instead, since nothing at runtime needs these two.
+janitor_dockerfile_images:
+  - archive
+  - auto_upload
+  - bzr_store
+  - differ
+  - git_store
+  - mail_filter
+  - ognibuild_dep
+  - publish
+  - runner
+  - site
+  - worker
+
+# Addressing for a worker that isn't co-located with the control host (see
+# group_vars/control.yml and group_vars/worker.yml, and docs/multi-host-
+# deployment.md). Single-host default: everything on loopback, unchanged
+# from before these existed.
+#
+# git_store_bind_address - what roles/janitor_quadlet's git_store/bzr_store
+# units pass as --listen-address. git_store.py/bzr_store.py bind both their
+# admin API (port) and public API (public-port) to this one address (no
+# separate flag for the two) - localhost keeps the admin API off the
+# network same as before; a remote worker needs the public API reachable,
+# which means binding this to an address actually reachable from that
+# worker (its private-network IP, not 0.0.0.0 - the admin API rides along
+# on the same bind and has no auth of its own beyond network reachability).
+git_store_bind_address: "127.0.0.1"
+# git_store_public_address - the address embedded in the runner's
+# --public-vcs-location (roles/janitor_quadlet/templates/runner.container.j2)
+# for a worker to fetch VCS content from. Must resolve, from wherever the
+# worker runs, to whatever git_store_bind_address above is actually bound
+# to on the control host.
+git_store_public_address: "localhost"
+# runner_bind_address - what roles/janitor_quadlet/templates/
+# runner.container.j2 passes as --listen-address, for both the runner's
+# admin API (port 9911) and its public API (public-port 9919, what a
+# worker actually talks to for assignments). Same one-address-for-both
+# constraint as git_store above. A remote worker needs this reachable,
+# same as git_store_bind_address.
+runner_bind_address: "127.0.0.1"
+# runner_base_url_host - the address roles/janitor_quadlet/templates/
+# worker.container.j2 points --base-url at. "localhost" only works when the
+# worker shares the runner's host; a remote worker needs the control host's
+# actual address here, resolving to whatever runner_bind_address above is
+# bound to.
+runner_base_url_host: "localhost"
+# worker_listen_address - what worker.container.j2 passes as
+# --listen-address for the worker's own web server (what the runner's
+# backchannel pings hit directly). "localhost" only works when the runner
+# shares the worker's host.
+worker_listen_address: "127.0.0.1"
+# worker_external_address - what worker.container.j2 passes as
+# --external-address, i.e. what the worker tells the runner to use for the
+# runner's own backchannel pings back to the worker (keepalive watchdog -
+# see the comment above Exec= in that template). Must resolve, from the
+# control host, to whatever worker_listen_address above is bound to.
+worker_external_address: "localhost"
+
+# Whether this host gets janitor_home/data/* and janitor.conf deployed
+# (roles/janitor_config). true for a single-host or control-host
+# deployment; group_vars/worker.yml sets this false for a worker-only host,
+# which has nothing that reads janitor.conf (the worker container takes
+# its config entirely via --base-url/--external-address/env, not a mounted
+# config file - see worker.container.j2).
+deploy_janitor_conf: true

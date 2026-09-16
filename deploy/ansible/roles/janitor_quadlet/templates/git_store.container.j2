@@ -1,0 +1,39 @@
+[Unit]
+Description=janitor git_store (tier 0)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=ghcr.io/jelmer/janitor/git_store:latest
+ContainerName=janitor-git-store
+Network=host
+# --listen-address overrides the image's own baked-in
+# --listen-address=0.0.0.0 (Dockerfile_git_store's ENTRYPOINT) - see
+# worker.container.j2's own comment for why this needs overriding rather
+# than an Entrypoint replacement, and why the override itself is safe
+# (argparse keeps the last occurrence of a repeated flag). git_store.py
+# binds both the admin API (port) and the public API (public-port, what a
+# remote worker fetches VCS content from during a build - see runner.
+# container.j2's --public-vcs-location) to this one address; single-host
+# default (git_store_bind_address, group_vars/all.yml) is loopback, since
+# Caddy already proxies the public port for browser access
+# (/git/* -> localhost:9924) and nothing else needs it reachable beyond
+# the host. A remote worker needs this bound to an address it can actually
+# reach - see group_vars/control.yml.
+Exec=--listen-address {{ git_store_bind_address }} --port=9923 --public-port=9924 --config /mnt/janitor/janitor.conf --vcs-path /mnt/janitor/data/git
+Volume={{ janitor_home }}:/mnt/janitor:rw
+
+# Already pulled this exact image explicitly in roles/janitor_source
+# - never re-check the registry on every service start (quadlet's default
+# for a :latest tag). That re-check was slow enough on this network to
+# blow TimeoutStartSec below, failing the start outright even though the
+# image was already present locally.
+Pull=never
+
+[Service]
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+
+[Install]
+WantedBy=default.target
