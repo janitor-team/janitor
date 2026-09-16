@@ -137,6 +137,16 @@ async def discover_openid_config(app, oauth2_provider_base_url):
         )
 
 
+async def handle_logout(request):
+    session_id = request.cookies.get("session_id")
+    if session_id is not None:
+        async with request.app.database.acquire() as conn:
+            await conn.execute("DELETE FROM site_session WHERE id = $1", session_id)
+    resp = web.HTTPFound("/")
+    resp.del_cookie("session_id")
+    return resp
+
+
 async def handle_login(request):
     state = str(uuid.uuid4())
     callback_path = request.app.router["oauth2-callback"].url_for()
@@ -168,6 +178,7 @@ async def handle_login(request):
 def setup_openid(app, oauth2_provider_base_url: Optional[str]):
     app.middlewares.insert(0, openid_middleware)
     app.router.add_get("/login", handle_login, name="login")
+    app.router.add_post("/logout", handle_logout, name="logout")
     app.router.add_get("/oauth/callback", handle_oauth_callback, name="oauth2-callback")
     app["openid_config"] = None
     if oauth2_provider_base_url:
