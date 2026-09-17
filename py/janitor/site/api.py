@@ -265,7 +265,7 @@ async def handle_queue(request):
     url = URL(request.app["runner_url"]) / "queue"
     span = aiozipkin.request_span(request)
     with span.new_child("runner:queue"):
-        async with request.app["http_client_session"].get(url, param=params) as resp:
+        async with request.app["http_client_session"].get(url, params=params) as resp:
             return web.json_response(await resp.json(), status=resp.status)
 
 

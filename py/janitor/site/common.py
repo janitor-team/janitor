@@ -366,7 +366,9 @@ async def generate_candidates(db, suite):
     async with db.acquire() as conn:
         for row in await iter_candidates(conn, campaign=suite):
             candidates.append((row["codebase"], row["value"]))
-        candidates.sort(key=lambda x: x[1], reverse=True)
+        candidates.sort(
+            key=lambda x: x[1] if x[1] is not None else float("-inf"), reverse=True
+        )
     return {"candidates": candidates, "suite": suite, "campaign": suite}
 
 

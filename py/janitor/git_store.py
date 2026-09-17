@@ -385,13 +385,20 @@ async def cgit_backend(request: web.Request) -> web.Response:
                 while chunk:
                     try:
                         await response.write(chunk)
+                    except ConnectionResetError:
+                        # Client already got what it wanted and hung up -
+                        # nothing left to write, nothing to report.
+                        with suppress(ProcessLookupError):
+                            p.kill()
+                        return response
                     except BaseException:
                         with suppress(ProcessLookupError):
                             p.kill()
                         raise
                     chunk = await p.stdout.read(GIT_BACKEND_CHUNK_SIZE)  # type: ignore
 
-                await response.write_eof()
+                with suppress(ConnectionResetError):
+                    await response.write_eof()
 
                 return response
 
@@ -459,9 +466,9 @@ async def dulwich_refs(request: web.Request) -> web.StreamResponse:
 
         await asyncio.to_thread(handler.handle)
 
-        await response.write(out.getvalue())
-
-        await response.write_eof()
+        with suppress(ConnectionResetError):
+            await response.write(out.getvalue())
+            await response.write_eof()
 
         return response
 
@@ -509,9 +516,9 @@ async def dulwich_service(request: web.Request) -> web.StreamResponse:
 
         await asyncio.to_thread(handle)
 
-        await response.write(outf.getvalue())
-
-        await response.write_eof()
+        with suppress(ConnectionResetError):
+            await response.write(outf.getvalue())
+            await response.write_eof()
         return response
 
 

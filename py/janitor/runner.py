@@ -1557,7 +1557,9 @@ class QueueProcessor:
         active_run_count = await self.active_run_count()
         return (
             position,
-            (wait_time / active_run_count) if wait_time is not None else None,
+            (wait_time / active_run_count)
+            if wait_time is not None and active_run_count
+            else None,
             wait_time,
         )
 
@@ -2483,7 +2485,7 @@ async def handle_queue(request):
         limit = None
     async with queue_processor.database.acquire() as conn:
         queue = Queue(conn)
-        for entry in await queue.iter_queue(limit=limit):
+        async for entry in queue.iter_queue(limit=limit):
             response_obj.append(
                 {
                     "queue_id": entry.id,

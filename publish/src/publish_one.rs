@@ -324,46 +324,66 @@ pub fn publish_one(
         (None, None, None)
     };
 
-    let debdiff =
-        match crate::get_debdiff(&request.differ_url, &request.unchanged_id, &request.log_id) {
-            Ok(debdiff) => Some(debdiff),
-            Err(crate::DebdiffError::Unavailable(e)) => {
-                return Err(PublishError::Failure {
-                    description: format!("Unable to contact differ for build diff: {}", e),
-                    code: "differ-unreachable".to_string(),
-                });
-            }
-            Err(crate::DebdiffError::MissingRun(missing_run_id)) => {
-                if [Mode::Propose, Mode::AttemptPush].contains(&request.mode)
-                    && request.require_binary_diff
-                {
-                    if missing_run_id == request.log_id {
-                        return Err(PublishError::Failure {
-                            description: format!(
-                                "Build diff is not available. Run ({}) not yet published?",
-                                request.log_id
-                            ),
-                            code: "missing-build-diff-self".to_string(),
-                        });
-                    } else {
-                        return Err(PublishError::Failure {
-                            description: format!(
-                                "Binary debdiff is not available. Control run ({}) not published?",
-                                missing_run_id
-                            ),
-                            code: "missing-build-diff-control".to_string(),
-                        });
-                    }
+    let debdiff = match crate::get_debdiff(
+        &request.differ_url,
+        request.unchanged_id.as_deref(),
+        &request.log_id,
+    ) {
+        Ok(debdiff) => Some(debdiff),
+        Err(crate::DebdiffError::Unavailable(e)) => {
+            return Err(PublishError::Failure {
+                description: format!("Unable to contact differ for build diff: {}", e),
+                code: "differ-unreachable".to_string(),
+            });
+        }
+        Err(crate::DebdiffError::MissingRun(missing_run_id)) => {
+            if [Mode::Propose, Mode::AttemptPush].contains(&request.mode)
+                && request.require_binary_diff
+            {
+                if missing_run_id == request.log_id {
+                    return Err(PublishError::Failure {
+                        description: format!(
+                            "Build diff is not available. Run ({}) not yet published?",
+                            request.log_id
+                        ),
+                        code: "missing-build-diff-self".to_string(),
+                    });
+                } else {
+                    return Err(PublishError::Failure {
+                        description: format!(
+                            "Binary debdiff is not available. Control run ({}) not published?",
+                            missing_run_id
+                        ),
+                        code: "missing-build-diff-control".to_string(),
+                    });
                 }
-                None
             }
-            Err(crate::DebdiffError::Http(e)) => {
+            None
+        }
+        Err(crate::DebdiffError::NoUnchangedRun) => {
+            // Expected for a codebase's first run: there's no earlier
+            // build to diff against yet, not a run that failed to
+            // publish. Only actually blocks publishing when a binary
+            // diff is required.
+            if [Mode::Propose, Mode::AttemptPush].contains(&request.mode)
+                && request.require_binary_diff
+            {
                 return Err(PublishError::Failure {
-                    description: format!("Error from differ for build diff: HTTP {}", e),
-                    code: "differ-http-error".to_string(),
+                    description: "Binary debdiff is not available: no earlier run exists yet \
+                             to compare against."
+                        .to_string(),
+                    code: "missing-build-diff-control".to_string(),
                 });
             }
-        };
+            None
+        }
+        Err(crate::DebdiffError::Http(e)) => {
+            return Err(PublishError::Failure {
+                description: format!("Error from differ for build diff: HTTP {}", e),
+                code: "differ-http-error".to_string(),
+            });
+        }
+    };
 
     let result = publish(
         template_env,

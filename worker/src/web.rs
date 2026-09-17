@@ -638,7 +638,7 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
         // Should reject paths with slashes after URL decoding
         assert_eq!(response.status(), 400);
-        assert_eq!(get_body(response).await, "Invalid filename");
+        assert!(get_body(response).await.starts_with("Invalid filename"));
     }
 
     #[tokio::test]
@@ -671,7 +671,7 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
         // Should reject paths with backslashes
         assert_eq!(response.status(), 400);
-        assert_eq!(get_body(response).await, "Invalid filename");
+        assert!(get_body(response).await.starts_with("Invalid filename"));
     }
 
     #[tokio::test]

@@ -160,17 +160,6 @@ jobs:
             .[typing]
           make typing
 
-      - name: Test config (janitor.debian.net)
-        if: always()
-        run: |
-          set -x
-          apt-get satisfy --yes --no-install-recommends \
-            git
-          git clone https://salsa.debian.org/janitor-team/janitor.debian.net \
-            janitor.debian.net
-          PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python PYTHONPATH=py \
-            python3 -m janitor.config janitor.debian.net/k8s/janitor.conf
-
       - name: Test using ./tests/test_*.py (unittest)
         if: always()
         run: |

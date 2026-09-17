@@ -24,12 +24,37 @@ RUN apt-get update --yes \
         git \
         python3-gpg \
         python3-pip \
+        python3-venv \
  && apt-get clean
+
+RUN python3 -m venv --system-site-packages /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
 COPY . /code
 
-RUN pip3 install --break-system-packages --upgrade "/code[gcp,git-store]" \
+RUN pip3 install --upgrade "/code[gcp,git-store]" \
  && rm -rf /code
+
+FROM docker.io/debian:testing-slim
+MAINTAINER Jelmer Vernooij <jelmer@jelmer.uk>
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update --yes \
+ && apt-get install --yes --no-install-recommends \
+        auto-apt-proxy \
+ && apt-get upgrade --yes \
+ && apt-get satisfy --yes --no-install-recommends \
+        ca-certificates \
+        git \
+        libssl3 \
+        libzstd1 \
+        python3-gpg \
+        python3 \
+ && apt-get clean
+
+COPY --from=build /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
 VOLUME /git
 

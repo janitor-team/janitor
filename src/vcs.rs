@@ -728,8 +728,9 @@ impl VcsManager for LocalGitVcsManager {
     }
 
     fn get_repository_url(&self, codebase: &str) -> Url {
-        let abspath = self.base_path.canonicalize().unwrap();
-        Url::from_directory_path(&abspath)
+        std::fs::create_dir_all(&self.base_path).unwrap();
+        let base_path = self.base_path.canonicalize().unwrap();
+        Url::from_directory_path(base_path)
             .unwrap()
             .join(codebase)
             .unwrap()
@@ -893,8 +894,9 @@ impl VcsManager for LocalBzrVcsManager {
     }
 
     fn get_repository_url(&self, codebase: &str) -> Url {
-        let abspath = self.base_path.canonicalize().unwrap();
-        Url::from_directory_path(&abspath)
+        std::fs::create_dir_all(&self.base_path).unwrap();
+        let base_path = self.base_path.canonicalize().unwrap();
+        Url::from_directory_path(base_path)
             .unwrap()
             .join(codebase)
             .unwrap()
@@ -965,6 +967,38 @@ impl VcsManager for LocalBzrVcsManager {
 
         std::mem::drop(lock);
         ret
+    }
+}
+
+#[cfg(test)]
+mod local_repository_url_tests {
+    use super::*;
+
+    #[test]
+    fn get_repository_url_does_not_require_existing_directory() {
+        let base = tempfile::tempdir().unwrap();
+        let missing = base.path().join("not-created-yet");
+
+        let git_manager = LocalGitVcsManager::new(missing.clone());
+        let git_url = git_manager.get_repository_url("mycodebase");
+        assert!(git_url.as_str().ends_with("/not-created-yet/mycodebase"));
+
+        let bzr_manager = LocalBzrVcsManager::new(missing.clone());
+        let bzr_url = bzr_manager.get_repository_url("mycodebase");
+        assert!(bzr_url.as_str().ends_with("/not-created-yet/mycodebase"));
+    }
+
+    #[test]
+    fn get_repository_url_accepts_relative_base_path() {
+        let git_manager = LocalGitVcsManager::new(PathBuf::from("."));
+        let git_url = git_manager.get_repository_url("mycodebase");
+        assert!(git_url.as_str().starts_with("file://"));
+        assert!(git_url.as_str().ends_with("/mycodebase"));
+
+        let bzr_manager = LocalBzrVcsManager::new(PathBuf::from("."));
+        let bzr_url = bzr_manager.get_repository_url("mycodebase");
+        assert!(bzr_url.as_str().starts_with("file://"));
+        assert!(bzr_url.as_str().ends_with("/mycodebase"));
     }
 }
 

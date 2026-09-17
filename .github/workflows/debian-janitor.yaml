@@ -1,0 +1,60 @@
+---
+name: Debian Janitor - Test config
+
+"on":
+  push:
+  pull_request:
+  schedule:
+    - cron: '0 6 * * *'    # Daily 6AM UTC build
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  config:
+    name: Test config (janitor.debian.net)
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/debian:testing-slim
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies (apt)
+        run: |
+          set -x
+          apt-get update --yes
+          apt-get satisfy --yes --no-install-recommends \
+            cargo \
+            g++ \
+            gcc \
+            git \
+            libclang-dev \
+            libpython3-dev \
+            libssl-dev \
+            pkg-config \
+            nettle-dev \
+            protobuf-compiler \
+            python3-minimal \
+            python3-pip
+
+      - name: PIP install
+        run: |
+          set -x
+          pip3 install --break-system-packages --upgrade --editable \
+            .
+
+      - name: Make all
+        run: |
+          set -x
+          make all
+
+      - name: Test config (janitor.debian.net)
+        run: |
+          set -x
+          git clone https://salsa.debian.org/janitor-team/janitor.debian.net \
+            janitor.debian.net
+          PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python PYTHONPATH=py \
+            python3 -m janitor.config janitor.debian.net/k8s/janitor.conf

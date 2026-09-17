@@ -58,6 +58,10 @@ pub enum DebdiffError {
     Http(reqwest::Error),
     /// The run ID was missing.
     MissingRun(String),
+    /// There is no unchanged/control run to compare against yet, e.g. a
+    /// codebase's first run. Distinct from `MissingRun`: no request was
+    /// made, and this is an expected state rather than a differ failure.
+    NoUnchangedRun,
     /// The debdiff is unavailable.
     Unavailable(String),
 }
@@ -73,6 +77,9 @@ impl std::fmt::Display for DebdiffError {
         match self {
             DebdiffError::Http(e) => write!(f, "HTTP error: {}", e),
             DebdiffError::MissingRun(e) => write!(f, "Missing run: {}", e),
+            DebdiffError::NoUnchangedRun => {
+                write!(f, "No unchanged run to compare against yet")
+            }
             DebdiffError::Unavailable(e) => write!(f, "Unavailable: {}", e),
         }
     }
@@ -91,16 +98,24 @@ impl std::error::Error for DebdiffError {
 ///
 /// # Arguments
 /// * `differ_url` - The URL of the differ service
-/// * `unchanged_id` - The ID of the unchanged run
+/// * `unchanged_id` - The ID of the unchanged run, or `None` if there is no
+///   unchanged run to compare against
 /// * `log_id` - The ID of the changed run
 ///
 /// # Returns
 /// The debdiff as a byte vector, or an error
 pub fn get_debdiff(
     differ_url: &url::Url,
-    unchanged_id: &str,
+    unchanged_id: Option<&str>,
     log_id: &str,
 ) -> Result<Vec<u8>, DebdiffError> {
+    // The differ's /debdiff/{old_id}/{new_id} route has no representation
+    // for "no control run" - an empty or missing old_id segment doesn't
+    // match the route at all, so there's nothing useful to request.
+    let Some(unchanged_id) = unchanged_id else {
+        return Err(DebdiffError::NoUnchangedRun);
+    };
+
     let debdiff_url = differ_url
         .join(&format!(
             "/debdiff/{}/{}?filter_boring=1",
@@ -152,7 +167,7 @@ pub struct PublishOneRequest {
     /// The revision ID of the change.
     pub revision_id: RevisionId,
     /// The ID of the unchanged run.
-    pub unchanged_id: String,
+    pub unchanged_id: Option<String>,
     /// Whether to require a binary diff.
     #[serde(rename = "require-binary-diff")]
     pub require_binary_diff: bool,
@@ -492,7 +507,7 @@ impl PublishWorker {
             mode,
             role: role.to_owned(),
             log_id: log_id.to_owned(),
-            unchanged_id: unchanged_id.to_owned(),
+            unchanged_id: Some(unchanged_id.to_owned()),
             require_binary_diff,
             allow_create_proposal,
             external_url: self.external_url.clone(),
@@ -932,7 +947,7 @@ mod tests {
             log_id: "log-123".to_string(),
             reviewers: Some(vec!["alice".to_string()]),
             revision_id: breezyshim::RevisionId::from(b"rev-1".to_vec()),
-            unchanged_id: "unchanged-456".to_string(),
+            unchanged_id: Some("unchanged-456".to_string()),
             require_binary_diff: true,
             differ_url: url::Url::parse("https://differ.example.com").unwrap(),
             derived_branch_name: "lintian-fixes".to_string(),
@@ -1016,8 +1031,26 @@ mod tests {
         let err = DebdiffError::MissingRun("run-123".to_string());
         assert_eq!(err.to_string(), "Missing run: run-123");
 
+        let err = DebdiffError::NoUnchangedRun;
+        assert_eq!(err.to_string(), "No unchanged run to compare against yet");
+
         let err = DebdiffError::Unavailable("service down".to_string());
         assert_eq!(err.to_string(), "Unavailable: service down");
+    }
+
+    #[test]
+    fn test_get_debdiff_without_unchanged_id_skips_the_request() {
+        // The differ has no route for a missing control run, so get_debdiff
+        // must report it directly rather than making a request that can
+        // only ever come back as an unrelated 404. A URL that refuses
+        // connections proves no request was attempted: any other error
+        // variant here would mean one was. This is also the normal state
+        // for a codebase's first-ever run, not a differ failure, so it
+        // gets its own variant rather than an empty MissingRun id.
+        let differ_url = url::Url::parse("http://127.0.0.1:1").unwrap();
+        let err = get_debdiff(&differ_url, None, "log-123").unwrap_err();
+        assert!(matches!(err, DebdiffError::NoUnchangedRun));
+        assert_eq!(err.to_string(), "No unchanged run to compare against yet");
     }
 
     #[test]

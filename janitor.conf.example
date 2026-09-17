@@ -19,6 +19,14 @@ bzr_location: "http://localhost:9929"
 # Redis
 redis_location: "redis://localhost"
 
+# Zipkin server for distributed tracing. Optional; tracing is skipped if
+# unset.
+# zipkin_address: "http://localhost:9411"
+
+# User agent sent on outgoing HTTP requests. Optional; defaults to
+# "janitor/<version>" if unset.
+# user_agent: "my-janitor-instance/1.0"
+
 # Set the default committer; if unset defaults to current users' preferences
 # (i.e. ~/.gitconfig)
 committer: "Janitor Bot <janitor@jelmer.uk>"
@@ -35,8 +43,13 @@ bugtracker {
 distribution {
   name: "unstable"
   archive_mirror_uri: "http://deb.debian.org/debian"
+  # Keyring used to verify archive_mirror_uri. Optional; apt's default
+  # trust store is used if unset.
+  # signed_by: "/usr/share/keyrings/debian-archive-keyring.gpg"
   component: "main"
   chroot: "unstable-amd64-sbuild"
+  # Extra schroot aliases, beyond the default "<name>-<arch>-sbuild". Optional.
+  # chroot_alias: "unstable-sbuild"
   lintian_profile: "debian"
   lintian_suppress_tag: "bad-distribution-in-changes-file"
   lintian_suppress_tag: "no-nmu-in-changelog"
@@ -45,6 +58,9 @@ distribution {
   lintian_suppress_tag: "distribution-and-changes-mismatch"
   build_command: "sbuild -Asv --no-clean-source"
   vendor: "debian"
+  # Extra suites to add as apt sources when creating the sbuild chroot.
+  # Optional.
+  # extra: "unstable-backports"
 }
 
 campaign {
@@ -56,12 +72,35 @@ campaign {
     build_suffix: "jan+lint"
     base_distribution: "unstable"
     build_command: "sbuild -Asv --no-clean-source"
+    # Extra distributions to pull packages from when building. Optional;
+    # can be specified more than once.
+    # extra_build_distribution: "experimental"
+    # extra_build_distribution: "unstable-backports"
+    # Chroot for this campaign, overriding the distribution's chroot.
+    # Optional.
+    # chroot: "lintian-fixes-amd64-sbuild"
   }
   bugtracker {
     kind: debian
     url: "https://bugs.debian.org/lintian-brush"
     name: "lintian-brush"
   }
+  # Only propose a merge once the run's value estimate reaches
+  # value_threshold; commit_message and title are templates for the
+  # proposal. All optional.
+  # merge_proposal {
+    # value_threshold: 10
+    # commit_message: "Apply lintian fixes for {package}"
+    # title: "Fix lintian issues"
+  # }
+  # Build even if the command made no changes. Optional; defaults to false.
+  # force_build: false
+  # Skip the pre-build setup validation step. Optional; defaults to false.
+  # skip_setup_validation: false
+  # Allow this campaign to run against codebases with no known VCS branch,
+  # starting from an empty tree instead of aborting as not-in-vcs. Optional;
+  # defaults to false.
+  # default_empty: false
 }
 
 campaign {
@@ -142,7 +181,7 @@ oauth2_provider {
   admin_group: "janitor-team/admins"
 }
 
-# Note that you'll need to run janitor.debian.archive to publish apt archives0
+# Note that you'll need to run janitor-archive to publish apt archives
 apt_repository {
   name: "lintian-fixes"
   description: "Builds of lintian fixes"

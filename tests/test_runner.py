@@ -903,6 +903,56 @@ async def test_schedule_response_includes_queue_position(aiohttp_client, db, tmp
     await qp.stop()
 
 
+async def test_schedule_with_no_active_runs_does_not_500(aiohttp_client, db, tmp_path):
+    # /schedule with zero active runs returns queue_wait_time=None, not a 500.
+    vcs = tmp_path / "vcs"
+    vcs.mkdir()
+    qp = await create_queue_processor(db, vcs_managers=get_vcs_managers(str(vcs)))
+    client = await create_client(aiohttp_client, qp, campaigns=["mycampaign"])
+    resp = await client.post(
+        "/codebases",
+        json=[{"name": "foo", "branch_url": "https://example.com/foo.git"}],
+    )
+    assert resp.status == 200
+    resp = await client.post(
+        "/candidates",
+        json=[{"campaign": "mycampaign", "codebase": "foo", "command": "true"}],
+    )
+    assert resp.status == 200
+
+    resp = await client.post(
+        "/schedule", json={"campaign": "mycampaign", "codebase": "foo"}
+    )
+    assert resp.status == 200
+    body = await resp.json()
+    assert body["queue_wait_time"] is None
+    await qp.stop()
+
+
+async def test_estimate_wait_with_no_active_runs(aiohttp_client, db, tmp_path):
+    # estimate_wait's per-worker wait estimate is None when there are no
+    # active runs to divide the queue wait time by.
+    vcs = tmp_path / "vcs"
+    vcs.mkdir()
+    qp = await create_queue_processor(db, vcs_managers=get_vcs_managers(str(vcs)))
+    client = await create_client(aiohttp_client, qp, campaigns=["mycampaign"])
+    resp = await client.post(
+        "/codebases",
+        json=[{"name": "foo", "branch_url": "https://example.com/foo.git"}],
+    )
+    assert resp.status == 200
+    resp = await client.post(
+        "/candidates",
+        json=[{"campaign": "mycampaign", "codebase": "foo", "command": "true"}],
+    )
+    assert resp.status == 200
+
+    position, per_worker_wait, wait_time = await qp.estimate_wait("foo", "mycampaign")
+    assert position == 1
+    assert per_worker_wait is None
+    await qp.stop()
+
+
 async def test_schedule_by_run_id_includes_queue_position(aiohttp_client, db, tmp_path):
     vcs = tmp_path / "vcs"
     vcs.mkdir()
@@ -932,6 +982,36 @@ async def test_schedule_by_run_id_includes_queue_position(aiohttp_client, db, tm
     assert body["codebase"] == codebase
     assert "queue_position" in body
     assert "queue_wait_time" in body
+    await qp.stop()
+
+
+async def test_handle_queue_returns_entries(aiohttp_client, db, tmp_path):
+    # GET /queue returns the entries currently in the queue.
+    vcs = tmp_path / "vcs"
+    vcs.mkdir()
+    qp = await create_queue_processor(db, vcs_managers=get_vcs_managers(str(vcs)))
+    client = await create_client(aiohttp_client, qp, campaigns=["mycampaign"])
+    resp = await client.post(
+        "/codebases",
+        json=[{"name": "foo", "branch_url": "https://example.com/foo.git"}],
+    )
+    assert resp.status == 200
+    resp = await client.post(
+        "/candidates",
+        json=[{"campaign": "mycampaign", "codebase": "foo", "command": "true"}],
+    )
+    assert resp.status == 200
+    resp = await client.post(
+        "/schedule", json={"campaign": "mycampaign", "codebase": "foo"}
+    )
+    assert resp.status == 200
+
+    resp = await client.get("/queue")
+    assert resp.status == 200
+    body = await resp.json()
+    assert len(body) == 1
+    assert body[0]["codebase"] == "foo"
+    assert body[0]["campaign"] == "mycampaign"
     await qp.stop()
 
 
