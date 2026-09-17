@@ -12,8 +12,35 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    name: Detect non-docs changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - '!docs/**'
+              - '!devnotes/**'
+              - '!**.md'
+              - '!LICENSE'
+              - '!DCO'
+              - '!AUTHORS'
+              - '!TODO'
+              - '!TODO.rust'
+
   build:
     name: Build and Push
+    needs: changes
+    # Skip via if:, not workflow-level paths-ignore, since these are
+    #   required checks: a workflow that never triggers leaves them
+    #   Pending forever instead of passing. See GH Actions workflow syntax
+    #   docs, section "on.<push|pull_request>.<paths|paths-ignore>".
+    if: github.event_name == 'schedule' || needs.changes.outputs.code == 'true'
     # https://github.com/actions/runner-images
     runs-on: ubuntu-latest
     # Publish under vars.GHCR_OWNER when set (see issue #1329: janitor-team
