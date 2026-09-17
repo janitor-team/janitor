@@ -123,6 +123,12 @@ async def test_publish_history(aiohttp_client, db):
     assert resp.status == 200
 
 
+async def test_reprocess_logs_requires_admin(aiohttp_client, db):
+    client = await create_client(aiohttp_client, db)
+    resp = await client.get("/cupboard/reprocess-logs")
+    assert resp.status == 401
+
+
 def test_render_changeset():
     env = Environment(loader=template_loader)
     template = env.get_template("cupboard/changeset.html")

@@ -97,6 +97,12 @@ unset:
 For a Janitor instance, you probably want a custom website in combination with
 the Janitor API. See the existing instances for inspiration.
 
+Once an instance is running, see [roles.md](roles.md) for what its
+`oauth2_provider.qa_reviewer_group` and `admin_group` config actually
+grant on the web UI, and [usage.md](usage.md) for a guide to using an
+instance by audience - visitor, package maintainer, distro/OS
+maintainer, or admin.
+
 ## Registering workers
 
 Workers authenticate to the site with a name and password stored in the `worker`
