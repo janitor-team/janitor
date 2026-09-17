@@ -36,6 +36,35 @@
     state: present
     update_cache: true
 
+- name: Generate a self-signed cert for the vagrant HTTPS listener
+  # tls internal needs the caddy service account to write to the system
+  # trust store, which it isn't sudo'd for here - a plain self-signed
+  # cert sidesteps that path entirely. creates: skips regeneration on
+  # every re-run, matching the openssl_certificate module's own idempotency
+  # without adding that module as a new role dependency.
+  command: >
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650
+    -keyout /etc/caddy/vagrant-selfsigned.key
+    -out /etc/caddy/vagrant-selfsigned.crt
+    -subj "/CN={{ janitor_domain }}"
+  args:
+    creates: /etc/caddy/vagrant-selfsigned.crt
+  when: "'vagrant' in group_names"
+  notify: restart caddy
+
+- name: Let the caddy service account read the self-signed key
+  # openssl req above writes root:root 0600 - the caddy service runs as
+  # its own unprivileged account, which that leaves unable to read the
+  # key at all ("loading tls app: ... permission denied"), failing the
+  # service on every start.
+  file:
+    path: /etc/caddy/vagrant-selfsigned.key
+    owner: root
+    group: caddy
+    mode: "0640"
+  when: "'vagrant' in group_names"
+  notify: restart caddy
+
 - name: Deploy Caddyfile
   template:
     src: Caddyfile.j2
