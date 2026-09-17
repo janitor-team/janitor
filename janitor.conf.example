@@ -173,6 +173,20 @@ campaign {
   }
 }
 
+# qa_reviewer_group and admin_group name a group on the identity provider
+# itself (a GitLab "group/subgroup" path as below, or a GitHub org/team) -
+# janitor keeps no user database of its own, so granting or revoking either
+# role means adding or removing someone from that group on the identity
+# provider, not anything done here. Leaving either field unset grants that
+# role to every logged-in user.
+#
+# admin_group unlocks admin-only actions: rescheduling or killing runs,
+# reprocessing logs, triggering publish scans, managing workers, and
+# overriding a merge proposal's status once it's closed/abandoned/applied/
+# rejected.
+# qa_reviewer_group decides whose review verdicts actually take effect -
+# any logged-in user can leave a review, but only a qa_reviewer's verdict
+# is forwarded to update the run's publish status.
 oauth2_provider {
   client_id: "some-client-id"
   client_secret: "totally-secret"
