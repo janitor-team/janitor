@@ -616,7 +616,7 @@ def _naive_utc(value: str) -> datetime:
 class WorkerResult:
     """The result from a worker."""
 
-    code: str
+    code: Optional[str]
     description: Optional[str]
     context: Any
     codemod: Optional[Any] = None
@@ -687,7 +687,7 @@ class WorkerResult:
             else:
                 raise NotImplementedError(f"unsupported build target {target_kind!r}")
         return cls(
-            code=worker_result.get("code", "missing-result-code"),
+            code=worker_result.get("code"),
             description=worker_result.get("description"),
             context=worker_result.get("context"),
             codemod=worker_result.get("codemod"),
