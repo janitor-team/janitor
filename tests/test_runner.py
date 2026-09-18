@@ -17,12 +17,14 @@
 
 import asyncio
 import os
+import subprocess
 from datetime import datetime, timedelta
 from io import BytesIO
 
 import aiozipkin
 import pytest
 from aiohttp import MultipartWriter, web
+from breezy import urlutils
 from fakeredis.aioredis import FakeRedis
 
 from janitor.config import read_string as read_config_string
@@ -690,6 +692,59 @@ async def test_assignment_with_only_vcs(aiohttp_client, db, tmp_path):
         "skip-setup-validation": False,
         "target_repository": {"url": None, "vcs_type": "hg"},
     }
+    await qp.stop()
+
+
+async def test_assignment_falls_back_when_resume_branch_forge_needs_login(
+    aiohttp_client, db, tmp_path, monkeypatch
+):
+    # Simulate breezy.forge.ForgeLoginRequired coming out of the
+    # find_existing_proposed() call inside open_resume_branch(), which
+    # happens when the forge hosting the public branch needs credentials
+    # we don't have just to look up a resume branch. The assignment should
+    # still succeed, with no resume branch.
+    from breezy.forge import ForgeLoginRequired
+
+    def raise_forge_login_required(*args, **kwargs):
+        raise ForgeLoginRequired(None)
+
+    monkeypatch.setattr(
+        "janitor.runner.open_resume_branch", raise_forge_login_required
+    )
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "--allow-empty", "-m", "init"],
+        check=True,
+    )
+    branch_url = urlutils.local_path_to_url(str(repo))
+
+    # get_vcs_managers() expects vcs/git and vcs/bzr to already exist (its
+    # LocalVcsManagers canonicalize() their base path) - other tests never
+    # hit this because their fake branch_urls never reach the successful-open
+    # path that touches a VcsManager.
+    vcs = tmp_path / "vcs"
+    (vcs / "git").mkdir(parents=True)
+    (vcs / "bzr").mkdir(parents=True)
+    qp = await create_queue_processor(db, vcs_managers=get_vcs_managers(str(vcs)))
+    client = await create_client(aiohttp_client, qp, campaigns=["mycampaign"])
+    resp = await client.post(
+        "/codebases",
+        json=[{"name": "foo", "vcs_type": "git", "branch_url": branch_url}],
+    )
+    assert resp.status == 200
+    resp = await client.post(
+        "/candidates",
+        json=[{"campaign": "mycampaign", "codebase": "foo", "command": "true"}],
+    )
+    assert resp.status == 200
+
+    resp = await client.post("/active-runs", json={})
+    assert resp.status == 201, await resp.json()
+    assignment = await resp.json()
+    assert assignment["resume"] is None
     await qp.stop()
 
 

@@ -142,6 +142,11 @@ queue_empty_count = Counter(
     "queue_empty",
     "Number of times the queue was empty when an assignment was requested",
 )
+forge_login_required_count = Counter(
+    "forge_login_required",
+    "Number of times a resume-branch check was skipped because forge "
+    "credentials were missing",
+)
 
 
 async def to_thread_timeout(timeout, func, *args, **kwargs):
@@ -1132,7 +1137,8 @@ def open_resume_branch(
         logging.warning("Unsupported forge (%s)", e)
         return None
     except ForgeLoginRequired as e:
-        logging.warning("No credentials for forge (%s)", e)
+        forge_login_required_count.inc()
+        logging.error("No credentials for forge (%s)", e)
         return None
     except (ssl.SSLCertVerificationError, ssl.SSLZeroReturnError) as e:
         logging.warning("SSL error probing for forge (%s)", e)
@@ -2668,6 +2674,17 @@ async def next_item(
                             raise QueueRateLimiting(e.retry_after) from e
                         except asyncio.TimeoutError:
                             logging.debug("Timeout opening resume branch")
+                            resume_branch = None
+                        except ForgeLoginRequired as e:
+                            # resume-branch check is an optimization, not a requirement,
+                            # but missing credentials are a real misconfiguration -
+                            # keep this loud rather than a quiet fallback.
+                            logging.error(
+                                "No credentials for forge, can't check for "
+                                "resume branch: %s",
+                                e,
+                            )
+                            forge_login_required_count.inc()
                             resume_branch = None
                 else:
                     resume_branch = None
