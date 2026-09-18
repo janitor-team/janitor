@@ -83,14 +83,14 @@ Docker
 
 Several docker images are provided
 
- * ghcr.io/jelmer/janitor/archive - APT archive generator
- * ghcr.io/jelmer/janitor/differ - diffoscope/debdiff generator
- * ghcr.io/jelmer/janitor/publish - VCS publisher
- * ghcr.io/jelmer/janitor/runner - Queue management & Run handling
- * ghcr.io/jelmer/janitor/site - Example web site & public API
- * ghcr.io/jelmer/janitor/git_store - storage for Git
- * ghcr.io/jelmer/janitor/bzr_store - storage for Bazaar
- * ghcr.io/jelmer/janitor/worker - Base for workers
+ * [ghcr.io/jelmer/janitor/archive](https://github.com/users/jelmer/packages/container/package/janitor%2Farchive) - APT archive generator
+ * [ghcr.io/jelmer/janitor/differ](https://github.com/users/jelmer/packages/container/package/janitor%2Fdiffer) - diffoscope/debdiff generator
+ * [ghcr.io/jelmer/janitor/publish](https://github.com/users/jelmer/packages/container/package/janitor%2Fpublish) - VCS publisher
+ * [ghcr.io/jelmer/janitor/runner](https://github.com/users/jelmer/packages/container/package/janitor%2Frunner) - Queue management & Run handling
+ * [ghcr.io/jelmer/janitor/site](https://github.com/users/jelmer/packages/container/package/janitor%2Fsite) - Example web site & public API
+ * [ghcr.io/jelmer/janitor/git_store](https://github.com/users/jelmer/packages/container/package/janitor%2Fgit_store) - storage for Git
+ * [ghcr.io/jelmer/janitor/bzr_store](https://github.com/users/jelmer/packages/container/package/janitor%2Fbzr_store) - storage for Bazaar
+ * [ghcr.io/jelmer/janitor/worker](https://github.com/users/jelmer/packages/container/package/janitor%2Fworker) - Base for workers
 
 Contributing
 ============
