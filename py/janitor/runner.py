@@ -1812,6 +1812,10 @@ async def handle_schedule_control(request):
                 )
             if run is None:
                 return web.json_response({"reason": "Run not found"}, status=404)
+            if run["main_branch_revision"] is None:
+                return web.json_response(
+                    {"reason": "Run has no main branch revision"}, status=400
+                )
             codebase = run["codebase"]
             main_branch_revision = run["main_branch_revision"].encode("utf-8")
         with span.new_child("do-schedule-control"):
