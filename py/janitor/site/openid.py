@@ -17,11 +17,13 @@
 
 """OpenID support."""
 
+import asyncio
 import logging
 import os
 import uuid
 from typing import Optional
 
+import aiohttp
 from aiohttp import web
 from yarl import URL
 
@@ -116,16 +118,23 @@ INSERT INTO site_session (id, userinfo) VALUES ($1, $2)
 
 async def discover_openid_config(app, oauth2_provider_base_url):
     url = URL(oauth2_provider_base_url).join(URL("/.well-known/openid-configuration"))
-    async with app["http_client_session"].get(url) as resp:
-        if resp.status != 200:
-            # TODO(jelmer): Fail? Set flag?
-            logging.warning(
-                "Unable to find openid configuration (%s): %s",
-                resp.status,
-                await resp.read(),
-            )
-            return
-        app["openid_config"] = await resp.json()
+    try:
+        async with app["http_client_session"].get(url) as resp:
+            if resp.status != 200:
+                # TODO(jelmer): Fail? Set flag?
+                logging.warning(
+                    "Unable to find openid configuration (%s): %s",
+                    resp.status,
+                    await resp.read(),
+                )
+                return
+            app["openid_config"] = await resp.json()
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        # Unlike a non-200 response, a connection failure raises instead
+        # of returning - uncaught, it would abort the whole site's startup.
+        logging.warning(
+            "Unable to reach openid configuration at %s", url, exc_info=True
+        )
 
 
 async def handle_login(request):
