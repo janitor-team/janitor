@@ -282,7 +282,31 @@ async def handle_reprocess_logs(request):
         run_ids = None
 
     if not run_ids:
+        campaign = post.get("campaign")
+        description_re = post.get("description_re")
+        min_age = int(post.get("min_age", "0"))
+
         args = []
+        where = [
+            "(result_code = 'build-failed' OR "
+            "result_code LIKE 'build-failed-stage-%' OR "
+            "result_code LIKE 'autopkgtest-%' OR "
+            "result_code LIKE 'build-%' OR "
+            "result_code LIKE 'dist-%' OR "
+            "result_code LIKE 'unpack-%s' OR "
+            "result_code LIKE 'create-session-%' OR "
+            "result_code LIKE 'missing-%')"
+        ]
+        if campaign:
+            args.append(campaign)
+            where.append(f"suite = ${len(args)}")
+        if description_re:
+            args.append(description_re)
+            where.append(f"description ~ ${len(args)}")
+        if min_age:
+            args.append(datetime.utcnow() - timedelta(days=min_age))
+            where.append(f"finish_time < ${len(args)}")
+
         query = """
 SELECT
   codebase,
@@ -292,18 +316,11 @@ SELECT
   finish_time - start_time as duration,
   result_code,
   description,
-  failure_details
+  failure_details,
+  change_set
 FROM run
 WHERE
-  (result_code = 'build-failed' OR
-   result_code LIKE 'build-failed-stage-%' OR
-   result_code LIKE 'autopkgtest-%' OR
-   result_code LIKE 'build-%' OR
-   result_code LIKE 'dist-%' OR
-   result_code LIKE 'unpack-%s' OR
-   result_code LIKE 'create-session-%' OR
-   result_code LIKE 'missing-%')
-"""
+""" + " AND ".join(where)
     else:
         args = [run_ids]
         query = """
@@ -323,7 +340,10 @@ WHERE
   id = ANY($1::text[])
 """
     async with request.app["pool"].acquire() as conn:
-        rows = await conn.fetch(query, *args)
+        try:
+            rows = await conn.fetch(query, *args)
+        except asyncpg.InvalidRegularExpressionError as e:
+            raise web.HTTPBadRequest(text=f"Invalid regex: {e.message}") from e
 
     for row in rows:
         await spawn(

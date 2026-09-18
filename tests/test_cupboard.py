@@ -199,7 +199,15 @@ async def _insert_codebase(conn, name):
 
 
 async def _insert_run(
-    conn, *, run_id, codebase, campaign="mycampaign", start_time, finish_time
+    conn,
+    *,
+    run_id,
+    codebase,
+    campaign="mycampaign",
+    start_time,
+    finish_time,
+    result_code="success",
+    description=None,
 ):
     await store_change_set(conn, run_id, campaign=campaign)
     await store_run(
@@ -212,11 +220,11 @@ async def _insert_run(
         start_time=start_time,
         finish_time=finish_time,
         command="true",
-        result_code="success",
+        result_code=result_code,
         codemod_result={},
         main_branch_revision=b"revid",
         revision=b"revid",
-        description=None,
+        description=description,
         context=None,
         instigated_context=None,
         logfilenames=[],
@@ -459,3 +467,100 @@ async def test_workers_delete_unknown(aiohttp_client, db):
     client = await create_api_client(aiohttp_client, db, user=ADMIN_USER)
     resp = await client.delete("/workers/nonexistent")
     assert resp.status == 404
+
+
+async def test_reprocess_logs_bulk_filters_by_campaign(aiohttp_client, db):
+    client = await create_api_client(aiohttp_client, db, user=ADMIN_USER)
+    async with db.acquire() as conn:
+        await _insert_codebase(conn, "foo")
+        await _insert_codebase(conn, "bar")
+        now = datetime.utcnow()
+        await _insert_run(
+            conn,
+            run_id="matching",
+            codebase="foo",
+            campaign="lintian-fixes",
+            start_time=now - timedelta(minutes=30),
+            finish_time=now,
+            result_code="build-failed",
+        )
+        await _insert_run(
+            conn,
+            run_id="other-campaign",
+            codebase="bar",
+            campaign="multiarch-hints",
+            start_time=now - timedelta(minutes=30),
+            finish_time=now,
+            result_code="build-failed",
+        )
+
+    resp = await client.post("/reprocess-logs", data={"campaign": "lintian-fixes"})
+    assert resp.status == 200
+    body = await resp.json()
+    assert [row["log_id"] for row in body] == ["matching"]
+
+
+async def test_reprocess_logs_bulk_filters_by_description_re(aiohttp_client, db):
+    client = await create_api_client(aiohttp_client, db, user=ADMIN_USER)
+    async with db.acquire() as conn:
+        await _insert_codebase(conn, "foo")
+        await _insert_codebase(conn, "bar")
+        now = datetime.utcnow()
+        await _insert_run(
+            conn,
+            run_id="matching",
+            codebase="foo",
+            start_time=now - timedelta(minutes=30),
+            finish_time=now,
+            result_code="build-failed",
+            description="sbuild timed out",
+        )
+        await _insert_run(
+            conn,
+            run_id="non-matching",
+            codebase="bar",
+            start_time=now - timedelta(minutes=30),
+            finish_time=now,
+            result_code="build-failed",
+            description="missing build dependency",
+        )
+
+    resp = await client.post("/reprocess-logs", data={"description_re": "timed out"})
+    assert resp.status == 200
+    body = await resp.json()
+    assert [row["log_id"] for row in body] == ["matching"]
+
+
+async def test_reprocess_logs_bulk_filters_by_min_age(aiohttp_client, db):
+    client = await create_api_client(aiohttp_client, db, user=ADMIN_USER)
+    async with db.acquire() as conn:
+        await _insert_codebase(conn, "foo")
+        await _insert_codebase(conn, "bar")
+        now = datetime.utcnow()
+        await _insert_run(
+            conn,
+            run_id="old-enough",
+            codebase="foo",
+            start_time=now - timedelta(days=10, minutes=30),
+            finish_time=now - timedelta(days=10),
+            result_code="build-failed",
+        )
+        await _insert_run(
+            conn,
+            run_id="too-recent",
+            codebase="bar",
+            start_time=now - timedelta(minutes=30),
+            finish_time=now,
+            result_code="build-failed",
+        )
+
+    resp = await client.post("/reprocess-logs", data={"min_age": "5"})
+    assert resp.status == 200
+    body = await resp.json()
+    assert [row["log_id"] for row in body] == ["old-enough"]
+
+
+async def test_reprocess_logs_bulk_invalid_regex(aiohttp_client, db):
+    client = await create_api_client(aiohttp_client, db, user=ADMIN_USER)
+    resp = await client.post("/reprocess-logs", data={"description_re": "("})
+    assert resp.status == 400
