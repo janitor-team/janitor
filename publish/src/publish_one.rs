@@ -612,6 +612,11 @@ pub fn publish(
         }
     }
 
+    // Drop before publish_changes(), which takes its own write lock on
+    // target_branch; breezy's git branches can't escalate read to write.
+    std::mem::drop(target_lock);
+    std::mem::drop(source_lock);
+
     let labels = if forge
         .as_ref()
         .map(|x| x.supports_merge_proposal_labels())
@@ -727,8 +732,6 @@ pub fn publish(
             description: "No changes to propose; changes made independently upstream?".to_string(),
         }),
         Ok(publish_result) => {
-            std::mem::drop(target_lock);
-            std::mem::drop(source_lock);
             Ok((
                 PublishOneResult {
                     mode,
