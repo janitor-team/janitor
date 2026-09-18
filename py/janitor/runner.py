@@ -2704,9 +2704,18 @@ async def next_item(
         if resume_branch is not None:
             with span.new_child("resume-branch:check"):
                 resume = await check_resume_result(conn, item.campaign, resume_branch)
+                if resume is not None and is_authenticated_url(resume.branch.user_url):
+                    # An authenticated URL isn't safely re-readable, but this is a normal
+                    # state (e.g. an existing forge proposal branch), not a bug - don't resume.
+                    logging.info(
+                        "Not resuming %s/%s from %s: resolves to an "
+                        "authenticated URL, not safely re-readable",
+                        item.codebase,
+                        item.campaign,
+                        resume.branch,
+                    )
+                    resume = None
                 if resume is not None:
-                    if is_authenticated_url(resume.branch.user_url):
-                        raise AssertionError(f"invalid resume branch {resume.branch}")
                     active_run.resume_from = resume.run_id
                     logging.info(
                         "Resuming %s/%s from run %s",
