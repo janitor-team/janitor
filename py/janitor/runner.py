@@ -40,9 +40,7 @@ import aiojobs
 import aiozipkin
 import asyncpg
 import asyncpg.pool
-import breezy.plugins.github  # noqa: F401
-import breezy.plugins.gitlab  # noqa: F401
-import breezy.plugins.launchpad  # noqa: F401
+import breezy.plugin
 from aiohttp import (
     ClientConnectorError,
     ClientOSError,
@@ -114,6 +112,7 @@ from .vcs import (
 from .worker_creds import check_worker_creds
 
 override_launchpad_consumer_name()
+breezy.plugin.load_plugins()
 
 
 DEFAULT_RETRY_AFTER = 120
