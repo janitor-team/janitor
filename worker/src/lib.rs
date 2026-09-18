@@ -889,7 +889,10 @@ pub fn run_worker(
 
     if let Some(cached_branch_url) = cached_branch_url.as_ref() {
         // TODO(jelmer): integrate into import_branches_git / import_branches_bzr
-        log::info!("Pushing packaging branch cache to {}", cached_branch_url);
+        log::info!(
+            "Pushing packaging branch cache to {}",
+            sanitise_url_for_log(cached_branch_url)
+        );
 
         let vendor = vendor.to_string();
 
@@ -915,16 +918,24 @@ pub fn run_worker(
                     | e @ BrzError::TransportNotPossible(..)
                     | e @ BrzError::RemoteGitError(..),
                 ) => {
-                    log::warn!("unable to push to cache URL {}: {}", cached_branch_url, e);
+                    log::warn!(
+                        "unable to push to cache URL {}: {}",
+                        sanitise_url_for_log(cached_branch_url),
+                        e
+                    );
                 }
                 Err(e) => {
                     panic!(
                         "Unexpected error pushing to cache URL {}: {}",
-                        cached_branch_url, e
+                        sanitise_url_for_log(cached_branch_url),
+                        e
                     );
                 }
                 Ok(_) => {
-                    log::info!("Pushed packaging branch cache to {}", cached_branch_url);
+                    log::info!(
+                        "Pushed packaging branch cache to {}",
+                        sanitise_url_for_log(cached_branch_url)
+                    );
                 }
             }
         }
