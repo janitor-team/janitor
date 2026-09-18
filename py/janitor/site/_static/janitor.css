@@ -1,3 +1,7 @@
+table.docutils {
+    margin-bottom: 1.5em;
+}
+
 /* -- result codes */
 span.result-code-bug, span.publish-bug {
     color: darkred;
