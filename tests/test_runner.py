@@ -244,6 +244,42 @@ async def test_register_run():
     assert await qp.active_run_count() == 0
 
 
+async def test_release_claim_only_drops_the_queue_exclusion():
+    # peek used to hold the queue-item claim for its whole (possibly slow)
+    # preview, starving concurrent assign calls on a small queue. release_claim
+    # should only drop the "assigned-queue-items" exclusion, leaving
+    # active-runs/last-keepalive/the metric alone - those get cleared by the
+    # real unclaim_run once the preview actually finishes.
+    qp = await create_queue_processor()
+    active_run = ActiveRun(
+        campaign="test",
+        change_set=None,
+        command="blah",
+        queue_id=12,
+        log_id="some-id",
+        start_time=datetime.utcnow(),
+        codebase="test-1.1",
+        vcs_info={},
+        backchannel=Backchannel(),
+        worker_name="tester",
+        instigated_context=None,
+        estimated_duration=timedelta(seconds=10),
+    )
+    await qp.register_run(active_run)
+    assert await qp.active_run_count() == 1
+
+    await qp.release_claim(active_run.queue_id)
+    assert await qp.redis.hkeys("assigned-queue-items") == []
+    assert await qp.redis.hkeys("active-runs") == [b"some-id"]
+    assert await qp.redis.hkeys("last-keepalive") == [b"some-id"]
+    assert await qp.active_run_count() == 1
+
+    await qp.unclaim_run("some-id")
+    assert await qp.redis.hkeys("active-runs") == []
+    assert await qp.redis.hkeys("last-keepalive") == []
+    assert await qp.active_run_count() == 0
+
+
 async def test_submit_codebase(aiohttp_client, db):
     qp = await create_queue_processor(db)
     client = await create_client(aiohttp_client, qp)

@@ -1623,6 +1623,13 @@ class QueueProcessor:
         js = json.loads(serialized)
         return ActiveRun.from_json(js)
 
+    async def release_claim(self, queue_id: int) -> None:
+        # Releases just the exclusive queue-item claim, without touching
+        # the active-runs/metrics bookkeeping unclaim_run also clears.
+        # Used by peek so a slow preview stops excluding the item from
+        # other callers once it no longer needs exclusivity.
+        await self.redis.hdel("assigned-queue-items", str(queue_id))
+
     async def unclaim_run(self, log_id: str) -> None:
         active_run = await self.get_run(log_id)
         active_run_count.labels(
@@ -2575,6 +2582,13 @@ async def next_item(
                 )
                 item = None
                 continue
+
+            if mode != "assign":
+                # Preview modes don't need to keep excluding this item from
+                # other callers while they compute the (possibly slow)
+                # preview below - only a real assignment needs exclusivity
+                # for the rest of this function.
+                await queue_processor.release_claim(active_run.queue_id)
 
             try:
                 campaign_config = get_campaign_config(config, item.campaign)
