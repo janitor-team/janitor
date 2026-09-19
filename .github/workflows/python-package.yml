@@ -54,21 +54,11 @@ jobs:
           make ruff check-ruff-format
 
   build:
-    name: Build - Ubuntu LTS (Python ${{ matrix.python-version }})
+    name: Build - Ubuntu LTS
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version:
-          - '3.12'
-      fail-fast: false
 
     # Steps to perform in job
     steps:
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -77,12 +67,19 @@ jobs:
           set -x
           sudo apt-get update --yes
           sudo apt-get satisfy --yes --no-install-recommends \
-            ${CORE_DEB} ${EXTRA_DEB}
+            ${CORE_DEB} ${EXTRA_DEB} \
+            python3-venv
+
+      - name: Set up venv
+        run: |
+          set -x
+          python3 -m venv --system-site-packages /opt/venv
+          echo "/opt/venv/bin" >> "$GITHUB_PATH"
 
       - name: PIP install
         run: |
           set -x
-          pip3 install --break-system-packages --upgrade --editable \
+          pip3 install --upgrade --editable \
             .
 
       - name: Make
@@ -102,7 +99,7 @@ jobs:
             postgresql \
             ${PSQL_DEB} \
             libjs-jquery-datatables
-          pip3 install --break-system-packages --upgrade --editable \
+          pip3 install --upgrade --editable \
             .[test]
           if test "$(id -u)" = "0"; then
             echo "-- Switching to postgres user"
