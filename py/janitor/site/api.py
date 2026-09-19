@@ -105,6 +105,7 @@ class ScheduleResultSchema(Schema):
 @response_schema(ScheduleResultSchema())
 @routes.post("/run/{run_id}/reschedule", name="run-reschedule")
 async def handle_run_reschedule(request):
+    check_logged_in(request)
     run_id = request.match_info["run_id"]
     post = await request.post()
     offset = post.get("offset")
@@ -143,6 +144,7 @@ async def handle_run_reschedule(request):
 @response_schema(ScheduleResultSchema())
 @routes.post("/run/{run_id}/schedule-control", name="run-schedule-control")
 async def handle_schedule_control(request):
+    check_logged_in(request)
     run_id = request.match_info["run_id"]
     post = await request.post()
     offset = post.get("offset")
