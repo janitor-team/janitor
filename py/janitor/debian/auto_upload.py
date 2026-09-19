@@ -147,7 +147,7 @@ async def listen_to_runner(
     async def handle_result_message(msg):
         result = json.loads(msg["data"])
 
-        if result["target"]["name"] != "debian":
+        if (result.get("target") or {}).get("name") != "debian":
             return
         if (
             not distributions
