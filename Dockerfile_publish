@@ -48,6 +48,7 @@ RUN apt-get update --yes \
  && apt-get upgrade --yes \
  && apt-get satisfy --yes --no-install-recommends \
         ca-certificates \
+        libpython3.14 \
         libssl3 \
         libzstd1 \
         openssh-client \
@@ -56,6 +57,7 @@ RUN apt-get update --yes \
  && apt-get clean
 
 COPY --from=build /opt/venv /opt/venv
+COPY --from=build /usr/local/bin/janitor-publish-one /opt/venv/bin/janitor-publish-one
 ENV PATH="/opt/venv/bin:$PATH"
 
 EXPOSE 9912
