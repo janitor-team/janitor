@@ -34,7 +34,7 @@ xz2 = "0.1"
 zstd = "0.13"
 apt-repository = { path = "../apt-repository" }
 axum.workspace = true
-tower = "0.4"
+tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "validate-request"] }
 hyper = "1.0"
 tokio-util = "0.7"
@@ -42,3 +42,8 @@ redis = { workspace = true, features = ["tokio-comp", "connection-manager"] }
 uuid = { version = "1.6", features = ["v4", "serde"] }
 clap = { version = "4.4", features = ["derive", "env"] }
 tracing-subscriber = "0.3"
+
+[dev-dependencies]
+janitor = { path = "..", features = ["testing"] }
+serial_test = "3"
+tempfile = "3"
