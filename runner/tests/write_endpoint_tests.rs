@@ -2162,3 +2162,49 @@ async fn admin_cleanup_runs_missing_result_code_is_bad_request() {
         response.status()
     );
 }
+
+/// The caller sends `exclude_hosts` containing the only candidate's
+/// host; the queue filter must skip the candidate and the response
+/// must be 503 (queue empty).
+#[tokio::test]
+async fn post_active_runs_honours_client_exclude_hosts() {
+    let Some((app, state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let pool = state.database.pool().clone();
+    insert_codebase(&pool, "excl-host-cb").await;
+
+    let candidate_body = json!([{
+        "codebase": "excl-host-cb",
+        "campaign": "test-campaign",
+    }]);
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/candidates")
+        .header("content-type", "application/json")
+        .body(Body::from(candidate_body.to_string()))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::OK,
+    );
+
+    let assign_body = json!({
+        "worker": "excl-worker",
+        "exclude_hosts": ["example.invalid"],
+    });
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/active-runs")
+        .header("content-type", "application/json")
+        .body(Body::from(assign_body.to_string()))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "queue should look empty when the only candidate's host is excluded"
+    );
+}
