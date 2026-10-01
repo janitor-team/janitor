@@ -199,7 +199,14 @@ async def _insert_codebase(conn, name):
 
 
 async def _insert_run(
-    conn, *, run_id, codebase, campaign="mycampaign", start_time, finish_time
+    conn,
+    *,
+    run_id,
+    codebase,
+    campaign="mycampaign",
+    start_time,
+    finish_time,
+    result_code="success",
 ):
     await store_change_set(conn, run_id, campaign=campaign)
     await store_run(
@@ -212,7 +219,7 @@ async def _insert_run(
         start_time=start_time,
         finish_time=finish_time,
         command="true",
-        result_code="success",
+        result_code=result_code,
         codemod_result={},
         main_branch_revision=b"revid",
         revision=b"revid",
@@ -459,3 +466,23 @@ async def test_workers_delete_unknown(aiohttp_client, db):
     client = await create_api_client(aiohttp_client, db, user=ADMIN_USER)
     resp = await client.delete("/workers/nonexistent")
     assert resp.status == 404
+
+
+async def test_reprocess_logs_bulk_does_not_crash_on_change_set(aiohttp_client, db):
+    client = await create_api_client(aiohttp_client, db, user=ADMIN_USER)
+    async with db.acquire() as conn:
+        await _insert_codebase(conn, "foo")
+        now = datetime.utcnow()
+        await _insert_run(
+            conn,
+            run_id="failed",
+            codebase="foo",
+            start_time=now - timedelta(minutes=30),
+            finish_time=now,
+            result_code="build-failed",
+        )
+
+    resp = await client.post("/reprocess-logs", data={})
+    assert resp.status == 200
+    body = await resp.json()
+    assert [row["log_id"] for row in body] == ["failed"]
