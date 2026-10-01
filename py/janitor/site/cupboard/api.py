@@ -292,7 +292,8 @@ SELECT
   finish_time - start_time as duration,
   result_code,
   description,
-  failure_details
+  failure_details,
+  change_set
 FROM run
 WHERE
   (result_code = 'build-failed' OR
@@ -300,7 +301,7 @@ WHERE
    result_code LIKE 'autopkgtest-%' OR
    result_code LIKE 'build-%' OR
    result_code LIKE 'dist-%' OR
-   result_code LIKE 'unpack-%s' OR
+   result_code LIKE 'unpack-%' OR
    result_code LIKE 'create-session-%' OR
    result_code LIKE 'missing-%')
 """

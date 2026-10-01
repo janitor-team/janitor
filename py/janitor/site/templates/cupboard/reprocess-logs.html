@@ -7,13 +7,19 @@
 {% endblock page_title %}
 {% block body %}
     <h1>Reprocess Logs</h1>
-    <form id="mass_reschedule"
-          method="post"
-          action="/cupboard/api/reprocess-logs">
-        Dry Run:
-        <input type="checkbox" name="dry_run" value="1" />
-        Reschedule:
-        <input type="checkbox" name="reschedule" value="1" />
-        <input type="submit" value="Reprocess Logs" />
-    </form>
+    <p>Manually trigger reprocessing of run logs, e.g. after a log-parser update, to re-extract data from already-completed runs.</p>
+    {% if matching_run_count %}
+        <p>{{ matching_run_count }} run{{ "s" if matching_run_count != 1 }} currently match the automatic reprocessing criteria (failed builds, dist, or autopkgtest runs).</p>
+        <form id="mass_reschedule"
+              method="post"
+              action="/cupboard/api/reprocess-logs">
+            Dry Run:
+            <input type="checkbox" name="dry_run" value="1" />
+            Reschedule:
+            <input type="checkbox" name="reschedule" value="1" />
+            <input type="submit" value="Reprocess Logs" />
+        </form>
+    {% else %}
+        <p>No runs currently match the automatic reprocessing criteria.</p>
+    {% endif %}
 {% endblock body %}
