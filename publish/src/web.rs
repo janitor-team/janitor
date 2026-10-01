@@ -1193,23 +1193,31 @@ async fn publish(
         }
     };
 
+    let policy_lookup = match crate::get_publish_policy(&state.conn, &codebase, &campaign).await {
+        Ok(p) => p,
+        Err(e) => {
+            log::error!(
+                "Error loading publish policy for {}/{}: {}",
+                codebase,
+                campaign,
+                e
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_response("Database error"),
+            );
+        }
+    };
+    if policy_lookup.is_none() && form.mode.is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "reason": format!("no publish policy for {}/{}", codebase, campaign),
+            })),
+        );
+    }
     let (publish_policy, _cmd, rate_limit_bucket) =
-        match crate::get_publish_policy(&state.conn, &codebase, &campaign).await {
-            Ok(Some(p)) => p,
-            Ok(None) => (HashMap::new(), None, None),
-            Err(e) => {
-                log::error!(
-                    "Error loading publish policy for {}/{}: {}",
-                    codebase,
-                    campaign,
-                    e
-                );
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    error_response("Database error"),
-                );
-            }
-        };
+        policy_lookup.unwrap_or_else(|| (HashMap::new(), None, None));
     let rate_limit_bucket = Arc::new(rate_limit_bucket);
     let requester = Arc::new(form.requester.clone());
 
@@ -2499,4 +2507,5 @@ mod tests {
             ]
         );
     }
+
 }
