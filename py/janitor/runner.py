@@ -2501,6 +2501,7 @@ async def handle_queue(request):
         except (
             asyncpg.InvalidRowCountInLimitClauseError,
             asyncpg.NumericValueOutOfRangeError,
+            OverflowError,
         ) as e:
             return web.json_response({"reason": str(e)}, status=400)
     return web.json_response(response_obj)

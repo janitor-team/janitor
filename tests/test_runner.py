@@ -1066,5 +1066,5 @@ async def test_handle_queue_bad_limit(aiohttp_client, db, tmp_path):
     assert statuses == [400, 400, 400, 400]
     assert reasons[:2] == ["limit must be an integer", "limit must be an integer"]
     assert "LIMIT" in reasons[2], reasons[2]
-    assert "bigint" in reasons[3], reasons[3]
+    assert "int64" in reasons[3], reasons[3]
     await qp.stop()
