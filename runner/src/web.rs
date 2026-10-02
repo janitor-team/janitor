@@ -40,6 +40,12 @@ struct AssignRequest {
     codebase: Option<String>,
     /// Specific campaign to work on.
     campaign: Option<String>,
+    /// Hosts the worker is temporarily rate-limited on; the queue
+    /// filter unions these with the runner-wide `avoid_hosts` and the
+    /// Redis `rate-limit-hosts` set so the worker doesn't get handed
+    /// an item it would just bounce back on.
+    #[serde(default)]
+    exclude_hosts: Option<Vec<String>>,
 }
 
 /// Request for updating run publish status.
@@ -3139,7 +3145,7 @@ async fn assign_work_internal(
     request: AssignRequest,
 ) -> impl IntoResponse {
     // JANITOR_AVOID_HOSTS overrides the config-file `avoid_hosts` list.
-    let excluded_hosts: Vec<String> =
+    let mut excluded_hosts: Vec<String> =
         if let Ok(avoid_hosts_env) = std::env::var("JANITOR_AVOID_HOSTS") {
             parse_avoid_hosts_csv(&avoid_hosts_env)
         } else if let Ok(runner_config_path) = std::env::var("RUNNER_CONFIG") {
@@ -3159,6 +3165,13 @@ async fn assign_work_internal(
             // Default to empty list
             vec![]
         };
+    if let Some(client_exclusions) = request.exclude_hosts.as_ref() {
+        for host in client_exclusions {
+            if !excluded_hosts.contains(host) {
+                excluded_hosts.push(host.clone());
+            }
+        }
+    }
     // Pull queue items one at a time and, for each, validate that the
     // campaign is known and (unless `default_empty`) that the codebase
     // has a branch_url. On a failure we finish the run with that
