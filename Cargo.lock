@@ -3719,6 +3719,7 @@ dependencies = [
  "silver-platter",
  "sqlx",
  "tokio",
+ "tower 0.5.3",
  "url",
  "uuid",
 ]
