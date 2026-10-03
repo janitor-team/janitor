@@ -101,3 +101,78 @@ async def test_write_suite_files_leaves_no_partial_gpg_files_on_signing_failure(
         assert os.path.exists(os.path.join(base_path, "Release"))
         assert not os.path.exists(os.path.join(base_path, "Release.gpg"))
         assert not os.path.exists(os.path.join(base_path, "InRelease"))
+
+
+ON_DEMAND_CONFIG = """\
+distribution {
+  name: "unstable"
+  archive_mirror_uri: "http://deb.debian.org/debian"
+  component: "main"
+  chroot: "unstable-amd64-sbuild"
+  vendor: "debian"
+}
+campaign {
+  name: "some-campaign"
+  branch_name: "some-campaign"
+  debian_build {
+    base_distribution: "unstable"
+    build_distribution: "some-campaign"
+  }
+}
+"""
+
+
+async def _add_run(con, run_id):
+    await con.execute(
+        "INSERT INTO codebase (name, branch_url, url, subpath, vcs_type) "
+        "VALUES ('pkg', 'https://example.com/pkg', 'https://example.com/pkg', "
+        "'', 'git')"
+    )
+    await con.execute(
+        "INSERT INTO change_set (id, campaign) "
+        "VALUES ('some-change-set', 'some-campaign')"
+    )
+    await con.execute(
+        "INSERT INTO run (id, suite, codebase, result_code, finish_time, "
+        "logfilenames, change_set) "
+        "VALUES ($1, 'some-campaign', 'pkg', 'success', now(), '{}', "
+        "'some-change-set')",
+        run_id,
+    )
+
+
+async def test_refresh_on_demand_dists_run(db, con, monkeypatch):
+    """A /dists/run/{run_id} refresh passes a description to write_suite_files."""
+    from janitor.debian import archive
+
+    run_id = "some-run-id"
+    await _add_run(con, run_id)
+
+    calls = []
+
+    async def fake_write_suite_files(directory, **kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(archive, "write_suite_files", fake_write_suite_files)
+
+    config = read_config_string(ON_DEMAND_CONFIG)
+    with TemporaryDirectory() as td:
+        await archive.refresh_on_demand_dists(td, db, config, None, None, "run", run_id)
+
+    assert len(calls) == 1
+    assert calls[0]["suite_name"] == f"run/{run_id}"
+    assert calls[0]["archive_description"] == f"Run {run_id}"
+
+
+async def test_refresh_on_demand_dists_unknown_run(db, con):
+    """An unknown run id is a 404, not a crash further down."""
+    from aiohttp import web
+
+    from janitor.debian import archive
+
+    config = read_config_string(ON_DEMAND_CONFIG)
+    with TemporaryDirectory() as td:
+        with pytest.raises(web.HTTPNotFound):
+            await archive.refresh_on_demand_dists(
+                td, db, config, None, None, "run", "no-such-run"
+            )
