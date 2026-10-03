@@ -54,7 +54,12 @@ from aiohttp_openmetrics import (
 from aiojobs.aiohttp import setup as setup_aiojobs
 from aiojobs.aiohttp import spawn
 from breezy import urlutils
-from breezy.errors import PermissionDenied, RedirectRequested, UnexpectedHttpStatus
+from breezy.errors import (
+    PermissionDenied,
+    RedirectRequested,
+    TransportError,
+    UnexpectedHttpStatus,
+)
 from breezy.forge import (
     Forge,
     ForgeLoginRequired,
@@ -3203,10 +3208,17 @@ applied independently.
 
 def iter_all_mps(
     statuses: Optional[list[str]] = None,
+    unreachable_forges: Optional[list[Forge]] = None,
 ) -> Iterator[tuple[Forge, MergeProposal, str]]:
-    """Iterate over all existing merge proposals."""
+    """Iterate over all existing merge proposals.
+
+    Forges that could not be listed are appended to unreachable_forges, so a
+    caller can tell a partial listing from a complete one.
+    """
     if statuses is None:
         statuses = ["open", "merged", "closed"]
+    if unreachable_forges is None:
+        unreachable_forges = []
     for instance in iter_forge_instances():
         for status in statuses:
             try:
@@ -3218,6 +3230,12 @@ def iter_all_mps(
                 logger.warning(
                     "Got unexpected HTTP status %s, skipping %r", e, instance
                 )
+                if instance not in unreachable_forges:
+                    unreachable_forges.append(instance)
+            except TransportError as e:
+                logger.warning("Unable to reach %r, skipping: %s", instance, e)
+                if instance not in unreachable_forges:
+                    unreachable_forges.append(instance)
             except UnsupportedForge as e:
                 logger.warning(
                     "Unsupported host instance, skipping %r: %s", instance, e
@@ -3258,8 +3276,9 @@ async def check_existing(
     unexpected = 0
     check_only = False
     was_forge_ratelimited = False
+    unreachable_forges: list[Forge] = []
 
-    for forge, mp, status in iter_all_mps():
+    for forge, mp, status in iter_all_mps(unreachable_forges=unreachable_forges):
         status_count[status] += 1
         if forge in forge_rate_limiter:
             if utcnow() < forge_rate_limiter[forge]:
@@ -3330,21 +3349,25 @@ async def check_existing(
     logger.info("Successfully scanned existing merge proposals")
     last_scan_existing_success.set_to_current_time()
 
-    if not was_forge_ratelimited:
-        for status, count in status_count.items():
-            merge_proposal_count.labels(status=status).set(count)
-
-        bucket_rate_limiter.set_mps_per_bucket(mps_per_bucket)
-        total = 0
-        for bucket, count in mps_per_bucket["open"].items():
-            total += count
-            if bucket is not None:
-                bucket_proposal_count.labels(bucket=bucket).set(count)
-        open_proposal_count.set(total)
-    else:
-        logger.info(
-            "Rate-Limited for forges %r. Not updating stats", forge_rate_limiter
+    if was_forge_ratelimited or unreachable_forges:
+        logger.warning(
+            "Scan was incomplete, not updating stats, so the rate limiter keeps "
+            "whatever it already had. Rate-limited forges: %r. Unreachable forges: %r.",
+            forge_rate_limiter,
+            unreachable_forges,
         )
+        return
+
+    for status, count in status_count.items():
+        merge_proposal_count.labels(status=status).set(count)
+
+    bucket_rate_limiter.set_mps_per_bucket(mps_per_bucket)
+    total = 0
+    for bucket, count in mps_per_bucket["open"].items():
+        total += count
+        if bucket is not None:
+            bucket_proposal_count.labels(bucket=bucket).set(count)
+    open_proposal_count.set(total)
 
 
 async def get_run(conn: asyncpg.Connection, run_id):
