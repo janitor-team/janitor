@@ -3403,10 +3403,7 @@ async fn check_existing_mp(
     // the source URL, fall back to the URL's segment params.
     if source_branch_name.is_none() {
         if let Some(url) = &source_branch_url {
-            let segment_params = breezyshim::urlutils::split_segment_parameters(url).1;
-            source_branch_name = segment_params
-                .get("branch")
-                .map(|b| breezyshim::urlutils::unescape_utf8(b));
+            source_branch_name = janitor::vcs::segment_branch_name(url);
         }
     }
 

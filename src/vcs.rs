@@ -410,6 +410,24 @@ mod tests {
     }
 
     #[test]
+    fn test_remote_git_vcs_manager_branch_url_escapes_slash() {
+        // cache_branch_name and campaign/role names always contain a /. Without
+        // escaping, split_segment_parameters cannot parse the name back out.
+        let mgr = RemoteGitVcsManager::new(Url::parse("https://vcs.example.com/git/").unwrap());
+        let url = mgr.get_branch_url("mycodebase", "debian/latest");
+        assert_eq!(
+            url.as_str(),
+            "https://vcs.example.com/git/mycodebase,branch=debian%2Flatest"
+        );
+        let (base, params) = breezyshim::urlutils::split_segment_parameters(&url);
+        assert_eq!(base.as_str(), "https://vcs.example.com/git/mycodebase");
+        assert_eq!(
+            params.get("branch").map(|s| s.as_str()),
+            Some("debian%2Flatest")
+        );
+    }
+
+    #[test]
     fn test_remote_bzr_vcs_manager_branch_url() {
         let mgr = RemoteBzrVcsManager::new(Url::parse("https://vcs.example.com/bzr/").unwrap());
         let url = mgr.get_branch_url("mycodebase", "main");
@@ -626,6 +644,17 @@ pub struct RevisionInfo {
 
 pub const EMPTY_GIT_TREE: &[u8] = b"4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
+/// Read the branch name back out of a `,branch=` segment parameter.
+///
+/// The inverse of what `get_branch_url` writes. Uses `unescape_utf8` so a
+/// campaign/role name keeps its `/`.
+pub fn segment_branch_name(url: &Url) -> Option<String> {
+    let (_url, params) = breezyshim::urlutils::split_segment_parameters(url);
+    params
+        .get("branch")
+        .map(|s| breezyshim::urlutils::unescape_utf8(s))
+}
+
 #[async_trait]
 pub trait VcsManager: Send + Sync {
     fn get_branch(
@@ -696,7 +725,7 @@ impl VcsManager for LocalGitVcsManager {
                     .collect::<Vec<_>>()
                     .as_slice(),
             ),
-            None,
+            Some(branch_name),
         ) {
             Ok(branch) => Ok(Some(branch)),
             Err(BranchOpenError::Unavailable { .. }) | Err(BranchOpenError::Missing { .. }) => {
@@ -714,7 +743,10 @@ impl VcsManager for LocalGitVcsManager {
             codebase
         ));
         let mut params = std::collections::HashMap::new();
-        params.insert("branch".to_string(), branch_name.to_string());
+        params.insert(
+            "branch".to_string(),
+            breezyshim::urlutils::escape_utf8(branch_name, Some("")),
+        );
         breezyshim::urlutils::join_segment_parameters(&url, params)
     }
 
@@ -1097,9 +1129,11 @@ impl VcsManager for RemoteGitVcsManager {
 
     fn get_branch_url(&self, codebase: &str, branch_name: &str) -> Url {
         let url = self.base_url.join(codebase).unwrap();
+        // escape with safe="" so a / in the name survives the round trip. The
+        // default safe set keeps /, which leaves the parameter unparseable.
         let params = std::collections::HashMap::from_iter(vec![(
             "branch".to_string(),
-            branch_name.to_string(),
+            breezyshim::urlutils::escape_utf8(branch_name, Some("")),
         )]);
         breezyshim::urlutils::join_segment_parameters(&url, params)
     }

@@ -26,7 +26,6 @@ debian-analyzer = { workspace = true, optional = true }
 shlex = { workspace = true }
 axum = { workspace = true }
 nix = { workspace = true, features = ["fs"] }
-percent-encoding = "2.3.1"
 maplit = "1.0.2"
 tempfile = "3.20.0"
 prometheus = "0.14.0"
