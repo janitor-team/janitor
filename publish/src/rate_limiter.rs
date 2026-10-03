@@ -305,18 +305,57 @@ impl RateLimiter for SlowStartRateLimiter {
         self.open_mps_per_bucket
             .as_ref()
             .map(|open_mps_per_bucket| RateLimitStats {
-                per_bucket: open_mps_per_bucket
-                    .iter()
-                    .map(|(k, _v)| {
-                        (
-                            k.clone(),
-                            std::cmp::min(
-                                self.max_mps_per_bucket.unwrap(),
-                                self.get_limit(k).unwrap(),
-                            ),
-                        )
-                    })
-                    .collect(),
+                per_bucket: open_mps_per_bucket.clone(),
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slow_start_get_stats_reports_open_counts_with_nothing_absorbed() {
+        let mut limiter = SlowStartRateLimiter::new(Some(5));
+        limiter.set_mps_per_bucket(&maplit::hashmap! {
+            MergeProposalStatus::Open => maplit::hashmap! { "lintian-fixes".to_string() => 3 },
+        });
+
+        let stats = limiter.get_stats().expect("stats after a refresh");
+        assert_eq!(stats.per_bucket.get("lintian-fixes"), Some(&3));
+    }
+
+    #[test]
+    fn slow_start_get_stats_reports_open_counts_with_no_maximum_set() {
+        let mut limiter = SlowStartRateLimiter::new(None);
+        limiter.set_mps_per_bucket(&maplit::hashmap! {
+            MergeProposalStatus::Open => maplit::hashmap! { "lintian-fixes".to_string() => 2 },
+            MergeProposalStatus::Merged => maplit::hashmap! { "lintian-fixes".to_string() => 4 },
+        });
+
+        let stats = limiter.get_stats().expect("stats after a refresh");
+        assert_eq!(stats.per_bucket.get("lintian-fixes"), Some(&2));
+    }
+
+    #[test]
+    fn both_limiters_report_the_same_open_count() {
+        let counts = maplit::hashmap! {
+            MergeProposalStatus::Open => maplit::hashmap! { "lintian-fixes".to_string() => 7 },
+            MergeProposalStatus::Merged => maplit::hashmap! { "lintian-fixes".to_string() => 1 },
+        };
+        let mut slow = SlowStartRateLimiter::new(Some(10));
+        slow.set_mps_per_bucket(&counts);
+        let mut fixed = FixedRateLimiter::new(10);
+        fixed.set_mps_per_bucket(&counts);
+
+        let slow_stats = slow.get_stats().expect("slow start stats");
+        let fixed_stats = fixed.get_stats().expect("fixed stats");
+        assert_eq!(slow_stats.per_bucket, fixed_stats.per_bucket);
+        assert_eq!(slow_stats.per_bucket.get("lintian-fixes"), Some(&7));
+    }
+
+    #[test]
+    fn slow_start_get_stats_is_none_before_a_refresh() {
+        assert!(SlowStartRateLimiter::new(Some(5)).get_stats().is_none());
     }
 }
