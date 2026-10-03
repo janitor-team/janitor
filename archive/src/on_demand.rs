@@ -96,8 +96,8 @@ pub async fn lookup_builds(
 ) -> ArchiveResult<(Vec<BuildRecord>, Option<DateTime<Utc>>, Option<String>)> {
     match parse_kind(kind) {
         OnDemandKind::Run => {
-            // Look up (suite, max(finish_time)) for the run. The
-            // suite field is used to look up `campaign_config` for
+            // Look up (suite, finish_time) for the run. The suite
+            // field is used to look up `campaign_config` for
             // components; without it the caller falls back to
             // defaults. Cast finish_time to TIMESTAMPTZ so sqlx can
             // decode into DateTime<Utc> (run.finish_time is stored
@@ -112,15 +112,12 @@ pub async fn lookup_builds(
             .fetch_optional(db.pool())
             .await
             .map_err(ArchiveError::Database)?;
-            let (campaign, max_finish_time) = match row {
-                Some(row) => {
-                    use sqlx::Row;
-                    let campaign: Option<String> = row.try_get("suite").ok();
-                    let ts: Option<DateTime<Utc>> = row.try_get("finish_time").ok().flatten();
-                    (campaign, ts)
-                }
-                None => (None, None),
+            let Some(row) = row else {
+                return Err(ArchiveError::NotFound(format!("no such run: {}", id)));
             };
+            use sqlx::Row;
+            let campaign: Option<String> = row.try_get("suite").ok();
+            let max_finish_time: Option<DateTime<Utc>> = row.try_get("finish_time").ok().flatten();
             let builds = db.get_builds_for_run(id).await?;
             Ok((builds, max_finish_time, campaign))
         }
