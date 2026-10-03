@@ -35,13 +35,16 @@ def test_timestamp():
     assert "2022-10-01T11:10" == format_timestamp(datetime(2022, 10, 1, 11, 10, 22))
 
 
-def _make_request(external_url=None, request_url="https://example.com/some/path"):
+def _make_request(
+    external_url=None, request_url="https://example.com/some/path", openid_config=None
+):
     app = MagicMock()
     app.__getitem__.side_effect = {
         "external_url": external_url,
         "config": MagicMock(campaign=[]),
     }.__getitem__
     app.__contains__.side_effect = lambda k: k in {"config", "external_url"}
+    app.get.side_effect = {"openid_config": openid_config}.get
     request = MagicMock()
     request.__getitem__.side_effect = {"user": None}.__getitem__
     request.rel_url = URL(request_url).relative()
@@ -80,3 +83,25 @@ def test_update_vars_from_request_uses_external_url():
         vs["bzr_vcs_manager"].get_repository_url("mycb")
         == "https://public.example.org/bzr/mycb"
     )
+
+
+def test_update_vars_from_request_openid_not_configured():
+    vs: dict = {}
+    update_vars_from_request(vs, _make_request())
+    assert vs["openid_configured"] is False
+
+
+def test_update_vars_from_request_openid_config_empty_dict_is_not_configured():
+    # app["openid_config"] is always present (None when login is disabled),
+    # so this has to check truthiness, not just key presence.
+    vs: dict = {}
+    update_vars_from_request(vs, _make_request(openid_config={}))
+    assert vs["openid_configured"] is False
+
+
+def test_update_vars_from_request_openid_configured():
+    vs: dict = {}
+    update_vars_from_request(
+        vs, _make_request(openid_config={"token_endpoint": "https://example.com/token"})
+    )
+    assert vs["openid_configured"] is True

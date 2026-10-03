@@ -88,7 +88,7 @@ def update_vars_from_request(vs, request):
     vs["rel_url"] = request.rel_url
     vs["suites"] = [c for c in request.app["config"].campaign]
     vs["campaigns"] = [c for c in request.app["config"].campaign]
-    vs["openid_configured"] = "openid_config" in request.app
+    vs["openid_configured"] = bool(request.app.get("openid_config"))
 
     def url_for(name, **kwargs):
         return request.app.router[name].url_for(**kwargs)
