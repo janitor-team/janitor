@@ -2270,7 +2270,11 @@ async fn publish_finish_events(
 
     state.active_runs.remove(run_id).await;
 
-    if let Err(e) = state.database.unassign_queue_item(queue_id).await {
+    if let Err(e) = state
+        .database
+        .release_queue_item_claim(queue_id, run_id)
+        .await
+    {
         log::error!("Failed to unassign queue item from Redis: {}", e);
         crate::metrics::REDIS_OPERATIONS_TOTAL
             .with_label_values(&["unassign_queue_item", "error"])
@@ -3171,7 +3175,7 @@ async fn assign_work_internal(
     // row, give up and tell the caller the queue is effectively empty.
     const MAX_VALIDATION_RETRIES: usize = 20;
     let mut validation_retries = 0usize;
-    let (assignment, log_id) = loop {
+    let (assignment, log_id, claim_guard) = loop {
         if validation_retries >= MAX_VALIDATION_RETRIES {
             log::warn!(
                 "assign: gave up after {} consecutive validation failures",
@@ -3259,14 +3263,20 @@ async fn assign_work_internal(
         // `next_queue_item_with_rate_limiting` and this HSET NX),
         // discard this item and loop.
         let candidate_log_id = Uuid::new_v4().to_string();
+        let claim_guard = crate::database::QueueItemClaimGuard::new(
+            state.database.clone(),
+            assignment.queue_item.id,
+            &candidate_log_id,
+        );
         match state
             .database
             .assign_queue_item(assignment.queue_item.id, &worker_name, &candidate_log_id)
             .await
         {
-            Ok(()) => break (assignment, candidate_log_id),
+            Ok(()) => break (assignment, candidate_log_id, claim_guard),
             Err(e) => {
                 if e.to_string().contains("already assigned") {
+                    claim_guard.disarm();
                     log::info!(
                         "Queue item {} was already claimed by another worker; retrying",
                         assignment.queue_item.id
@@ -3282,7 +3292,7 @@ async fn assign_work_internal(
                     assignment.queue_item.id,
                     e
                 );
-                break (assignment, candidate_log_id);
+                break (assignment, candidate_log_id, claim_guard);
             }
         }
     };
@@ -3359,6 +3369,7 @@ async fn assign_work_internal(
             &format!("Forge {} rate-limited us; retry after {}s", host, wait_secs),
         )
         .await;
+        claim_guard.release().await;
 
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -3393,6 +3404,7 @@ async fn assign_work_internal(
 
     // Store active run in the in-memory store
     state.active_runs.store(active_run.clone()).await;
+    claim_guard.disarm();
     crate::metrics::MetricsCollector::set_active_runs(
         &active_run.worker_name,
         state

@@ -1853,6 +1853,250 @@ async fn concurrent_assign_queue_item_never_double_claims() {
     );
 }
 
+/// Build a Redis-backed `RunnerDatabase` with any leftover claim on `queue_id` removed.
+async fn redis_backed_db(queue_id: i64) -> Option<Arc<janitor_runner::database::RunnerDatabase>> {
+    test_utils::ensure_redis().await;
+    let redis_url = std::env::var("TEST_REDIS_URL").ok()?;
+    let redis_client = redis::Client::open(redis_url.as_str()).ok()?;
+    let pg_url =
+        std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| "postgresql:///postgres".to_string());
+    let pool = sqlx::PgPool::connect(&pg_url).await.ok()?;
+    let db = janitor_runner::database::RunnerDatabase::new_with_redis(pool, redis_client);
+    db.unassign_queue_item(queue_id).await.ok()?;
+    Some(Arc::new(db))
+}
+
+/// Poll until the claim on `queue_id` is gone, or give up after 5s.
+async fn claim_released(db: &janitor_runner::database::RunnerDatabase, queue_id: i64) -> bool {
+    for _ in 0..100 {
+        if !db.is_queue_item_assigned(queue_id).await.unwrap() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    false
+}
+
+/// `release_queue_item_claim` releases only the owner's claim and is a no-op when absent.
+#[tokio::test]
+async fn release_queue_item_claim_checks_owner() {
+    let queue_id: i64 = 99989;
+    let Some(db) = redis_backed_db(queue_id).await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let worker = "release-owner-w1";
+
+    db.assign_queue_item(queue_id, worker, "owner-log")
+        .await
+        .unwrap();
+
+    let released = db
+        .release_queue_item_claim(queue_id, "other-log")
+        .await
+        .unwrap();
+    assert!(!released, "a non-owner must not release the claim");
+    assert_eq!(
+        db.get_queue_item_assignment(queue_id).await.unwrap(),
+        Some((worker.to_string(), "owner-log".to_string()))
+    );
+    assert_eq!(
+        db.get_worker_queue_items(worker).await.unwrap(),
+        vec![queue_id]
+    );
+
+    let released = db
+        .release_queue_item_claim(queue_id, "owner-log")
+        .await
+        .unwrap();
+    assert!(released, "the owner should release the claim");
+    assert!(!db.is_queue_item_assigned(queue_id).await.unwrap());
+    assert!(db.get_worker_queue_items(worker).await.unwrap().is_empty());
+
+    let released = db
+        .release_queue_item_claim(queue_id, "owner-log")
+        .await
+        .unwrap();
+    assert!(!released, "releasing an absent claim is a no-op");
+
+    let redis_url = std::env::var("TEST_REDIS_URL").unwrap();
+    let mut conn = redis::Client::open(redis_url.as_str())
+        .unwrap()
+        .get_multiplexed_async_connection()
+        .await
+        .unwrap();
+    let _: () = redis::AsyncCommands::hset(
+        &mut conn,
+        "assigned-queue-items",
+        queue_id.to_string(),
+        "bare-log",
+    )
+    .await
+    .unwrap();
+    assert!(!db
+        .release_queue_item_claim(queue_id, "other-log")
+        .await
+        .unwrap());
+    assert!(db.is_queue_item_assigned(queue_id).await.unwrap());
+    assert!(db
+        .release_queue_item_claim(queue_id, "bare-log")
+        .await
+        .unwrap());
+    assert!(!db.is_queue_item_assigned(queue_id).await.unwrap());
+}
+
+/// An armed `QueueItemClaimGuard` releases the claim on drop and on `release()`.
+#[tokio::test]
+async fn claim_guard_releases_claim_when_armed() {
+    let queue_id: i64 = 99971;
+    let Some(db) = redis_backed_db(queue_id).await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let worker = "guard-armed-w1";
+
+    db.assign_queue_item(queue_id, worker, "guard-log")
+        .await
+        .unwrap();
+    let guard =
+        janitor_runner::database::QueueItemClaimGuard::new(db.clone(), queue_id, "guard-log");
+    drop(guard);
+    assert!(
+        claim_released(&db, queue_id).await,
+        "dropping an armed guard should release the claim"
+    );
+    assert!(db.get_worker_queue_items(worker).await.unwrap().is_empty());
+
+    db.assign_queue_item(queue_id, worker, "guard-log-2")
+        .await
+        .unwrap();
+    janitor_runner::database::QueueItemClaimGuard::new(db.clone(), queue_id, "guard-log-2")
+        .release()
+        .await;
+    assert!(!db.is_queue_item_assigned(queue_id).await.unwrap());
+}
+
+/// A disarmed guard, or a guard for a non-owner log id, leaves the claim alone.
+#[tokio::test]
+async fn claim_guard_keeps_claim_when_disarmed_or_not_owner() {
+    let queue_id: i64 = 99961;
+    let Some(db) = redis_backed_db(queue_id).await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    db.assign_queue_item(queue_id, "guard-keep-w1", "guard-log")
+        .await
+        .unwrap();
+    janitor_runner::database::QueueItemClaimGuard::new(db.clone(), queue_id, "guard-log").disarm();
+    drop(janitor_runner::database::QueueItemClaimGuard::new(
+        db.clone(),
+        queue_id,
+        "other-log",
+    ));
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert_eq!(
+        db.get_queue_item_assignment(queue_id).await.unwrap(),
+        Some(("guard-keep-w1".to_string(), "guard-log".to_string()))
+    );
+
+    db.unassign_queue_item(queue_id).await.unwrap();
+}
+
+/// The guard releases the claim when the task holding it is cancelled or panics.
+#[tokio::test]
+async fn claim_guard_releases_claim_on_cancellation_and_panic() {
+    let queue_id: i64 = 99929;
+    let Some(db) = redis_backed_db(queue_id).await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    db.assign_queue_item(queue_id, "guard-cancel-w1", "cancel-log")
+        .await
+        .unwrap();
+    let guard =
+        janitor_runner::database::QueueItemClaimGuard::new(db.clone(), queue_id, "cancel-log");
+    let task = tokio::spawn(async move {
+        let _guard = guard;
+        std::future::pending::<()>().await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(db.is_queue_item_assigned(queue_id).await.unwrap());
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert!(
+        claim_released(&db, queue_id).await,
+        "cancelling the task should release the claim"
+    );
+
+    db.assign_queue_item(queue_id, "guard-cancel-w1", "panic-log")
+        .await
+        .unwrap();
+    let guard =
+        janitor_runner::database::QueueItemClaimGuard::new(db.clone(), queue_id, "panic-log");
+    let task = tokio::spawn(async move {
+        let _guard = guard;
+        panic!("simulated handler panic");
+    });
+    assert!(task.await.unwrap_err().is_panic());
+    assert!(
+        claim_released(&db, queue_id).await,
+        "a panicking task should release the claim"
+    );
+}
+
+/// Terminating a run from the watchdog releases its queue item claim.
+#[tokio::test]
+async fn watchdog_terminate_releases_queue_item_claim() {
+    let queue_id: i64 = 99923;
+    let Some((_app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let Some(db) = redis_backed_db(queue_id).await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let make_run = |queue_id: i64, log_id: &str| ActiveRun {
+        worker_name: "watchdog-claim-w1".to_string(),
+        worker_link: None,
+        queue_id,
+        log_id: log_id.to_string(),
+        start_time: Utc::now(),
+        finish_time: None,
+        estimated_duration: None,
+        campaign: "test-campaign".to_string(),
+        change_set: None,
+        command: "true".to_string(),
+        codebase: "watchdog-claim-cb".to_string(),
+        backchannel: Backchannel::default(),
+        vcs_info: VcsInfo::default(),
+        instigated_context: None,
+        resume_from: None,
+    };
+    let log_id = format!("watchdog-claim-{}", uuid::Uuid::new_v4());
+
+    db.assign_queue_item(queue_id, "watchdog-claim-w1", &log_id)
+        .await
+        .unwrap();
+    state.active_runs.store(make_run(queue_id, &log_id)).await;
+
+    let mut watchdog = janitor_runner::watchdog::Watchdog::new(
+        db.clone(),
+        state.active_runs.clone(),
+        janitor_runner::watchdog::WatchdogConfig::default(),
+    );
+    assert!(watchdog.kill_run(&log_id).await.unwrap());
+
+    assert!(state.active_runs.get(&log_id).await.is_none());
+    assert!(
+        !db.is_queue_item_assigned(queue_id).await.unwrap(),
+        "terminated run should not leave its claim behind"
+    );
+}
+
 /// `POST /runs/{id}` publishes a `publish-status` message on Redis so
 /// the publish service can react. Subscribe first, then POST, then
 /// pull one message and assert its payload. Uses tokio::spawn for the

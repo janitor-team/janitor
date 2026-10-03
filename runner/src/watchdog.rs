@@ -418,6 +418,7 @@ impl Watchdog {
                                     other.start_time,
                                 );
                                 self.active_runs.remove(&run.log_id).await;
+                                self.release_claim(run).await;
                                 Ok(None)
                             }
                             Some(other) => {
@@ -520,6 +521,22 @@ impl Watchdog {
         }
     }
 
+    /// Release the queue item claim held by `run`, if it still owns it.
+    async fn release_claim(&self, run: &ActiveRun) {
+        if let Err(e) = self
+            .database
+            .release_queue_item_claim(run.queue_id, &run.log_id)
+            .await
+        {
+            log::warn!(
+                "Failed to release claim on queue item {} for run {}: {}",
+                run.queue_id,
+                run.log_id,
+                e
+            );
+        }
+    }
+
     /// Terminate a run and clean up its state.
     async fn terminate_run(
         &mut self,
@@ -581,6 +598,7 @@ impl Watchdog {
         }
 
         self.active_runs.remove(&run.log_id).await;
+        self.release_claim(run).await;
 
         // Clean up health failure tracking
         self.health_failures.remove(&run.log_id);
@@ -612,6 +630,7 @@ impl Watchdog {
                     run.worker_name,
                     run.start_time
                 );
+                self.release_claim(&run).await;
             }
         }
 
@@ -821,6 +840,79 @@ mod tests {
 
     fn t(secs_from_epoch: i64) -> DateTime<Utc> {
         Utc.timestamp_opt(secs_from_epoch, 0).unwrap()
+    }
+
+    /// Draining a stale active run in maintenance releases its queue item claim.
+    #[tokio::test]
+    async fn test_run_maintenance_releases_claim_of_stale_run() {
+        crate::test_utils::ensure_redis().await;
+        let redis_url = std::env::var("TEST_REDIS_URL")
+            .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        let pg_url = std::env::var("TEST_DATABASE_URL")
+            .unwrap_or_else(|_| "postgresql:///postgres".to_string());
+        let (Ok(redis_client), Ok(pool)) = (
+            redis::Client::open(redis_url),
+            sqlx::PgPool::connect_lazy(&pg_url),
+        ) else {
+            eprintln!("skipping: no test resources");
+            return;
+        };
+        if redis_client
+            .get_multiplexed_async_connection()
+            .await
+            .is_err()
+        {
+            eprintln!("skipping: Redis unavailable");
+            return;
+        }
+        let database = Arc::new(RunnerDatabase::new_with_redis(pool, redis_client.clone()));
+        let active_runs = crate::active_runs::ActiveRunStore::with_key(
+            redis_client,
+            format!("runner:active-runs:test:{}", uuid::Uuid::new_v4().simple()),
+        );
+
+        let queue_id: i64 = 99901;
+        let log_id = format!("stale-claim-{}", uuid::Uuid::new_v4());
+        database.unassign_queue_item(queue_id).await.unwrap();
+        database
+            .assign_queue_item(queue_id, "stale-claim-w1", &log_id)
+            .await
+            .unwrap();
+        active_runs
+            .store(ActiveRun {
+                worker_name: "stale-claim-w1".to_string(),
+                worker_link: None,
+                queue_id,
+                log_id: log_id.clone(),
+                start_time: Utc::now() - Duration::hours(10),
+                finish_time: None,
+                estimated_duration: None,
+                campaign: "test-campaign".to_string(),
+                change_set: None,
+                command: "true".to_string(),
+                backchannel: crate::Backchannel::default(),
+                vcs_info: crate::VcsInfo::default(),
+                codebase: "stale-claim-cb".to_string(),
+                instigated_context: None,
+                resume_from: None,
+            })
+            .await;
+
+        let watchdog = Watchdog::new(
+            database.clone(),
+            active_runs.clone(),
+            WatchdogConfig {
+                max_run_age_hours: 1,
+                ..WatchdogConfig::default()
+            },
+        );
+        let _ = watchdog.run_maintenance().await;
+
+        assert!(active_runs.get(&log_id).await.is_none());
+        assert!(
+            !database.is_queue_item_assigned(queue_id).await.unwrap(),
+            "drained run should not leave its claim behind"
+        );
     }
 
     /// First idle reading just records `now` and returns None -- never
