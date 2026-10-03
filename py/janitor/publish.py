@@ -3268,6 +3268,7 @@ async def check_existing(
                 forge_rate_limited_count.labels(forge=str(forge)).inc()
                 was_forge_ratelimited = True
                 continue
+        modified = False
         try:
             modified = await check_existing_mp(
                 conn=conn,
@@ -3284,10 +3285,8 @@ async def check_existing(
             )
         except NoRunForMergeProposal as e:
             logger.warning("Unable to find metadata for %s, skipping.", e.mp.url)
-            modified = False
         except ForgeLoginRequired as e:
             logger.warning("Login required for forge %s, skipping.", e)
-            modified = False
         except BranchRateLimited as e:
             logger.warning(
                 "Rate-limited accessing %s. Skipping %r for this cycle.", mp.url, forge

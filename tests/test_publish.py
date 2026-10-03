@@ -145,3 +145,59 @@ async def test_publish_one_passes_template_env_path_to_compiled_binary(monkeypat
         "janitor-publish-one",
         "--template-env-path=/etc/janitor/templates",
     ]
+
+
+class _StubForge:
+    """Stand-in for a forge instance.
+
+    The scan only uses the forge as a dictionary key and in log messages.
+    """
+
+    def __repr__(self):
+        return "<StubForge>"
+
+
+class _UnreadableMergeProposal:
+    """A proposal that raises when the scan tries to read it.
+
+    Reading a proposal goes out to the forge over the network, so this part
+    has to be a stand-in. The rest of the scan, the ``merge_proposal`` table
+    included, runs for real.
+    """
+
+    url = "https://example.com/mypkg/merge_requests/1"
+
+    def __init__(self, error):
+        self._error = error
+        self.read_attempts = 0
+
+    def get_source_revision(self):
+        self.read_attempts += 1
+        raise self._error
+
+
+async def test_check_existing_keeps_going_after_an_unexpected_status(
+    con, monkeypatch
+) -> None:
+    mp = _UnreadableMergeProposal(
+        publish.UnexpectedHttpStatus(_UnreadableMergeProposal.url, 502)
+    )
+    forge = _StubForge()
+
+    # Only the forge iteration is replaced, since a real one would need a
+    # forge to talk to.
+    monkeypatch.setattr(
+        publish, "iter_all_mps", lambda statuses=None: iter([(forge, mp, "open")])
+    )
+
+    await publish.check_existing(
+        conn=con,
+        redis=None,
+        config=None,
+        publish_worker=None,
+        bucket_rate_limiter=publish.NonRateLimiter(),
+        forge_rate_limiter={},
+        vcs_managers=None,
+    )
+
+    assert mp.read_attempts == 1
