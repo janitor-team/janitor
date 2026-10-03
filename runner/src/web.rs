@@ -3133,6 +3133,18 @@ async fn compute_resume_from(
     }
 }
 
+/// Seconds to rate-limit a host for, given the forge's Retry-After.
+fn rate_limit_wait_secs(retry_after: Option<f64>) -> i64 {
+    const DEFAULT_WAIT_SECS: i64 = 1800;
+    const MAX_WAIT_SECS: i64 = 86400;
+    match retry_after {
+        Some(secs) if secs.is_finite() && secs > 0.0 => {
+            secs.ceil().min(MAX_WAIT_SECS as f64) as i64
+        }
+        _ => DEFAULT_WAIT_SECS,
+    }
+}
+
 async fn assign_work_internal(
     state: Arc<AppState>,
     worker_name: String,
@@ -3345,9 +3357,9 @@ async fn assign_work_internal(
         // Record the host in Redis so `next_queue_item_with_rate_limiting`
         // skips it until the forge-supplied `retry_after`. Fall back
         // to a conservative 30 minutes if the forge didn't include a
-        // Retry-After header.
-        let wait_secs = retry_after.unwrap_or(1800.0).max(0.0);
-        let until = chrono::Utc::now() + chrono::Duration::seconds(wait_secs as i64);
+        // usable Retry-After header.
+        let wait_secs = rate_limit_wait_secs(retry_after);
+        let until = chrono::Utc::now() + chrono::Duration::seconds(wait_secs);
         if let Err(e) = state.database.rate_limit_host(&host, until).await {
             log::warn!("Failed to record rate-limit for host {}: {}", host, e);
         }
@@ -3365,7 +3377,7 @@ async fn assign_work_internal(
             Json(json!({
                 "reason": "rate limited",
                 "host": host,
-                "retry_after": retry_after,
+                "retry_after": wait_secs,
             })),
         );
     }
@@ -4029,8 +4041,8 @@ pub fn app(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::{
-        assignment_validation_outcome, candidate_preflight, main_branch_name, AssignmentValidation,
-        CandidatePreflight,
+        assignment_validation_outcome, candidate_preflight, main_branch_name, rate_limit_wait_secs,
+        AssignmentValidation, CandidatePreflight,
     };
     use serde_json::json;
     use std::collections::HashSet;
@@ -4776,6 +4788,35 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(surviving_followups, vec!["r-keep".to_string()]);
+    }
+
+    /// A missing or unusable Retry-After falls back to the default wait.
+    #[test]
+    fn test_rate_limit_wait_secs_unusable_values_use_default() {
+        assert_eq!(rate_limit_wait_secs(None), 1800);
+        assert_eq!(rate_limit_wait_secs(Some(f64::NAN)), 1800);
+        assert_eq!(rate_limit_wait_secs(Some(f64::INFINITY)), 1800);
+        assert_eq!(rate_limit_wait_secs(Some(f64::NEG_INFINITY)), 1800);
+        assert_eq!(rate_limit_wait_secs(Some(0.0)), 1800);
+        assert_eq!(rate_limit_wait_secs(Some(-0.0)), 1800);
+        assert_eq!(rate_limit_wait_secs(Some(-5.0)), 1800);
+    }
+
+    /// A usable Retry-After is rounded up to whole seconds.
+    #[test]
+    fn test_rate_limit_wait_secs_rounds_up() {
+        assert_eq!(rate_limit_wait_secs(Some(60.0)), 60);
+        assert_eq!(rate_limit_wait_secs(Some(0.2)), 1);
+        assert_eq!(rate_limit_wait_secs(Some(1.5)), 2);
+        assert_eq!(rate_limit_wait_secs(Some(86400.0)), 86400);
+    }
+
+    /// A huge Retry-After is capped at one day.
+    #[test]
+    fn test_rate_limit_wait_secs_caps_at_one_day() {
+        assert_eq!(rate_limit_wait_secs(Some(86400.5)), 86400);
+        assert_eq!(rate_limit_wait_secs(Some(1e12)), 86400);
+        assert_eq!(rate_limit_wait_secs(Some(f64::MAX)), 86400);
     }
 
     /// The assignment's `additional_colocated_branches` depends on the
