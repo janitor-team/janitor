@@ -135,16 +135,45 @@ impl ActiveRunStore {
         runs
     }
 
-    /// Drop an active run from the store. Returns `true` if a row was
-    /// actually removed.
+    /// Drop an active run together with its queue item claim. Returns `true` if a row was removed.
     pub async fn remove(&self, run_id: &RunId) -> bool {
         let Some(mut conn) = self.conn().await else {
             return false;
         };
-        match conn.hdel::<_, _, u32>(&self.key, run_id.as_str()).await {
+        // Only this run's own claim, as written by `RunnerDatabase::assign_queue_item`.
+        let script = redis::Script::new(
+            r#"
+            local run = redis.call("HGET", KEYS[1], ARGV[1])
+            if not run then
+                return 0
+            end
+            redis.call("HDEL", KEYS[1], ARGV[1])
+            local queue_id = string.format("%d", cjson.decode(run)["queue_id"])
+            local claim = redis.call("HGET", KEYS[2], queue_id)
+            if claim then
+                local ok, info = pcall(cjson.decode, claim)
+                if ok and type(info) == "table" and info["log_id"] == ARGV[1] then
+                    redis.call("HDEL", KEYS[2], queue_id)
+                    redis.call("SREM", ARGV[2] .. info["worker_name"], queue_id)
+                end
+            end
+            return 1
+            "#,
+        );
+        match script
+            .key(&self.key)
+            .key("assigned-queue-items")
+            .arg(run_id.as_str())
+            .arg("worker-queue-items:")
+            .invoke_async::<u32>(&mut conn)
+            .await
+        {
             Ok(n) => n > 0,
             Err(e) => {
-                log::warn!("active_runs.remove HDEL {}: {}", run_id, e);
+                log::error!("active_runs.remove {}: {}", run_id, e);
+                crate::metrics::REDIS_OPERATIONS_TOTAL
+                    .with_label_values(&["unassign_queue_item", "error"])
+                    .inc();
                 false
             }
         }
@@ -188,28 +217,6 @@ impl ActiveRunStore {
             workers.insert(run.worker_name);
         }
         workers.len()
-    }
-
-    /// Remove runs that have been active for longer than `max_age`.
-    /// Returns the removed entries so the caller can run any cleanup
-    /// (logging, recording a worker-timeout result, etc.).
-    pub async fn drain_older_than(&self, max_age: chrono::Duration) -> Vec<ActiveRun> {
-        let cutoff = chrono::Utc::now() - max_age;
-        let runs = self.list().await;
-        let stale: Vec<ActiveRun> = runs.into_iter().filter(|r| r.start_time < cutoff).collect();
-        if stale.is_empty() {
-            return stale;
-        }
-        let Some(mut conn) = self.conn().await else {
-            return Vec::new();
-        };
-        for run in &stale {
-            let res: redis::RedisResult<u32> = conn.hdel(&self.key, run.log_id.as_str()).await;
-            if let Err(e) = res {
-                log::warn!("active_runs.drain HDEL {}: {}", run.log_id, e);
-            }
-        }
-        stale
     }
 }
 
@@ -352,25 +359,6 @@ mod tests {
         store.store(make_run("run-2", "worker-a")).await;
         store.store(make_run("run-3", "worker-b")).await;
         assert_eq!(store.distinct_worker_count().await, 2);
-        cleanup(&store).await;
-    }
-
-    #[tokio::test]
-    async fn drain_older_than_returns_stale_runs() {
-        let Some(store) = try_test_store().await else {
-            eprintln!("skipping: Redis unavailable");
-            return;
-        };
-        let mut old = make_run("old", "w");
-        old.start_time = Utc::now() - chrono::Duration::hours(10);
-        let fresh = make_run("fresh", "w");
-        store.store(old).await;
-        store.store(fresh).await;
-        let drained = store.drain_older_than(chrono::Duration::hours(1)).await;
-        assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0].log_id, "old");
-        assert!(store.get(&rid("fresh")).await.is_some());
-        assert!(store.get(&rid("old")).await.is_none());
         cleanup(&store).await;
     }
 

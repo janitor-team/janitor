@@ -19,6 +19,8 @@ pub enum TerminationReason {
     ManualKill,
     /// Worker disappeared or stopped responding.
     WorkerDisappeared,
+    /// Worker moved on to a newer run without reporting this one.
+    RunDisappeared,
     /// Resource constraints or system issues.
     SystemFailure(String),
 }
@@ -31,6 +33,7 @@ impl TerminationReason {
             TerminationReason::HealthCheckFailed => "worker-failure",
             TerminationReason::ManualKill => "killed",
             TerminationReason::WorkerDisappeared => "worker-disappeared",
+            TerminationReason::RunDisappeared => "run-disappeared",
             TerminationReason::SystemFailure(_) => "system-failure",
         }
     }
@@ -42,6 +45,7 @@ impl TerminationReason {
             TerminationReason::HealthCheckFailed => "Worker health check failed".to_string(),
             TerminationReason::ManualKill => "Run was manually terminated".to_string(),
             TerminationReason::WorkerDisappeared => "Worker stopped responding".to_string(),
+            TerminationReason::RunDisappeared => "Worker moved on to a newer run".to_string(),
             TerminationReason::SystemFailure(msg) => format!("System failure: {}", msg),
         }
     }
@@ -53,6 +57,7 @@ impl TerminationReason {
             TerminationReason::HealthCheckFailed => true,
             TerminationReason::ManualKill => false,
             TerminationReason::WorkerDisappeared => true,
+            TerminationReason::RunDisappeared => true,
             TerminationReason::SystemFailure(_) => true,
         }
     }
@@ -99,6 +104,7 @@ impl TerminationReason {
             TerminationReason::WorkerDisappeared => {
                 details["worker_unreachable"] = json!(true);
             }
+            TerminationReason::RunDisappeared => {}
             TerminationReason::SystemFailure(msg) => {
                 details["system_failure_message"] = json!(msg);
             }
@@ -382,9 +388,9 @@ impl Watchdog {
                         //    checking -- the worker has advanced
                         //    forward (older run finished, /finish
                         //    cleanup hasn't completed, worker
-                        //    already accepted the next one). Drop
-                        //    the stale older entry; the worker is
-                        //    fine.
+                        //    already accepted the next one). Record
+                        //    the stale older entry as run-disappeared.
+                        //    The worker is fine.
                         //
                         // 2) The reported run is in active-runs but
                         //    started BEFORE the run we're checking
@@ -419,7 +425,7 @@ impl Watchdog {
                                     other.log_id,
                                     other.start_time,
                                 );
-                                self.active_runs.remove(&run.log_id).await;
+                                self.abort_run(run, TerminationReason::RunDisappeared).await;
                                 Ok(None)
                             }
                             Some(other) => {
@@ -547,6 +553,13 @@ impl Watchdog {
         // Wait a bit for graceful shutdown
         sleep(std::time::Duration::from_secs(5)).await;
 
+        self.abort_run(run, reason).await;
+        log::info!("Successfully terminated and cleaned up run {}", run.log_id);
+        Ok(())
+    }
+
+    /// Record `run` as ended with `reason` and drop it, without signalling the worker.
+    async fn abort_run(&mut self, run: &ActiveRun, reason: TerminationReason) {
         // Build a synthetic JanitorResult for the failed run and run
         // the same finish_run transaction the worker would have run
         // had it reported success.
@@ -591,33 +604,24 @@ impl Watchdog {
         // Clean up health failure tracking
         self.health_failures.remove(&run.log_id);
         self.idle_since.remove(&run.log_id);
-
-        log::info!("Successfully terminated and cleaned up run {}", run.log_id);
-        Ok(())
     }
 
     /// Run periodic maintenance tasks.
-    async fn run_maintenance(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn run_maintenance(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         log::debug!("Running watchdog maintenance tasks");
 
-        // Drop in-memory active runs that have been running longer than
-        // the configured max age. Matches the Python watchdog's periodic
-        // timeout sweep. The queue row is left in place so another
-        // worker can pick it up.
-        let stale = self
-            .active_runs
-            .drain_older_than(chrono::Duration::hours(self.config.max_run_age_hours))
-            .await;
-        if !stale.is_empty() {
-            log::info!("Cleaned up {} stale active runs", stale.len());
-            for run in stale {
+        // End runs older than the max age, like the Python watchdog's timeout sweep.
+        let cutoff = Utc::now() - Duration::hours(self.config.max_run_age_hours);
+        for run in self.active_runs.list().await {
+            if run.start_time < cutoff {
                 log::warn!(
-                    "Dropped stale active run {} (campaign={}, worker={}, started {})",
+                    "Ending stale active run {} (campaign={}, worker={}, started {})",
                     run.log_id,
                     run.campaign,
                     run.worker_name,
                     run.start_time
                 );
+                self.abort_run(&run, TerminationReason::Timeout).await;
             }
         }
 
