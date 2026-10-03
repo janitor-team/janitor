@@ -32,6 +32,16 @@ pub(crate) fn sanitise_url_for_log(url: &Url) -> Url {
     out
 }
 
+/// Scrub a rendered error. breezy embeds the URL it was handed in its own
+/// messages, so sanitising the URL argument alone still leaks through `{}`.
+pub(crate) fn sanitise_error_for_log(msg: String, url: &Url) -> String {
+    let mut out = msg.replace(url.as_str(), sanitise_url_for_log(url).as_str());
+    if let Some(password) = url.password().filter(|p| !p.is_empty()) {
+        out = out.replace(password, "REDACTED");
+    }
+    out
+}
+
 pub mod client;
 
 #[cfg(feature = "debian")]
@@ -889,7 +899,10 @@ pub fn run_worker(
 
     if let Some(cached_branch_url) = cached_branch_url.as_ref() {
         // TODO(jelmer): integrate into import_branches_git / import_branches_bzr
-        log::info!("Pushing packaging branch cache to {}", cached_branch_url);
+        log::info!(
+            "Pushing packaging branch cache to {}",
+            sanitise_url_for_log(cached_branch_url)
+        );
 
         let vendor = vendor.to_string();
 
@@ -915,16 +928,24 @@ pub fn run_worker(
                     | e @ BrzError::TransportNotPossible(..)
                     | e @ BrzError::RemoteGitError(..),
                 ) => {
-                    log::warn!("unable to push to cache URL {}: {}", cached_branch_url, e);
+                    log::warn!(
+                        "unable to push to cache URL {}: {}",
+                        sanitise_url_for_log(cached_branch_url),
+                        sanitise_error_for_log(e.to_string(), cached_branch_url)
+                    );
                 }
                 Err(e) => {
                     panic!(
                         "Unexpected error pushing to cache URL {}: {}",
-                        cached_branch_url, e
+                        sanitise_url_for_log(cached_branch_url),
+                        sanitise_error_for_log(e.to_string(), cached_branch_url)
                     );
                 }
                 Ok(_) => {
-                    log::info!("Pushed packaging branch cache to {}", cached_branch_url);
+                    log::info!(
+                        "Pushed packaging branch cache to {}",
+                        sanitise_url_for_log(cached_branch_url)
+                    );
                 }
             }
         }
@@ -1303,6 +1324,37 @@ mod tests {
             s
         );
         assert_eq!(s, "http://janitor.local/git/imath");
+    }
+
+    #[test]
+    fn test_sanitise_error_for_log_scrubs_the_embedded_url() {
+        // breezy renders the URL it was given into its own message, so the
+        // credentials reach the log through the error even when the URL
+        // argument is sanitised.
+        let with_creds: Url = "http://frigg:secret-token@janitor.local/git/imath"
+            .parse()
+            .unwrap();
+        let rendered = format!(
+            "Unexpected HTTP status 401 for {}: Unauthorized",
+            with_creds
+        );
+        let cleaned = sanitise_error_for_log(rendered, &with_creds);
+        assert!(!cleaned.contains("secret-token"), "{}", cleaned);
+        assert!(!cleaned.contains("frigg"), "{}", cleaned);
+        assert!(cleaned.contains("janitor.local/git/imath"), "{}", cleaned);
+    }
+
+    #[test]
+    fn test_sanitise_error_for_log_scrubs_a_reformatted_url() {
+        // If breezy reformats the URL the exact-string replace misses it, so
+        // the password is redacted on its own as a backstop.
+        let with_creds: Url = "http://frigg:secret-token@janitor.local/git/imath"
+            .parse()
+            .unwrap();
+        let rendered =
+            "Transport error: http://frigg:secret-token@janitor.local:80/git/imath".to_string();
+        let cleaned = sanitise_error_for_log(rendered, &with_creds);
+        assert!(!cleaned.contains("secret-token"), "{}", cleaned);
     }
 
     #[test]
