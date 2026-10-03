@@ -201,24 +201,30 @@ async def handle_campaign_merge_proposal_list(request):
     campaign = request.match_info["campaign"]
 
     url = URL(request.app["publisher_url"]) / campaign / "merge-proposals"
-    async with request.app["http_client_session"].get(url, raise_for_status=True):
-        return web.json_response({})
+    async with request.app["http_client_session"].get(
+        url, raise_for_status=True
+    ) as resp:
+        return web.json_response(await resp.json())
 
 
 @routes.get("/c/{codebase}/merge-proposals", name="codebase-merge-proposals")
 async def handle_codebase_merge_proposal_list(request):
     codebase = request.match_info["codebase"]
     url = URL(request.app["publisher_url"]) / "c" / codebase / "merge-proposals"
-    async with request.app["http_client_session"].get(url, raise_for_status=True):
-        return web.json_response({})
+    async with request.app["http_client_session"].get(
+        url, raise_for_status=True
+    ) as resp:
+        return web.json_response(await resp.json())
 
 
 @docs()
 @routes.get("/merge-proposals", name="merge-proposals")
 async def handle_merge_proposal_list(request):
     url = URL(request.app["publisher_url"]) / "merge-proposals"
-    async with request.app["http_client_session"].get(url, raise_for_status=True):
-        return web.json_response({})
+    async with request.app["http_client_session"].get(
+        url, raise_for_status=True
+    ) as resp:
+        return web.json_response(await resp.json())
 
 
 @docs()

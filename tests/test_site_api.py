@@ -81,3 +81,61 @@ async def test_handle_queue_without_limit(aiohttp_client, db):
     resp = await client.get("/queue")
     assert resp.status == 200
     assert await resp.json() == []
+
+
+async def _publisher_client(aiohttp_client, proposals, seen_paths):
+    publisher_app = web.Application()
+
+    async def _handle_list(request):
+        seen_paths.append(request.path)
+        return web.json_response(proposals)
+
+    publisher_app.router.add_get("/merge-proposals", _handle_list)
+    publisher_app.router.add_get("/{campaign}/merge-proposals", _handle_list)
+    publisher_app.router.add_get("/c/{codebase}/merge-proposals", _handle_list)
+    return await aiohttp_client(publisher_app)
+
+
+async def test_merge_proposal_list_returns_publisher_body(aiohttp_client, db):
+    proposals = [{"url": "https://example.com/merge/1", "status": "open"}]
+    seen_paths: list[str] = []
+    publisher_client = await _publisher_client(aiohttp_client, proposals, seen_paths)
+
+    client = await create_client(
+        aiohttp_client, db, publisher_url=str(publisher_client.make_url("/"))
+    )
+
+    resp = await client.get("/merge-proposals")
+    assert resp.status == 200
+    assert await resp.json() == proposals
+    assert seen_paths == ["/merge-proposals"]
+
+
+async def test_campaign_merge_proposal_list_returns_publisher_body(aiohttp_client, db):
+    proposals = [{"url": "https://example.com/merge/2", "status": "merged"}]
+    seen_paths: list[str] = []
+    publisher_client = await _publisher_client(aiohttp_client, proposals, seen_paths)
+
+    client = await create_client(
+        aiohttp_client, db, publisher_url=str(publisher_client.make_url("/"))
+    )
+
+    resp = await client.get("/lintian-fixes/merge-proposals")
+    assert resp.status == 200
+    assert await resp.json() == proposals
+    assert seen_paths == ["/lintian-fixes/merge-proposals"]
+
+
+async def test_codebase_merge_proposal_list_returns_publisher_body(aiohttp_client, db):
+    proposals = [{"url": "https://example.com/merge/3", "status": "closed"}]
+    seen_paths: list[str] = []
+    publisher_client = await _publisher_client(aiohttp_client, proposals, seen_paths)
+
+    client = await create_client(
+        aiohttp_client, db, publisher_url=str(publisher_client.make_url("/"))
+    )
+
+    resp = await client.get("/c/example/merge-proposals")
+    assert resp.status == 200
+    assert await resp.json() == proposals
+    assert seen_paths == ["/c/example/merge-proposals"]
