@@ -94,6 +94,13 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Build ${{ matrix.dockerfile_suffix }} image
+        # On a pull request only the site image is built and smoke tested. It
+        # has the widest import surface of the eleven, so it gives the most
+        # signal for one job. The matrix context is not available in a
+        # job-level if, so this has to sit on the steps.
+        if: |
+          github.event_name != 'pull_request'
+          || matrix.dockerfile_suffix == 'site'
         id: build-image
         uses: redhat-actions/buildah-build@v2
         with:
@@ -104,6 +111,13 @@ jobs:
           extra-args: ${{ env.BUILDAH_CACHE_ARGS }}
 
       - name: Test ${{ matrix.dockerfile_suffix }} image
+        # On a pull request only the site image is built and smoke tested. It
+        # has the widest import surface of the eleven, so it gives the most
+        # signal for one job. The matrix context is not available in a
+        # job-level if, so this has to sit on the steps.
+        if: |
+          github.event_name != 'pull_request'
+          || matrix.dockerfile_suffix == 'site'
         run: |
           set -x
           tag="$( echo ${{ env.TAGS }} | awk '{print $1}' )"
