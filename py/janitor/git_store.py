@@ -20,6 +20,7 @@
 import asyncio
 import logging
 import os
+import signal
 import sys
 import warnings
 from contextlib import closing, suppress
@@ -49,6 +50,10 @@ from .site import template_loader
 from .worker_creds import is_worker
 
 GIT_BACKEND_CHUNK_SIZE = 4096
+# Grace given to http-backend to unwind its own lockfiles on SIGTERM, and the
+# outer bound on reaping it once SIGKILL has gone out.
+GIT_BACKEND_TERM_TIMEOUT = 2.0
+GIT_BACKEND_REAP_TIMEOUT = 10.0
 
 
 async def git_diff_request(request: web.Request) -> web.Response:
@@ -321,14 +326,64 @@ async def cgit_backend(request: web.Request) -> web.Response:
         stderr=asyncio.subprocess.PIPE,
         env=env,
         stdin=asyncio.subprocess.PIPE,
+        # Own session, so the whole tree can be signalled at once. See
+        # reap_backend below.
+        start_new_session=True,
     )
 
     assert p.stdin
 
+    async def reap_backend() -> None:
+        """Signal the http-backend process group and wait for it.
+
+        git http-backend forks children of its own, and they inherit the
+        stdout and stderr pipes created here. Signalling only the direct
+        child leaves them running, reparented to init, and p.wait() then
+        blocks for as long as they hold those pipes open. start_new_session
+        makes the child a session and group leader, so p.pid doubles as the
+        group id.
+
+        SIGTERM goes first, because git removes its own ref lockfiles from a
+        SIGTERM handler and SIGKILL bypasses that. A SIGKILLed receive-pack
+        leaves refs/heads/<branch>.lock behind, which blocks every later push
+        to that ref until somebody deletes it by hand.
+
+        Nothing reaching here still wants the subprocess's output. The
+        streamed path has already read stdout to EOF, and every other path is
+        discarding the response anyway.
+
+        The first signal is sent before the first await on purpose. A
+        cancellation arriving during the wait then finds the tree already
+        signalled.
+        """
+        if p.returncode is None:
+            with suppress(ProcessLookupError, PermissionError):
+                os.killpg(p.pid, signal.SIGTERM)
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(p.wait(), timeout=GIT_BACKEND_TERM_TIMEOUT)
+        if p.returncode is None:
+            with suppress(ProcessLookupError, PermissionError):
+                os.killpg(p.pid, signal.SIGKILL)
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(p.wait(), timeout=GIT_BACKEND_REAP_TIMEOUT)
+            if p.returncode is None:
+                logging.warning(
+                    "git http-backend session %d still alive %.0fs after SIGKILL",
+                    p.pid,
+                    GIT_BACKEND_REAP_TIMEOUT,
+                )
+
     try:
-        async for chunk in request.content.iter_any():
-            p.stdin.write(chunk)
-            await p.stdin.drain()
+        try:
+            async for chunk in request.content.iter_any():
+                p.stdin.write(chunk)
+                await p.stdin.drain()
+        except ConnectionResetError:
+            # The client went away while its request body was still being
+            # read. aiohttp has already closed the connection by this point,
+            # so nothing returned here reaches it, but returning rather than
+            # raising keeps it out of the logs as a server error.
+            return web.Response(status=499, reason="Client Closed Request")
         p.stdin.close()
         await p.stdin.wait_closed()
 
@@ -379,7 +434,13 @@ async def cgit_backend(request: web.Request) -> web.Response:
                 if tuple(request.version) == (1, 1):
                     response.enable_chunked_encoding()
 
-                await response.prepare(request)
+                try:
+                    await response.prepare(request)
+                except ConnectionResetError:
+                    # Same benign disconnect, just before any headers went
+                    # out. ClientConnectionResetError is a subclass, so this
+                    # covers what prepare() itself raises.
+                    return web.Response(status=499, reason="Client Closed Request")
 
                 chunk = await p.stdout.read(GIT_BACKEND_CHUNK_SIZE)  # type: ignore
                 while chunk:
@@ -388,13 +449,7 @@ async def cgit_backend(request: web.Request) -> web.Response:
                     except ConnectionResetError:
                         # Client already got what it wanted and hung up -
                         # nothing left to write, nothing to report.
-                        with suppress(ProcessLookupError):
-                            p.kill()
                         return response
-                    except BaseException:
-                        with suppress(ProcessLookupError):
-                            p.kill()
-                        raise
                     chunk = await p.stdout.read(GIT_BACKEND_CHUNK_SIZE)  # type: ignore
 
                 with suppress(ConnectionResetError):
@@ -403,21 +458,13 @@ async def cgit_backend(request: web.Request) -> web.Response:
                 return response
 
         with span.new_child("git-backend"):
-            try:
-                _stderr_reader, response = await asyncio.gather(
-                    read_stderr(p.stderr),
-                    read_stdout(p.stdout),
-                    return_exceptions=False,
-                )
-            except asyncio.CancelledError:
-                p.terminate()
-                await p.wait()
-                raise
-
-    except BaseException:
-        with suppress(ProcessLookupError):
-            p.kill()
-        raise
+            _stderr_reader, response = await asyncio.gather(
+                read_stderr(p.stderr),
+                read_stdout(p.stdout),
+                return_exceptions=False,
+            )
+    finally:
+        await reap_backend()
 
     return response
 
