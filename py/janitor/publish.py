@@ -3263,11 +3263,11 @@ async def check_existing(
         status_count[status] += 1
         if forge in forge_rate_limiter:
             if utcnow() < forge_rate_limiter[forge]:
-                del forge_rate_limiter[forge]
-            else:
                 forge_rate_limited_count.labels(forge=str(forge)).inc()
                 was_forge_ratelimited = True
                 continue
+            else:
+                del forge_rate_limiter[forge]
         try:
             modified = await check_existing_mp(
                 conn=conn,
