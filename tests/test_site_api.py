@@ -16,6 +16,7 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
 import aiozipkin
+import pytest
 from aiohttp import web
 
 from janitor.config import read_string as read_config_string
@@ -81,3 +82,26 @@ async def test_handle_queue_without_limit(aiohttp_client, db):
     resp = await client.get("/queue")
     assert resp.status == 200
     assert await resp.json() == []
+
+
+@pytest.mark.parametrize("limit", ["abc", "", "1.5"])
+async def test_handle_queue_bad_limit(aiohttp_client, db, limit):
+    runner_calls = []
+
+    runner_app = web.Application()
+
+    async def _handle_queue(request):
+        runner_calls.append(dict(request.query))
+        return web.json_response([])
+
+    runner_app.router.add_get("/queue", _handle_queue)
+    runner_client = await aiohttp_client(runner_app)
+
+    client = await create_client(
+        aiohttp_client, db, runner_url=str(runner_client.make_url("/"))
+    )
+
+    resp = await client.get("/queue", params={"limit": limit})
+    assert resp.status == 400
+    assert await resp.text() == "limit must be an integer"
+    assert runner_calls == []

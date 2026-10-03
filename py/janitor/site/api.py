@@ -265,7 +265,10 @@ async def handle_queue(request):
     limit = request.query.get("limit")
     params = {}
     if limit is not None:
-        params["limit"] = str(int(limit))
+        try:
+            params["limit"] = str(int(limit))
+        except ValueError as e:
+            raise web.HTTPBadRequest(text="limit must be an integer") from e
     url = URL(request.app["runner_url"]) / "queue"
     span = aiozipkin.request_span(request)
     with span.new_child("runner:queue"):
