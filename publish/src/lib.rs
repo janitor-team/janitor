@@ -4535,19 +4535,9 @@ pub fn iter_all_mps(
             .filter_map(
                 move |&status| match forge.iter_my_proposals_lazy(Some(status), None) {
                     Ok(proposals) => {
-                        let forge_for_items = forge.clone();
-                        let forge_for_errors = forge.clone();
-                        Some(proposals.filter_map(move |item| match item {
-                            Ok(proposal) => Some(Ok((forge_for_items.clone(), proposal, status))),
-                            Err(e) => {
-                                log::warn!(
-                                    "Skipping a proposal on forge {} ({}): {}",
-                                    forge_for_errors.forge_name(),
-                                    status,
-                                    e
-                                );
-                                None
-                            }
+                        let forge = forge.clone();
+                        Some(proposals.map(move |item| {
+                            item.map(|proposal| (forge.clone(), proposal, status))
                         }))
                     }
                     Err(BrzError::ForgeLoginRequired) => {
