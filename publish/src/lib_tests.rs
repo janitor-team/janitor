@@ -245,3 +245,29 @@ fn test_publish_one_error_fields() {
     assert_eq!(deserialized.code, "test-error");
     assert_eq!(deserialized.description, "Test error description");
 }
+
+#[test]
+fn remember_transport_keeps_one_transport_per_host() {
+    let mut possible_transports = Vec::new();
+    for url in [
+        "http://forge.example/one/",
+        "http://forge.example/two/",
+        "http://other.example/one/",
+    ] {
+        let transport = breezyshim::transport::get_transport(&url.parse().unwrap(), None).unwrap();
+        remember_transport(&mut possible_transports, transport);
+    }
+
+    assert_eq!(possible_transports.len(), 2);
+}
+
+#[test]
+fn remember_transport_skips_a_transport_with_no_host() {
+    let transport =
+        breezyshim::transport::get_transport(&"file:///tmp/".parse().unwrap(), None).unwrap();
+    let mut possible_transports = Vec::new();
+
+    remember_transport(&mut possible_transports, transport);
+
+    assert!(possible_transports.is_empty());
+}

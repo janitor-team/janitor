@@ -87,7 +87,11 @@ fn main() {
     );
 
     let publish_result: janitor_publish::PublishOneResult =
-        match janitor_publish::publish_one::publish_one(template_env, &request, &mut None) {
+        match janitor_publish::publish_one::publish_one(
+            template_env,
+            &request,
+            &mut Some(Vec::new()),
+        ) {
             Ok(result) => result,
             Err(e) => {
                 if let Err(json_err) = serde_json::to_writer(std::io::stdout(), &e) {

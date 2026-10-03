@@ -3226,6 +3226,29 @@ pub async fn publish_and_store(
     }
 }
 
+/// Record a branch's transport so a later open on the same host can share its
+/// connection. breezyshim copies `possible_transports` in but not back out, so
+/// nothing lands in it unless the caller puts it there. One transport per
+/// scheme, host and port is enough, and the list lives for a whole scan.
+pub(crate) fn remember_transport(
+    possible_transports: &mut Vec<breezyshim::transport::Transport>,
+    transport: breezyshim::transport::Transport,
+) {
+    let base = transport.base();
+    if base.host_str().is_none() {
+        return;
+    }
+    let held = possible_transports.iter().any(|t| {
+        let b = t.base();
+        b.scheme() == base.scheme()
+            && b.host_str() == base.host_str()
+            && b.port_or_known_default() == base.port_or_known_default()
+    });
+    if !held {
+        possible_transports.push(transport);
+    }
+}
+
 /// Verify a previously-published merge proposal is still in good shape,
 /// updating our local state and republishing if a newer run has arrived.
 ///
@@ -3388,6 +3411,9 @@ async fn check_existing_mp(
                 Ok(branch) => {
                     revision = Some(branch.last_revision());
                     source_branch_name = branch.name();
+                    if let Some(transports) = possible_transports.as_deref_mut() {
+                        remember_transport(transports, branch.user_transport());
+                    }
                 }
                 Err(silver_platter::vcs::BranchOpenError::Missing { .. })
                 | Err(silver_platter::vcs::BranchOpenError::Unavailable { .. })
@@ -3426,7 +3452,13 @@ async fn check_existing_mp(
     // codebase rows are keyed on. We keep parity.
     if rate_limit_bucket.is_none() {
         if let Some(target_url) = &target_branch_url {
-            match crate::state::guess_codebase_from_branch_url(conn, target_url, None).await {
+            match crate::state::guess_codebase_from_branch_url(
+                conn,
+                target_url,
+                possible_transports.as_deref_mut(),
+            )
+            .await
+            {
                 Ok(Some(cb)) => {
                     log::info!(
                         "Guessed codebase ({}) for {} from target branch URL.",
@@ -3709,6 +3741,9 @@ async fn check_existing_mp(
             ) {
                 Ok(branch) => {
                     mp_remote_branch_name = branch.name();
+                    if let Some(transports) = possible_transports.as_deref_mut() {
+                        remember_transport(transports, branch.user_transport());
+                    }
                 }
                 Err(silver_platter::vcs::BranchOpenError::Missing { .. })
                 | Err(silver_platter::vcs::BranchOpenError::Unavailable { .. })

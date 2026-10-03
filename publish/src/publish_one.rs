@@ -54,7 +54,12 @@ pub fn publish_one(
         None,
         None,
     ) {
-        Ok(branch) => branch,
+        Ok(branch) => {
+            if let Some(transports) = possible_transports.as_mut() {
+                crate::remember_transport(transports, branch.user_transport());
+            }
+            branch
+        }
         Err(BranchOpenError::RateLimited { description, .. }) => {
             return Err(PublishError::Failure {
                 description: format!("Local branch rate limited: {}", description),
@@ -110,7 +115,12 @@ pub fn publish_one(
         None,
         None,
     ) {
-        Ok(branch) => branch,
+        Ok(branch) => {
+            if let Some(transports) = possible_transports.as_mut() {
+                crate::remember_transport(transports, branch.user_transport());
+            }
+            branch
+        }
         Err(BranchOpenError::RateLimited { description, .. }) => {
             return Err(PublishError::Failure {
                 description: format!("Target branch rate limited: {}", description),
@@ -261,7 +271,12 @@ pub fn publish_one(
             };
             let resume_branch =
                 match open_branch(&source_branch_url, possible_transports.as_mut(), None, None) {
-                    Ok(branch) => branch,
+                    Ok(branch) => {
+                        if let Some(transports) = possible_transports.as_mut() {
+                            crate::remember_transport(transports, branch.user_transport());
+                        }
+                        branch
+                    }
                     Err(BranchOpenError::RateLimited { description, .. }) => {
                         return Err(PublishError::Failure {
                             description: format!("Resume branch rate limited: {}", description),
