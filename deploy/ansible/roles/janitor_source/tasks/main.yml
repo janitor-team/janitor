@@ -1,0 +1,133 @@
+---
+# schema/*.sql (needed by roles/postgres) and the quadlet templates'
+# expectations both come from this checkout regardless of which image
+# path below is used, so the clone always happens.
+- name: Clone janitor
+  git:
+    repo: "{{ janitor_repo }}"
+    dest: "{{ janitor_home }}"
+    version: "{{ janitor_branch }}"
+    force: false
+
+# The clone above (ansible's own git module) doesn't trip git's dubious-
+# ownership check, but a later plain `git` invocation as this same user
+# does - ansible's become_user apparently doesn't leave euid/directory-
+# owner matching in a way git's ownership heuristic accepts, even though
+# it's the same account. The Makefile's build-% rule shells out to `git
+# rev-parse HEAD` for the image's $(SHA) tag; when that fails, $(SHA) is
+# silently empty (make $(shell ...) only captures stdout) and buildah
+# rejects the resulting "archive:" (empty) tag outright with "invalid
+# reference format" - killing build-all at the very first image.
+- name: Check whether the janitor checkout is already marked git-safe
+  become_user: "{{ ansible_user }}"
+  command: git config --global --get-all safe.directory
+  register: git_safe_directories
+  changed_when: false
+  failed_when: false
+
+- name: Mark the janitor checkout safe for git commands make build-all shells out to
+  become_user: "{{ ansible_user }}"
+  command: git config --global --add safe.directory {{ janitor_home }}
+  changed_when: true
+  when: janitor_home not in git_safe_directories.stdout_lines
+
+- name: Get current janitor checkout commit SHA
+  # make build-all's build-% rule tags every image :$(SHA) as well as
+  # :latest (see Makefile) - this SHA is what the skip-if-already-built
+  # check below matches against, so a config-only re-run (no new commit)
+  # doesn't pay for a multi-hour --no-cache rebuild just to redeploy
+  # quadlet units.
+  become_user: "{{ ansible_user }}"
+  command: git rev-parse HEAD
+  args:
+    chdir: "{{ janitor_home }}"
+  register: janitor_head_sha
+  changed_when: false
+  when: not use_prebuilt_images
+
+- name: Check whether images for this commit SHA are already built
+  become_user: "{{ ansible_user }}"
+  command: podman images --format "{{ '{{.Repository}}:{{.Tag}}' }}"
+  register: existing_images_for_sha_check
+  changed_when: false
+  when: not use_prebuilt_images
+
+- name: Determine whether a source rebuild is actually needed
+  # Same dedupe-on-repository-name logic as the "Fail if fewer than
+  # expected" check below, but filtered to only the tags matching this
+  # checkout's current HEAD SHA - if every expected image already has a
+  # tag for this exact commit, a previous run already built it and
+  # buildah build --no-cache (zero shared cache between images, hours on
+  # a modest instance) would just reproduce the same output.
+  vars:
+    sha_tagged_repos: "{{ existing_images_for_sha_check.stdout_lines | select('search', ':' + janitor_head_sha.stdout) | map('regex_replace', ':[^:]*$', '') | unique | list }}"
+  set_fact:
+    images_already_built_for_head: "{{ (sha_tagged_repos | select('search', 'jelmer/janitor/') | list | length) >= (janitor_dockerfile_images | length) }}"
+  when: not use_prebuilt_images
+
+- name: Build all service images from source
+  # buildah build --no-cache, zero shared cache between images - this
+  # can take a few hours on a modest instance. Skipped when every
+  # expected image is already tagged with the current checkout's commit
+  # SHA (see the two tasks above) - only a genuine code change forces a
+  # rebuild; a config/template-only re-run just needs quadlet to
+  # redeploy unit files and restart services, not fresh images.
+  #
+  # become_user below: rootless podman/buildah storage is keyed by uid, and
+  # is a completely separate store from root's - the quadlet units in
+  # roles/janitor_quadlet run podman as become_user: {{ ansible_user }}, so
+  # building/pulling as root here would silently populate a store nothing
+  # else ever reads from - quadlet then fails with "image not known" since
+  # Pull=never stops it from papering over the gap with an on-demand pull
+  # as root.
+  become_user: "{{ ansible_user }}"
+  command: make build-all
+  args:
+    chdir: "{{ janitor_home }}"
+  register: build_result
+  changed_when: true
+  when: not use_prebuilt_images and not images_already_built_for_head
+
+- name: Pull pre-built service images from ghcr.io
+  # Same ghcr.io/jelmer/janitor/<name>:latest tag make build-all would have
+  # produced locally - the quadlet templates reference that tag either way,
+  # so nothing downstream needs to know which path populated it. Loops
+  # over janitor_services, not the full janitor_dockerfile_images list -
+  # ognibuild_dep/mail_filter aren't standalone services (no quadlet
+  # unit), so nothing needs them pulled on this faster path.
+  # become_user: see the build task above - must land in the same rootless
+  # per-uid store the quadlet units actually run podman against.
+  become_user: "{{ ansible_user }}"
+  command: podman pull ghcr.io/jelmer/janitor/{{ item }}:latest
+  loop: "{{ janitor_services }}"
+  when: use_prebuilt_images
+  changed_when: true
+
+- name: Verify what actually built/pulled
+  # become_user: must inspect the same store the two tasks above populated,
+  # not root's - otherwise this "verifies" an empty store and passes anyway.
+  become_user: "{{ ansible_user }}"
+  command: podman images --format "{{ '{{.Repository}}:{{.Tag}}' }}"
+  register: built_images
+  changed_when: false
+
+- name: Fail if fewer than the expected number of service images are present
+  # podman images emits one line per tag, and make build-all's build-%
+  # rule tags every image twice (:latest and :$(SHA) - see Makefile), so
+  # a plain line count would still pass with roughly half the images
+  # missing on the source-build path. Dedupe on repository name (strip
+  # the trailing :tag) before counting.
+  #
+  # Expected count differs by path: make build-all always builds the full
+  # janitor_dockerfile_images set (including ognibuild_dep/mail_filter),
+  # but the pull task above only pulls janitor_services - so on the pull
+  # path this only expects the smaller set actually pulled.
+  vars:
+    expected_images: "{{ (use_prebuilt_images) | ternary(janitor_services, janitor_dockerfile_images) }}"
+  assert:
+    that:
+      - built_images.stdout_lines | map('regex_replace', ':[^:]*$', '') | unique | select('search', 'jelmer/janitor/') | list | length >= (expected_images | length)
+    fail_msg: >
+      Expected {{ expected_images | length }} janitor service images, found
+      {{ built_images.stdout_lines | map('regex_replace', ':[^:]*$', '') | unique | select('search', 'jelmer/janitor/') | list | length }}.
+      {{ (not use_prebuilt_images) | ternary('make build-all output: ' + (build_result.stdout[-2000:] | default('')), 'pull path was used - check the individual podman pull task results above') }}

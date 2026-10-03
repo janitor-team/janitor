@@ -1,0 +1,183 @@
+---
+# Rootless podman + systemd user units (Quadlet), so services survive a
+# reboot.
+#
+# Worker needs sbuild/schroot/mmdebstrap (in Dockerfile_worker) plus, at
+# this container-run level, SYS_ADMIN/SYS_CHROOT/SETUID/SETGID capabilities
+# for sbuild's unshare chroot mode to work unprivileged - see
+# templates/worker.container.j2. Real device-node creation (mknod) is
+# blocked in rootless podman regardless of granted capabilities - tried
+# AddCapability=MKNOD, made no difference - so the chroot registration
+# below uses schroot's type=directory (bind-mounts existing /dev entries)
+# rather than type=file (which extracts a tarball including device nodes,
+# and fails).
+#
+# The chroot registration below (schroot.conf, fstab, tarball) is otherwise
+# lost on every container restart/rebuild - provisioned here so it survives.
+
+- name: Create quadlet unit directory
+  file:
+    path: "/home/{{ ansible_user }}/.config/containers/systemd"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0755"
+
+- name: Deploy quadlet unit files
+  # Quadlet derives the generated systemd unit's name from the .container
+  # file's own basename, not from any directive inside it - dest here must
+  # already carry the janitor- prefix that "Start janitor services" below
+  # expects, or the generator silently produces "archive.service" instead
+  # of "janitor-archive.service" and the start task fails with "Could not
+  # find the requested service: host".
+  #
+  # mode 0600, not 0644: worker.container embeds WORKER_PASSWORD in a
+  # plaintext Environment= line - same secrecy level as
+  # janitor.conf/authentication.conf below, so no_log applies here too.
+  # Applied to every unit in this loop, not just worker's, since that's
+  # simpler than splitting the task and there's no downside - each unit
+  # only needs to be readable by the user account that runs it.
+  template:
+    src: "{{ item }}.container.j2"
+    dest: "/home/{{ ansible_user }}/.config/containers/systemd/janitor-{{ item }}.container"
+    owner: "{{ ansible_user }}"
+    mode: "0600"
+  loop: "{{ janitor_services }}"
+  loop_control:
+    label: "{{ item }}"
+  notify: reload user systemd
+  no_log: true
+
+- meta: flush_handlers
+
+# Started in dependency tiers rather than all at once: tier 0 (git_store,
+# bzr_store) has no janitor-side deps, tier 1 (differ/archive/auto_upload)
+# wants tier 0 up first, runner wants git_store's public port, publish/
+# worker want runner, site wants everything. Each unit's own After=
+# encodes this too - the pauses between tiers here are just to keep
+# first-boot logs readable, not load-bearing (Restart=on-failure on every
+# unit means an early race resolves itself either way).
+#
+# Loops over janitor_services (group_vars/all.yml, or a group's own
+# override - see group_vars/control.yml and group_vars/worker.yml) rather
+# than its own hardcoded list - that variable's order is already
+# tier-ordered to match this comment, and looping over it directly means
+# adding/removing a service there can't silently drift out of sync with
+# what actually gets started here. On a worker-only host this list is just
+# ["worker"], so the loop (and every worker-specific task below) still
+# does the right thing without any further guarding needed here.
+- name: Start janitor services in dependency tiers
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  systemd:
+    name: "janitor-{{ item }}.service"
+    scope: user
+    state: started
+  loop: "{{ janitor_services }}"
+
+# systemd's "start" job for janitor-worker.service above returns as soon as
+# it's dispatched, not once the container is actually up - podman exec here
+# can race the container's own create/init and fail with "no such
+# container" a task or two later.
+#
+# Everything from here on only applies when this host actually runs the
+# worker service (janitor_services, per group_vars/control.yml vs
+# group_vars/worker.yml) - a control-only host has no janitor-worker
+# container for any of this to act on.
+- name: Wait for the worker container to actually be running
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  command: podman exec janitor-worker true
+  register: worker_ready
+  until: worker_ready.rc == 0
+  retries: 10
+  delay: 1
+  changed_when: false
+  when: "'worker' in janitor_services"
+
+# The worker container's filesystem is ephemeral - everything below is lost
+# on every restart/rebuild.
+- name: Check whether the sbuild chroot tarball already exists in the worker container
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  command: podman exec janitor-worker test -f /root/.cache/sbuild/unstable-amd64-sbuild.tar.xz
+  register: chroot_tarball_check
+  changed_when: false
+  failed_when: false
+  when: "'worker' in janitor_services"
+
+- name: Create the sbuild cache directory the chroot tarball is written into
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  command: podman exec janitor-worker mkdir -p /root/.cache/sbuild
+  when: "'worker' in janitor_services and chroot_tarball_check.rc != 0"
+
+- name: Build the sbuild chroot tarball (mmdebstrap, ~3 minutes)
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  command: >
+    podman exec janitor-worker
+    mmdebstrap --variant=buildd unstable
+    /root/.cache/sbuild/unstable-amd64-sbuild.tar.xz
+    http://deb.debian.org/debian --mode=unshare --arch=amd64 --components=main
+  when: "'worker' in janitor_services and chroot_tarball_check.rc != 0"
+
+- name: Extract the chroot tarball to a directory (excluding /dev - see mknod note above)
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  command: >
+    podman exec janitor-worker sh -c
+    "mkdir -p /root/.cache/sbuild/unstable-amd64-sbuild-dir &&
+    tar --exclude=dev -C /root/.cache/sbuild/unstable-amd64-sbuild-dir
+    -xf /root/.cache/sbuild/unstable-amd64-sbuild.tar.xz"
+  when: "'worker' in janitor_services and chroot_tarball_check.rc != 0"
+
+- name: Register the schroot chroot (type=directory, not type=file - see mknod note above)
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  # Must be a literal block scalar (|), not folded (>): the heredoc's
+  # terminator and each config line depend on real newlines reaching the
+  # shell. Folded style collapses them all onto one line, so `cat` never
+  # sees a heredoc at all and instead tries to read "[unstable-amd64-sbuild]",
+  # "type=directory", etc. as literal filenames and fails on each.
+  command: |
+    podman exec janitor-worker sh -c
+    "cat > /etc/schroot/chroot.d/unstable-amd64-sbuild.conf << 'EOF'
+    [unstable-amd64-sbuild]
+    type=directory
+    description=Debian unstable/amd64 autobuilder
+    directory=/root/.cache/sbuild/unstable-amd64-sbuild-dir
+    groups=root
+    root-groups=root
+    profile=sbuild
+    EOF"
+  when: "'worker' in janitor_services"
+
+- name: Disable the /sys bind-mount in the sbuild schroot profile (fails inside this container)
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  command: podman exec janitor-worker sed -i 's|^/sys|#/sys|' /etc/schroot/sbuild/fstab
+  when: "'worker' in janitor_services"
+
+- name: Create the sbuild scratch build directory the schroot profile's fstab expects
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  command: podman exec janitor-worker mkdir -p /var/lib/sbuild/build
+  when: "'worker' in janitor_services"

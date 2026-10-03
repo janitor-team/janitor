@@ -1,0 +1,29 @@
+---
+# Overrides applied only to hosts in the "vagrant" inventory group (the
+# local test VM - see ../../Vagrantfile). Never used for an instance -
+# instances only have the "janitor" group, not "vagrant".
+#
+# All secret VALUES below are fake, local-dev-only placeholders - safe to
+# commit because they don't work anywhere real. OAuth login and real GitHub
+# pushes will not work against this VM with these values; that's expected,
+# this VM is for validating the playbook's mechanics (services come up,
+# schema loads, quadlet units start, the site responds), not full
+# credential-dependent flows. Supply real values the normal way
+# (-e @secrets/vagrant.vault.yml) if you need those to work locally too.
+
+# Static fallback matching the Vagrantfile's own default VM_IP - the
+# Vagrantfile itself passes the real (possibly JANITOR_VM_IP-overridden)
+# VM_IP as an extra_var, which takes precedence over this. Kept here for
+# the case of running ansible-playbook directly against the vagrant group
+# without going through Vagrant. ansible_default_ipv4 was tried first but
+# reports the VM's default-route (NAT) interface, not the private_network
+# one this actually needs.
+janitor_domain: "192.168.56.10"
+janitor_github_org: vagrant-test
+
+janitor_db_password: vagrant-dev-only-not-a-real-password
+worker_password: vagrant-dev-only-not-a-real-password
+oauth_client_id: vagrant-dev-fake-client-id
+oauth_client_secret: vagrant-dev-fake-client-secret
+breezy_github_token: vagrant-dev-fake-token-does-not-work
+breezy_whoami: "Vagrant Test Bot <vagrant-test@example.invalid>"

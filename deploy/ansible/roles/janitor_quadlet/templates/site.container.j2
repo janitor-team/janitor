@@ -1,0 +1,33 @@
+[Unit]
+Description=janitor site (tier 4, needs archiver+differ+publisher+runner)
+After=network-online.target janitor-archive.service janitor-differ.service janitor-publish.service janitor-runner.service
+Wants=network-online.target
+
+[Container]
+Image=ghcr.io/jelmer/janitor/site:latest
+ContainerName=janitor-site
+Network=host
+# --host 127.0.0.1 overrides the image's own baked-in --host=0.0.0.0
+# (Dockerfile_site's ENTRYPOINT) - see worker.container.j2's own comment
+# for why this needs overriding rather than an Entrypoint replacement,
+# and why the override itself is safe (argparse keeps the last
+# occurrence of a repeated flag). Caddy proxies the public port (8090)
+# via localhost; the admin API (8080) isn't proxied by Caddy at all - it's
+# intentionally loopback-only and not exposed externally.
+Exec=--host 127.0.0.1 --port 8080 --public-port 8090 --config /mnt/janitor/janitor.conf --archiver-url http://localhost:9914/ --differ-url http://localhost:9920/ --external-url {{ 'http' if 'vagrant' in group_names else 'https' }}://{{ janitor_domain }}/ --publisher-url http://localhost:9912/ --runner-url http://localhost:9911/
+Volume={{ janitor_home }}:/mnt/janitor:rw
+
+# Already pulled this exact image explicitly in roles/janitor_source
+# - never re-check the registry on every service start (quadlet's default
+# for a :latest tag). That re-check was slow enough on this network to
+# blow TimeoutStartSec below, failing the start outright even though the
+# image was already present locally.
+Pull=never
+
+[Service]
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+
+[Install]
+WantedBy=default.target

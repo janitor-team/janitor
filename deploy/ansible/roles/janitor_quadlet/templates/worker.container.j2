@@ -1,0 +1,78 @@
+[Unit]
+Description=janitor worker (tier 3, needs runner's public port)
+After=network-online.target janitor-runner.service
+Wants=network-online.target
+
+[Container]
+Image=ghcr.io/jelmer/janitor/worker:latest
+ContainerName=janitor-worker
+Network=host
+# sbuild's unshare chroot mode (the only mode that works unprivileged inside
+# a rootless container - see Dockerfile_worker) needs these beyond podman's
+# rootless defaults. Without them sbuild fails at the "create chroot
+# session" stage (uid_map / sethostname permission errors).
+AddCapability=SYS_ADMIN
+AddCapability=SYS_CHROOT
+AddCapability=SETUID
+AddCapability=SETGID
+# An init as PID 1 (RunInit=true, podman's own bundled catatonit --init)
+# reaps zombies from subprocesses the worker never directly waits on -
+# orphaned grandchildren of apt/breezy/ognibuild (auto-apt-proxy in
+# particular). Without this, zombie [http] processes accumulate without
+# bound over the container's lifetime.
+#
+# Dockerfile_worker's own ENTRYPOINT already wraps janitor-worker in
+# tini-static (github.com/janitor-team/janitor#1202), but that puts tini-static
+# at PID 2 under catatonit, not PID 1 - reparented orphans go to whichever
+# process is the container's actual PID 1, so tini-static no longer sees
+# them once RunInit puts catatonit there instead. RunInit is still doing
+# the real reaping here, not tini-static.
+RunInit=true
+Environment=WORKER_NAME={{ worker_name }}
+Environment=WORKER_PASSWORD={{ worker_password }}
+Volume=/home/{{ ansible_user }}/.config/breezy:/root/.config/breezy:ro
+# --external-address lets the runner build a per-run backchannel URL to ping
+# this worker directly. Without it, every run's backchannel stays empty and
+# the runner's keepalive watchdog can only fall back to a 24h staleness
+# check instead of the configured run_timeout - a worker that silently
+# drops a job then blocks that queue slot for up to a day instead of being
+# reaped and requeued.
+#
+# --listen-address overrides the image's own baked-in
+# --listen-address=0.0.0.0 (Dockerfile_worker's ENTRYPOINT). Single-host
+# default (worker_listen_address, group_vars/all.yml) is loopback: the
+# runner backchannel above already reaches it via localhost, same host,
+# same Network=host namespace. A runner on a different host needs this
+# bound to an address it can actually reach - see group_vars/worker.yml.
+#
+# Entrypoint= replaces the image's own
+# ENTRYPOINT ["tini-static", "--", "janitor-worker", "--port=9821",
+# "--listen-address=0.0.0.0"] outright, rather than letting Exec= append
+# after it: clap rejects a repeated single-value flag instead of letting
+# the later one win ("the argument '--listen-address <LISTEN_ADDRESS>'
+# cannot be used multiple times"), so appending a --listen-address
+# after the image's baked-in one is a hard crash-loop, not an override.
+#
+# Entrypoint= takes only the executable, not a full argv string - podman
+# execs whatever follows literally as one path ("failed to exec pid1: No
+# such file or directory" when given "tini-static -- janitor-worker
+# --port=9821" as a single value). Everything else - tini's own "--"
+# separator, janitor-worker, and all its flags - has to live in Exec=
+# instead, which podman appends as CMD after the Entrypoint executable.
+Entrypoint=tini-static
+Exec=-- janitor-worker --port=9821 --listen-address {{ worker_listen_address }} --external-address {{ worker_external_address }} --base-url http://{{ runner_base_url_host }}:9919/runner/ --loop
+
+# Already pulled this exact image explicitly in roles/janitor_source
+# - never re-check the registry on every service start (quadlet's default
+# for a :latest tag). That re-check can be slow enough to blow
+# TimeoutStartSec below, failing the start outright even though the image
+# was already present locally.
+Pull=never
+
+[Service]
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+
+[Install]
+WantedBy=default.target
