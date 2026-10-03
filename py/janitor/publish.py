@@ -1098,7 +1098,8 @@ async def publish_from_policy(
             publish_result.proposal_url if publish_result.proposal_url else None
         ),
         publish_id=publish_id,
-        target_branch_url=publish_result.target_branch_url,
+        # publish_result only carries this on success, and the column is NOT NULL.
+        target_branch_url=publish_result.target_branch_url or target_branch_url,
         target_branch_web_url=publish_result.target_branch_web_url,
         requester=requester,
         run_id=run.id,
