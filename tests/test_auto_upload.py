@@ -15,7 +15,11 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
+import asyncio
+import json
 import os
+
+from fakeredis.aioredis import FakeRedis
 
 from janitor.debian import auto_upload
 from janitor.debian.auto_upload import is_debian_upload_target
@@ -122,3 +126,96 @@ async def test_debsign_failure_skips_dput(monkeypatch):
     )
 
     assert dput_calls == []
+
+
+def _debian_result(log_id):
+    return {
+        "code": "success",
+        "log_id": log_id,
+        "target": {"name": "debian", "details": {"build_distribution": "unstable"}},
+    }
+
+
+async def _publish_until_subscribed(redis, payload):
+    for _ in range(200):
+        if await redis.publish("result", payload):
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("nothing subscribed to the result channel")
+
+
+async def _wait_for(predicate):
+    for _ in range(200):
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("timed out waiting for the listener to catch up")
+
+
+async def test_listener_survives_an_unexpected_upload_error(monkeypatch):
+    handled = []
+
+    async def upload(log_id, *args, **kwargs):
+        handled.append(log_id)
+        if log_id == "bad":
+            raise TypeError(
+                "debsign() takes from 1 to 2 positional arguments but 3 were given"
+            )
+
+    monkeypatch.setattr(auto_upload, "upload_build_result", upload)
+
+    redis = FakeRedis()
+    listener = asyncio.create_task(
+        auto_upload.listen_to_runner(redis, None, "local", distributions=["unstable"])
+    )
+    try:
+        # a non-debian result is skipped, so this only waits for the subscription
+        await _publish_until_subscribed(
+            redis, json.dumps({"code": "success", "target": {"name": "generic"}})
+        )
+
+        await redis.publish("result", json.dumps(_debian_result("bad")))
+        await redis.publish("result", json.dumps(_debian_result("good")))
+
+        await _wait_for(lambda: handled == ["bad", "good"])
+        assert handled == ["bad", "good"]
+        assert not listener.done()
+    finally:
+        listener.cancel()
+        try:
+            await listener
+        except asyncio.CancelledError:
+            pass
+
+
+async def test_result_without_a_log_id_is_not_uploaded(monkeypatch):
+    handled = []
+
+    async def upload(log_id, *args, **kwargs):
+        handled.append(log_id)
+
+    monkeypatch.setattr(auto_upload, "upload_build_result", upload)
+
+    redis = FakeRedis()
+    listener = asyncio.create_task(
+        auto_upload.listen_to_runner(redis, None, "local", distributions=["unstable"])
+    )
+    try:
+        await _publish_until_subscribed(
+            redis, json.dumps({"code": "success", "target": {"name": "generic"}})
+        )
+
+        no_log_id = _debian_result("unused")
+        del no_log_id["log_id"]
+        await redis.publish("result", json.dumps(no_log_id))
+        await redis.publish("result", json.dumps(_debian_result("good")))
+
+        await _wait_for(lambda: handled == ["good"])
+        assert handled == ["good"]
+        assert not listener.done()
+    finally:
+        listener.cancel()
+        try:
+            await listener
+        except asyncio.CancelledError:
+            pass
