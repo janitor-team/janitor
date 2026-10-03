@@ -4,6 +4,7 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+mod analyze_log;
 mod artifacts;
 mod config;
 mod debdiff;
@@ -40,6 +41,10 @@ pub fn _common(py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(is_authenticated_url, m)?)?;
     m.add_function(wrap_pyfunction!(is_alioth_url, m)?)?;
     m.add_function(wrap_pyfunction!(get_branch_vcs_type, m)?)?;
+
+    let analyze_logm = pyo3::types::PyModule::new(py, "analyze_log")?;
+    crate::analyze_log::init_module(py, &analyze_logm)?;
+    m.add_submodule(&analyze_logm)?;
 
     let artifactsm = pyo3::types::PyModule::new(py, "artifacts")?;
     crate::artifacts::init(py, &artifactsm)?;
