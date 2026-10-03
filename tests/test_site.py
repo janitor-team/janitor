@@ -18,9 +18,13 @@
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock
 
+import asyncpg
+import pytest
+from aiohttp import web
 from yarl import URL
 
 from janitor.site import format_duration, format_timestamp, update_vars_from_request
+from janitor.site.common import bad_row_count_as_400, parse_int_query_param
 
 
 def test_duration():
@@ -80,3 +84,63 @@ def test_update_vars_from_request_uses_external_url():
         vs["bzr_vcs_manager"].get_repository_url("mycb")
         == "https://public.example.org/bzr/mycb"
     )
+
+
+def _query_request(**query):
+    request = MagicMock()
+    request.query = query
+    return request
+
+
+def test_parse_int_query_param_reads_and_defaults():
+    assert parse_int_query_param(_query_request(limit="5"), "limit", 100) == 5
+    assert parse_int_query_param(_query_request(), "limit", 100) == 100
+    assert (
+        parse_int_query_param(_query_request(offset="7", limit="5"), "offset", 0) == 7
+    )
+
+
+def test_parse_int_query_param_leaves_the_range_to_the_database():
+    assert parse_int_query_param(_query_request(limit="-1"), "limit", 100) == -1
+    assert (
+        parse_int_query_param(_query_request(limit=str(2**63)), "limit", 100) == 2**63
+    )
+
+
+@pytest.mark.parametrize("value", ["abc", "", "1.5"])
+def test_parse_int_query_param_rejects_a_non_integer(value):
+    with pytest.raises(web.HTTPBadRequest) as excinfo:
+        parse_int_query_param(_query_request(limit=value), "limit", 100)
+    assert excinfo.value.text == "limit must be an integer"
+
+
+def test_parse_int_query_param_names_the_parameter_it_read():
+    with pytest.raises(web.HTTPBadRequest) as excinfo:
+        parse_int_query_param(_query_request(offset="abc"), "offset", 0)
+    assert excinfo.value.text == "offset must be an integer"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        # asyncpg's own codec raises a bare DataError before postgres sees the value.
+        asyncpg.DataError(
+            "invalid input for query argument $1: 99999999999999999999 "
+            "(value out of int64 range)"
+        ),
+        asyncpg.InvalidRowCountInLimitClauseError("LIMIT must not be negative"),
+        asyncpg.InvalidRowCountInResultOffsetClauseError("OFFSET must not be negative"),
+        asyncpg.NumericValueOutOfRangeError("bigint out of range"),
+    ],
+)
+async def test_bad_row_count_as_400_covers_the_data_error_family(error):
+    with pytest.raises(web.HTTPBadRequest) as excinfo:
+        async with bad_row_count_as_400():
+            raise error
+    assert excinfo.value.text == str(error)
+
+
+async def test_bad_row_count_as_400_leaves_other_errors_alone():
+    with pytest.raises(asyncpg.UniqueViolationError):
+        async with bad_row_count_as_400():
+            raise asyncpg.UniqueViolationError("duplicate key value")
