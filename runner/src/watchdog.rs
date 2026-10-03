@@ -19,6 +19,8 @@ pub enum TerminationReason {
     ManualKill,
     /// Worker disappeared or stopped responding.
     WorkerDisappeared,
+    /// Worker moved on to a newer run without reporting this one.
+    RunDisappeared,
     /// Resource constraints or system issues.
     SystemFailure(String),
 }
@@ -31,6 +33,7 @@ impl TerminationReason {
             TerminationReason::HealthCheckFailed => "worker-failure",
             TerminationReason::ManualKill => "killed",
             TerminationReason::WorkerDisappeared => "worker-disappeared",
+            TerminationReason::RunDisappeared => "run-disappeared",
             TerminationReason::SystemFailure(_) => "system-failure",
         }
     }
@@ -42,6 +45,7 @@ impl TerminationReason {
             TerminationReason::HealthCheckFailed => "Worker health check failed".to_string(),
             TerminationReason::ManualKill => "Run was manually terminated".to_string(),
             TerminationReason::WorkerDisappeared => "Worker stopped responding".to_string(),
+            TerminationReason::RunDisappeared => "Worker moved on to a newer run".to_string(),
             TerminationReason::SystemFailure(msg) => format!("System failure: {}", msg),
         }
     }
@@ -53,6 +57,7 @@ impl TerminationReason {
             TerminationReason::HealthCheckFailed => true,
             TerminationReason::ManualKill => false,
             TerminationReason::WorkerDisappeared => true,
+            TerminationReason::RunDisappeared => true,
             TerminationReason::SystemFailure(_) => true,
         }
     }
@@ -99,6 +104,7 @@ impl TerminationReason {
             TerminationReason::WorkerDisappeared => {
                 details["worker_unreachable"] = json!(true);
             }
+            TerminationReason::RunDisappeared => {}
             TerminationReason::SystemFailure(msg) => {
                 details["system_failure_message"] = json!(msg);
             }
@@ -382,9 +388,9 @@ impl Watchdog {
                         //    checking -- the worker has advanced
                         //    forward (older run finished, /finish
                         //    cleanup hasn't completed, worker
-                        //    already accepted the next one). Drop
-                        //    the stale older entry; the worker is
-                        //    fine.
+                        //    already accepted the next one). Record
+                        //    the stale older entry as run-disappeared.
+                        //    The worker is fine.
                         //
                         // 2) The reported run is in active-runs but
                         //    started BEFORE the run we're checking
@@ -419,7 +425,7 @@ impl Watchdog {
                                     other.log_id,
                                     other.start_time,
                                 );
-                                self.active_runs.remove(&run.log_id).await;
+                                self.abort_run(run, TerminationReason::RunDisappeared).await;
                                 Ok(None)
                             }
                             Some(other) => {
@@ -547,6 +553,13 @@ impl Watchdog {
         // Wait a bit for graceful shutdown
         sleep(std::time::Duration::from_secs(5)).await;
 
+        self.abort_run(run, reason).await;
+        log::info!("Successfully terminated and cleaned up run {}", run.log_id);
+        Ok(())
+    }
+
+    /// Record `run` as ended with `reason` and drop it, without signalling the worker.
+    async fn abort_run(&mut self, run: &ActiveRun, reason: TerminationReason) {
         // Build a synthetic JanitorResult for the failed run and run
         // the same finish_run transaction the worker would have run
         // had it reported success.
@@ -591,33 +604,24 @@ impl Watchdog {
         // Clean up health failure tracking
         self.health_failures.remove(&run.log_id);
         self.idle_since.remove(&run.log_id);
-
-        log::info!("Successfully terminated and cleaned up run {}", run.log_id);
-        Ok(())
     }
 
     /// Run periodic maintenance tasks.
-    async fn run_maintenance(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn run_maintenance(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         log::debug!("Running watchdog maintenance tasks");
 
-        // Drop in-memory active runs that have been running longer than
-        // the configured max age. Matches the Python watchdog's periodic
-        // timeout sweep. The queue row is left in place so another
-        // worker can pick it up.
-        let stale = self
-            .active_runs
-            .drain_older_than(chrono::Duration::hours(self.config.max_run_age_hours))
-            .await;
-        if !stale.is_empty() {
-            log::info!("Cleaned up {} stale active runs", stale.len());
-            for run in stale {
+        // End runs older than the max age, like the Python watchdog's timeout sweep.
+        let cutoff = Utc::now() - Duration::hours(self.config.max_run_age_hours);
+        for run in self.active_runs.list().await {
+            if run.start_time < cutoff {
                 log::warn!(
-                    "Dropped stale active run {} (campaign={}, worker={}, started {})",
+                    "Ending stale active run {} (campaign={}, worker={}, started {})",
                     run.log_id,
                     run.campaign,
                     run.worker_name,
                     run.start_time
                 );
+                self.abort_run(&run, TerminationReason::Timeout).await;
             }
         }
 
@@ -813,6 +817,215 @@ mod tests {
 
     fn t(secs_from_epoch: i64) -> DateTime<Utc> {
         Utc.timestamp_opt(secs_from_epoch, 0).unwrap()
+    }
+
+    /// The test `AppState`'s database has no Redis client, so claims go through this one.
+    fn claims_database(pool: &sqlx::PgPool) -> RunnerDatabase {
+        let redis_url = std::env::var("TEST_REDIS_URL")
+            .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        RunnerDatabase::new_with_redis(pool.clone(), redis::Client::open(redis_url).unwrap())
+    }
+
+    /// Queue, claim and store a run of worker `w` on a new codebase.
+    async fn start_run(
+        state: &crate::AppState,
+        claims: &RunnerDatabase,
+        codebase: &str,
+        start_time: DateTime<Utc>,
+        backchannel: crate::Backchannel,
+    ) -> ActiveRun {
+        sqlx::query(
+            "INSERT INTO codebase (name, branch_url, url, vcs_type)
+             VALUES ($1, 'https://example.invalid/cb', 'https://example.invalid/cb', 'git')",
+        )
+        .bind(codebase)
+        .execute(state.database.pool())
+        .await
+        .unwrap();
+        // A random queue id, as the claims hash is shared with other tests.
+        let queue_id = i64::from(uuid::Uuid::new_v4().as_fields().0 >> 1);
+        sqlx::query(
+            "INSERT INTO queue (id, codebase, campaign, command) VALUES ($1, $2, 'test-campaign', 'true')",
+        )
+        .bind(queue_id)
+        .bind(codebase)
+        .execute(state.database.pool())
+        .await
+        .unwrap();
+        let log_id = RunId::new(uuid::Uuid::new_v4().to_string()).unwrap();
+        claims
+            .assign_queue_item(queue_id, "w", &log_id)
+            .await
+            .unwrap();
+        let run = ActiveRun {
+            worker_name: "w".to_string(),
+            worker_link: None,
+            queue_id,
+            log_id,
+            start_time,
+            finish_time: None,
+            estimated_duration: None,
+            campaign: janitor_types::Campaign::new("test-campaign").unwrap(),
+            change_set: None,
+            command: "true".to_string(),
+            backchannel,
+            vcs_info: crate::VcsInfo::default(),
+            codebase: janitor_types::CodebaseName::new(codebase).unwrap(),
+            instigated_context: None,
+            resume_from: None,
+        };
+        state.active_runs.store(run.clone()).await;
+        run
+    }
+
+    async fn claim(claims: &RunnerDatabase, queue_id: i64) -> Option<String> {
+        let mut conn = claims
+            .redis()
+            .unwrap()
+            .get_multiplexed_async_connection()
+            .await
+            .unwrap();
+        redis::cmd("HGET")
+            .arg("assigned-queue-items")
+            .arg(queue_id)
+            .query_async(&mut conn)
+            .await
+            .unwrap()
+    }
+
+    async fn run_results(pool: &sqlx::PgPool) -> Vec<(RunId, String)> {
+        sqlx::query_as("SELECT id, result_code FROM run")
+            .fetch_all(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn queue_ids(pool: &sqlx::PgPool) -> Vec<i64> {
+        sqlx::query_scalar("SELECT id::bigint FROM queue")
+            .fetch_all(pool)
+            .await
+            .unwrap()
+    }
+
+    /// Maintenance ends a run older than the max age as `worker-timeout` and drops its claim.
+    #[tokio::test]
+    async fn test_run_maintenance_ends_stale_run() {
+        crate::test_utils::ensure_redis().await;
+        let Ok(Some(state)) = crate::test_utils::create_test_app_state_if_available().await else {
+            eprintln!("skipping: no test resources");
+            return;
+        };
+        let pool = state.database.pool().clone();
+        let claims = claims_database(&pool);
+        state
+            .auth_service
+            .create_worker("w", "pw", None)
+            .await
+            .unwrap();
+        let run = start_run(
+            &state,
+            &claims,
+            "cb",
+            Utc::now() - Duration::hours(10),
+            crate::Backchannel::default(),
+        )
+        .await;
+
+        let mut watchdog = Watchdog::new(
+            state.database.clone(),
+            state.active_runs.clone(),
+            WatchdogConfig {
+                max_run_age_hours: 1,
+                ..WatchdogConfig::default()
+            },
+        );
+        watchdog.run_maintenance().await.unwrap();
+
+        assert_eq!(state.active_runs.list().await.len(), 0);
+        assert_eq!(claim(&claims, run.queue_id).await, None);
+        assert_eq!(
+            run_results(&pool).await,
+            vec![(run.log_id, "worker-timeout".to_string())]
+        );
+        assert_eq!(queue_ids(&pool).await, Vec::<i64>::new());
+    }
+
+    /// A run the worker moved on from is ended as `run-disappeared` and drops its claim.
+    #[tokio::test]
+    async fn test_check_single_run_ends_run_worker_moved_on_from() {
+        crate::test_utils::ensure_redis().await;
+        let Ok(Some(state)) = crate::test_utils::create_test_app_state_if_available().await else {
+            eprintln!("skipping: no test resources");
+            return;
+        };
+        let pool = state.database.pool().clone();
+        let claims = claims_database(&pool);
+        state
+            .auth_service
+            .create_worker("w", "pw", None)
+            .await
+            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let backchannel = crate::Backchannel::Polling {
+            my_url: format!("http://{}/", listener.local_addr().unwrap())
+                .parse()
+                .unwrap(),
+        };
+        let older = start_run(
+            &state,
+            &claims,
+            "cb1",
+            Utc::now() - Duration::minutes(2),
+            backchannel.clone(),
+        )
+        .await;
+        let newer = start_run(
+            &state,
+            &claims,
+            "cb2",
+            Utc::now() - Duration::minutes(1),
+            backchannel,
+        )
+        .await;
+        let status = serde_json::json!({
+            "alive": true,
+            "status": "running",
+            "current_run_id": newer.log_id.as_str(),
+        });
+        let worker = axum::Router::new().route(
+            "/status",
+            axum::routing::get(move || {
+                let status = status.clone();
+                async move { axum::Json(status) }
+            }),
+        );
+        tokio::spawn(async move { axum::serve(listener, worker).await.unwrap() });
+
+        let mut watchdog = Watchdog::new(
+            state.database.clone(),
+            state.active_runs.clone(),
+            WatchdogConfig::default(),
+        );
+        watchdog.check_single_run(&older, Utc::now()).await.unwrap();
+
+        let active: Vec<RunId> = state
+            .active_runs
+            .list()
+            .await
+            .into_iter()
+            .map(|r| r.log_id)
+            .collect();
+        assert_eq!(active, vec![newer.log_id.clone()]);
+        assert_eq!(claim(&claims, older.queue_id).await, None);
+        let newer_claim: serde_json::Value =
+            serde_json::from_str(&claim(&claims, newer.queue_id).await.unwrap()).unwrap();
+        assert_eq!(newer_claim["log_id"], newer.log_id.as_str());
+        assert_eq!(
+            run_results(&pool).await,
+            vec![(older.log_id, "run-disappeared".to_string())]
+        );
+        assert_eq!(queue_ids(&pool).await, vec![newer.queue_id]);
+        state.active_runs.remove(&newer.log_id).await;
     }
 
     /// First idle reading just records `now` and returns None -- never
