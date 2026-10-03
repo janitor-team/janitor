@@ -274,6 +274,7 @@ impl crate::logs::LogFileManager for MockLogFileManager {
 #[derive(Default)]
 pub struct TestConfigBuilder {
     campaigns: Vec<janitor::config::Campaign>,
+    git_location: Option<String>,
 }
 
 impl TestConfigBuilder {
@@ -290,6 +291,12 @@ impl TestConfigBuilder {
         campaign.name = Some(name.to_string());
         campaign.command = Some(command.to_string());
         self.campaigns.push(campaign);
+        self
+    }
+
+    /// Set the `git_location` used for the URLs handed to workers.
+    pub fn with_git_location(mut self, url: &str) -> Self {
+        self.git_location = Some(url.to_string());
         self
     }
 
@@ -314,6 +321,7 @@ impl TestConfigBuilder {
         );
         config.committer = Some("Test Runner <test@example.com>".to_string());
         config.campaign = self.campaigns;
+        config.git_location = self.git_location;
         config
     }
 }

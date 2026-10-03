@@ -1449,6 +1449,47 @@ async fn assign_response_envelope_has_all_documented_fields() {
     );
 }
 
+/// A codebase without a `vcs_type` still yields an assignment the worker can parse.
+#[tokio::test]
+async fn assign_codebase_without_vcs_type_deserialises_for_worker() {
+    let builder = test_utils::TestConfigBuilder::new()
+        .with_campaign("test-campaign", "true")
+        .with_git_location("https://git.example.invalid/");
+    let Some((app, state)) =
+        test_utils::create_test_app_with_state_with_config_if_available(builder)
+            .await
+            .expect("test app setup should either succeed or return None cleanly")
+    else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let pool = state.database.pool().clone();
+    sqlx::query(
+        "INSERT INTO codebase (name, branch_url, url, vcs_type)
+         VALUES ($1, $2, $2, NULL)",
+    )
+    .bind("assign-no-vcs-type-cb")
+    .bind("https://example.invalid/assign-no-vcs-type-cb")
+    .execute(&pool)
+    .await
+    .expect("codebase insert");
+
+    let body = assign_one(app, &state, "assign-no-vcs-type-cb").await;
+    assert!(
+        body["vcs_info"]["vcs_type"].is_null(),
+        "codebase should have no vcs_type, got {body}"
+    );
+
+    let assignment: janitor::api::worker::Assignment = serde_json::from_value(body.clone())
+        .unwrap_or_else(|e| panic!("worker must be able to parse the assignment: {e}: {body}"));
+    assert_eq!(assignment.branch.vcs_type, janitor::vcs::VcsType::Git);
+    assert_eq!(
+        assignment.target_repository.url.as_str(),
+        "https://git.example.invalid/assign-no-vcs-type-cb"
+    );
+}
+
 /// `GET /active-runs/+peek` returns 201 + the peek envelope when a
 /// queue item is available, and 503 with `{reason: "queue empty"}`
 /// when it isn't. The peek shape is

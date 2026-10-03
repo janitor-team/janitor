@@ -3575,9 +3575,16 @@ async fn assign_work_internal(
             }
         };
 
+    // The worker requires a VCS type; fall back to git when the codebase has none.
+    let vcs_type = assignment
+        .vcs_info
+        .vcs_type
+        .clone()
+        .unwrap_or_else(|| crate::vcs::VcsType::Git.to_string());
+
     let branch = json!({
         "cached_url": cached_url,
-        "vcs_type": assignment.vcs_info.vcs_type,
+        "vcs_type": vcs_type,
         "url": assignment.vcs_info.branch_url,
         "subpath": assignment.vcs_info.subpath.clone().unwrap_or_default(),
         "additional_colocated_branches": additional_colocated_branches,
