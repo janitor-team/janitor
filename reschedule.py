@@ -47,7 +47,7 @@ logging.basicConfig()
 async def main(base_url, result_code, campaign, description_re, rejected, min_age=0):
     params = {"result_code": result_code}
     if campaign:
-        params["suite"] = campaign
+        params["campaign"] = campaign
     if description_re:
         params["description_re"] = description_re
     if rejected:
@@ -55,7 +55,7 @@ async def main(base_url, result_code, campaign, description_re, rejected, min_ag
     if min_age:
         params["min_age"] = str(min_age)
     url = URL(base_url) / "cupboard/api/mass-reschedule"
-    async with ClientSession() as session, session.post(url, params=params) as resp:
+    async with ClientSession() as session, session.post(url, data=params) as resp:
         if resp.status != 200:
             logging.fatal("rescheduling failed: %d", resp.status)
             return 1
