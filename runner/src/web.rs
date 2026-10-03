@@ -1522,6 +1522,11 @@ async fn get_queue(
                 .collect();
             (StatusCode::OK, Json(serde_json::Value::Array(payload)))
         }
+        // The database rejects a limit that is not a valid row count.
+        Err(sqlx::Error::Database(db_err)) if db_err.code().as_deref() == Some("2201W") => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"reason": db_err.message()})),
+        ),
         Err(e) => {
             log::error!("Failed to iterate queue: {}", e);
             (
