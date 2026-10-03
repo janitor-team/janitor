@@ -1936,10 +1936,10 @@ async def autopublish_request(request):
 @routes.get("/rate-limits/{bucket}", name="bucket-rate-limits")
 async def bucket_rate_limits_request(request):
     bucket_rate_limiter = request.app["bucket_rate_limiter"]
+    bucket = request.match_info["bucket"]
 
-    stats = bucket_rate_limiter.get_stats()
-
-    (current_open, max_open) = stats.get(request.match_info["bucket"], (None, None))
+    current_open = bucket_rate_limiter.get_stats().get(bucket)
+    max_open = bucket_rate_limiter.get_max_open(bucket)
 
     ret = {
         "open": current_open,
@@ -1981,7 +1981,8 @@ async def rate_limits_request(request):
     bucket_rate_limiter = request.app["bucket_rate_limiter"]
 
     per_bucket = {}
-    for bucket, (current_open, max_open) in bucket_rate_limiter.get_stats().items():
+    for bucket, current_open in bucket_rate_limiter.get_stats().items():
+        max_open = bucket_rate_limiter.get_max_open(bucket)
         per_bucket[bucket] = {
             "open": current_open,
             "max_open": max_open,

@@ -18,13 +18,20 @@
 import pytest
 
 import janitor.publish as publish
+from janitor._publish import FixedRateLimiter
 from janitor.config import read_string as read_config_string
 from janitor.publish import create_app
 
 
-async def create_client(aiohttp_client, db):
+async def create_client(aiohttp_client, db, *, bucket_rate_limiter=None):
     config = read_config_string("")
-    app = await create_app(vcs_managers={}, db=db, redis=None, config=config)
+    app = await create_app(
+        vcs_managers={},
+        db=db,
+        redis=None,
+        config=config,
+        bucket_rate_limiter=bucket_rate_limiter,
+    )
     return await aiohttp_client(app)
 
 
@@ -145,3 +152,46 @@ async def test_publish_one_passes_template_env_path_to_compiled_binary(monkeypat
         "janitor-publish-one",
         "--template-env-path=/etc/janitor/templates",
     ]
+
+
+@pytest.fixture
+def bucket_rate_limiter():
+    limiter = FixedRateLimiter(10)
+    limiter.set_mps_per_bucket({"open": {"lintian-fixes": 3}})
+    return limiter
+
+
+async def test_rate_limits_reports_open_count_per_bucket(
+    aiohttp_client, db, bucket_rate_limiter
+):
+    client = await create_client(
+        aiohttp_client, db, bucket_rate_limiter=bucket_rate_limiter
+    )
+    resp = await client.get("/rate-limits")
+    assert resp.status == 200
+    body = await resp.json()
+    assert body["proposals_per_bucket"] == {
+        "lintian-fixes": {"open": 3, "max_open": None, "remaining": None}
+    }
+
+
+async def test_bucket_rate_limits_reports_open_count(
+    aiohttp_client, db, bucket_rate_limiter
+):
+    client = await create_client(
+        aiohttp_client, db, bucket_rate_limiter=bucket_rate_limiter
+    )
+    resp = await client.get("/rate-limits/lintian-fixes")
+    assert resp.status == 200
+    assert await resp.json() == {"open": 3, "max_open": None, "remaining": None}
+
+
+async def test_bucket_rate_limits_unknown_bucket(
+    aiohttp_client, db, bucket_rate_limiter
+):
+    client = await create_client(
+        aiohttp_client, db, bucket_rate_limiter=bucket_rate_limiter
+    )
+    resp = await client.get("/rate-limits/no-such-bucket")
+    assert resp.status == 200
+    assert await resp.json() == {"open": None, "max_open": None, "remaining": None}
