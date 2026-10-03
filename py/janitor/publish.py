@@ -75,7 +75,7 @@ from silver_platter import (
     _open_branch as open_branch,
 )
 
-from . import set_user_agent, state, utcnow
+from . import retry_after_seconds, set_user_agent, state, utcnow
 from ._launchpad import override_launchpad_consumer_name
 from ._publish import (
     BucketRateLimited,
@@ -3292,10 +3292,11 @@ async def check_existing(
             logger.warning(
                 "Rate-limited accessing %s. Skipping %r for this cycle.", mp.url, forge
             )
-            if e.retry_after is None:
+            retry_seconds = retry_after_seconds(getattr(e, "retry_after", None))
+            if retry_seconds is None:
                 retry_after = timedelta(minutes=30)
             else:
-                retry_after = timedelta(seconds=e.retry_after)
+                retry_after = timedelta(seconds=retry_seconds)
             forge_rate_limiter[forge] = utcnow() + retry_after
             continue
         except UnexpectedHttpStatus as e:

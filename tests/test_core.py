@@ -16,7 +16,7 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
 
-from janitor import splitout_env
+from janitor import MAX_RETRY_AFTER, retry_after_seconds, splitout_env
 
 
 def test_splitout_env():
@@ -30,3 +30,15 @@ def test_splitout_env():
         {"PATH": "/bin", "FOO": "bar"},
         "ls -l",
     )
+
+
+def test_retry_after_seconds():
+    assert retry_after_seconds(None) is None
+    assert retry_after_seconds(0) is None
+    assert retry_after_seconds(-5) is None
+    assert retry_after_seconds(float("nan")) is None
+    assert retry_after_seconds(float("inf")) is None
+    assert retry_after_seconds(0.2) == 1
+    assert retry_after_seconds(41.2) == 42
+    assert retry_after_seconds(MAX_RETRY_AFTER) == MAX_RETRY_AFTER
+    assert retry_after_seconds(1e12) == MAX_RETRY_AFTER
