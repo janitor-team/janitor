@@ -22,6 +22,12 @@ from janitor.config import read_string as read_config_string
 from janitor.site.api import create_app
 
 
+@web.middleware
+async def dummy_user_middleware(request, handler):
+    request["user"] = None
+    return await handler(request)
+
+
 async def create_client(aiohttp_client, db, *, runner_url=None, publisher_url=None):
     config = read_config_string("")
     app = create_app(
@@ -32,6 +38,7 @@ async def create_client(aiohttp_client, db, *, runner_url=None, publisher_url=No
         config=config,
         db=db,
     )
+    app.middlewares.insert(0, dummy_user_middleware)
     # In production this app is mounted as a subapp of janitor.site.simple,
     # which is what calls aiozipkin.setup() - do the same here since these
     # handlers use aiozipkin.request_span(request).
@@ -81,3 +88,52 @@ async def test_handle_queue_without_limit(aiohttp_client, db):
     resp = await client.get("/queue")
     assert resp.status == 200
     assert await resp.json() == []
+
+
+async def test_reschedule_passes_through_runner_error(aiohttp_client, db):
+    runner_app = web.Application()
+
+    async def _handle_schedule(request):
+        return web.json_response({"reason": "Run not found"}, status=404)
+
+    runner_app.router.add_post("/schedule", _handle_schedule)
+    runner_client = await aiohttp_client(runner_app)
+
+    client = await create_client(
+        aiohttp_client, db, runner_url=str(runner_client.make_url("/"))
+    )
+
+    resp = await client.post("/run/nonexistent/reschedule")
+    assert resp.status == 404
+    assert await resp.json() == {"reason": "Run not found"}
+
+
+async def test_reschedule_returns_runner_result(aiohttp_client, db):
+    runner_app = web.Application()
+
+    async def _handle_schedule(request):
+        body = await request.json()
+        assert body["run_id"] == "1"
+        return web.json_response(
+            {
+                "codebase": "foo",
+                "campaign": "mycampaign",
+                "offset": 0,
+                "estimated_duration_seconds": 10,
+                "queue_position": 1,
+                "queue_wait_time": 5,
+            }
+        )
+
+    runner_app.router.add_post("/schedule", _handle_schedule)
+    runner_client = await aiohttp_client(runner_app)
+
+    client = await create_client(
+        aiohttp_client, db, runner_url=str(runner_client.make_url("/"))
+    )
+
+    resp = await client.post("/run/1/reschedule")
+    assert resp.status == 200
+    body = await resp.json()
+    assert body["codebase"] == "foo"
+    assert body["campaign"] == "mycampaign"
