@@ -48,12 +48,13 @@ RUN apt-get update --yes \
  && apt-get upgrade --yes \
  && apt-get satisfy --yes --no-install-recommends \
         ca-certificates \
-        libpython3.14 \
         libssl3 \
         libzstd1 \
         openssh-client \
         python3-gpg \
         python3 \
+ && apt-get satisfy --yes --no-install-recommends \
+        "libpython$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')" \
  && apt-get clean
 
 COPY --from=build /opt/venv /opt/venv
