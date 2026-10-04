@@ -39,6 +39,23 @@ FROM ghcr.io/jelmer/janitor/worker:latest
 RUN apt-get update && apt-get install -y my-other-build-tool && apt-get clean
 ```
 
+**sbuild chroot** - the worker image runs `sbuild` in unshare mode, which looks for chroot tarballs in `~/.cache/sbuild` by file name. `janitor-create-sbuild-chroot`, shipped in the image, builds the tarball for a distribution and links it under a name for each campaign built on it, since `sbuild` picks the chroot from the campaign's `build_distribution`:
+
+```console
+$ janitor-create-sbuild-chroot --config janitor.conf unstable
+```
+
+On a host without `janitor.conf`, name everything on the command line:
+
+```console
+$ janitor-create-sbuild-chroot --suite unstable --mirror http://deb.debian.org/debian \
+    --chroot unstable-amd64-sbuild --component main --build-distribution lintian-fixes
+```
+
+Run it again after adding a campaign; an existing tarball is kept unless `--force` is given. The image tells `sbuild` never to treat the tarball as too old, so run it with `--force` when the chroot should be refreshed. Keep `~/.cache/sbuild` on a volume so the chroot survives a restart.
+
+`mmdebstrap` has to create a user namespace to build the tarball. If it stops with `unshare failed: Operation not permitted`, start the container with `--cap-add SYS_ADMIN`.
+
 **Troubleshooting**:
 
 ```console
