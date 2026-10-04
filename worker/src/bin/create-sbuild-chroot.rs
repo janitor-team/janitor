@@ -376,6 +376,115 @@ mod tests {
     }
 
     #[test]
+    fn test_default_mode() {
+        let args = Args::try_parse_from(["prog", "unstable"]).unwrap();
+        assert_eq!(args.mode, Mode::Unshare);
+        check_mode(&args).unwrap();
+        let args = Args::try_parse_from(["prog", "--force", "--mode=unshare"]).unwrap();
+        check_mode(&args).unwrap();
+        assert!(Args::try_parse_from(["prog", "--mode=sudo"]).is_err());
+    }
+
+    #[test]
+    fn test_schroot_mode() {
+        let args = Args::try_parse_from([
+            "prog",
+            "--mode=schroot",
+            "--base-directory=/srv/chroots",
+            "--remove-old",
+            "--no-eatmydata",
+            "--make-sbuild-tarball",
+            "--sbuild-chroot-mode=schroot",
+            "--run-command=apt -y install foo",
+            "--run-command=true",
+            "--include=ccache",
+            "unstable",
+        ])
+        .unwrap();
+        check_mode(&args).unwrap();
+        assert_eq!(args.mode, Mode::Schroot);
+        assert_eq!(args.sbuild_chroot_mode, Some(schroot::ChrootMode::Schroot));
+        assert_eq!(args.run_command, vec!["apt -y install foo", "true"]);
+        assert!(args.remove_old && args.no_eatmydata && args.make_sbuild_tarball);
+        assert_eq!(args.distribution, vec!["unstable"]);
+        assert!(Args::try_parse_from(["prog", "--sbuild-chroot-mode=chroot"]).is_err());
+    }
+
+    #[test]
+    fn test_schroot_mode_aliases() {
+        let args = Args::try_parse_from([
+            "prog",
+            "--mode=schroot",
+            "--base-directory=/srv/chroots",
+            "--suite=unstable",
+            "--mirror=http://m",
+            "--chroot=unstable-amd64-sbuild",
+            "--alias=sid",
+            "--alias=UNRELEASED",
+        ])
+        .unwrap();
+        check_mode(&args).unwrap();
+        assert_eq!(
+            chroots(&args).unwrap()[0].aliases,
+            vec!["sid", "UNRELEASED"]
+        );
+        // Aliases come from the configuration otherwise
+        assert!(Args::try_parse_from(["prog", "--mode=schroot", "--alias=sid"]).is_err());
+    }
+
+    #[test]
+    fn test_schroot_mode_needs_base_directory() {
+        let args = Args::try_parse_from(["prog", "--mode=schroot", "unstable"]).unwrap();
+        let err = check_mode(&args).unwrap_err();
+        assert!(err.contains("--base-directory is required"), "{}", err);
+
+        let argv = ["prog", "--mode=schroot", "--base-directory=chroots"];
+        let err = check_mode(&Args::try_parse_from(argv).unwrap()).unwrap_err();
+        assert!(err.contains("must be an absolute path"), "{}", err);
+    }
+
+    #[test]
+    fn test_schroot_mode_other_sbuild_chroot_modes() {
+        let parse = |extra: &[&str]| {
+            let base = ["prog", "--mode=schroot", "--base-directory=/c"];
+            Args::try_parse_from(base.iter().chain(extra)).unwrap()
+        };
+        for mode in ["--sbuild-chroot-mode=sudo", "--sbuild-chroot-mode=unshare"] {
+            check_mode(&parse(&[mode])).unwrap();
+            for option in ["--remove-old", "--run-command=true"] {
+                let err = check_mode(&parse(&[mode, option])).unwrap_err();
+                assert!(
+                    err.contains("needs --sbuild-chroot-mode schroot"),
+                    "{}",
+                    err
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_options_of_the_other_mode() {
+        for option in [
+            "--no-eatmydata",
+            "--make-sbuild-tarball",
+            "--sbuild-chroot-mode=schroot",
+            "--remove-old",
+            "--run-command=true",
+        ] {
+            let args = Args::try_parse_from(["prog", option]).unwrap();
+            let err = check_mode(&args).unwrap_err();
+            assert!(err.contains("--mode schroot"), "{}: {}", option, err);
+        }
+        let suite = ["--suite=sid", "--mirror=http://m", "--chroot=sid-amd64"];
+        let argv = ["prog", "--alias=unstable"].iter().chain(&suite);
+        assert!(check_mode(&Args::try_parse_from(argv).unwrap()).is_err());
+
+        let argv = ["prog", "--mode=schroot", "--base-directory=/c", "--force"];
+        let err = check_mode(&Args::try_parse_from(argv).unwrap()).unwrap_err();
+        assert!(err.contains("--mode unshare"), "{}", err);
+    }
+
+    #[test]
     fn test_incomplete_suite_mode() {
         for argv in [
             &["prog", "--suite=sid", "--mirror=http://m"][..],
