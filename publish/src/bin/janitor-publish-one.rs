@@ -1,6 +1,6 @@
 use clap::Parser;
-use minijinja::{self, Environment, Value};
-use std::path::{Path, PathBuf};
+use janitor_publish::publish_one::load_template_env;
+use std::path::PathBuf;
 
 #[derive(Parser)]
 struct Args {
@@ -10,36 +10,6 @@ struct Args {
 
     #[clap(flatten)]
     logs: janitor::logging::LoggingArgs,
-}
-
-fn debdiff_is_empty(debdiff: &str) -> Result<bool, minijinja::Error> {
-    Ok(janitor::debdiff::debdiff_is_empty(debdiff))
-}
-
-fn markdownify_debdiff(debdiff: &str) -> Result<String, minijinja::Error> {
-    Ok(janitor::debdiff::markdownify_debdiff(debdiff))
-}
-
-fn parseaddr(addr: &str) -> Result<Value, minijinja::Error> {
-    let (name, email) = debian_changelog::parseaddr(addr);
-
-    Ok(if let Some(name) = name {
-        minijinja::Value::from_iter(vec![Value::from(name), Value::from(email)])
-    } else {
-        minijinja::Value::from_iter(vec![Value::from(()), Value::from(email)])
-    })
-}
-
-fn load_template_env(path: &Path) -> Environment {
-    let mut environment = Environment::new();
-    environment.set_loader(minijinja::path_loader(path));
-    environment.set_trim_blocks(true);
-    environment.set_lstrip_blocks(true);
-
-    environment.add_function("debdiff_is_empty", debdiff_is_empty);
-    environment.add_function("markdownify_debdiff", markdownify_debdiff);
-    environment.add_function("parseaddr", parseaddr);
-    environment
 }
 
 fn main() {
@@ -98,25 +68,5 @@ fn main() {
     if let Err(e) = serde_json::to_writer(std::io::stdout(), &publish_result) {
         eprintln!("Failed to write result to stdout: {}", e);
         std::process::exit(1);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_templates_are_not_html_escaped() {
-        let mut env = load_template_env(Path::new("."));
-        let context = serde_json::json!({"value": "debian/upstream & <b>"});
-        for name in ["title", "commit_message"] {
-            let rendered = env.render_named_str(name, "{{ value }}", &context).unwrap();
-            assert_eq!(rendered, "debian/upstream & <b>", "{}", name);
-        }
-        for name in ["lintian-fixes.md", "lintian-fixes.txt"] {
-            env.add_template(name, "{{ value }}").unwrap();
-            let rendered = env.get_template(name).unwrap().render(&context).unwrap();
-            assert_eq!(rendered, "debian/upstream & <b>", "{}", name);
-        }
     }
 }
