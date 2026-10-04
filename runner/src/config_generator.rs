@@ -8,7 +8,12 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::LazyLock;
 use url::Url;
+
+static DEFAULT_DEP_SERVER_URL: LazyLock<Url> = LazyLock::new(|| {
+    Url::parse("http://dep-server:8080").expect("hardcoded default dep-server URL parses")
+});
 
 #[async_trait]
 /// Result type for configuration generators.
@@ -32,6 +37,8 @@ pub enum Error {
     ArtifactsMissing,
     /// Error in the configuration.
     ConfigError(String),
+    /// Other errors.
+    Other(String),
 }
 
 impl From<sqlx::Error> for Error {
@@ -46,6 +53,7 @@ impl std::fmt::Display for Error {
             Error::Sqlx(e) => write!(f, "SQLx error: {}", e),
             Error::ArtifactsMissing => write!(f, "Artifacts missing"),
             Error::ConfigError(e) => write!(f, "Configuration error: {}", e),
+            Error::Other(e) => write!(f, "{}", e),
         }
     }
 }
@@ -104,9 +112,7 @@ impl GenericConfigGenerator {
     /// Create a new generic configuration generator.
     pub fn new(dep_server_url: Option<url::Url>) -> Self {
         Self {
-            dep_server_url: dep_server_url.unwrap_or_else(|| {
-                url::Url::parse("http://dep-server:8080").expect("Invalid dep-server URL")
-            }),
+            dep_server_url: dep_server_url.unwrap_or_else(|| DEFAULT_DEP_SERVER_URL.clone()),
         }
     }
 }
@@ -124,7 +130,8 @@ impl ConfigGenerator for GenericConfigGenerator {
             config.chroot = Some(chroot.to_string());
         }
         config.dep_server_url = Some(self.dep_server_url.clone());
-        Ok(serde_json::to_value(config).unwrap())
+        serde_json::to_value(config)
+            .map_err(|e| Error::Other(format!("Failed to serialize config: {}", e)))
     }
 
     async fn build_env(
@@ -203,12 +210,19 @@ impl ConfigGeneratorResult for DebianResult {
     fn artifact_filenames(&self) -> Vec<String> {
         let mut ret = Vec::new();
         for changes_filename in &self.changes_filenames {
-            let changes_path = self
-                .output_directory
-                .as_ref()
-                .unwrap()
-                .join(changes_filename);
-            ret.extend(crate::changes_filenames(&changes_path));
+            let Some(output_dir) = self.output_directory.as_ref() else {
+                log::warn!(
+                    "No output directory set for changes file: {}",
+                    changes_filename
+                );
+                continue;
+            };
+            let changes_path = output_dir.join(changes_filename);
+            if let Ok(filenames) = crate::changes_filenames(&changes_path) {
+                ret.extend(filenames);
+            } else {
+                log::warn!("Failed to read changes file: {}", changes_path.display());
+            }
             ret.push(changes_filename.to_string());
         }
         ret
@@ -265,18 +279,30 @@ impl ConfigGenerator for DebianConfigGenerator {
             extra_janitor_distributions.push(format!("cs/{}", change_set));
         }
 
-        // TODO(jelmer): Ship build-extra-repositories-keys, and specify [signed-by] here
+        // Use signed repositories instead of trusted=yes
         let build_extra_repositories = extra_janitor_distributions
             .iter()
-            .map(|suite| {
-                format!(
-                    "deb [trusted=yes] {} {} main",
-                    self.apt_location.as_ref().unwrap(),
-                    suite
-                )
+            .filter_map(|suite| {
+                // Use the Debian Janitor signing key for extra repositories
+                match self.apt_location.as_ref() {
+                    Some(apt_location) => Some(format!(
+                        "deb [arch=amd64 signed-by=/etc/apt/keyrings/debian-janitor.gpg] {} {} main",
+                        apt_location,
+                        suite
+                    )),
+                    None => {
+                        log::warn!("APT location not configured, skipping extra repository for suite: {}", suite);
+                        None
+                    }
+                }
             })
             .collect::<Vec<_>>();
         config.extra_repositories = Some(build_extra_repositories);
+
+        // Add the Debian Janitor repository key for extra repositories
+        if !extra_janitor_distributions.is_empty() {
+            config.apt_repository_key = Some("/etc/apt/keyrings/debian-janitor.gpg".to_string());
+        }
 
         let build_distribution = campaign_config
             .debian_build()
@@ -336,7 +362,8 @@ impl ConfigGenerator for DebianConfigGenerator {
 
         config.dep_server_url = self.dep_server_url.as_ref().map(|u| u.to_string());
 
-        Ok(serde_json::to_value(config).unwrap())
+        serde_json::to_value(config)
+            .map_err(|e| Error::Other(format!("Failed to serialize config: {}", e)))
     }
 
     async fn build_env(
@@ -380,7 +407,9 @@ impl ConfigGenerator for DebianConfigGenerator {
             );
         }
 
-        // TODO(jelmer): Set env["APT_REPOSITORY_KEY"]
+        if let Some(signed_by) = &self.distro_config.signed_by {
+            env.insert("APT_REPOSITORY_KEY".to_owned(), signed_by.clone());
+        }
 
         Ok(env)
     }

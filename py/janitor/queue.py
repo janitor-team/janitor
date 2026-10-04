@@ -218,8 +218,8 @@ queue.bucket ASC,
 queue.priority ASC,
 queue.id ASC
 """
-        if limit:
-            query += f" LIMIT {limit}"
+        args.append(limit)
+        query += f" LIMIT ${len(args)}"
         for row in await self.conn.fetch(query, *args):
             yield QueueItem.from_row(row)
 

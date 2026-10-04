@@ -75,6 +75,50 @@ pub fn service_user_agent(service_name: &str) -> String {
     format!("janitor-{}/{}", service_name, VERSION)
 }
 
+/// Override the User-Agent used by Python-backed HTTP clients.
+///
+/// Mirrors `py/janitor/__init__.set_user_agent`: rebinds
+/// `breezy.transport.http.default_user_agent` and installs an
+/// `urllib.request` opener whose default headers carry the value. The
+/// Rust ArtifactManager implementations that shell out to breezy (via
+/// breezyshim) pick this up transparently.
+///
+/// `None` restores the default `janitor/{version}` string.
+pub fn set_user_agent(user_agent: Option<&str>) -> pyo3::PyResult<()> {
+    use pyo3::prelude::*;
+    use pyo3::types::PyTuple;
+
+    let ua = user_agent
+        .map(String::from)
+        .unwrap_or_else(default_user_agent);
+
+    Python::attach(|py| {
+        let http = py.import("breezy.transport.http")?;
+        let make_default = PyModule::from_code(
+            py,
+            std::ffi::CString::new("def make(v):\n    return lambda: v\n")
+                .unwrap()
+                .as_c_str(),
+            std::ffi::CString::new("_janitor_ua.py").unwrap().as_c_str(),
+            std::ffi::CString::new("_janitor_ua").unwrap().as_c_str(),
+        )?;
+        let closure = make_default.getattr("make")?.call1((ua.as_str(),))?;
+        http.setattr("default_user_agent", closure)?;
+
+        let urllib_http = py.import("breezy.transport.http.urllib")?;
+        let handler = urllib_http.getattr("AbstractHTTPHandler")?;
+        let defaults = handler.getattr("_default_headers")?;
+        defaults.set_item("User-agent", ua.as_str())?;
+
+        let urllib_request = py.import("urllib.request")?;
+        let opener = urllib_request.call_method0("build_opener")?;
+        let header = PyTuple::new(py, ["User-agent", ua.as_str()])?;
+        opener.setattr("addheaders", vec![header])?;
+        urllib_request.call_method1("install_opener", (opener,))?;
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,5 +213,24 @@ mod tests {
         let service_ua = service_user_agent("runner");
         assert!(service_ua.starts_with("janitor-runner/"));
         assert!(service_ua.contains(VERSION));
+    }
+
+    #[test]
+    fn set_user_agent_rebinds_breezy_default() {
+        use pyo3::prelude::*;
+
+        set_user_agent(Some("janitor-test/1.2.3")).expect("set_user_agent failed");
+
+        Python::attach(|py| {
+            let http = py.import("breezy.transport.http").unwrap();
+            let seen: String = http
+                .getattr("default_user_agent")
+                .unwrap()
+                .call0()
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert_eq!(seen, "janitor-test/1.2.3");
+        });
     }
 }

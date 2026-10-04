@@ -199,6 +199,13 @@ pub struct DebdiffError {
     message: String,
 }
 
+impl DebdiffError {
+    /// The raw error message, without the `DebdiffError:` `Display` prefix.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
 impl From<tokio::io::Error> for DebdiffError {
     fn from(e: tokio::io::Error) -> Self {
         DebdiffError {

@@ -1,424 +1,138 @@
-use patchkit::unified::{iter_hunks, HunkLine};
+//! Run diffoscope and manipulate its JSON output.
+//!
+//! This is the Rust counterpart to `py/janitor/diffoscope.py`.
+
+use patchkit::unified::{iter_hunks, splitlines, HunkLine};
 use pyo3::prelude::*;
-use pyo3::{Py, PyAny, Python};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::{debug, warn};
 
-/// Output structure for diffoscope results.
-///
-/// This structure represents the JSON output from diffoscope and is used for
-/// serialization, deserialization, and manipulation of diffoscope results.
-#[derive(Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq, Clone)]
-#[allow(unused)]
+/// A node in the diffoscope JSON tree.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct DiffoscopeOutput {
-    /// The version of the diffoscope JSON format.
     #[serde(
         rename = "diffoscope-json-version",
-        skip_serializing_if = "Option::is_none"
+        skip_serializing_if = "Option::is_none",
+        default
     )]
     diffoscope_json_version: Option<u8>,
-    /// The path to the first file being compared.
     pub source1: PathBuf,
-    /// The path to the second file being compared.
     pub source2: PathBuf,
-    /// Comments about the comparison, such as similarity percentage.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub comments: Vec<String>,
-    /// The unified diff output, if available.
     #[serde(default)]
     pub unified_diff: Option<String>,
-    /// Nested details for sub-comparisons of components within the files.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub details: Vec<DiffoscopeOutput>,
 }
 
-/// Errors that can occur when running diffoscope.
-#[derive(Debug)]
+/// Errors from `run_diffoscope`.
+#[derive(Debug, thiserror::Error)]
 pub enum DiffoscopeError {
-    /// The diffoscope process timed out.
+    #[error("diffoscope timed out")]
     Timeout,
-    /// An I/O error occurred.
-    Io(std::io::Error),
-    /// An error occurred while parsing the JSON output.
-    Serde(serde_json::Error),
-    /// Any other error with a message.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Serde(#[from] serde_json::Error),
+    #[error(transparent)]
+    Py(#[from] pyo3::PyErr),
+    #[error("{0}")]
     Other(String),
 }
 
-impl DiffoscopeError {
-    /// Create a new generic error with a message.
-    ///
-    /// # Arguments
-    /// * `msg` - The error message
-    pub fn new(msg: &str) -> Self {
-        DiffoscopeError::Other(msg.to_string())
+// Mirrors the Python `_set_limits`: cap virtual memory only. Extra
+// limits (RLIMIT_CPU, RLIMIT_NOFILE, ...) would be new behaviour and
+// belong in a separate change.
+fn set_memory_limit(limit_mb: u64) {
+    let bytes = limit_mb * 1024 * 1024;
+    let soft = (bytes as f64 * 0.8) as u64;
+    if let Err(e) =
+        nix::sys::resource::setrlimit(nix::sys::resource::Resource::RLIMIT_AS, soft, bytes)
+    {
+        warn!("Failed to set RLIMIT_AS: {}", e);
     }
 }
 
-impl From<std::io::Error> for DiffoscopeError {
-    fn from(err: std::io::Error) -> Self {
-        DiffoscopeError::Io(err)
-    }
-}
-
-impl From<serde_json::Error> for DiffoscopeError {
-    fn from(err: serde_json::Error) -> Self {
-        DiffoscopeError::Serde(err)
-    }
-}
-
-impl std::fmt::Display for DiffoscopeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            DiffoscopeError::Timeout => write!(f, "diffoscope timed out"),
-            DiffoscopeError::Io(err) => write!(f, "IO error: {}", err),
-            DiffoscopeError::Serde(err) => write!(f, "serde error: {}", err),
-            DiffoscopeError::Other(msg) => write!(f, "{}", msg),
-        }
-    }
-}
-
-/// Set resource limits for the diffoscope process.
-///
-/// # Arguments
-/// * `limit_mb` - Memory limit in megabytes
-fn _set_limits(limit_mb: Option<u64>) {
-    let limit_mb = limit_mb.unwrap_or(1024);
-
-    nix::sys::resource::setrlimit(
-        nix::sys::resource::Resource::RLIMIT_AS,
-        limit_mb * 1024 * 1024,
-        limit_mb * 1024 * 1024,
-    )
-    .unwrap();
-}
-
-/// Run diffoscope on two binaries
-///
-/// # Arguments
-/// * `old_binary` - The path to the old binary
-/// * `new_binary` - The path to the new binary
-/// * `diffoscope_command` - The command to run diffoscope
-/// * `timeout` - The maximum time to run diffoscope
-/// * `memory_limit` - The maximum memory to use
-///
-/// # Returns
-/// * `Ok(Some(diffoscope_output))` - If diffoscope ran successfully
-/// * `Ok(None)` - If diffoscope ran successfully but there were no differences
-/// * `Err(DiffoscopeError)` - If there was an error running diffoscope
-async fn _run_diffoscope(
+async fn run_diffoscope_one(
     old_binary: &str,
     new_binary: &str,
     diffoscope_command: Option<&str>,
     timeout: Option<f64>,
-    memory_limit: Option<usize>,
+    memory_limit: Option<u64>,
 ) -> Result<Option<DiffoscopeOutput>, DiffoscopeError> {
-    let diffoscope_command = diffoscope_command.unwrap_or("diffoscope");
-    let mut args = shlex::split(diffoscope_command).unwrap();
+    let command = diffoscope_command.unwrap_or("diffoscope");
+    let mut args = shlex::split(command)
+        .ok_or_else(|| DiffoscopeError::Other(format!("Failed to parse command: {command}")))?;
     args.extend([
         "--json=-".to_string(),
         "--exclude-directory-metadata=yes".to_string(),
         old_binary.to_string(),
         new_binary.to_string(),
     ]);
-    debug!("running {:?}", args);
 
     let mut cmd = tokio::process::Command::new(&args[0]);
     cmd.args(&args[1..]);
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+    cmd.process_group(0);
 
-    if let Some(memory_limit) = memory_limit {
+    if let Some(mb) = memory_limit {
         unsafe {
             cmd.pre_exec(move || {
-                _set_limits(Some(memory_limit as u64));
+                set_memory_limit(mb);
                 Ok(())
-            })
-        };
-    }
-
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs_f64(timeout.unwrap_or(5.0)),
-        cmd.output(),
-    )
-    .await
-    .map_err(|_| DiffoscopeError::Timeout)?
-    .map_err(DiffoscopeError::Io)?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if output.status.code() == Some(1) {
-            return Ok(Some(serde_json::from_str(&String::from_utf8_lossy(
-                &output.stdout,
-            ))?));
+            });
         }
-        Err(DiffoscopeError::new(&stderr))
-    } else {
-        Ok(None)
     }
-}
 
-/// Filter out irrelevant information from the diff
-/// (e.g. the full path to the binaries)
-///
-/// # Arguments
-/// * `diff` - The diff to filter
-pub fn filter_irrelevant(diff: &mut DiffoscopeOutput) {
-    diff.source1 = diff.source1.file_name().unwrap().into();
-    diff.source2 = diff.source2.file_name().unwrap().into();
-}
+    let child = cmd.spawn()?;
+    let pid = child.id();
+    debug!("Spawned diffoscope: pid={:?} args={:?}", pid, args);
 
-/// Filter out boring information from the unified diff
-///
-/// This function replaces version-specific strings in the diff with a display version
-/// to make the diff more readable and focused on actual changes.
-///
-/// # Arguments
-/// * `udiff` - The unified diff to filter
-/// * `old_version` - The old version string to replace
-/// * `new_version` - The new version string to replace
-/// * `display_version` - The version string to use in the output
-///
-/// # Returns
-/// The filtered unified diff or an error
-pub fn filter_boring_udiff(
-    udiff: &str,
-    old_version: &str,
-    new_version: &str,
-    display_version: &str,
-) -> Result<String, patchkit::unified::Error> {
-    let mut lines = udiff.lines().map(|line| line.as_bytes());
-    let mut hunks = vec![];
-    for hunk in iter_hunks(&mut lines) {
-        let mut hunk = hunk?;
-        for line in &mut hunk.lines {
-            match line {
-                HunkLine::RemoveLine(line) => {
-                    *line = String::from_utf8(line.to_vec())
-                        .unwrap()
-                        .replace(old_version, display_version)
-                        .into_bytes();
+    let output = match timeout {
+        Some(secs) => {
+            let dur = std::time::Duration::from_secs_f64(secs);
+            match tokio::time::timeout(dur, child.wait_with_output()).await {
+                Ok(res) => res?,
+                Err(_) => {
+                    if let Some(pid) = pid {
+                        use nix::sys::signal::{killpg, Signal};
+                        use nix::unistd::Pid;
+                        let _ = killpg(Pid::from_raw(pid as i32), Signal::SIGKILL);
+                    }
+                    return Err(DiffoscopeError::Timeout);
                 }
-                HunkLine::InsertLine(line) => {
-                    *line = String::from_utf8(line.to_vec())
-                        .unwrap()
-                        .replace(new_version, display_version)
-                        .into_bytes();
-                }
-                HunkLine::ContextLine(_line) => {}
             }
         }
-        hunks.push(hunk);
+        None => child.wait_with_output().await?,
+    };
+
+    match output.status.code() {
+        Some(0) => Ok(None),
+        Some(1) => {
+            let out = serde_json::from_slice(&output.stdout)?;
+            Ok(Some(out))
+        }
+        Some(code) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(DiffoscopeError::Other(format!(
+                "diffoscope exited with code {code}: {stderr}"
+            )))
+        }
+        None => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(DiffoscopeError::Other(format!(
+                "diffoscope killed by signal: {stderr}"
+            )))
+        }
     }
-    Ok(hunks
-        .iter()
-        .map(|hunk| String::from_utf8(hunk.as_bytes()).unwrap())
-        .collect())
 }
 
-/// Filter out boring details from a diffoscope output detail section
-///
-/// This function replaces version-specific strings in the detail section and filters
-/// out uninteresting differences.
-///
-/// # Arguments
-/// * `detail` - The detail section to filter
-/// * `old_version` - The old version string to replace
-/// * `new_version` - The new version string to replace
-/// * `display_version` - The version string to use in the output
-///
-/// # Returns
-/// `true` if the detail section still contains interesting differences, `false` otherwise
-pub fn filter_boring_detail(
-    detail: &mut DiffoscopeOutput,
-    old_version: &str,
-    new_version: &str,
-    display_version: &str,
-) -> bool {
-    if let Some(unified_diff) = &detail.unified_diff {
-        detail.unified_diff =
-            match filter_boring_udiff(unified_diff, old_version, new_version, display_version) {
-                Ok(udiff) => Some(udiff),
-                Err(e) => {
-                    warn!("Error parsing hunk: {:?}", e);
-                    None
-                }
-            };
-    }
-    detail.source1 = detail
-        .source1
-        .to_str()
-        .unwrap()
-        .replace(old_version, display_version)
-        .into();
-    detail.source2 = detail
-        .source2
-        .to_str()
-        .unwrap()
-        .replace(new_version, display_version)
-        .into();
-    if !detail.details.is_empty() {
-        let subdetails = detail.details.drain(..).filter_map(|mut subdetail| {
-            if !filter_boring_detail(&mut subdetail, old_version, new_version, display_version) {
-                return None;
-            }
-            Some(subdetail)
-        });
-        detail.details = subdetails.collect();
-    }
-    !(detail.unified_diff.is_none() && detail.details.is_empty())
-}
-
-/// Filter out boring information from the entire diffoscope output
-///
-/// This function filters out uninteresting differences from the entire diffoscope output,
-/// such as changes in dates, distribution, and version.
-///
-/// # Arguments
-/// * `diff` - The diffoscope output to filter
-/// * `old_version` - The old version string
-/// * `_old_campaign` - The old campaign string (unused)
-/// * `new_version` - The new version string
-/// * `_new_campaign` - The new campaign string (unused)
-pub fn filter_boring(
-    diff: &mut DiffoscopeOutput,
-    old_version: &str,
-    _old_campaign: &str,
-    new_version: &str,
-    _new_campaign: &str,
-) {
-    let display_version = new_version.rsplit_once("~").map_or(new_version, |(v, _)| v);
-    // Changes file differences
-    pub const BORING_FIELDS: &[&str] = &["Date", "Distribution", "Version"];
-    let new_details = diff.details.drain(..).filter_map(|mut detail| {
-        let boring = BORING_FIELDS.contains(&detail.source1.to_str().unwrap())
-            && BORING_FIELDS.contains(&detail.source2.to_str().unwrap());
-        if boring {
-            return None;
-        }
-        if detail.source1.ends_with(".buildinfo") && detail.source2.ends_with(".buildinfo") {
-            return None;
-        }
-        if !filter_boring_detail(&mut detail, old_version, new_version, display_version) {
-            return None;
-        }
-        Some(detail)
-    });
-    diff.details = new_details.collect();
-}
-
-/// Format diffoscope output into various formats
-///
-/// This function converts diffoscope output into different formats like HTML, Markdown, plain text, or JSON.
-///
-/// # Arguments
-/// * `diff` - The diffoscope output to format
-/// * `content_type` - The desired output format ("text/html", "text/markdown", "text/plain", or "application/json")
-/// * `title` - The title to use in the formatted output
-/// * `css_url` - Optional URL for CSS styling (only used for HTML output)
-///
-/// # Returns
-/// The formatted output as a string or a Python error
-pub fn format_diffoscope(
-    diff: &DiffoscopeOutput,
-    content_type: &str,
-    title: &str,
-    css_url: Option<&str>,
-) -> Result<String, pyo3::PyErr> {
-    use pyo3::prelude::*;
-    if content_type == "application/json" {
-        return Ok(serde_json::to_string(diff).unwrap());
-    }
-
-    Python::attach(|py| {
-        let m = py.import("diffoscope.readers.json")?;
-        let reader = m.getattr("JSONReaderV1")?.call0()?;
-
-        let json_str = serde_json::to_string(&diff).unwrap();
-        let json_mod = py.import("json")?;
-        let py_dict = json_mod.call_method1("loads", (json_str,))?;
-        let root_differ = reader.call_method1("load_rec", (py_dict,))?;
-
-        match content_type {
-            "text/html" => {
-                let m = py.import("diffoscope.presenters.html")?;
-                let p = m.getattr("HTMLPresenter")?.call0()?;
-
-                let sysm = py.import("sys")?;
-
-                let old_stdout = sysm.getattr("stdout")?;
-                let io = py.import("io")?;
-                let f = io.getattr("StringIO")?.call0()?;
-                sysm.setattr("stdout", f.clone())?;
-                let old_argv = sysm.getattr("argv")?;
-                sysm.setattr(
-                    "argv",
-                    title.split(' ').map(|s| s.into()).collect::<Vec<String>>(),
-                )?;
-
-                let kwargs = pyo3::types::PyDict::new(py);
-                kwargs.set_item("css_url", css_url)?;
-                p.call_method("output_html", ("-", root_differ), Some(&kwargs))?;
-                let html = f.call_method0("getvalue")?;
-
-                sysm.setattr("stdout", old_stdout)?;
-                sysm.setattr("argv", old_argv)?;
-
-                Ok(html.extract::<String>()?)
-            }
-            "text/markdown" => {
-                let m = py.import("diffoscope.presenters.markdown")?;
-                let out = std::sync::Arc::new(pyo3::types::PyList::empty(py).unbind());
-
-                let println_out = out.clone();
-
-                // Define a python callback that can take a string or no arguments
-                // and append it to the out list
-                let println = move |args: &Bound<pyo3::types::PyTuple>,
-                                    _kwargs: Option<&Bound<pyo3::types::PyDict>>|
-                      -> pyo3::PyResult<()> {
-                    let s = if args.len() == 1 {
-                        args.get_item(0).unwrap().extract::<String>()?
-                    } else {
-                        "".to_string()
-                    };
-                    Python::attach(|py| println_out.call_method1(py, "append", (s,)))?;
-                    Ok(())
-                };
-
-                let pyprintln = pyo3::types::PyCFunction::new_closure(py, None, None, println)?;
-
-                let presenter = m.getattr("MarkdownTextPresenter")?.call1((pyprintln,))?;
-                presenter.call_method1("start", (root_differ,))?;
-                Ok(out.extract::<Vec<String>>(py)?.join("\n"))
-            }
-            "text/plain" => {
-                let m = py.import("diffoscope.presenters.text")?;
-                let out = pyo3::types::PyList::empty(py);
-
-                let presenter = m
-                    .getattr("TextPresenter")?
-                    .call1((out.getattr("append")?, false))?;
-                presenter.call_method1("start", (root_differ,))?;
-
-                Ok(out.extract::<Vec<String>>()?.join("\n"))
-            }
-            _ => Err(pyo3::exceptions::PyValueError::new_err(
-                "Invalid content type",
-            )),
-        }
-    })
-}
-
-/// Run diffoscope on two binaries
-///
-/// # Arguments
-/// * `old_binaries` - A list of tuples containing the name and path of the old binaries
-/// * `new_binaries` - A list of tuples containing the name and path of the new binaries
-/// * `timeout` - The maximum time to run diffoscope
-/// * `memory_limit` - The maximum memory to use
-/// * `diffoscope_command` - The command to run diffoscope
+/// Diff each `(old_name, old_path)` against its positional counterpart
+/// in `new_binaries`, returning a single wrapper `DiffoscopeOutput`.
 pub async fn run_diffoscope(
     old_binaries: &[(&str, &str)],
     new_binaries: &[(&str, &str)],
@@ -437,17 +151,17 @@ pub async fn run_diffoscope(
 
     for ((old_name, old_path), (new_name, new_path)) in old_binaries.iter().zip(new_binaries.iter())
     {
-        let sub = _run_diffoscope(
+        if let Some(mut sub) = run_diffoscope_one(
             old_path,
             new_path,
             diffoscope_command,
             timeout,
-            memory_limit.map(|mb| mb as usize),
+            memory_limit,
         )
-        .await?;
-        if let Some(mut sub) = sub {
-            sub.source1 = old_name.into();
-            sub.source2 = new_name.into();
+        .await?
+        {
+            sub.source1 = (*old_name).into();
+            sub.source2 = (*new_name).into();
             sub.diffoscope_json_version = None;
             ret.details.push(sub);
         }
@@ -455,20 +169,237 @@ pub async fn run_diffoscope(
     Ok(ret)
 }
 
+/// Reduce source paths to their basename, matching Python's `filter_irrelevant`.
+pub fn filter_irrelevant(diff: &mut DiffoscopeOutput) {
+    if let Some(name) = diff.source1.file_name() {
+        diff.source1 = name.into();
+    }
+    if let Some(name) = diff.source2.file_name() {
+        diff.source2 = name.into();
+    }
+}
+
+/// Rewrite version strings inside `-`/`+` lines of a unified diff to `display_version`.
+pub fn filter_boring_udiff(
+    udiff: &str,
+    old_version: &str,
+    new_version: &str,
+    display_version: &str,
+) -> std::result::Result<String, patchkit::unified::Error> {
+    // patchkit's hunk parser needs lines with their terminators to
+    // round-trip: HunkLine::as_bytes() emits `\ No newline at end of
+    // file` for any line that doesn't end in `\n`. std's str::lines()
+    // strips terminators, so we use patchkit's splitlines instead.
+    let mut lines = splitlines(udiff.as_bytes());
+    let mut out = String::new();
+    for hunk in iter_hunks(&mut lines) {
+        let mut hunk = hunk?;
+        for line in &mut hunk.lines {
+            match line {
+                HunkLine::RemoveLine(bytes) => {
+                    if let Ok(s) = std::str::from_utf8(bytes) {
+                        *bytes = s.replace(old_version, display_version).into_bytes();
+                    }
+                }
+                HunkLine::InsertLine(bytes) => {
+                    if let Ok(s) = std::str::from_utf8(bytes) {
+                        *bytes = s.replace(new_version, display_version).into_bytes();
+                    }
+                }
+                HunkLine::ContextLine(_) => {}
+            }
+        }
+        out.push_str(&String::from_utf8_lossy(&hunk.as_bytes()));
+    }
+    Ok(out)
+}
+
+fn filter_boring_detail(
+    detail: &mut DiffoscopeOutput,
+    old_version: &str,
+    new_version: &str,
+    display_version: &str,
+) -> bool {
+    if let Some(udiff) = &detail.unified_diff {
+        match filter_boring_udiff(udiff, old_version, new_version, display_version) {
+            Ok(filtered) => detail.unified_diff = Some(filtered),
+            Err(e) => {
+                warn!("Error parsing hunk: {}", e);
+                detail.unified_diff = None;
+            }
+        }
+    }
+    if let Some(s) = detail.source1.to_str() {
+        detail.source1 = s.replace(old_version, display_version).into();
+    }
+    if let Some(s) = detail.source2.to_str() {
+        detail.source2 = s.replace(new_version, display_version).into();
+    }
+    if !detail.details.is_empty() {
+        detail.details = std::mem::take(&mut detail.details)
+            .into_iter()
+            .filter_map(|mut sub| {
+                filter_boring_detail(&mut sub, old_version, new_version, display_version)
+                    .then_some(sub)
+            })
+            .collect();
+    }
+    detail
+        .unified_diff
+        .as_deref()
+        .is_some_and(|s| !s.is_empty())
+        || !detail.details.is_empty()
+}
+
+/// Drop `Date`/`Distribution`/`Version` changes-file diffs and
+/// `.buildinfo` diffs; rewrite version strings in the rest.
+///
+/// Argument order matches Python: `(old_version, new_version, old_campaign, new_campaign)`.
+/// `old_campaign` and `new_campaign` are accepted for API parity but unused.
+pub fn filter_boring(
+    diff: &mut DiffoscopeOutput,
+    old_version: &str,
+    new_version: &str,
+    _old_campaign: &str,
+    _new_campaign: &str,
+) {
+    const BORING_FIELDS: &[&str] = &["Date", "Distribution", "Version"];
+    let display_version = new_version.rsplit_once('~').map_or(new_version, |(v, _)| v);
+    diff.details = std::mem::take(&mut diff.details)
+        .into_iter()
+        .filter_map(|mut detail| {
+            let s1 = detail.source1.to_str().unwrap_or("");
+            let s2 = detail.source2.to_str().unwrap_or("");
+            if BORING_FIELDS.contains(&s1) && BORING_FIELDS.contains(&s2) {
+                return None;
+            }
+            if s1.ends_with(".buildinfo") && s2.ends_with(".buildinfo") {
+                return None;
+            }
+            filter_boring_detail(&mut detail, old_version, new_version, display_version)
+                .then_some(detail)
+        })
+        .collect();
+}
+
+/// Render a diffoscope tree using the diffoscope Python presenters.
+pub fn format_diffoscope(
+    diff: &DiffoscopeOutput,
+    content_type: &str,
+    title: &str,
+    css_url: Option<&str>,
+) -> Result<String, DiffoscopeError> {
+    if content_type == "application/json" {
+        return Ok(serde_json::to_string(diff)?);
+    }
+
+    Ok(Python::attach(|py| -> PyResult<String> {
+        let reader = py
+            .import("diffoscope.readers.json")?
+            .getattr("JSONReaderV1")?
+            .call0()?;
+        let json_str = serde_json::to_string(diff).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("JSON serialization failed: {e}"))
+        })?;
+        let py_dict = py.import("json")?.call_method1("loads", (json_str,))?;
+        let root = reader.call_method1("load_rec", (py_dict,))?;
+
+        match content_type {
+            "text/html" => {
+                let presenter = py
+                    .import("diffoscope.presenters.html")?
+                    .getattr("HTMLPresenter")?
+                    .call0()?;
+                let sys = py.import("sys")?;
+                let old_stdout = sys.getattr("stdout")?;
+                let buf = py.import("io")?.getattr("StringIO")?.call0()?;
+                sys.setattr("stdout", buf.clone())?;
+                let old_argv = sys.getattr("argv")?;
+                sys.setattr(
+                    "argv",
+                    title.split(' ').map(String::from).collect::<Vec<_>>(),
+                )?;
+                let kwargs = pyo3::types::PyDict::new(py);
+                kwargs.set_item("css_url", css_url)?;
+                let result = presenter.call_method("output_html", ("-", root), Some(&kwargs));
+                sys.setattr("stdout", old_stdout)?;
+                sys.setattr("argv", old_argv)?;
+                result?;
+                Ok(buf.call_method0("getvalue")?.extract::<String>()?)
+            }
+            "text/markdown" => {
+                let out = std::sync::Arc::new(pyo3::types::PyList::empty(py).unbind());
+                let sink = out.clone();
+                let printfn = move |args: &Bound<pyo3::types::PyTuple>,
+                                    _kw: Option<&Bound<pyo3::types::PyDict>>|
+                      -> PyResult<()> {
+                    let s = if args.len() == 1 {
+                        args.get_item(0)?.extract::<String>()?
+                    } else {
+                        String::new()
+                    };
+                    Python::attach(|py| sink.call_method1(py, "append", (s + "\n",)))?;
+                    Ok(())
+                };
+                let cb = pyo3::types::PyCFunction::new_closure(py, None, None, printfn)?;
+                let presenter = py
+                    .import("diffoscope.presenters.markdown")?
+                    .getattr("MarkdownTextPresenter")?
+                    .call1((cb,))?;
+                presenter.call_method1("start", (root,))?;
+                Ok(out.extract::<Vec<String>>(py)?.concat())
+            }
+            "text/plain" => {
+                let out = pyo3::types::PyList::empty(py);
+                let presenter = py
+                    .import("diffoscope.presenters.text")?
+                    .getattr("TextPresenter")?
+                    .call1((out.getattr("append")?, false))?;
+                presenter.call_method1("start", (root,))?;
+                Ok(out
+                    .extract::<Vec<String>>()?
+                    .into_iter()
+                    .map(|s| s + "\n")
+                    .collect::<String>())
+            }
+            _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "unknown content type {content_type:?}"
+            ))),
+        }
+    })?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn leaf(source: &str) -> DiffoscopeOutput {
+        DiffoscopeOutput {
+            diffoscope_json_version: None,
+            source1: source.into(),
+            source2: source.into(),
+            comments: vec![],
+            unified_diff: None,
+            details: vec![DiffoscopeOutput {
+                diffoscope_json_version: None,
+                source1: "leaf".into(),
+                source2: "leaf".into(),
+                comments: vec![],
+                unified_diff: Some("@@ -1,1 +1,1 @@\n-a\n+b\n".to_string()),
+                details: vec![],
+            }],
+        }
+    }
+
     #[tokio::test]
-    async fn test_run() {
+    async fn run_diffoscope_produces_expected_tree() {
         let td = tempfile::tempdir().unwrap();
         let old = td.path().join("old.json");
         let new = td.path().join("new.json");
-
         std::fs::write(&old, r#"{"foo": "bar"}"#).unwrap();
         std::fs::write(&new, r#"{"foo": "baz"}"#).unwrap();
 
-        let diff = super::run_diffoscope(
+        let diff = run_diffoscope(
             &[("old", old.to_str().unwrap())],
             &[("new", new.to_str().unwrap())],
             None,
@@ -492,25 +423,27 @@ mod tests {
                     source2: "new".into(),
                     comments: vec![],
                     unified_diff: None,
-                    details: vec![
-                        DiffoscopeOutput {
-                            diffoscope_json_version: None,
-                            source1: "Pretty-printed".into(),
-                            source2: "Pretty-printed".into(),
-                            comments: vec!["Similarity: 0.5%".to_string(), "Differences: {\"'foo'\": \"'baz'\"}".to_string()],
-                            unified_diff: Some("@@ -1,3 +1,3 @@\n {\n-    \"foo\": \"bar\"\n+    \"foo\": \"baz\"\n }\n".to_string()),
-                            details: vec![]
-                        }
-                    ]
-
+                    details: vec![DiffoscopeOutput {
+                        diffoscope_json_version: None,
+                        source1: "Pretty-printed".into(),
+                        source2: "Pretty-printed".into(),
+                        comments: vec![
+                            "Similarity: 0.5%".to_string(),
+                            "Differences: {\"'foo'\": \"'baz'\"}".to_string(),
+                        ],
+                        unified_diff: Some(
+                            "@@ -1,3 +1,3 @@\n {\n-    \"foo\": \"bar\"\n+    \"foo\": \"baz\"\n }\n"
+                                .to_string()
+                        ),
+                        details: vec![],
+                    }]
                 }]
             }
         );
     }
 
-    #[test]
-    fn test_format_markdown() {
-        let diff = DiffoscopeOutput {
+    fn sample_diff() -> DiffoscopeOutput {
+        DiffoscopeOutput {
             diffoscope_json_version: Some(1),
             source1: "old version".into(),
             source2: "new version".into(),
@@ -540,85 +473,27 @@ mod tests {
                     details: vec![],
                 }],
             }],
-        };
-
-        let markdown = format_diffoscope(&diff, "text/markdown", "title", None).unwrap();
-        assert_eq!(markdown, "# Comparing `old version` & `new version`\n\n## Comparing `old` & `new`\n\n```diff\n@@ -1,3 +1,3 @@\n {\n-    \"foo\": \"bar\"\n+    \"foo\": \"baz\"\n }\n```\n\n### Pretty-printed\n\n * *Similarity: 0.5%*\n\n * *Differences: {\"'foo'\": \"'baz'\"}*\n\n```diff\n@@ -1,3 +1,3 @@\n {\n-    \"foo\": \"bar\"\n+    \"foo\": \"baz\"\n }\n```\n");
+        }
     }
 
     #[test]
-    fn test_format_html() {
-        let diff = DiffoscopeOutput {
-            diffoscope_json_version: Some(1),
-            source1: "old version".into(),
-            source2: "new version".into(),
-            comments: vec![],
-            unified_diff: None,
-            details: vec![DiffoscopeOutput {
-                diffoscope_json_version: None,
-                source1: "old".into(),
-                source2: "new".into(),
-                comments: vec![],
-                unified_diff: Some(
-                    "@@ -1,3 +1,3 @@\n {\n-    \"foo\": \"bar\"\n+    \"foo\": \"baz\"\n }\n"
-                        .to_string(),
-                ),
-                details: vec![DiffoscopeOutput {
-                    diffoscope_json_version: None,
-                    source1: "Pretty-printed".into(),
-                    source2: "Pretty-printed".into(),
-                    comments: vec![
-                        "Similarity: 0.5%".to_string(),
-                        "Differences: {\"'foo'\": \"'baz'\"}".to_string(),
-                    ],
-                    unified_diff: Some(
-                        "@@ -1,3 +1,3 @@\n {\n-    \"foo\": \"bar\"\n+    \"foo\": \"baz\"\n }\n"
-                            .to_string(),
-                    ),
-                    details: vec![],
-                }],
-            }],
-        };
+    fn format_markdown_matches_snapshot() {
+        let md = format_diffoscope(&sample_diff(), "text/markdown", "title", None).unwrap();
+        assert_eq!(
+            md,
+            "# Comparing `old version` & `new version`\n\n## Comparing `old` & `new`\n\n```diff\n@@ -1,3 +1,3 @@\n {\n-    \"foo\": \"bar\"\n+    \"foo\": \"baz\"\n }\n```\n\n### Pretty-printed\n\n * *Similarity: 0.5%*\n\n * *Differences: {\"'foo'\": \"'baz'\"}*\n\n```diff\n@@ -1,3 +1,3 @@\n {\n-    \"foo\": \"bar\"\n+    \"foo\": \"baz\"\n }\n```\n\n"
+        );
+    }
 
-        let html = format_diffoscope(&diff, "text/html", "title", None).unwrap();
+    #[test]
+    fn format_html_starts_with_doctype() {
+        let html = format_diffoscope(&sample_diff(), "text/html", "title", None).unwrap();
         assert!(html.starts_with("<!DOCTYPE html>"));
     }
 
     #[test]
-    fn test_format_json() {
-        let diff = DiffoscopeOutput {
-            diffoscope_json_version: Some(1),
-            source1: "old version".into(),
-            source2: "new version".into(),
-            comments: vec![],
-            unified_diff: None,
-            details: vec![DiffoscopeOutput {
-                diffoscope_json_version: None,
-                source1: "old".into(),
-                source2: "new".into(),
-                comments: vec![],
-                unified_diff: Some(
-                    "@@ -1,3 +1,3 @@\n {\n-    \"foo\": \"bar\"\n+    \"foo\": \"baz\"\n }\n"
-                        .to_string(),
-                ),
-                details: vec![DiffoscopeOutput {
-                    diffoscope_json_version: None,
-                    source1: "Pretty-printed".into(),
-                    source2: "Pretty-printed".into(),
-                    comments: vec![
-                        "Similarity: 0.5%".to_string(),
-                        "Differences: {\"'foo'\": \"'baz'\"}".to_string(),
-                    ],
-                    unified_diff: Some(
-                        "@@ -1,3 +1,3 @@\n {\n-    \"foo\": \"bar\"\n+    \"foo\": \"baz\"\n }\n"
-                            .to_string(),
-                    ),
-                    details: vec![],
-                }],
-            }],
-        };
-
-        let json = format_diffoscope(&diff, "application/json", "title", None).unwrap();
+    fn format_json_is_json() {
+        let json = format_diffoscope(&sample_diff(), "application/json", "title", None).unwrap();
         assert_eq!(
             json,
             "{\"diffoscope-json-version\":1,\"source1\":\"old version\",\"source2\":\"new version\",\"unified_diff\":null,\"details\":[{\"source1\":\"old\",\"source2\":\"new\",\"unified_diff\":\"@@ -1,3 +1,3 @@\\n {\\n-    \\\"foo\\\": \\\"bar\\\"\\n+    \\\"foo\\\": \\\"baz\\\"\\n }\\n\",\"details\":[{\"source1\":\"Pretty-printed\",\"source2\":\"Pretty-printed\",\"comments\":[\"Similarity: 0.5%\",\"Differences: {\\\"'foo'\\\": \\\"'baz'\\\"}\"],\"unified_diff\":\"@@ -1,3 +1,3 @@\\n {\\n-    \\\"foo\\\": \\\"bar\\\"\\n+    \\\"foo\\\": \\\"baz\\\"\\n }\\n\"}]}]}"
@@ -626,43 +501,122 @@ mod tests {
     }
 
     #[test]
-    fn test_format_text() {
-        let diff = DiffoscopeOutput {
+    fn format_text_matches_snapshot() {
+        let text = format_diffoscope(&sample_diff(), "text/plain", "title", None).unwrap();
+        assert_eq!(
+            text,
+            "--- old version\n+++ new version\n│   --- old\n├── +++ new\n│ @@ -1,3 +1,3 @@\n│  {\n│ -    \"foo\": \"bar\"\n│ +    \"foo\": \"baz\"\n│  }\n│ ├── Pretty-printed\n│ │┄ Similarity: 0.5%\n│ │┄ Differences: {\"'foo'\": \"'baz'\"}\n│ │ @@ -1,3 +1,3 @@\n│ │  {\n│ │ -    \"foo\": \"bar\"\n│ │ +    \"foo\": \"baz\"\n│ │  }\n"
+        );
+    }
+
+    #[test]
+    fn filter_irrelevant_strips_directory() {
+        let mut diff = DiffoscopeOutput {
             diffoscope_json_version: Some(1),
-            source1: "old version".into(),
-            source2: "new version".into(),
+            source1: "/tmp/old/build_1.0.deb".into(),
+            source2: "/tmp/new/build_1.1.deb".into(),
+            comments: vec![],
+            unified_diff: None,
+            details: vec![],
+        };
+        filter_irrelevant(&mut diff);
+        assert_eq!(diff.source1, PathBuf::from("build_1.0.deb"));
+        assert_eq!(diff.source2, PathBuf::from("build_1.1.deb"));
+    }
+
+    #[test]
+    fn filter_boring_udiff_rewrites_versions() {
+        let udiff = "@@ -1,2 +1,2 @@\n context\n-pkg_1.0.0.deb\n+pkg_1.1.0.deb\n";
+        let out = filter_boring_udiff(udiff, "1.0.0", "1.1.0", "X.Y.Z").unwrap();
+        assert_eq!(
+            out,
+            "@@ -1,2 +1,2 @@\n context\n-pkg_X.Y.Z.deb\n+pkg_X.Y.Z.deb\n"
+        );
+    }
+
+    #[test]
+    fn filter_boring_udiff_leaves_unrelated_lines() {
+        let udiff = "@@ -1,3 +1,3 @@\n line a\n-foo\n+bar\n line b\n";
+        let out = filter_boring_udiff(udiff, "1.0.0", "1.1.0", "X.Y.Z").unwrap();
+        assert_eq!(out, udiff);
+    }
+
+    #[test]
+    fn filter_boring_drops_date_version_distribution() {
+        let mut diff = DiffoscopeOutput {
+            diffoscope_json_version: Some(1),
+            source1: "a.changes".into(),
+            source2: "b.changes".into(),
+            comments: vec![],
+            unified_diff: None,
+            details: vec![
+                leaf("Date"),
+                leaf("Version"),
+                leaf("Distribution"),
+                leaf("Description"),
+            ],
+        };
+        filter_boring(&mut diff, "1.0", "1.1", "old", "new");
+        assert_eq!(diff.details.len(), 1);
+        assert_eq!(diff.details[0].source1, PathBuf::from("Description"));
+    }
+
+    #[test]
+    fn filter_boring_drops_buildinfo() {
+        let buildinfo = DiffoscopeOutput {
+            diffoscope_json_version: None,
+            source1: "pkg_1.0_amd64.buildinfo".into(),
+            source2: "pkg_1.1_amd64.buildinfo".into(),
             comments: vec![],
             unified_diff: None,
             details: vec![DiffoscopeOutput {
                 diffoscope_json_version: None,
-                source1: "old".into(),
-                source2: "new".into(),
+                source1: "stub".into(),
+                source2: "stub".into(),
                 comments: vec![],
-                unified_diff: Some(
-                    "@@ -1,3 +1,3 @@\n {\n-    \"foo\": \"bar\"\n+    \"foo\": \"baz\"\n }\n"
-                        .to_string(),
-                ),
-                details: vec![DiffoscopeOutput {
-                    diffoscope_json_version: None,
-                    source1: "Pretty-printed".into(),
-                    source2: "Pretty-printed".into(),
-                    comments: vec![
-                        "Similarity: 0.5%".to_string(),
-                        "Differences: {\"'foo'\": \"'baz'\"}".to_string(),
-                    ],
-                    unified_diff: Some(
-                        "@@ -1,3 +1,3 @@\n {\n-    \"foo\": \"bar\"\n+    \"foo\": \"baz\"\n }\n"
-                            .to_string(),
-                    ),
-                    details: vec![],
-                }],
+                unified_diff: Some("@@ -1,1 +1,1 @@\n-a\n+b\n".to_string()),
+                details: vec![],
             }],
         };
+        let deb = DiffoscopeOutput {
+            source1: "pkg_1.0_amd64.deb".into(),
+            source2: "pkg_1.1_amd64.deb".into(),
+            ..buildinfo.clone()
+        };
+        let mut diff = DiffoscopeOutput {
+            diffoscope_json_version: Some(1),
+            source1: "a.changes".into(),
+            source2: "b.changes".into(),
+            comments: vec![],
+            unified_diff: None,
+            details: vec![buildinfo, deb],
+        };
+        filter_boring(&mut diff, "1.0", "1.1", "_", "_");
+        assert_eq!(diff.details.len(), 1);
+        assert_eq!(diff.details[0].source1, PathBuf::from("pkg_1.1_amd64.deb"));
+        assert_eq!(diff.details[0].source2, PathBuf::from("pkg_1.1_amd64.deb"));
+    }
 
-        let text = format_diffoscope(&diff, "text/plain", "title", None).unwrap();
-        assert_eq!(
-            text,
-            "--- old version\n+++ new version\n│   --- old\n├── +++ new\n│ @@ -1,3 +1,3 @@\n│  {\n│ -    \"foo\": \"bar\"\n│ +    \"foo\": \"baz\"\n│  }\n│ ├── Pretty-printed\n│ │┄ Similarity: 0.5%\n│ │┄ Differences: {\"'foo'\": \"'baz'\"}\n│ │ @@ -1,3 +1,3 @@\n│ │  {\n│ │ -    \"foo\": \"bar\"\n│ │ +    \"foo\": \"baz\"\n│ │  }"
-        );
+    #[test]
+    fn filter_boring_strips_tilde_suffix_for_display_version() {
+        let mut diff = DiffoscopeOutput {
+            diffoscope_json_version: Some(1),
+            source1: "a.changes".into(),
+            source2: "b.changes".into(),
+            comments: vec![],
+            unified_diff: None,
+            details: vec![DiffoscopeOutput {
+                diffoscope_json_version: None,
+                source1: "pkg_1.0.0_all.deb".into(),
+                source2: "pkg_1.1.0~bpo12+1_all.deb".into(),
+                comments: vec![],
+                unified_diff: Some("@@ -1,1 +1,1 @@\n-1.0.0\n+1.1.0~bpo12+1\n".to_string()),
+                details: vec![],
+            }],
+        };
+        filter_boring(&mut diff, "1.0.0", "1.1.0~bpo12+1", "_", "_");
+        assert_eq!(diff.details.len(), 1);
+        assert_eq!(diff.details[0].source1, PathBuf::from("pkg_1.1.0_all.deb"));
+        assert_eq!(diff.details[0].source2, PathBuf::from("pkg_1.1.0_all.deb"));
     }
 }

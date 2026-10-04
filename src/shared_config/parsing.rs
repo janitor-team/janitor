@@ -151,6 +151,7 @@ mod tests {
     // Demonstration of simplified config using the helper functions
     #[derive(Debug, Clone)]
     struct ExampleConfig {
+        #[allow(dead_code)] // demonstration struct; field only populated in tests
         base: ServiceConfig,
         service_name: String,
         debug_mode: bool,

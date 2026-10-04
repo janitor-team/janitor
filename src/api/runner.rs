@@ -1,13 +1,13 @@
 /// Sent when the publish-status for a run changes.
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
-struct PublishStatusPubsub {
+pub struct PublishStatusPubsub {
     /// The codebase.
-    codebase: String,
+    pub codebase: String,
 
     /// The run ID.
-    run_id: crate::RunId,
+    pub run_id: crate::RunId,
 
     /// The new publish-status.
     #[serde(rename = "publish-status")]
-    publish_status: crate::api::RunPublishStatus,
+    pub publish_status: crate::api::RunPublishStatus,
 }

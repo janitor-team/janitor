@@ -39,10 +39,7 @@ import aioredlock
 import aiozipkin
 import asyncpg
 import asyncpg.pool
-import breezy.plugins.github  # noqa: F401
-import breezy.plugins.gitlab  # noqa: F401
-import breezy.plugins.launchpad  # noqa: F401
-import gpg
+import breezy.plugin
 from aiohttp import ClientSession, web
 from aiohttp.web_middlewares import normalize_path_middleware
 from aiohttp_apispec import setup_aiohttp_apispec
@@ -78,7 +75,7 @@ from silver_platter import (
     _open_branch as open_branch,
 )
 
-from . import set_user_agent, state
+from . import set_user_agent, state, utcnow
 from ._launchpad import override_launchpad_consumer_name
 from ._publish import (
     BucketRateLimited,
@@ -97,6 +94,7 @@ from .schedule import CandidateUnavailable, do_schedule, do_schedule_control
 from .vcs import VcsManager, get_vcs_managers_from_config
 
 override_launchpad_consumer_name()
+breezy.plugin.load_plugins()
 
 
 EXISTING_RUN_RETRY_INTERVAL = 30
@@ -350,7 +348,7 @@ class PublishWorker:
             "allow_create_proposal": allow_create_proposal,
             "external_url": self.external_url,
             "differ_url": self.differ_url,
-            "revision": revision.decode("utf-8"),
+            "revision_id": revision.decode("utf-8"),
             "reviewers": reviewers,
             "commit_message_template": commit_message_template,
             "title_template": title_template,
@@ -362,7 +360,7 @@ class PublishWorker:
         else:
             request["tags"] = {}
 
-        args = [sys.executable, "-m", "janitor.publish_one"]
+        args = ["janitor-publish-one"]
 
         if self.template_env_path:
             args.append(f"--template-env-path={self.template_env_path}")
@@ -459,14 +457,14 @@ async def consider_publish_run(
         conn, run.revision, {"differ-unreachable"}
     )
     next_try_time = calculate_next_try_time(run.finish_time, attempt_count)
-    if datetime.utcnow() < next_try_time:
+    if utcnow() < next_try_time:
         logger.info(
             "Not attempting to push %s / %s (%s) due to "
             "exponential backoff. Next try in %s.",
             run.codebase,
             run.campaign,
             run.id,
-            next_try_time - datetime.utcnow(),
+            next_try_time - utcnow(),
             extra={"run_id": run.id},
         )
         exponential_backoff_count.inc()
@@ -992,7 +990,7 @@ async def publish_from_policy(
                 )
                 if (
                     last_published is not None
-                    and (datetime.utcnow() - last_published).days < max_frequency_days
+                    and (utcnow() - last_published).days < max_frequency_days
                 ):
                     logger.debug(
                         "Not creating proposal for %s/%s: "
@@ -1100,7 +1098,8 @@ async def publish_from_policy(
             publish_result.proposal_url if publish_result.proposal_url else None
         ),
         publish_id=publish_id,
-        target_branch_url=publish_result.target_branch_url,
+        # publish_result only carries this on success, and the column is NOT NULL.
+        target_branch_url=publish_result.target_branch_url or target_branch_url,
         target_branch_web_url=publish_result.target_branch_web_url,
         requester=requester,
         run_id=run.id,
@@ -1112,7 +1111,7 @@ async def publish_from_policy(
         pass
 
     if code == "success":
-        publish_delay = datetime.utcnow() - run.finish_time
+        publish_delay = utcnow() - run.finish_time
         publish_latency.observe(publish_delay.total_seconds())
     else:
         publish_delay = None
@@ -1292,7 +1291,7 @@ async def publish_and_store(
             run_id=run.id,
         )
 
-        publish_delay = datetime.utcnow() - run.finish_time
+        publish_delay = utcnow() - run.finish_time
         publish_latency.observe(publish_delay.total_seconds())
 
         publish_entry = {
@@ -1422,7 +1421,7 @@ async def handle_policy_get(request):
                     "mode": p["mode"],
                     "max_frequency_days": p["frequency_days"],
                 }
-                for p in row["publish"]
+                for p in row["per_branch_policy"]
             },
         }
     )
@@ -1627,11 +1626,14 @@ async def handle_publish_id(request):
     publish_id = request.match_info["publish_id"]
     async with request.app["db"].acquire() as conn:
         row = await conn.fetchrow(
+            "SELECT * FROM publish WHERE id = $1",
             publish_id,
         )
-        if row:
+        if row is None:
             raise web.HTTPNotFound(text=f"no such publish: {publish_id}")
-    return web.json_response({})
+        result = dict(row)
+        result["timestamp"] = result["timestamp"].isoformat()
+    return web.json_response(result)
 
 
 @routes.post("/{campaign}/{codebase}/publish", name="publish")
@@ -1714,7 +1716,11 @@ async def publish_request(request):
 @routes.get("/credentials", name="credentials")
 async def credentials_request(request):
     ssh_keys = []
-    for entry in os.scandir(os.path.expanduser("~/.ssh")):
+    try:
+        ssh_dir_entries = list(os.scandir(os.path.expanduser("~/.ssh")))
+    except (FileNotFoundError, NotADirectoryError):
+        ssh_dir_entries = []
+    for entry in ssh_dir_entries:
         if entry.name.endswith(".pub"):
             with open(entry.path) as f:
                 ssh_keys.extend([line.strip() for line in f.readlines()])
@@ -1775,6 +1781,10 @@ async def create_app(
         middlewares=[trailing_slash_redirect, state.asyncpg_error_middleware]
     )
     app.router.add_routes(routes)
+    # python3-gpg is only packaged for the system Python, so import it here
+    # rather than at module scope; the rest of this module works without it.
+    import gpg
+
     app["gpg"] = gpg.Context(armor=True)
     app["publish_worker"] = publish_worker
     app["vcs_managers"] = vcs_managers
@@ -2087,7 +2097,7 @@ WHERE run.id = $1
 
     next_try_time = calculate_next_try_time(run["finish_time"], attempt_count)
     ret["backoff"] = {
-        "result": datetime.utcnow() >= next_try_time,
+        "result": utcnow() >= next_try_time,
         "details": {
             "attempt_count": attempt_count,
             "next_try_time": next_try_time.isoformat(),
@@ -2142,7 +2152,7 @@ async def process_queue_loop(
     require_binary_diff: bool = False,
 ):
     while True:
-        cycle_start = datetime.utcnow()
+        cycle_start = utcnow()
         async with db.acquire() as conn:
             await check_existing(
                 conn=conn,
@@ -2166,7 +2176,7 @@ async def process_queue_loop(
                 push_limit=push_limit,
                 require_binary_diff=require_binary_diff,
             )
-        cycle_duration = datetime.utcnow() - cycle_start
+        cycle_duration = utcnow() - cycle_start
         to_wait = max(0, interval - cycle_duration.total_seconds())
         logger.info("Waiting %d seconds for next cycle.", to_wait)
         if to_wait > 0:
@@ -2811,7 +2821,7 @@ applied independently.
             return True
 
     if last_run.result_code != "success":
-        last_run_age = datetime.utcnow() - last_run.finish_time
+        last_run_age = utcnow() - last_run.finish_time
         if last_run.failure_transient:
             logger.info(
                 "%s: Last run failed with transient error (%s). Rescheduling.",
@@ -3258,12 +3268,12 @@ async def check_existing(
     for forge, mp, status in iter_all_mps():
         status_count[status] += 1
         if forge in forge_rate_limiter:
-            if datetime.utcnow() < forge_rate_limiter[forge]:
-                del forge_rate_limiter[forge]
-            else:
+            if utcnow() < forge_rate_limiter[forge]:
                 forge_rate_limited_count.labels(forge=str(forge)).inc()
                 was_forge_ratelimited = True
                 continue
+            else:
+                del forge_rate_limiter[forge]
         try:
             modified = await check_existing_mp(
                 conn=conn,
@@ -3292,7 +3302,7 @@ async def check_existing(
                 retry_after = timedelta(minutes=30)
             else:
                 retry_after = timedelta(seconds=e.retry_after)
-            forge_rate_limiter[forge] = datetime.utcnow() + retry_after
+            forge_rate_limiter[forge] = utcnow() + retry_after
             continue
         except UnexpectedHttpStatus as e:
             logger.warning(

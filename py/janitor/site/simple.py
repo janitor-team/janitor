@@ -125,7 +125,10 @@ async def handle_merge_proposals(request):
 async def handle_merge_proposal(request):
     from .merge_proposals import write_merge_proposal
 
-    url = request.query["url"]
+    try:
+        url = request.query["url"]
+    except KeyError as e:
+        raise web.HTTPBadRequest(text="no url specified") from e
     return await write_merge_proposal(request.app["pool"], url)
 
 
@@ -345,7 +348,7 @@ async def process_webhook(request, db):
     async for codebase, branch_url in parse_webhook(request, db):
         urls.append(branch_url)
         if codebase is not None:
-            codebase[codebase] = branch_url
+            codebases[codebase] = branch_url
 
     async with db.acquire() as conn:
         for codebase, branch_url in codebases.items():
@@ -373,7 +376,7 @@ async def handle_webhook(request):
             content_type="text/html",
             text=text,
         )
-    return await process_webhook(request, request.app["db"])
+    return await process_webhook(request, request.app.database)
 
 
 async def create_app(

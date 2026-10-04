@@ -75,7 +75,7 @@ dependencies = [
     "aiozipkin",
     "asyncpg",
     "backoff",
-    "breezy[git,launchpad,workspace]",
+    "breezy[git,launchpad,workspace]<4",
     "bs4",
     "dulwich",
     #"gpg", # Using python3-gpg instead ~ https://github.com/jelmer/janitor/issues/931
@@ -252,6 +252,8 @@ select = [
     "I",
     "B",
     "UP",
+    "DTZ003",
+    "DTZ004",
 ]
 ignore = [
     "ANN001",

@@ -3,8 +3,27 @@ name = "janitor-auto-upload"
 version.workspace = true
 edition.workspace = true
 
+[[bin]]
+name = "janitor-auto-upload"
+path = "src/main.rs"
+
 [dependencies]
-futures = "0.3.31"
 tokio = { workspace = true, features = ["full"] }
-tracing = "0.1.41"
+axum = { workspace = true }
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "tls-rustls"] }
+redis = { workspace = true, features = ["tokio-comp"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2.0"
+prometheus = { version = "0.13", features = ["process"] }
+tempfile = { workspace = true }
 silver-platter = { workspace = true, features = ["debian"] }
+janitor = { path = "..", features = ["debian"] }
+nix = { workspace = true, features = ["fs"] }  # for umask()
+
+[dev-dependencies]
+tower = { workspace = true, features = ["util"] }
+http-body-util = "0.1"

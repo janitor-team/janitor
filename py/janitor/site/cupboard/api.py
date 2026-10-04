@@ -17,7 +17,7 @@
 
 import logging
 import secrets
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import aiozipkin
 import asyncpg
@@ -27,7 +27,7 @@ from aiojobs.aiohttp import setup as setup_aiojobs
 from aiojobs.aiohttp import spawn
 from yarl import URL
 
-from janitor import CAMPAIGN_REGEX
+from janitor import CAMPAIGN_REGEX, utcnow
 
 from .. import check_admin, worker_link_is_global
 from ..setup import setup_logfile_manager, setup_postgres
@@ -105,7 +105,7 @@ AND """
             params.append(description_re)
             where.append(f"description ~ ${len(params)}")
         if min_age:
-            params.append(datetime.utcnow() - timedelta(days=min_age))
+            params.append(utcnow() - timedelta(days=min_age))
             where.append(f"finish_time < ${len(params)}")
     query += " AND ".join(where)
 

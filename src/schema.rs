@@ -5,18 +5,24 @@ pub const CORE_SCHEMA: &str = include_str!("../schema/state.sql");
 pub const DEBIAN_SCHEMA: &str = include_str!("../schema/debian/debian.sql");
 
 #[cfg(feature = "testing")]
-/// Set up a test database with core janitor schema
+/// Set up a test database with core janitor schema.
+///
+/// Uses the simple-query protocol via `raw_sql` so the multi-statement
+/// schema file loads in one round-trip; the prepared-statement path
+/// (`sqlx::query`) errors with "cannot insert multiple commands into
+/// a prepared statement".
 pub async fn setup_test_database(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
-    // Execute the entire schema as one statement - PostgreSQL can handle this
-    sqlx::query(CORE_SCHEMA).execute(pool).await?;
+    use sqlx::Executor;
+    pool.execute(sqlx::raw_sql(CORE_SCHEMA)).await?;
     Ok(())
 }
 
 #[cfg(feature = "testing")]
 /// Set up a test database with Debian extensions
 pub async fn setup_debian_test_database(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+    use sqlx::Executor;
     setup_test_database(pool).await?;
-    sqlx::query(DEBIAN_SCHEMA).execute(pool).await?;
+    pool.execute(sqlx::raw_sql(DEBIAN_SCHEMA)).await?;
     Ok(())
 }
 

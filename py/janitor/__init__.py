@@ -17,6 +17,7 @@
 
 
 import shlex
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.request import build_opener, install_opener
 
@@ -28,6 +29,11 @@ version_string = ".".join(map(str, __version__))
 
 
 _SCHEMA_DIR = Path(__file__).resolve().parent.parent.parent / "schema"
+
+
+def utcnow() -> datetime:
+    """Return the current UTC time as a naive datetime, like the timestamp columns."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def get_core_schema() -> str:

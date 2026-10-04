@@ -1,0 +1,44 @@
+# Git Store Configuration Example
+
+# Path to local git repositories
+local_path = "/srv/git"
+
+# Public URL for the git store
+public_url = "http://localhost:9422"
+
+# Database connection URL
+database_url = "postgresql://janitor:password@localhost/janitor"
+
+# Port to listen on for admin interface
+admin_port = 9421
+
+# Port to listen on for public interface  
+public_port = 9422
+
+# Host to bind to
+host = "0.0.0.0"
+
+# Path to templates directory (optional, will use embedded templates if not set)
+# templates_path = "/srv/git-store/templates"
+
+# Git backend type: "cgi" (default) or "native"
+git_backend = "cgi"
+
+# Enable distributed tracing
+enable_tracing = false
+
+# Prometheus push gateway URL (optional)
+# prometheus_push_gateway = "http://localhost:9091"
+
+# Database table names
+worker_table = "worker"
+codebase_table = "codebase"
+
+# Title for web interface
+title = "Janitor Git Store"
+
+# Maximum diff size in bytes (10MB default)
+max_diff_size = 10485760
+
+# Timeout for git operations in seconds
+git_timeout = 30

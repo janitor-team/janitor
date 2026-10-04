@@ -20,6 +20,8 @@ pub mod schema;
 pub mod security;
 pub mod shared_config;
 pub mod state;
+#[cfg(feature = "testing")]
+pub mod test_utils;
 pub mod tracing;
 pub mod utils;
 pub mod vcs;

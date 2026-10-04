@@ -16,6 +16,19 @@ create_exception!(
     pyo3::exceptions::PyException
 );
 
+/// Runs fut with a timeout (default 60s if timeout is None), converting an
+/// elapsed timeout into a PyErr the same way an artifact_err_to_py_err-mapped
+/// error would be - kept separate from the PyO3/tokio glue in
+/// retrieve_artifacts so it can be exercised directly without a GIL.
+async fn with_timeout<F, T>(timeout: Option<u64>, fut: F) -> Result<T, PyErr>
+where
+    F: std::future::Future<Output = T>,
+{
+    tokio::time::timeout(std::time::Duration::from_secs(timeout.unwrap_or(60)), fut)
+        .await
+        .map_err(|_| PyTimeoutError::new_err("Timeout"))
+}
+
 fn artifact_err_to_py_err(e: janitor::artifacts::Error) -> PyErr {
     match e {
         janitor::artifacts::Error::ServiceUnavailable => {
@@ -99,13 +112,14 @@ impl ArtifactManager {
         })
     }
 
-    #[pyo3(signature = (run_id, local_path, filter_fn=None))]
+    #[pyo3(signature = (run_id, local_path, filter_fn=None, timeout=None))]
     fn retrieve_artifacts<'a>(
         &self,
         py: Python<'a>,
         run_id: &str,
         local_path: &str,
         filter_fn: Option<Py<PyAny>>,
+        timeout: Option<u64>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let run_id = run_id.to_string();
         let local_path = std::path::PathBuf::from(local_path);
@@ -122,9 +136,12 @@ impl ArtifactManager {
             }) as Box<dyn Fn(&str) -> bool + Sync + Send>
         });
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            z.retrieve_artifacts(&run_id, &local_path, filter_fn.as_deref())
-                .await
-                .map_err(artifact_err_to_py_err)
+            with_timeout(
+                timeout,
+                z.retrieve_artifacts(&run_id, &local_path, filter_fn.as_deref()),
+            )
+            .await?
+            .map_err(artifact_err_to_py_err)
         })
     }
 
@@ -248,4 +265,35 @@ pub(crate) fn init(py: Python, module: &Bound<PyModule>) -> PyResult<()> {
     module.add("ServiceUnavailable", py.get_type::<ServiceUnavailable>())?;
     module.add("ArtifactsMissing", py.get_type::<ArtifactsMissing>())?;
     Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn with_timeout_returns_ok_for_a_fast_future() {
+        let result = with_timeout(Some(1), async { 42 }).await;
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn with_timeout_errors_when_the_future_is_slower_than_the_deadline() {
+        let result = with_timeout(Some(0), async {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            42
+        })
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn with_timeout_defaults_to_sixty_seconds_when_none() {
+        // A future well under 60s should resolve normally on the default.
+        let result = with_timeout(None, async {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            7
+        })
+        .await;
+        assert_eq!(result.unwrap(), 7);
+    }
 }

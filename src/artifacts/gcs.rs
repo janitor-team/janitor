@@ -56,10 +56,6 @@ impl GCSArtifactManager {
             control,
         })
     }
-
-    fn bucket_path(&self) -> String {
-        format!("projects/_/buckets/{}", self.bucket_name)
-    }
 }
 
 fn map_gcs_error(e: google_cloud_storage::Error) -> Error {

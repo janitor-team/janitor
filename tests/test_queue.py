@@ -68,3 +68,16 @@ async def test_next_item_campaign_no_match(con):
 
     queue_item, _ = await queue.next_item(campaign="beta")
     assert queue_item is None
+
+
+async def test_iter_queue_limit_zero(con):
+    queue = Queue(con)
+    await con.execute("INSERT INTO codebase (name) VALUES ('foo'), ('bar')")
+    await queue.add(codebase="foo", campaign="mycampaign", command="true")
+    await queue.add(codebase="bar", campaign="mycampaign", command="true")
+    assert sorted([item.codebase async for item in queue.iter_queue()]) == [
+        "bar",
+        "foo",
+    ]
+    assert [item.codebase async for item in queue.iter_queue(limit=1)] == ["foo"]
+    assert [item.codebase async for item in queue.iter_queue(limit=0)] == []

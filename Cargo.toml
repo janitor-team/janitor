@@ -54,6 +54,7 @@ redis = { workspace = true }
 axum = { workspace = true }
 rand = "0.9"
 base64 = ">=0.22,<0.24"
+pyo3 = { workspace = true, features = ["auto-initialize"] }
 
 [workspace.dependencies]
 rslock = { default-features = false, version = "0.7" }
@@ -73,7 +74,7 @@ sqlx-core = { version = "0.9", features = ["chrono"] }
 pyo3 = { version = ">=0.28,<0.30" }
 reqwest = { version = "0.13", features = ["blocking"] }
 pyo3-log = "0.13"
-breezyshim = "0.7.18"
+breezyshim = "0.7.29"
 #breezyshim = { path = "../breezyshim/trunk" }
 log = "0.4"
 env_logger = ">=0.10"
@@ -118,3 +119,4 @@ debian = ["dep:debversion"]
 gcp = ["stackdriver_logger", "gcs"]
 gcs = ["dep:google-cloud-storage", "dep:google-cloud-auth", "dep:google-cloud-gax", "dep:bytes"]
 testing = ["sqlx/postgres", "sqlx/runtime-tokio", "sqlx/tls-rustls"]
+

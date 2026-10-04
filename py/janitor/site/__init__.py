@@ -15,13 +15,13 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
-from datetime import datetime
 from typing import Optional
 
 from aiohttp import ClientConnectorError, web
 from jinja2 import PackageLoader
 from yarl import URL
 
+from janitor import utcnow
 from janitor.vcs import RemoteBzrVcsManager, RemoteGitVcsManager
 
 BUG_ERROR_RESULT_CODES = [
@@ -240,7 +240,7 @@ def worker_link_is_global(url):
 
 
 TEMPLATE_ENV = {
-    "utcnow": datetime.utcnow,
+    "utcnow": utcnow,
     "enumerate": enumerate,
     "format_duration": format_duration,
     "format_timestamp": format_timestamp,

@@ -1,8 +1,76 @@
 [package]
-name = "bzr-store"
+name = "janitor-bzr-store"
 version = "0.1.0"
 edition.workspace = true
+
+[[bin]]
+name = "janitor-bzr-store"
+path = "src/main.rs"
 
 [lib]
 
 [dependencies]
+# Web framework
+axum = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tower = { workspace = true }
+tower-http = { version = "0.5", features = ["fs", "compression-gzip", "trace", "cors", "limit", "timeout"] }
+
+# Database
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "tls-rustls", "uuid", "chrono"] }
+janitor = { path = ".." }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+# Configuration and logging
+toml = "0.8"
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# HTTP and networking
+url = { workspace = true }
+bytes = "1.5"
+
+# Template engine
+tera = "1.19"
+
+# Bazaar branch web browser (replaces Python loggerhead)
+loggerhead = "3"
+
+# Breezy PyO3 shim: initialize on startup so loggerhead's branch access
+# works. Pinned to the same version loggerhead=3 uses.
+breezyshim = { workspace = true }
+
+# URL-encoded form bodies for POST /{codebase}/remotes/{remote}
+serde_urlencoded = "0.7"
+
+# Prometheus metrics (http_requests_total etc.)
+prometheus = "0.14"
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Async utilities
+async-trait = "0.1"
+
+# Path and file utilities
+tempfile = { workspace = true }
+
+# CLI flag parsing
+clap = { workspace = true, features = ["derive", "env"] }
+
+# HTTP Basic auth decoding
+base64 = "0.22"
+
+
+[dev-dependencies]
+# Redeclare janitor with the `testing` feature so integration tests
+# can use janitor::schema::setup_test_database to load schema/state.sql
+# into a real PostgreSQL.
+janitor = { path = "..", features = ["testing"] }
+serial_test = "3"
+# HTTP client for integration tests only.
+reqwest = { workspace = true, features = ["json"] }

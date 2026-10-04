@@ -38,8 +38,8 @@
             <div class="highlight-default notranslate">
                 <div class="highlight">
                     <pre>
-deb "[arch=amd64 signed-by=/etc/apt/keyrings/debian-janitor.gpg]" {{ url.join(URL('/')) }} cs/{{ changeset.id }} main
-deb-src "[arch=amd64 signed-by=/etc/apt/keyrings/debian-janitor.gpg]" {{ url.join(URL('/')) }} cs/{{ changeset.id }} main
+deb [arch=amd64 signed-by=/etc/apt/keyrings/debian-janitor.gpg] {{ url.join(URL('/')) }} cs/{{ changeset.id }} main
+deb-src [arch=amd64 signed-by=/etc/apt/keyrings/debian-janitor.gpg] {{ url.join(URL('/')) }} cs/{{ changeset.id }} main
 </pre>
                 </div>
             </div>

@@ -33,6 +33,8 @@ from aiohttp import (
 from aiohttp_openmetrics import Counter
 from yarl import URL
 
+from . import utcnow
+
 if TYPE_CHECKING:
     import gcloud.aio.storage
 
@@ -413,7 +415,7 @@ async def import_log(
         )
         # It may just be that the file already exists
         try:
-            suffix = datetime.utcnow().isoformat(timespec="seconds")
+            suffix = utcnow().isoformat(timespec="seconds")
             alternative_basename = os.path.basename(path) + "." + suffix
             await logfile_manager.import_log(
                 pkg, log_id, path, mtime=mtime, basename=alternative_basename

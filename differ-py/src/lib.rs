@@ -38,6 +38,7 @@ fn run_diffoscope<'a>(
             janitor_differ::diffoscope::DiffoscopeError::Serde(e) => {
                 PyValueError::new_err(e.to_string())
             }
+            janitor_differ::diffoscope::DiffoscopeError::Py(e) => e,
         })?;
         Ok(Python::attach(|py| {
             pythonize::pythonize(py, &o).unwrap().unbind()

@@ -5,4 +5,51 @@ edition.workspace = true
 
 [lib]
 
+[[bin]]
+name = "janitor-git-store"
+path = "src/main.rs"
+
 [dependencies]
+anyhow = "1.0"
+axum = { version = "0.8", features = ["http2", "json", "query", "macros"] }
+base64 = "0.22"
+bytes = "1"
+clap = { workspace = true, features = ["derive", "env"] }
+futures-util = "0.3"
+git2 = "0.18"
+http = "1.1"
+janitor = { path = ".." }
+nix = { workspace = true, features = ["signal"] }
+opentelemetry = "0.33"
+opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"] }
+# OTLP-over-HTTP: zipkin now accepts OTLP natively, and the dedicated
+# zipkin exporter crate is deprecated. http-proto keeps the dep tree
+# off tonic/grpc.
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace"] }
+prometheus = { version = "0.14.0", features = ["process"] }
+pyo3 = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_urlencoded = "0.7"
+sqlx = { version = "0.9", features = ["postgres", "runtime-tokio", "tls-rustls", "chrono", "uuid"] }
+tera = "1.19"
+thiserror = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tower-http = { version = "0.5", features = ["compression-gzip", "cors", "fs", "limit", "timeout", "trace"] }
+tracing = "0.1"
+tracing-opentelemetry = "0.34"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+# Redeclare janitor with the `testing` feature so integration tests can
+# use janitor::schema::CORE_SCHEMA.
+janitor = { path = "..", features = ["testing"] }
+libc = "0.2"
+reqwest = { version = "0.12", features = ["json"] }
+serial_test = "3"
+tempfile = "3.19"
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
+tokio-test = "0.4"
+tower = { version = "0.5", features = ["util"] }
+uuid = { version = "1.6", features = ["v4"] }

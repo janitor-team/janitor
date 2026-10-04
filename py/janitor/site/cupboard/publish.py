@@ -13,10 +13,9 @@ FROM
     publish
 LEFT JOIN codebase ON codebase.name = publish.codebase
 ORDER BY timestamp DESC
+LIMIT $1
 """
-    if limit:
-        query += f" LIMIT {limit}"
-    return await conn.fetch(query)
+    return await conn.fetch(query, limit)
 
 
 async def write_history(conn, limit: Optional[int] = None):

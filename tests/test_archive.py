@@ -20,10 +20,12 @@ import hashlib
 import os
 from tempfile import TemporaryDirectory
 
+import gpg
+import pytest
 from debian.deb822 import Release
 
 from janitor.config import read_string as read_config_string
-from janitor.debian.archive import HashedFileWriter, create_app
+from janitor.debian.archive import HashedFileWriter, create_app, write_suite_files
 
 
 async def create_client(aiohttp_client, config=None):
@@ -65,3 +67,37 @@ def test_hash_file_writer():
         with open(os.path.join(td, "foo", "bar"), "rb") as f:
             assert f.read() == b"chunk1chunk2"
         assert r["MD5Sum"] == [{"md5sum": md5hex, "name": "foo/bar", "size": 12}]
+
+
+async def _no_entries(*args, **kwargs):
+    return
+    yield  # pragma: no cover
+
+
+async def test_write_suite_files_leaves_no_partial_gpg_files_on_signing_failure():
+    """A failed signature must not leave a Release.gpg or InRelease behind.
+
+    apt treats a present-but-unsigned Release.gpg as an attempted-and-failed
+    verification (not "no verification requested"), so an empty file there
+    is worse than none.
+    """
+    with TemporaryDirectory() as gnupghome, TemporaryDirectory() as base_path:
+        os.chmod(gnupghome, 0o700)
+        gpg_context = gpg.Context(armor=True, home_dir=gnupghome)
+
+        with pytest.raises(gpg.errors.GpgError):
+            await write_suite_files(
+                base_path,
+                get_packages=_no_entries,
+                get_sources=_no_entries,
+                suite_name="test",
+                archive_description="Test",
+                components=["main"],
+                arches=["amd64"],
+                origin="test",
+                gpg_context=gpg_context,
+            )
+
+        assert os.path.exists(os.path.join(base_path, "Release"))
+        assert not os.path.exists(os.path.join(base_path, "Release.gpg"))
+        assert not os.path.exists(os.path.join(base_path, "InRelease"))

@@ -107,6 +107,12 @@ pub trait RateLimiter: Send + Sync {
 /// Rate limiter that always allows operations.
 pub struct NonRateLimiter;
 
+impl Default for NonRateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NonRateLimiter {
     /// Create a new NonRateLimiter.
     ///
@@ -296,8 +302,9 @@ impl RateLimiter for SlowStartRateLimiter {
     }
 
     fn get_stats(&self) -> Option<RateLimitStats> {
-        if let Some(open_mps_per_bucket) = &self.open_mps_per_bucket {
-            Some(RateLimitStats {
+        self.open_mps_per_bucket
+            .as_ref()
+            .map(|open_mps_per_bucket| RateLimitStats {
                 per_bucket: open_mps_per_bucket
                     .iter()
                     .map(|(k, _v)| {
@@ -311,8 +318,5 @@ impl RateLimiter for SlowStartRateLimiter {
                     })
                     .collect(),
             })
-        } else {
-            None
-        }
     }
 }

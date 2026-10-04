@@ -5,7 +5,7 @@ from asyncio import TimeoutError
 
 import aiozipkin
 import asyncpg
-from aiohttp import ClientConnectorError, ClientResponseError
+from aiohttp import ClientConnectorError, ClientResponseError, web
 from breezy.revision import NULL_REVISION
 
 from janitor import state
@@ -120,6 +120,8 @@ async def generate_evaluate(
             "finish_time, value, command, suite AS campaign FROM run WHERE id = $1",
             run_id,
         )
+    if run is None:
+        raise web.HTTPNotFound(text=f"No run with id {run_id!r}")
 
     async def show_diff(role):
         try:

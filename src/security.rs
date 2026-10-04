@@ -49,27 +49,29 @@ pub fn validate_filename(filename: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Safely joins a base directory with a filename, ensuring the result stays within the base directory
+/// Safely joins a base directory with a filename, ensuring the result stays within the base directory.
+///
+/// The target file is NOT required to exist — only the base directory must. This is so handlers
+/// can validate paths before attempting to open, and still return a useful 404 rather than a
+/// generic "Cannot resolve path" error when a legitimately-named file doesn't exist yet.
 pub fn safe_path_join(base_dir: &Path, filename: &str) -> Result<PathBuf, String> {
     // First validate the filename
     validate_filename(filename)?;
 
-    let path = base_dir.join(filename);
-
-    // Canonicalize both paths to resolve any symlinks or relative components
-    let canonical_path = path
-        .canonicalize()
-        .map_err(|_| "Cannot resolve path".to_string())?;
+    // Canonicalize the base directory to resolve any symlinks
     let canonical_base = base_dir
         .canonicalize()
         .map_err(|_| "Cannot resolve base directory".to_string())?;
 
-    // Ensure the resolved path is still within the base directory
-    if !canonical_path.starts_with(&canonical_base) {
+    let path = canonical_base.join(filename);
+
+    // Since filename is validated to not contain separators or traversal components,
+    // joining with a canonicalized base is safe. Sanity check anyway.
+    if !path.starts_with(&canonical_base) {
         return Err("Path escapes base directory".to_string());
     }
 
-    Ok(canonical_path)
+    Ok(path)
 }
 
 /// Validates command arguments to prevent command injection

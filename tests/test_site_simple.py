@@ -122,6 +122,46 @@ async def test_codebase_query_redirect_empty_param_returns_404(
     assert resp.status == 404
 
 
+async def test_webhook_github_push_reschedules_without_crashing(
+    aiohttp_client, database_location
+):
+    # A GitHub push webhook for a known codebase reschedules it successfully.
+    conn = await asyncpg.connect(database_location)
+    try:
+        await conn.execute(
+            "INSERT INTO codebase (name, branch_url, url, vcs_type) "
+            "VALUES ($1, $2, $2, $3)",
+            "example",
+            "https://github.com/jelmer/example",
+            "git",
+        )
+    finally:
+        await conn.close()
+
+    _private_app, app = await create_app(
+        config=create_config(database_location), redis=FakeRedis()
+    )
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/webhook",
+        headers={"X-GitHub-Event": "push"},
+        json={
+            "ref": "refs/heads/main",
+            "after": "0" * 40,
+            "repository": {
+                "clone_url": "https://github.com/jelmer/example",
+                "html_url": "https://github.com/jelmer/example",
+                "git_url": "git://github.com/jelmer/example.git",
+                "ssh_url": "git@github.com:jelmer/example.git",
+                "default_branch": "main",
+            },
+        },
+    )
+    assert resp.status == 200, await resp.text()
+    body = await resp.json()
+    assert "https://github.com/jelmer/example" in body["urls"]
+
+
 async def test_candidates_with_multiple_unscored_does_not_500(
     aiohttp_client, database_location
 ):
@@ -154,3 +194,15 @@ async def test_candidates_with_multiple_unscored_does_not_500(
     client = await aiohttp_client(app)
     resp = await client.get("/lintian-fixes/candidates")
     assert resp.status == 200
+
+
+async def test_merge_proposal_without_url_returns_400(
+    aiohttp_client, database_location
+):
+    _private_app, app = await create_app(
+        config=create_config(database_location), redis=FakeRedis()
+    )
+    client = await aiohttp_client(app)
+    resp = await client.get("/lintian-fixes/merge-proposal")
+    assert resp.status == 400
+    assert await resp.text() == "no url specified"

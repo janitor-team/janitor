@@ -40,9 +40,7 @@ import aiojobs
 import aiozipkin
 import asyncpg
 import asyncpg.pool
-import breezy.plugins.github  # noqa: F401
-import breezy.plugins.gitlab  # noqa: F401
-import breezy.plugins.launchpad  # noqa: F401
+import breezy.plugin
 from aiohttp import (
     ClientConnectorError,
     ClientOSError,
@@ -79,7 +77,7 @@ from silver_platter import (
 )
 from yarl import URL
 
-from . import set_user_agent, splitout_env, state
+from . import set_user_agent, splitout_env, state, utcnow
 from ._launchpad import override_launchpad_consumer_name
 from ._runner import (
     committer_env,
@@ -114,6 +112,7 @@ from .vcs import (
 from .worker_creds import check_worker_creds
 
 override_launchpad_consumer_name()
+breezy.plugin.load_plugins()
 
 
 DEFAULT_RETRY_AFTER = 120
@@ -605,7 +604,7 @@ class JanitorResult:
 
 def _naive_utc(value: str) -> datetime:
     # worker sends aware RFC3339, the run table columns are naive - asyncpg
-    # can't mix the two, so normalize to naive UTC like datetime.utcnow() elsewhere
+    # can't mix the two, so normalize to naive UTC like utcnow() elsewhere
     dt = datetime.fromisoformat(value)
     if dt.tzinfo is not None:
         dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
@@ -839,7 +838,7 @@ class ActiveRun:
             instigated_context=queue_item.context,
             estimated_duration=queue_item.estimated_duration,
             queue_id=queue_item.id,
-            start_time=datetime.utcnow(),
+            start_time=utcnow(),
             log_id=str(uuid.uuid4()),
             backchannel=backchannel,
             vcs_info=vcs_info,
@@ -879,13 +878,13 @@ class ActiveRun:
 
     @property
     def current_duration(self):
-        return datetime.utcnow() - self.start_time
+        return utcnow() - self.start_time
 
     def create_result(self, **kwargs):
         return JanitorResult(
             campaign=self.campaign,
             start_time=self.start_time,
-            finish_time=datetime.utcnow(),
+            finish_time=utcnow(),
             log_id=self.log_id,
             worker_name=self.worker_name,
             resume_from=self.resume_from,
@@ -1483,7 +1482,7 @@ class QueueProcessor:
             )
         else:
             await self.redis.hset(
-                "last-keepalive", active_run.log_id, datetime.utcnow().isoformat()
+                "last-keepalive", active_run.log_id, utcnow().isoformat()
             )
             keepalive_age = timedelta(seconds=0)
 
@@ -1521,7 +1520,7 @@ class QueueProcessor:
                     last_keepalive = datetime.fromisoformat(lk.decode("utf-8"))
                 else:
                     last_keepalive = active_run.start_time
-                keepalive_age = datetime.utcnow() - last_keepalive
+                keepalive_age = utcnow() - last_keepalive
                 if keepalive_age < timedelta(minutes=(self.run_timeout // 3)):
                     continue
                 tasks.append(
@@ -1543,7 +1542,7 @@ class QueueProcessor:
     async def rate_limited_hosts(self):
         for h, t in (await self.redis.hgetall("rate-limit-hosts")).items():
             dt = datetime.fromisoformat(t.decode("utf-8"))
-            if dt > datetime.utcnow():
+            if dt > utcnow():
                 yield h.decode("utf-8"), dt
 
     async def active_run_count(self):
@@ -1575,9 +1574,7 @@ class QueueProcessor:
             last_keepalive = last_keepalives.get(js["id"])
             if last_keepalive:
                 js["last-keepalive"] = last_keepalive.isoformat(timespec="seconds")
-                js["keepalive_age"] = (
-                    datetime.utcnow() - last_keepalive
-                ).total_seconds()
+                js["keepalive_age"] = (utcnow() - last_keepalive).total_seconds()
                 js["mia"] = js["keepalive_age"] > self.run_timeout * 60
             else:
                 js["keepalive_age"] = None
@@ -1605,7 +1602,7 @@ class QueueProcessor:
             raise QueueItemAlreadyClaimed(active_run.queue_id, run_id)
         async with self.redis.pipeline() as tr:
             tr.hset("active-runs", active_run.log_id, json.dumps(active_run.json()))
-            tr.hset("last-keepalive", active_run.log_id, datetime.utcnow().isoformat())
+            tr.hset("last-keepalive", active_run.log_id, utcnow().isoformat())
             await tr.execute()
         await self.redis.publish("queue", json.dumps(await self.status_json()))
         active_run_count.labels(worker=active_run.worker_name).inc()
@@ -1740,7 +1737,7 @@ class QueueProcessor:
     async def rate_limited(self, host, retry_after):
         rate_limited_count.labels(host=host).inc()
         if not retry_after:
-            retry_after = datetime.utcnow() + timedelta(seconds=DEFAULT_RETRY_AFTER)
+            retry_after = utcnow() + timedelta(seconds=DEFAULT_RETRY_AFTER)
         await self.redis.hset("rate-limit-hosts", host, retry_after.isoformat())
 
     async def next_queue_item(
@@ -2486,7 +2483,7 @@ async def handle_queue(request):
         limit = None
     async with queue_processor.database.acquire() as conn:
         queue = Queue(conn)
-        for entry in await queue.iter_queue(limit=limit):
+        async for entry in queue.iter_queue(limit=limit):
             response_obj.append(
                 {
                     "queue_id": entry.id,

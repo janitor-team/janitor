@@ -11,6 +11,7 @@ RUN apt-get update --yes \
  && apt-get upgrade --yes \
  && apt-get satisfy --yes --no-install-recommends \
        ## Standard packages: ./CONTRIBUTING.md
+        ca-certificates \
         cargo \
         g++ \
         gcc \
@@ -21,19 +22,12 @@ RUN apt-get update --yes \
         pkg-config \
         protobuf-compiler \
        ## Extra packages
-        git \
-        python3-gpg \
-        python3-pip \
-        python3-venv \
+        python3-minimal \
  && apt-get clean
-
-RUN python3 -m venv --system-site-packages /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
 
 COPY . /code
 
-RUN pip3 install --upgrade "/code[gcp,git-store]" \
- && rm -rf /code
+RUN cargo build --release --manifest-path /code/git-store/Cargo.toml --bin janitor-git-store
 
 FROM docker.io/debian:testing-slim
 MAINTAINER Jelmer Vernooij <jelmer@jelmer.uk>
@@ -47,14 +41,12 @@ RUN apt-get update --yes \
  && apt-get satisfy --yes --no-install-recommends \
         ca-certificates \
         git \
+        libpython3.14 \
         libssl3 \
-        libzstd1 \
-        python3-gpg \
-        python3 \
+        python3-breezy \
  && apt-get clean
 
-COPY --from=build /opt/venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+COPY --from=build /code/target/release/janitor-git-store /usr/local/bin/janitor-git-store
 
 VOLUME /git
 

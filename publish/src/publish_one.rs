@@ -30,15 +30,22 @@ fn is_remote_git_branch(branch: &dyn Branch) -> bool {
     vcs_type == breezyshim::foreign::VcsType::Git && url.scheme() != "file"
 }
 
-/// Publish a single branch based on a request.
-///
-/// This handles opening the source and target branches and calling the publish function.
+/// Open the source and target branches for `request` and call the
+/// underlying publish function.
 pub fn publish_one(
     template_env: Environment,
     request: &crate::PublishOneRequest,
     possible_transports: &mut Option<Vec<Transport>>,
 ) -> Result<(PublishOneResult, String), PublishError> {
-    let mut args = shlex::split(&request.command).unwrap();
+    let mut args = match shlex::split(&request.command) {
+        Some(args) => args,
+        None => {
+            return Err(PublishError::Failure {
+                description: format!("Invalid command syntax: {}", request.command),
+                code: "invalid-command-syntax".to_string(),
+            });
+        }
+    };
     drop_env(&mut args);
 
     let mut source_branch = match open_branch(
@@ -49,7 +56,10 @@ pub fn publish_one(
     ) {
         Ok(branch) => branch,
         Err(BranchOpenError::RateLimited { description, .. }) => {
-            panic!("Local branch rate limited: {}", description);
+            return Err(PublishError::Failure {
+                description: format!("Local branch rate limited: {}", description),
+                code: "local-branch-rate-limited".to_string(),
+            });
         }
         Err(BranchOpenError::TemporarilyUnavailable { description, .. }) => {
             return Err(PublishError::Failure {
@@ -78,9 +88,18 @@ pub fn publish_one(
     };
 
     let temp_sprout = if is_remote_git_branch(&source_branch) {
-        let sprout = silver_platter::utils::TempSprout::new(&source_branch, None).unwrap();
-        source_branch = sprout.tree().branch();
-        Some(sprout)
+        match silver_platter::utils::TempSprout::new(&source_branch, None) {
+            Ok(sprout) => {
+                source_branch = sprout.tree().branch();
+                Some(sprout)
+            }
+            Err(e) => {
+                return Err(PublishError::Failure {
+                    description: format!("Failed to create temporary branch sprout: {}", e),
+                    code: "temp-sprout-failed".to_string(),
+                });
+            }
+        }
     } else {
         None
     };
@@ -136,7 +155,7 @@ pub fn publish_one(
         Err(e @ BrzError::UnsupportedForge(..)) => {
             if ![Mode::Push, Mode::BuildOnly].contains(&request.mode) {
                 let url = target_branch.get_user_url();
-                let netloc = url.host_str().unwrap();
+                let netloc = url.host_str().unwrap_or("unknown");
                 return Err(PublishError::Failure {
                     description: format!("Forge unsupported: {}.", netloc),
                     code: "hoster-unsupported".to_string(),
@@ -155,7 +174,7 @@ pub fn publish_one(
         Err(e @ BrzError::ForgeLoginRequired) => {
             if ![Mode::Push, Mode::BuildOnly].contains(&request.mode) {
                 let url = target_branch.get_user_url();
-                let netloc = url.host_str().unwrap();
+                let netloc = url.host_str().unwrap_or("unknown");
                 return Err(PublishError::Failure {
                     description: format!("Forge {} supported but no login known.", netloc),
                     code: "hoster-no-login".to_string(),
@@ -219,50 +238,64 @@ pub fn publish_one(
                     });
                 }
                 Err(e) => {
-                    panic!("Unexpected error: {}", e);
+                    return Err(PublishError::Failure {
+                        description: format!("Unable to retrieve merge proposal: {}", e),
+                        code: "merge-proposal-retrieval-failed".to_string(),
+                    });
                 }
             };
-            let resume_branch = match open_branch(
-                &existing_proposal.get_source_branch_url().unwrap().unwrap(),
-                possible_transports.as_mut(),
-                None,
-                None,
-            ) {
-                Ok(branch) => branch,
-                Err(BranchOpenError::RateLimited { description, .. }) => {
+            let source_branch_url = match existing_proposal.get_source_branch_url() {
+                Ok(Some(url)) => url,
+                Ok(None) => {
                     return Err(PublishError::Failure {
-                        description: format!("Resume branch rate limited: {}", description),
-                        code: "resume-branch-rate-limited".to_string(),
-                    });
-                }
-                Err(BranchOpenError::TemporarilyUnavailable { description, .. }) => {
-                    return Err(PublishError::Failure {
-                        description: format!(
-                            "Resume branch temporarily unavailable: {}",
-                            description
-                        ),
-                        code: "resume-branch-temporarily-unavailable".to_string(),
-                    });
-                }
-                Err(BranchOpenError::Unavailable { description, .. }) => {
-                    return Err(PublishError::Failure {
-                        description: format!("Resume branch unavailable: {}", description),
-                        code: "resume-branch-unavailable".to_string(),
-                    });
-                }
-                Err(BranchOpenError::Missing { description, .. }) => {
-                    return Err(PublishError::Failure {
-                        description: format!("Resume branch missing: {}", description),
-                        code: "resume-branch-missing".to_string(),
+                        description: "Merge proposal has no source branch URL".to_string(),
+                        code: "merge-proposal-no-source-url".to_string(),
                     });
                 }
                 Err(e) => {
                     return Err(PublishError::Failure {
-                        description: e.to_string(),
-                        code: "unexpected-error".to_string(),
+                        description: format!("Unable to get source branch URL: {}", e),
+                        code: "merge-proposal-source-url-failed".to_string(),
                     });
                 }
             };
+            let resume_branch =
+                match open_branch(&source_branch_url, possible_transports.as_mut(), None, None) {
+                    Ok(branch) => branch,
+                    Err(BranchOpenError::RateLimited { description, .. }) => {
+                        return Err(PublishError::Failure {
+                            description: format!("Resume branch rate limited: {}", description),
+                            code: "resume-branch-rate-limited".to_string(),
+                        });
+                    }
+                    Err(BranchOpenError::TemporarilyUnavailable { description, .. }) => {
+                        return Err(PublishError::Failure {
+                            description: format!(
+                                "Resume branch temporarily unavailable: {}",
+                                description
+                            ),
+                            code: "resume-branch-temporarily-unavailable".to_string(),
+                        });
+                    }
+                    Err(BranchOpenError::Unavailable { description, .. }) => {
+                        return Err(PublishError::Failure {
+                            description: format!("Resume branch unavailable: {}", description),
+                            code: "resume-branch-unavailable".to_string(),
+                        });
+                    }
+                    Err(BranchOpenError::Missing { description, .. }) => {
+                        return Err(PublishError::Failure {
+                            description: format!("Resume branch missing: {}", description),
+                            code: "resume-branch-missing".to_string(),
+                        });
+                    }
+                    Err(e) => {
+                        return Err(PublishError::Failure {
+                            description: e.to_string(),
+                            code: "unexpected-error".to_string(),
+                        });
+                    }
+                };
             (Some(resume_branch), Some(true), Some(existing_proposal))
         } else {
             match silver_platter::publish::find_existing_proposed(
@@ -275,14 +308,18 @@ pub fn publish_one(
             ) {
                 Ok((branch, overwrite, existing_proposals)) => {
                     if let Some(mut existing_proposals) = existing_proposals {
-                        if existing_proposals.len() > 1 {
-                            log::warn!(
-                                "Multiple existing proposals: {:?}. Using {:?}",
-                                existing_proposals,
-                                existing_proposals[0],
-                            );
+                        if existing_proposals.is_empty() {
+                            (branch, overwrite, None)
+                        } else {
+                            if existing_proposals.len() > 1 {
+                                log::warn!(
+                                    "Multiple existing proposals: {:?}. Using {:?}",
+                                    existing_proposals,
+                                    existing_proposals[0],
+                                );
+                            }
+                            (branch, overwrite, Some(existing_proposals.remove(0)))
                         }
-                        (branch, overwrite, Some(existing_proposals.remove(0)))
                     } else {
                         (branch, overwrite, None)
                     }
@@ -324,46 +361,66 @@ pub fn publish_one(
         (None, None, None)
     };
 
-    let debdiff =
-        match crate::get_debdiff(&request.differ_url, &request.unchanged_id, &request.log_id) {
-            Ok(debdiff) => Some(debdiff),
-            Err(crate::DebdiffError::Unavailable(e)) => {
-                return Err(PublishError::Failure {
-                    description: format!("Unable to contact differ for build diff: {}", e),
-                    code: "differ-unreachable".to_string(),
-                });
-            }
-            Err(crate::DebdiffError::MissingRun(missing_run_id)) => {
-                if [Mode::Propose, Mode::AttemptPush].contains(&request.mode)
-                    && request.require_binary_diff
-                {
-                    if missing_run_id == request.log_id {
-                        return Err(PublishError::Failure {
-                            description: format!(
-                                "Build diff is not available. Run ({}) not yet published?",
-                                request.log_id
-                            ),
-                            code: "missing-build-diff-self".to_string(),
-                        });
-                    } else {
-                        return Err(PublishError::Failure {
-                            description: format!(
-                                "Binary debdiff is not available. Control run ({}) not published?",
-                                missing_run_id
-                            ),
-                            code: "missing-build-diff-control".to_string(),
-                        });
-                    }
+    let debdiff = match crate::get_debdiff(
+        &request.differ_url,
+        request.unchanged_id.as_deref(),
+        &request.log_id,
+    ) {
+        Ok(debdiff) => Some(debdiff),
+        Err(crate::DebdiffError::Unavailable(e)) => {
+            return Err(PublishError::Failure {
+                description: format!("Unable to contact differ for build diff: {}", e),
+                code: "differ-unreachable".to_string(),
+            });
+        }
+        Err(crate::DebdiffError::MissingRun(missing_run_id)) => {
+            if [Mode::Propose, Mode::AttemptPush].contains(&request.mode)
+                && request.require_binary_diff
+            {
+                if missing_run_id == request.log_id {
+                    return Err(PublishError::Failure {
+                        description: format!(
+                            "Build diff is not available. Run ({}) not yet published?",
+                            request.log_id
+                        ),
+                        code: "missing-build-diff-self".to_string(),
+                    });
+                } else {
+                    return Err(PublishError::Failure {
+                        description: format!(
+                            "Binary debdiff is not available. Control run ({}) not published?",
+                            missing_run_id
+                        ),
+                        code: "missing-build-diff-control".to_string(),
+                    });
                 }
-                None
             }
-            Err(crate::DebdiffError::Http(e)) => {
+            None
+        }
+        Err(crate::DebdiffError::NoUnchangedRun) => {
+            // Expected for a codebase's first run: there's no earlier
+            // build to diff against yet, not a run that failed to
+            // publish. Only actually blocks publishing when a binary
+            // diff is required.
+            if [Mode::Propose, Mode::AttemptPush].contains(&request.mode)
+                && request.require_binary_diff
+            {
                 return Err(PublishError::Failure {
-                    description: format!("Error from differ for build diff: HTTP {}", e),
-                    code: "differ-http-error".to_string(),
+                    description: "Binary debdiff is not available: no earlier run exists yet \
+                             to compare against."
+                        .to_string(),
+                    code: "missing-build-diff-control".to_string(),
                 });
             }
-        };
+            None
+        }
+        Err(crate::DebdiffError::Http(e)) => {
+            return Err(PublishError::Failure {
+                description: format!("Error from differ for build diff: HTTP {}", e),
+                code: "differ-http-error".to_string(),
+            });
+        }
+    };
 
     let result = publish(
         template_env,
@@ -387,7 +444,7 @@ pub fn publish_one(
         Some(&request.revision_id),
         request.extra_context.clone(),
         request.derived_owner.clone(),
-        request.auto_merge.clone(),
+        request.auto_merge,
     )?;
 
     if let Some(temp_sprout) = temp_sprout {
@@ -397,10 +454,9 @@ pub fn publish_one(
     Ok(result)
 }
 
-/// Publish changes from a source branch to a target branch.
-///
-/// This is the core function for publishing changes, handling different modes (propose, push, etc.)
-/// and generating appropriate descriptions and commit messages.
+/// Publish changes from a source branch to a target branch for the
+/// given mode (propose, push, etc.), generating descriptions and commit
+/// messages from the campaign templates.
 pub fn publish(
     template_env: Environment,
     campaign: &str,
@@ -434,50 +490,100 @@ pub fn publish(
             "role": role,
         });
         if let Some(extra_context) = extra_context.as_ref() {
-            vs.as_object_mut()
-                .unwrap()
-                .extend(extra_context.as_object().unwrap().clone());
+            if let (Some(vs_obj), Some(extra_obj)) = (vs.as_object_mut(), extra_context.as_object())
+            {
+                vs_obj.extend(extra_obj.clone());
+            } else {
+                log::warn!("Failed to merge extra_context: not an object");
+            }
         }
-        vs.as_object_mut()
-            .unwrap()
-            .extend(codemod_result.as_object().unwrap().clone());
+        if let (Some(vs_obj), Some(codemod_obj)) = (vs.as_object_mut(), codemod_result.as_object())
+        {
+            vs_obj.extend(codemod_obj.clone());
+        } else {
+            log::warn!("Failed to merge codemod_result: not an object");
+        }
         vs["codemod"] = codemod_result.clone();
         if let Some(debdiff) = debdiff.as_ref() {
-            vs["debdiff"] = std::str::from_utf8(debdiff).unwrap().into();
+            match std::str::from_utf8(debdiff) {
+                Ok(debdiff_str) => {
+                    vs["debdiff"] = debdiff_str.into();
+                }
+                Err(e) => {
+                    log::warn!("Debdiff contains invalid UTF-8: {}", e);
+                    vs["debdiff"] = format!("(Binary diff - {} bytes)", debdiff.len()).into();
+                }
+            }
         }
-        let template = if description_format == DescriptionFormat::Markdown {
-            template_env.get_template(&format!("{}.md", campaign))
+        let template_name = if description_format == DescriptionFormat::Markdown {
+            format!("{}.md", campaign)
         } else {
-            template_env.get_template(&format!("{}.txt", campaign))
+            format!("{}.txt", campaign)
+        };
+        let template = match template_env.get_template(&template_name) {
+            Ok(template) => template,
+            Err(e) => {
+                log::warn!("Template {} not found: {}, using default", template_name, e);
+                // Return a simple default description
+                return format!("Changes for {} ({})", campaign, log_id);
+            }
+        };
+        match template.render(vs) {
+            Ok(rendered) => rendered,
+            Err(e) => {
+                log::warn!("Template rendering failed: {}, using default", e);
+                format!("Changes for {} ({})", campaign, log_id)
+            }
         }
-        .unwrap();
-        template.render(vs).unwrap()
     };
 
     let get_proposal_commit_message =
         |_existing_proposal: Option<&MergeProposal>| -> Option<String> {
-            commit_message_template.map(|commit_message_template| {
-                template_env
-                    .render_named_str("commit_message", commit_message_template, codemod_result)
-                    .unwrap()
+            commit_message_template.and_then(|commit_message_template| {
+                match template_env.render_named_str(
+                    "commit_message",
+                    commit_message_template,
+                    codemod_result,
+                ) {
+                    Ok(rendered) => Some(rendered),
+                    Err(e) => {
+                        log::warn!("Commit message template rendering failed: {}", e);
+                        None
+                    }
+                }
             })
         };
 
     let get_proposal_title = |existing_proposal: Option<&MergeProposal>| -> Option<String> {
         if let Some(title_template) = title_template.as_ref() {
-            Some(
-                template_env
-                    .render_named_str("title", title_template, codemod_result)
-                    .unwrap(),
-            )
+            match template_env.render_named_str("title", title_template, codemod_result) {
+                Ok(rendered) => Some(rendered),
+                Err(e) => {
+                    log::warn!("Title template rendering failed: {}", e);
+                    // Fall back to determining title from description
+                    match determine_title(&get_proposal_description(
+                        DescriptionFormat::Plain,
+                        existing_proposal,
+                    )) {
+                        Ok(title) => Some(title),
+                        Err(e) => {
+                            log::warn!("Failed to determine fallback title: {}", e);
+                            Some(format!("Changes for {}", campaign))
+                        }
+                    }
+                }
+            }
         } else {
-            Some(
-                determine_title(&get_proposal_description(
-                    DescriptionFormat::Plain,
-                    existing_proposal,
-                ))
-                .unwrap_or_default(),
-            )
+            match determine_title(&get_proposal_description(
+                DescriptionFormat::Plain,
+                existing_proposal,
+            )) {
+                Ok(title) => Some(title),
+                Err(e) => {
+                    log::warn!("Failed to determine title: {}", e);
+                    None
+                }
+            }
         }
     };
 
@@ -520,7 +626,10 @@ pub fn publish(
         &source_branch,
         &target_branch,
         resume_branch.as_ref(),
-        mode.try_into().unwrap(),
+        mode.try_into().map_err(|_| PublishError::Failure {
+            description: "Invalid publish mode".to_string(),
+            code: "invalid-mode".to_string(),
+        })?,
         derived_branch_name,
         get_proposal_description,
         Some(get_proposal_commit_message),
@@ -655,18 +764,22 @@ impl From<(PublishOneResult, String)> for crate::PublishOneResult {
             proposal_url: publish_result
                 .proposal
                 .as_ref()
-                .map(|proposal| proposal.url().unwrap()),
+                .and_then(|proposal| proposal.url().ok()),
             proposal_web_url: publish_result
                 .proposal
                 .as_ref()
-                .map(|proposal| proposal.get_web_url().unwrap()),
+                .and_then(|proposal| proposal.get_web_url().ok()),
             is_new: publish_result.proposal.and(publish_result.is_new),
             target_branch_url: publish_result.target_branch.get_user_url(),
             target_branch_web_url: publish_result
                 .forge
-                .map(|forge| forge.get_web_url(&publish_result.target_branch).unwrap()),
+                .and_then(|forge| forge.get_web_url(&publish_result.target_branch).ok()),
             branch_name,
             mode: publish_result.mode,
         }
     }
 }
+
+#[cfg(test)]
+#[path = "publish_one_tests.rs"]
+mod tests;

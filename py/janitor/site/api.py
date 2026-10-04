@@ -56,6 +56,7 @@ routes = web.RouteTableDef()
 @docs()
 @routes.post("/{campaign}/c/{codebase}/publish", name="codebase-publish")
 async def handle_publish(request):
+    check_logged_in(request)
     publisher_url = request.app["publisher_url"]
     codebase = request.match_info["codebase"]
     campaign = request.match_info["campaign"]
@@ -104,6 +105,7 @@ class ScheduleResultSchema(Schema):
 @response_schema(ScheduleResultSchema())
 @routes.post("/run/{run_id}/reschedule", name="run-reschedule")
 async def handle_run_reschedule(request):
+    check_logged_in(request)
     run_id = request.match_info["run_id"]
     post = await request.post()
     offset = post.get("offset")
@@ -142,6 +144,7 @@ async def handle_run_reschedule(request):
 @response_schema(ScheduleResultSchema())
 @routes.post("/run/{run_id}/schedule-control", name="run-schedule-control")
 async def handle_schedule_control(request):
+    check_logged_in(request)
     run_id = request.match_info["run_id"]
     post = await request.post()
     offset = post.get("offset")
@@ -198,24 +201,30 @@ async def handle_campaign_merge_proposal_list(request):
     campaign = request.match_info["campaign"]
 
     url = URL(request.app["publisher_url"]) / campaign / "merge-proposals"
-    async with request.app["http_client_session"].get(url, raise_for_status=True):
-        return web.json_response({})
+    async with request.app["http_client_session"].get(
+        url, raise_for_status=True
+    ) as resp:
+        return web.json_response(await resp.json())
 
 
 @routes.get("/c/{codebase}/merge-proposals", name="codebase-merge-proposals")
 async def handle_codebase_merge_proposal_list(request):
     codebase = request.match_info["codebase"]
     url = URL(request.app["publisher_url"]) / "c" / codebase / "merge-proposals"
-    async with request.app["http_client_session"].get(url, raise_for_status=True):
-        return web.json_response({})
+    async with request.app["http_client_session"].get(
+        url, raise_for_status=True
+    ) as resp:
+        return web.json_response(await resp.json())
 
 
 @docs()
 @routes.get("/merge-proposals", name="merge-proposals")
 async def handle_merge_proposal_list(request):
     url = URL(request.app["publisher_url"]) / "merge-proposals"
-    async with request.app["http_client_session"].get(url, raise_for_status=True):
-        return web.json_response({})
+    async with request.app["http_client_session"].get(
+        url, raise_for_status=True
+    ) as resp:
+        return web.json_response(await resp.json())
 
 
 @docs()
@@ -234,6 +243,7 @@ async def handle_merge_proposal_change(request):
 @docs()
 @routes.post("/refresh-proposal-status", name="refresh-proposal-status")
 async def handle_refresh_proposal_status(request):
+    check_logged_in(request)
     post = await request.post()
     try:
         mp_url = post["url"]

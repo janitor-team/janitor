@@ -22,6 +22,7 @@ from typing import Any
 
 import asyncpg
 
+from ... import utcnow
 from ...queue import Queue, QueueItem
 
 
@@ -32,7 +33,7 @@ def get_processing(answer: dict[str, Any]) -> Iterator[dict[str, Any]]:
             entry["estimated_duration"] = timedelta(seconds=entry["estimated_duration"])
         if entry.get("start_time"):
             entry["start_time"] = datetime.fromisoformat(entry["start_time"])
-            entry["current_duration"] = datetime.utcnow() - entry["start_time"]
+            entry["current_duration"] = utcnow() - entry["start_time"]
         if entry.get("last-keepalive"):
             entry["keepalive_age"] = timedelta(seconds=entry["keepalive_age"])
         yield entry

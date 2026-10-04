@@ -5,7 +5,7 @@ use tokio::time::timeout;
 use tracing::{error, info};
 
 /// Reprocess run logs.
-async fn reprocess_run_logs(
+pub async fn reprocess_run_logs(
     db: &sqlx::PgPool,
     logfile_manager: &dyn LogFileManager,
     codebase: &str,

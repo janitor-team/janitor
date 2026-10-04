@@ -29,7 +29,7 @@ from breezy.patches import (
     MalformedHunkHeader,
 )
 
-from ._differ import (  # type: ignore
+from ._differ import (
     filter_boring_udiff,
     run_diffoscope,
 )

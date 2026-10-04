@@ -66,10 +66,6 @@ struct Args {
     #[clap(long)]
     external_url: Option<Url>,
 
-    /// Print debugging info
-    #[clap(long)]
-    debug: bool,
-
     /// Differ URL.
     #[clap(long, default_value = "http://localhost:9920/")]
     differ_url: Url,
@@ -88,6 +84,34 @@ async fn main() -> Result<(), i32> {
 
     args.logging.init();
 
+    // breezyshim::init() runs init_git() + init_bzr() which import
+    // breezy.git and breezy.bzr — that's what registers
+    // RemoteGitProber / LocalGitProber and the Bazaar formats.
+    // Without this, Branch.open(<git url>) falls through every
+    // registered prober (only the Bazaar ones load eagerly) and
+    // raises NotBranchError; silver_platter logs it as "Failed to
+    // open VCS branch (treating as unguessable)" and publish_one
+    // surfaces it as `result_code=local-branch-missing` for every
+    // git-store push attempt. Calling load_plugins() alone isn't
+    // enough — that walks BRZ_PLUGIN_PATH (gitlab/github/launchpad
+    // forges) but doesn't touch the built-in breezy submodules.
+    // spawn_blocking because Python initialization (and plugin loading,
+    // which may do network probing for forge connectors) must not run
+    // directly on the Tokio executor thread.
+    tokio::task::spawn_blocking(|| {
+        breezyshim::init();
+        let _ = breezyshim::plugin::load_plugins();
+    })
+    .await
+    .map_err(|e| {
+        log::error!("breezyshim init failed: {}", e);
+        1
+    })?;
+
+    log::info!(
+        "janitor-publish starting: loading config from {:?}",
+        args.config
+    );
     let config = Box::new(janitor::config::read_file(&args.config).map_err(|e| {
         log::error!("Failed to read config: {}", e);
         1
@@ -110,27 +134,60 @@ async fn main() -> Result<(), i32> {
         log::error!("Failed to get VCS managers from config: {}", e);
         1
     })?;
+    log::info!("creating database pool");
     let db = janitor::state::create_pool(config).await.map_err(|e| {
         log::error!("Failed to create database pool: {}", e);
         1
     })?;
+    log::info!("database pool created");
 
-    let redis_async_connection = if let Some(redis_location) = config.redis_location.as_ref() {
-        let client = redis::Client::open(redis_location.to_string()).map_err(|e| {
-            log::error!("Failed to create redis client: {}", e);
+    let (redis_async_connection, redis_manager) = if let Some(redis_location) =
+        config.redis_location.as_ref()
+    {
+        log::info!("creating RedisManager for {}", redis_location);
+        let redis_config = janitor::redis::RedisConfig::new(redis_location.to_string());
+        let manager = janitor::redis::RedisManager::new(redis_config).map_err(|e| {
+            log::error!("Failed to create redis manager: {}", e);
             1
         })?;
+        log::info!("RedisManager created; fetching connection manager");
 
-        Some(
-            redis::aio::ConnectionManager::new(client)
-                .await
-                .map_err(|e| {
-                    log::error!("Failed to create redis async connection: {}", e);
-                    1
-                })?,
+        let manager = std::sync::Arc::new(manager);
+
+        // redis-rs ConnectionManager::new has no default timeout and
+        // can hang indefinitely when the remote side accepts the TCP
+        // connection but never completes the initial handshake.
+        // Guard with a 30-second timeout so the pod doesn't sit
+        // silently in startup probes if something's off.
+        let connection = match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            manager.get_connection_manager(),
         )
+        .await
+        {
+            Ok(Ok(c)) => {
+                log::info!("redis connection manager obtained");
+                Some(c)
+            }
+            Ok(Err(e)) => {
+                log::error!(
+                    "Failed to get redis connection: {}; continuing without async connection",
+                    e
+                );
+                None
+            }
+            Err(_) => {
+                log::warn!(
+                        "redis ConnectionManager::new timed out after 30s; continuing without async connection"
+                    );
+                None
+            }
+        };
+
+        (connection, Some(manager))
     } else {
-        None
+        log::info!("no redis_location configured; skipping redis");
+        (None, None)
     };
 
     let lock_manager = config
@@ -138,32 +195,63 @@ async fn main() -> Result<(), i32> {
         .as_deref()
         .map(|redis_location| rslock::LockManager::new(vec![redis_location]));
 
+    log::info!("building publish worker");
     let publish_worker = janitor_publish::PublishWorker::new(
         args.template_env_path,
         args.external_url,
         args.differ_url,
         redis_async_connection.clone(),
+        redis_manager.clone(),
         lock_manager,
     )
     .await;
+    log::info!("publish worker built; initializing GPG context");
 
+    // Set up health checker
+    let mut health_checker = janitor_publish::health::BasicHealthChecker::with_info(
+        "publish".to_string(),
+        env!("CARGO_PKG_VERSION").to_string(),
+    );
+
+    // Add database health check
+    health_checker = health_checker.add_component_check(Arc::new(
+        janitor_publish::health::DatabaseHealthChecker::new(db.clone()),
+    ));
+
+    // Add Redis health check if Redis is configured
+    if let Some(redis_location) = config.redis_location.as_ref() {
+        if let Ok(client) = redis::Client::open(redis_location.as_str()) {
+            health_checker = health_checker.add_component_check(Arc::new(
+                janitor_publish::health::RedisHealthChecker::new(client),
+            ));
+        }
+    }
+
+    let health_checker = Arc::new(health_checker);
+
+    log::info!("constructing GPG context (may take a moment)");
+    let gpg = Arc::new(breezyshim::gpg::GPGContext::new());
+    log::info!("GPG context constructed; constructing AppState");
     let state = Arc::new(janitor_publish::AppState {
         conn: db.clone(),
-        bucket_rate_limiter,
+        bucket_rate_limiter: Arc::new(bucket_rate_limiter),
         forge_rate_limiter,
         push_limit: args.push_limit,
         config,
         redis: redis_async_connection,
-        vcs_managers,
+        redis_manager,
+        vcs_managers: Arc::new(vcs_managers),
         publish_worker,
         modify_mp_limit: args.modify_mp_limit,
         unexpected_mp_limit: args.unexpected_mp_limit,
-        gpg: breezyshim::gpg::GPGContext::new(),
+        gpg,
         require_binary_diff: args.require_binary_diff,
+        health_checker,
+        last_full_scan_at: tokio::sync::watch::channel(None).0,
     });
 
     if args.once {
-        janitor_publish::publish_pending_ready(state)
+        janitor_publish::publish_pending_ready(state, None, false)
             .await
             .map_err(|e| {
                 log::error!("Failed to publish pending proposals: {}", e);
@@ -185,11 +273,18 @@ async fn main() -> Result<(), i32> {
             state.clone(),
             chrono::Duration::seconds(args.interval),
             !args.no_auto_publish,
+            None,  // push_limit
+            None,  // modify_mp_limit
+            false, // require_binary_diff
         ));
 
         tokio::spawn(janitor_publish::refresh_bucket_mp_counts(state.clone()));
 
-        tokio::spawn(janitor_publish::listen_to_runner(state.clone()));
+        let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel(1);
+        tokio::spawn(janitor_publish::listen_to_runner(
+            state.clone(),
+            shutdown_rx,
+        ));
 
         let app = janitor_publish::web::app(state.clone());
 

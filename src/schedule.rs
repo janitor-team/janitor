@@ -44,6 +44,9 @@ pub async fn iter_schedule_requests_from_candidates(
     codebases: Option<Vec<&str>>,
     campaign: Option<&str>,
 ) -> Result<impl Iterator<Item = ScheduleRequest>, sqlx::Error> {
+    // named_publish_policy.per_branch_policy is an array of
+    // branch_publish_policy composite rows; unnest it in a correlated
+    // subquery to pull out the mode column for each per-branch entry.
     let mut query = sqlx::QueryBuilder::new(
         r###"
 SELECT
@@ -53,14 +56,17 @@ SELECT
   candidate.context AS context,
   candidate.value AS value,
   candidate.success_chance AS success_chance,
-  array_agg(named_publish_policy.per_branch_policy.mode) AS publish_modes,
+  (
+    SELECT array_agg(p.mode::text)
+    FROM unnest(named_publish_policy.per_branch_policy) p
+  ) AS publish_modes,
   candidate.command AS command,
   candidate.change_set AS change_set
 FROM candidate
 INNER JOIN codebase on codebase.name = candidate.codebase
 INNER JOIN named_publish_policy ON
     named_publish_policy.name = candidate.publish_policy
-INNER JOIN branch_publish_policy ON branch_publish_policy.role = ANY(named_publish_policy.per_branch_policy)
+WHERE TRUE
 "###,
     );
     if let Some(codebases) = codebases {
@@ -82,7 +88,9 @@ INNER JOIN branch_publish_policy ON branch_publish_policy.role = ANY(named_publi
         use sqlx::Row;
         let mut req = ScheduleRequest::from_row(&row).unwrap();
 
-        let pm = row.get::<Vec<String>, _>("publish_modes");
+        let pm = row
+            .get::<Option<Vec<String>>, _>("publish_modes")
+            .unwrap_or_default();
 
         req.value += pm
             .iter()
@@ -112,8 +120,12 @@ WHERE failure_transient is not True
         query.push(" AND suite = ");
         query.push_bind(campaign);
     }
-    let query = query.build_query_scalar::<PgInterval>();
-    let duration: Option<PgInterval> = query.fetch_optional(conn).await?;
+    // AVG(...) with no matching rows returns a single-row NULL, not
+    // zero rows -- so we must decode the scalar as Option<PgInterval>
+    // and flatten, otherwise fetch_optional returns Some(NULL) and
+    // decoding blows up.
+    let query = query.build_query_scalar::<Option<PgInterval>>();
+    let duration: Option<PgInterval> = query.fetch_optional(conn).await?.flatten();
     Ok(duration.map(|d| chrono::Duration::microseconds(d.microseconds)))
 }
 
@@ -172,7 +184,7 @@ async fn estimate_success_probability_and_duration(
     }
 
     let query = sqlx::query_as::<_, Run>(
-        r#"""
+        r#"
 SELECT
   result_code, instigated_context, context, failure_details,
   finish_time - start_time AS duration,
@@ -180,7 +192,7 @@ SELECT
 FROM run
 WHERE codebase = $1 AND suite = $2 AND failure_transient IS NOT True
 ORDER BY start_time DESC
-"""#,
+"#,
     );
     for run in query
         .bind(codebase)
@@ -207,12 +219,29 @@ ORDER BY start_time DESC
                 .as_ref()
                 .is_some_and(|d| d.get("relations").is_some())
         {
-            let relations: Relations = run.failure_details.as_ref().unwrap()["relations"]
-                .as_str()
-                .unwrap()
-                .parse()
-                .unwrap();
-            if deps_satisfied(conn, campaign, &relations).await? {
+            // Parse `Relations` and eagerly materialise the group
+            // structure into owned `Relation` values, then drop
+            // `Relations` before hitting any `.await`. `Relations`
+            // holds Python handles (through debian-control's rowan
+            // tree) and is `!Send`; keeping it in scope across an
+            // await would make this whole future non-`Send`, which
+            // in turn prevents `tokio::spawn`ing callers.
+            let groups: Vec<Vec<RelationRef>> = {
+                let relations: Relations = run.failure_details.as_ref().unwrap()["relations"]
+                    .as_str()
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                relations
+                    .entries()
+                    .map(|dep| {
+                        dep.relations()
+                            .map(|r| RelationRef::from_relation(&r))
+                            .collect()
+                    })
+                    .collect()
+            };
+            if deps_satisfied(conn, campaign, groups).await? {
                 success += 1;
                 same_context = false;
             }
@@ -307,7 +336,10 @@ fn calculate_offset(
     estimated_cost / estimated_value
 }
 
-async fn do_schedule_regular(
+/// Schedule a regular (non-control) queue item for the given campaign
+/// and codebase, computing an offset from the estimated success
+/// probability, duration and candidate value.
+pub async fn do_schedule_regular(
     conn: &PgPool,
     codebase: &str,
     campaign: &str,
@@ -327,9 +359,14 @@ async fn do_schedule_regular(
         || success_chance.is_none()
         || command.is_none()
     {
-        let candidate = sqlx::query_as::<_, (f64, f64, String, Option<String>)>(
+        // `candidate.value` is `integer` and `candidate.success_chance`
+        // is `float`, both nullable. Decoding either as non-Option
+        // fails at runtime when the row leaves them unset. Preserve
+        // Option semantics so downstream defaulting (matches Python's
+        // `row["value"] -> None`) can propagate.
+        let candidate = sqlx::query_as::<_, (Option<i32>, Option<f64>, String, Option<String>)>(
             "SELECT value, success_chance, command, context FROM candidate WHERE codebase = $1 and suite = $2 and coalesce(change_set, '') = $3").bind(codebase).bind(campaign).bind(change_set.unwrap_or("")).fetch_optional(conn).await?;
-        let candidate: (f64, f64, String, Option<String>) = if let Some(candidate) = candidate {
+        let candidate = if let Some(candidate) = candidate {
             candidate
         } else {
             return Err(Error::CandidateUnavailable {
@@ -338,8 +375,8 @@ async fn do_schedule_regular(
             });
         };
         (
-            candidate_value.unwrap_or(candidate.0),
-            success_chance.unwrap_or(candidate.1),
+            candidate_value.or_else(|| candidate.0.map(|v| v as f64)),
+            success_chance.or(candidate.1),
             command.unwrap_or(&candidate.2).to_owned(),
             if let Some(context) = context {
                 Some(context.to_string())
@@ -349,8 +386,8 @@ async fn do_schedule_regular(
         )
     } else {
         (
-            candidate_value.unwrap(),
-            success_chance.unwrap(),
+            candidate_value,
+            success_chance,
             command.unwrap().to_string(),
             context.map(|s| s.to_owned()),
         )
@@ -368,17 +405,19 @@ async fn do_schedule_regular(
     );
 
     if normalized_codebase_value.is_none() {
+        // `1.0 * value` produces NUMERIC in Postgres; cast the outer
+        // result to double precision so sqlx can decode into f64.
         normalized_codebase_value = sqlx::query_scalar::<_, f64>(
-            "select coalesce(least(1.0 * value / (select max(value) from codebase), 1.0), 1.0) from codebase WHERE name = $1").bind(codebase).fetch_optional(conn).await?
+            "select coalesce(least(1.0 * value / (select max(value) from codebase), 1.0), 1.0)::float8 from codebase WHERE name = $1").bind(codebase).fetch_optional(conn).await?
     }
 
     let offset = calculate_offset(
         estimated_duration,
         normalized_codebase_value,
         estimated_probability_of_success,
-        Some(candidate_value),
+        candidate_value,
         total_previous_runs,
-        Some(success_chance),
+        success_chance,
     );
     assert!(offset > 0.0);
     let offset = default_offset + offset;
@@ -476,7 +515,27 @@ pub async fn bulk_add_to_queue(
     Ok(())
 }
 
-async fn dep_available(conn: &PgPool, rel: &Relation) -> Result<bool, sqlx::Error> {
+/// Send-safe extract of a debian-control `Relation`: package name
+/// plus an optional (constraint, version) pair. `Relation` itself
+/// isn't `Send` (it wraps a `!Send` rowan syntax tree), so callers
+/// that need to hold dependency data across an `.await` must convert
+/// to this shape first.
+#[derive(Debug, Clone)]
+struct RelationRef {
+    name: String,
+    constraint: Option<(VersionConstraint, debversion::Version)>,
+}
+
+impl RelationRef {
+    fn from_relation(rel: &Relation) -> Self {
+        Self {
+            name: rel.try_name().expect("relation has no name"),
+            constraint: rel.version(),
+        }
+    }
+}
+
+async fn dep_available(conn: &PgPool, rel: &RelationRef) -> Result<bool, sqlx::Error> {
     let mut query = sqlx::QueryBuilder::new(
         r###"
 SELECT
@@ -486,18 +545,18 @@ FROM
 WHERE
   source = "###,
     );
-    query.push_bind(rel.try_name().expect("relation has no name"));
+    query.push_bind(rel.name.clone());
 
-    if let Some(version) = rel.version() {
+    if let Some((constraint, version)) = rel.constraint.as_ref() {
         query.push(" AND version ");
-        query.push(match version.0 {
+        query.push(match constraint {
             VersionConstraint::Equal => "=",
             VersionConstraint::GreaterThan => ">",
             VersionConstraint::GreaterThanEqual => ">=",
             VersionConstraint::LessThan => "<",
             VersionConstraint::LessThanEqual => "<=",
         });
-        query.push_bind(version.1);
+        query.push_bind(version.clone());
     }
 
     let query = query.build_query_scalar::<bool>();
@@ -508,13 +567,11 @@ WHERE
 async fn deps_satisfied(
     conn: &PgPool,
     _campaign: &str,
-    dependencies: &Relations,
+    dependencies: Vec<Vec<RelationRef>>,
 ) -> Result<bool, sqlx::Error> {
-    for dep in dependencies.entries() {
-        // TODO: This is a bit inefficient, we should be able to do this in a single query.
+    for group in dependencies {
         let mut found = false;
-
-        for subdep in dep.relations() {
+        for subdep in group {
             if dep_available(conn, &subdep).await? {
                 found = true;
                 break;

@@ -21,13 +21,13 @@ __all__ = [
 
 import logging
 import shlex
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Optional
 
 import asyncpg
 from debian.changelog import Version
 
-from . import set_user_agent
+from . import set_user_agent, utcnow
 from .config import read_config
 from .queue import Queue
 
@@ -45,7 +45,7 @@ DEFAULT_SCHEDULE_OFFSET = -1.0
 # will give a clearer error message.
 IGNORE_RESULT_CODE = {
     # Run worker failures from more than a day ago.
-    "worker-failure": lambda run: (datetime.utcnow() - run["start_time"]).days > 0,
+    "worker-failure": lambda run: (utcnow() - run["start_time"]).days > 0,
 }
 
 PUBLISH_MODE_VALUE = {

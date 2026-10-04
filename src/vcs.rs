@@ -1110,16 +1110,9 @@ impl VcsManager for RemoteGitVcsManager {
         branch_name: &str,
     ) -> Result<Option<breezyshim::branch::GenericBranch>, BranchOpenError> {
         let url = self.get_branch_url(codebase, branch_name);
-        // Create trace context from current span for remote Git operations
-        let trace_context = if let Some(trace_id) = tracing::Span::current().id() {
-            let mut ctx = TraceContext::default();
-            ctx.custom_headers
-                .insert("x-trace-span-id".to_string(), format!("{:?}", trace_id));
-            Some(ctx)
-        } else {
-            None
-        };
-
+        // TODO: plumb tracing::Span::current() into `open_cached_branch`
+        // as an `x-trace-span-id` header so upstream git-store logs can
+        // be correlated with our spans.
         open_cached_branch(&url).map_err(|e| BranchOpenError::from_err(url, &e))
     }
 
@@ -1252,16 +1245,8 @@ impl VcsManager for RemoteBzrVcsManager {
         branch_name: &str,
     ) -> Result<Option<breezyshim::branch::GenericBranch>, BranchOpenError> {
         let url = self.get_branch_url(codebase, branch_name);
-        // Create trace context from current span
-        let trace_context = if let Some(trace_id) = tracing::Span::current().id() {
-            let mut ctx = TraceContext::default();
-            ctx.custom_headers
-                .insert("x-trace-span-id".to_string(), format!("{:?}", trace_id));
-            Some(ctx)
-        } else {
-            None
-        };
-
+        // TODO: plumb tracing::Span::current() into `open_cached_branch`
+        // as an `x-trace-span-id` header for cross-service correlation.
         open_cached_branch(&url).map_err(|e| BranchOpenError::from_err(url, &e))
     }
 

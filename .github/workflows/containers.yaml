@@ -21,9 +21,6 @@ jobs:
     # else fall back to the current repository owner (works for forks).
     env:
       GHCR_OWNER: ${{ vars.GHCR_OWNER || github.repository_owner }}
-      IMAGE_BASE: >-
-        ghcr.io/${{ vars.GHCR_OWNER || github.repository_owner
-        }}/${{ github.event.repository.name }}
 
     strategy:
       matrix:
@@ -46,6 +43,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: 'true'
+
+      # Image refs must be lowercase; owner/repo names may not be.
+      - name: Determine image base
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          IMAGE_BASE="ghcr.io/${GHCR_OWNER}/${REPO_NAME}"
+          echo "IMAGE_BASE=${IMAGE_BASE,,}" | tee -a "$GITHUB_ENV"
 
       - name: Determine image tags to set
         run: |

@@ -260,16 +260,6 @@ async def get_run_pair(pool, old_id: str, new_id: str):
     return old_run, new_run
 
 
-def _set_limits(limit_mb):
-    if limit_mb is None:
-        return
-    import resource
-
-    limit = limit_mb * (1024**2)
-    # Limit to 1Gb
-    resource.setrlimit(resource.RLIMIT_AS, (int(0.8 * limit), limit))
-
-
 @routes.get("/diffoscope/{old_id}/{new_id}", name="diffoscope")
 async def handle_diffoscope(request):
     span = aiozipkin.request_span(request)
@@ -360,9 +350,7 @@ async def handle_diffoscope(request):
                         old_binaries,
                         new_binaries,
                         timeout=request.app["task_timeout"],
-                        preexec_fn=lambda: _set_limits(
-                            request.app["task_memory_limit"]
-                        ),
+                        memory_limit=request.app["task_memory_limit"],
                         diffoscope_command=request.app["diffoscope_command"],
                     )
             except MemoryError as e:
@@ -491,8 +479,8 @@ async def precache(
                 diffoscope_diff = await run_diffoscope(
                     old_binaries,
                     new_binaries,
-                    preexec_fn=lambda: _set_limits(task_memory_limit),
                     timeout=task_timeout,
+                    memory_limit=task_memory_limit,
                     diffoscope_command=diffoscope_command,
                 )
             except MemoryError as e:

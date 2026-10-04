@@ -9,11 +9,19 @@ repository = "https://github.com/jelmer/janitor.git"
 homepage = "https://github.com/jelmer/janitor"
 
 [dependencies]
+async-trait = "0.1"
 axum = { workspace = true }
 breezyshim = { workspace = true, features = ["sqlx"] }
 chrono.workspace = true
 clap = { workspace = true, features = ["derive"] }
 debian-changelog = { workspace = true }
+futures = "0.3"
+# `async_stream::try_stream!` powers the streaming `/policy` response
+# in `web.rs::get_policies` — it lets the handler emit one
+# named_publish_policy entry at a time instead of buffering the whole
+# 648k-row table (which previously OOMKilled the publisher).
+async-stream = "0.3"
+bytes.workspace = true
 janitor = { path = ".." }
 log.workspace = true
 minijinja = { version = "2", features = ["loader"] }
@@ -29,7 +37,20 @@ url = { workspace = true, features = ["serde"] }
 sqlx = { workspace = true, features = ["chrono"] }
 maplit.workspace = true
 prometheus = "0.14.0"
+lazy_static = "1.4"
+pyo3 = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+
+[[bin]]
+name = "janitor-publish-one"
+path = "src/bin/janitor-publish-one.rs"
 
 [dev-dependencies]
 maplit = { workspace = true }
 protobuf = "3"
+# Redeclare janitor with the `testing` feature so publish integration
+# tests can use janitor::schema::setup_test_database to load
+# schema/state.sql into a real PostgreSQL.
+janitor = { path = "..", features = ["testing"] }
+janitor-runner = { path = "../runner" }
+serial_test = "3"

@@ -1,37 +1,24 @@
 //! Differ crate for the Janitor project.
-//!
-//! This crate provides functionality for finding and comparing binary files.
 
-#![deny(missing_docs)]
-
-/// Module for interacting with diffoscope
 pub mod diffoscope;
+pub mod error;
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-/// Find binary files in a directory.
-///
-/// # Arguments
-/// * `path` - The directory to search
-///
-/// # Returns
-/// An iterator of (filename, path) pairs
-pub fn find_binaries(path: &Path) -> impl Iterator<Item = (OsString, PathBuf)> {
-    std::fs::read_dir(path).unwrap().filter_map(|entry| {
-        let entry = entry.ok()?;
-        let path = entry.path();
-        Some((entry.file_name(), path))
-    })
+pub use error::{Error, Result};
+
+/// Return `(filename, path)` for every entry directly under `path`.
+pub fn find_binaries(path: &Path) -> std::io::Result<Vec<(OsString, PathBuf)>> {
+    std::fs::read_dir(path)?
+        .map(|entry| {
+            let entry = entry?;
+            Ok((entry.file_name(), entry.path()))
+        })
+        .collect()
 }
 
-/// Check if a filename is a binary package.
-///
-/// # Arguments
-/// * `name` - The filename to check
-///
-/// # Returns
-/// `true` if the file is a binary package, `false` otherwise
+/// True for Debian binary package filenames (`.deb`, `.udeb`).
 pub fn is_binary(name: &str) -> bool {
     name.ends_with(".deb") || name.ends_with(".udeb")
 }
@@ -42,45 +29,32 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_is_binary_deb() {
-        assert_eq!(is_binary("package_1.0_amd64.deb"), true);
+    fn is_binary_matches_deb_and_udeb() {
+        assert!(is_binary("pkg_1.0_amd64.deb"));
+        assert!(is_binary("pkg_1.0_amd64.udeb"));
+        assert!(!is_binary("pkg_1.0.dsc"));
+        assert!(!is_binary("pkg_1.0.tar.gz"));
+        assert!(!is_binary("pkg_1.0.changes"));
     }
 
     #[test]
-    fn test_is_binary_udeb() {
-        assert_eq!(is_binary("package_1.0_amd64.udeb"), true);
-    }
-
-    #[test]
-    fn test_is_binary_not_binary() {
-        assert_eq!(is_binary("package_1.0.dsc"), false);
-        assert_eq!(is_binary("package_1.0.tar.gz"), false);
-        assert_eq!(is_binary("package_1.0.changes"), false);
-        assert_eq!(is_binary("Makefile"), false);
-    }
-
-    #[test]
-    fn test_find_binaries() {
+    fn find_binaries_lists_directory() {
         let td = TempDir::new().unwrap();
-        std::fs::write(td.path().join("package.deb"), b"fake deb").unwrap();
-        std::fs::write(td.path().join("source.dsc"), b"fake dsc").unwrap();
-        std::fs::write(td.path().join("installer.udeb"), b"fake udeb").unwrap();
+        std::fs::write(td.path().join("pkg.deb"), b"").unwrap();
+        std::fs::write(td.path().join("pkg.dsc"), b"").unwrap();
+        std::fs::write(td.path().join("pkg.udeb"), b"").unwrap();
 
-        let entries: Vec<(OsString, PathBuf)> = find_binaries(td.path()).collect();
-        assert_eq!(entries.len(), 3);
-
-        let mut names: Vec<String> = entries
-            .iter()
-            .map(|(name, _)| name.to_string_lossy().to_string())
+        let mut names: Vec<String> = find_binaries(td.path())
+            .unwrap()
+            .into_iter()
+            .map(|(n, _)| n.to_string_lossy().into_owned())
             .collect();
         names.sort();
-        assert_eq!(names, vec!["installer.udeb", "package.deb", "source.dsc"]);
+        assert_eq!(names, vec!["pkg.deb", "pkg.dsc", "pkg.udeb"]);
     }
 
     #[test]
-    fn test_find_binaries_empty_dir() {
-        let td = TempDir::new().unwrap();
-        let entries: Vec<(OsString, PathBuf)> = find_binaries(td.path()).collect();
-        assert_eq!(entries.len(), 0);
+    fn find_binaries_errors_on_missing_dir() {
+        assert!(find_binaries(Path::new("/no/such/path/should/exist")).is_err());
     }
 }

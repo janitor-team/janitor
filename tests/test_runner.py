@@ -25,6 +25,7 @@ import pytest
 from aiohttp import MultipartWriter, web
 from fakeredis.aioredis import FakeRedis
 
+from janitor import utcnow
 from janitor.config import read_string as read_config_string
 from janitor.debian import dpkg_vendor
 from janitor.logs import LogFileManager
@@ -60,7 +61,7 @@ class MemoryLogFileManager(LogFileManager):
 
     async def get_ctime(self, pkg: str, run_id: str, name: str):
         if self.has_log(pkg, run_id, name):
-            return datetime.utcnow()
+            return utcnow()
         raise FileNotFoundError
 
     async def import_log(
@@ -195,11 +196,11 @@ async def test_rate_limit_hosts():
     qp = await create_queue_processor()
     assert [x async for x in qp.rate_limited_hosts()] == []
 
-    retry_after = datetime.utcnow() - timedelta(seconds=30)
+    retry_after = utcnow() - timedelta(seconds=30)
     await qp.rate_limited("expired.com", retry_after)
     assert [x async for x in qp.rate_limited_hosts()] == []
 
-    retry_after = datetime.utcnow() + timedelta(seconds=30)
+    retry_after = utcnow() + timedelta(seconds=30)
     await qp.rate_limited("github.com", retry_after)
 
     assert [x async for x in qp.rate_limited_hosts()] == [("github.com", retry_after)]
@@ -220,7 +221,7 @@ async def test_register_run():
         command="blah",
         queue_id=12,
         log_id="some-id",
-        start_time=datetime.utcnow(),
+        start_time=utcnow(),
         codebase="test-1.1",
         vcs_info={},
         backchannel=Backchannel(),
@@ -392,7 +393,7 @@ async def test_submit_candidate(aiohttp_client, db, tmp_path):
         "target_repository": {"url": None, "vcs_type": None},
     }
 
-    ts = datetime.utcnow().isoformat()
+    ts = utcnow().isoformat()
 
     with MultipartWriter("form-data") as mpwriter:
         mpwriter.append_json(
@@ -514,7 +515,7 @@ def test_serialize_active_run():
         queue_id=4242,
         log_id="some-log-id",
         backchannel=Backchannel(),
-        start_time=datetime.utcnow(),
+        start_time=utcnow(),
         vcs_info={"vcs_type": "git", "branch_url": "http://example.com/foo"},
     )
     orig_json = run.json()
@@ -536,8 +537,8 @@ async def create_dummy_run(
         campaign=campaign,
         vcs_type="git",
         subpath="",
-        start_time=datetime.utcnow(),
-        finish_time=datetime.utcnow(),
+        start_time=utcnow(),
+        finish_time=utcnow(),
         command="true",
         result_code="missing-result-code",
         codemod_result={},
@@ -700,7 +701,7 @@ def _make_active_run(*, queue_id, log_id, codebase="foo"):
         command="blah",
         queue_id=queue_id,
         log_id=log_id,
-        start_time=datetime.utcnow(),
+        start_time=utcnow(),
         codebase=codebase,
         vcs_info={},
         backchannel=Backchannel(),
@@ -812,7 +813,7 @@ async def _register_dummy_active_run(
             command="blah",
             queue_id=999,
             log_id="dummy-active-run",
-            start_time=datetime.utcnow(),
+            start_time=utcnow(),
             codebase=codebase,
             vcs_info={},
             backchannel=backchannel or Backchannel(),
@@ -982,6 +983,36 @@ async def test_schedule_by_run_id_includes_queue_position(aiohttp_client, db, tm
     assert body["codebase"] == codebase
     assert "queue_position" in body
     assert "queue_wait_time" in body
+    await qp.stop()
+
+
+async def test_handle_queue_returns_entries(aiohttp_client, db, tmp_path):
+    # GET /queue returns the entries currently in the queue.
+    vcs = tmp_path / "vcs"
+    vcs.mkdir()
+    qp = await create_queue_processor(db, vcs_managers=get_vcs_managers(str(vcs)))
+    client = await create_client(aiohttp_client, qp, campaigns=["mycampaign"])
+    resp = await client.post(
+        "/codebases",
+        json=[{"name": "foo", "branch_url": "https://example.com/foo.git"}],
+    )
+    assert resp.status == 200
+    resp = await client.post(
+        "/candidates",
+        json=[{"campaign": "mycampaign", "codebase": "foo", "command": "true"}],
+    )
+    assert resp.status == 200
+    resp = await client.post(
+        "/schedule", json={"campaign": "mycampaign", "codebase": "foo"}
+    )
+    assert resp.status == 200
+
+    resp = await client.get("/queue")
+    assert resp.status == 200
+    body = await resp.json()
+    assert len(body) == 1
+    assert body[0]["codebase"] == "foo"
+    assert body[0]["campaign"] == "mycampaign"
     await qp.stop()
 
 

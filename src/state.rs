@@ -39,6 +39,11 @@ pub struct Run {
     pub vcs_type: String,
     pub branch_url: String,
     pub logfilenames: Option<Vec<String>>,
+    // Column in the schema is `worker` (name of the worker); keep the
+    // Rust field as `worker_name` for clarity but rename at the sqlx
+    // layer so queries can select `run.worker` directly without an
+    // `AS worker_name` alias everywhere.
+    #[sqlx(rename = "worker")]
     pub worker_name: Option<String>,
     pub result_branches: Option<Vec<(String, String, Option<RevisionId>, Option<RevisionId>)>>,
     pub result_tags: Option<Vec<(String, String)>>,
@@ -84,7 +89,10 @@ impl Run {
     }
 }
 
-async fn has_cotenants(
+/// Return whether `codebase` shares its VCS URL with another codebase
+/// (a "cotenant"). None when we can't tell (URL not found in the
+/// codebase table).
+pub async fn has_cotenants(
     conn: &PgPool,
     codebase: &str,
     url: &url::Url,
@@ -117,7 +125,9 @@ async fn has_cotenants(
     })
 }
 
-async fn iter_publishable_suites(
+/// All distinct suites that currently have publishable runs for
+/// `codebase`, per the `publish_ready` view.
+pub async fn iter_publishable_suites(
     conn: &PgPool,
     codebase: &str,
 ) -> Result<Vec<String>, sqlx::Error> {

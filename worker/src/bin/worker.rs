@@ -88,8 +88,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         metadata: None,
     }));
 
-    let global_config = breezyshim::config::global_stack().unwrap();
-    global_config.set("branch.fetch_tags", true).unwrap();
+    let global_config = breezyshim::config::global_stack()
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    global_config
+        .set("branch.fetch_tags", true)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
     let base_url = args.base_url;
 
@@ -99,8 +102,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             login: String,
             password: String,
         }
+        let credentials_file = File::open(&credentials).unwrap_or_else(|e| {
+            eprintln!(
+                "Failed to open credentials file '{}': {}",
+                credentials.display(),
+                e
+            );
+            std::process::exit(1);
+        });
         let creds: JsonCredentials =
-            serde_json::from_reader(File::open(credentials).unwrap()).unwrap();
+            serde_json::from_reader(credentials_file).unwrap_or_else(|e| {
+                eprintln!("Failed to parse credentials JSON: {}", e);
+                std::process::exit(1);
+            });
         janitor_worker::client::Credentials::Basic {
             username: creds.login,
             password: Some(creds.password),
@@ -114,11 +128,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         janitor_worker::client::Credentials::from_url(&base_url)
     };
 
-    let jenkins_build_url: Option<url::Url> =
-        std::env::var("BUILD_URL").ok().map(|x| x.parse().unwrap());
+    let jenkins_build_url: Option<url::Url> = std::env::var("BUILD_URL").ok().and_then(|x| {
+        x.parse()
+            .map_err(|e| {
+                eprintln!("Invalid BUILD_URL environment variable: {}", e);
+            })
+            .ok()
+    });
 
-    let node_name = std::env::var("NODE_NAME")
-        .unwrap_or_else(|_| gethostname::gethostname().to_str().unwrap().to_owned());
+    let node_name = std::env::var("NODE_NAME").unwrap_or_else(|_| {
+        gethostname::gethostname()
+            .to_str()
+            .unwrap_or("unknown-host")
+            .to_owned()
+    });
 
     let addr = SocketAddr::new(args.listen_address, args.port.unwrap_or(0));
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -134,23 +157,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let my_url = if let Some(my_url) = args.my_url.as_ref() {
         Some(my_url.clone())
     } else if let Some(external_address) = args.external_address {
-        Some(
-            format!("http://{}:{}", external_address, site_port)
-                .parse()
-                .unwrap(),
-        )
+        match format!("http://{}:{}", external_address, site_port).parse() {
+            Ok(url) => Some(url),
+            Err(e) => {
+                log::error!(
+                    "Failed to parse worker URL with external address {}: {}",
+                    external_address,
+                    e
+                );
+                return Err(Box::new(e) as Box<dyn std::error::Error>);
+            }
+        }
     } else if let Ok(my_ip) = std::env::var("MY_IP") {
-        Some(format!("http://{}:{}", my_ip, site_port).parse().unwrap())
+        match format!("http://{}:{}", my_ip, site_port).parse() {
+            Ok(url) => Some(url),
+            Err(e) => {
+                log::error!("Failed to parse worker URL with MY_IP {}: {}", my_ip, e);
+                return Err(Box::new(e) as Box<dyn std::error::Error>);
+            }
+        }
     } else if janitor_worker::is_gce_instance().await {
-        if let Some(external_ip) = janitor_worker::gce_external_ip().await.unwrap() {
-            Some(
-                format!("http://{}:{}", external_ip, site_port)
-                    .parse()
-                    .unwrap(),
-            )
-        } else {
-            // TODO(jelmer): Find out kubernetes IP?
-            None
+        match janitor_worker::gce_external_ip().await {
+            Ok(Some(external_ip)) => {
+                match format!("http://{}:{}", external_ip, site_port).parse() {
+                    Ok(url) => Some(url),
+                    Err(e) => {
+                        log::error!(
+                            "Failed to parse worker URL with GCE IP {}: {}",
+                            external_ip,
+                            e
+                        );
+                        return Err(Box::new(e) as Box<dyn std::error::Error>);
+                    }
+                }
+            }
+            Ok(None) => None,
+            Err(e) => {
+                log::warn!(
+                    "Failed to get GCE external IP, continuing without worker URL: {}",
+                    e
+                );
+                None
+            }
         }
     } else {
         None

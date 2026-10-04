@@ -59,13 +59,9 @@ async def handle_history(request):
 SELECT finish_time, codebase, suite, worker_link,
 worker as worker_name, finish_time - start_time AS duration,
 result_code, id, description, failure_transient FROM run
-ORDER BY finish_time DESC"""
-    if offset:
-        query += f" OFFSET {offset}"
-    if limit:
-        query += f" LIMIT {limit}"
+ORDER BY finish_time DESC LIMIT $1 OFFSET $2"""
     async with request.app["pool"].acquire() as conn:
-        runs = await conn.fetch(query)
+        runs = await conn.fetch(query, limit, offset)
     return {"count": limit, "history": runs}
 
 

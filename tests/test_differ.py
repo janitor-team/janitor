@@ -16,10 +16,12 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
 
+import json
+import os
 import tempfile
 
 from janitor.artifacts import LocalArtifactManager
-from janitor.differ import create_app
+from janitor.differ import create_app, precache
 
 
 async def create_client(aiohttp_client, db):
@@ -53,3 +55,27 @@ async def test_precache_all(aiohttp_client, db):
     resp = await client.post("/precache-all")
     assert resp.status == 200
     assert {"count": 0} == await resp.json()
+
+
+class _ArtifactManager:
+    async def retrieve_artifacts(
+        self, run_id, local_path, filter_fn=None, timeout=None
+    ):
+        with open(os.path.join(local_path, "pkg_1.0_all.deb"), "wb") as f:
+            f.write(run_id.encode())
+
+
+async def test_precache_runs_diffoscope():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "diffoscope.json")
+        await precache(
+            _ArtifactManager(),
+            "old",
+            "new",
+            task_memory_limit=1500,
+            task_timeout=60,
+            diffoscope_cache_path=lambda old_id, new_id: path,
+            diffoscope_command="true",
+        )
+        with open(path) as f:
+            assert json.load(f)["source1"] == "old version"

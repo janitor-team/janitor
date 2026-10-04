@@ -8,10 +8,11 @@ use std::hash::{Hash, Hasher};
 pub struct QueueItem {
     pub id: i32,
     pub context: Option<String>,
-    pub command: String,
-    pub estimated_duration: PgInterval,
+    pub command: Option<String>,
+    // queue.estimated_duration is nullable (schema/state.sql).
+    pub estimated_duration: Option<PgInterval>,
     pub campaign: String,
-    pub refresh: bool,
+    pub refresh: Option<bool>,
     pub requester: Option<String>,
     pub change_set: Option<String>,
     pub codebase: String,
@@ -53,7 +54,7 @@ pub struct ETA {
     pub wait_time: PgInterval,
 }
 
-#[derive(FromRow)]
+#[derive(Debug, Default, Clone, FromRow, serde::Serialize, serde::Deserialize)]
 pub struct VcsInfo {
     pub branch_url: Option<String>,
     pub subpath: Option<String>,
@@ -190,7 +191,7 @@ impl<'a> Queue<'a> {
     ) -> Result<(i32, String), Error> {
         let row = sqlx::query(
             "INSERT INTO queue (command, priority, bucket, context, estimated_duration, suite, refresh, requester, change_set, codebase)
-             VALUES ($1, (SELECT COALESCE(MIN(priority), 0) FROM queue) + $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             VALUES ($1, (SELECT COALESCE(MIN(priority), 0) FROM queue) + $2::bigint, $3::queue_bucket, $4, $5, $6::suite_name, $7, $8, $9, $10)
              ON CONFLICT (codebase, suite, coalesce(change_set, ''::text))
              DO UPDATE SET context = EXCLUDED.context,
                            priority = EXCLUDED.priority,
@@ -202,10 +203,10 @@ impl<'a> Queue<'a> {
                            codebase = EXCLUDED.codebase
              WHERE queue.bucket >= EXCLUDED.bucket OR
                    (queue.bucket = EXCLUDED.bucket AND queue.priority >= EXCLUDED.priority)
-             RETURNING id, bucket"
+             RETURNING id, bucket::text"
         )
         .bind(command)
-        .bind(offset)
+        .bind(offset as i64)
         .bind(bucket)
         .bind(context)
         .bind(estimated_duration)
@@ -234,6 +235,49 @@ impl<'a> Queue<'a> {
             let bucket: String = row.try_get("bucket")?;
             Ok((id, bucket))
         }
+    }
+
+    /// Iterate items currently queued.
+    ///
+    /// Rows are ordered the same way `next_item` would pick them
+    /// (bucket, priority, id ascending); `limit` caps the number of
+    /// rows, `campaign` optionally restricts to a single campaign.
+    pub async fn iter_queue(
+        &self,
+        limit: Option<i64>,
+        campaign: Option<&str>,
+    ) -> Result<Vec<QueueItem>, Error> {
+        let query = if campaign.is_some() {
+            r#"
+            SELECT queue.id, queue.context, queue.command, queue.estimated_duration,
+                   queue.suite AS campaign, queue.refresh, queue.requester,
+                   queue.change_set, queue.codebase
+            FROM queue
+            WHERE queue.suite = $1
+            ORDER BY bucket ASC, priority ASC, queue.id ASC
+            LIMIT $2
+            "#
+        } else {
+            r#"
+            SELECT queue.id, queue.context, queue.command, queue.estimated_duration,
+                   queue.suite AS campaign, queue.refresh, queue.requester,
+                   queue.change_set, queue.codebase
+            FROM queue
+            ORDER BY bucket ASC, priority ASC, queue.id ASC
+            LIMIT $1
+            "#
+        };
+
+        let sqlx_query = if let Some(campaign) = campaign {
+            sqlx::query_as::<_, QueueItem>(sqlx::AssertSqlSafe(query))
+                .bind(campaign)
+                .bind(limit.unwrap_or(i64::MAX))
+        } else {
+            sqlx::query_as::<_, QueueItem>(sqlx::AssertSqlSafe(query))
+                .bind(limit.unwrap_or(i64::MAX))
+        };
+
+        sqlx_query.fetch_all(self.pool).await
     }
 
     pub async fn get_buckets(&self) -> Result<Vec<(String, i64)>, Error> {
