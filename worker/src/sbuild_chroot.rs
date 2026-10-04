@@ -1,7 +1,9 @@
-//! Creation of chroot tarballs for sbuild's unshare mode.
+//! Creation of chroots for sbuild, as tarballs for its unshare mode or with schroot.
 
 use janitor::config::Config;
 use std::path::{Path, PathBuf};
+
+pub mod schroot;
 
 /// Extension of the tarballs that are created.
 const TARBALL_EXTENSION: &str = ".tar.xz";
@@ -22,6 +24,22 @@ pub enum Error {
     LinkBlocked(PathBuf),
     BuildFailed(String),
     Io(PathBuf, std::io::Error),
+    InvalidChrootName(String),
+    IncompatibleChrootMode(String),
+    RunCommandFailed(String, String),
+    EntryShared(PathBuf),
+    EntryWithoutPath(PathBuf),
+    ChrootPathChanged {
+        entry: PathBuf,
+        recorded: PathBuf,
+        expected: PathBuf,
+    },
+    RefusingToRemove(PathBuf, &'static str),
+    PathShared(PathBuf),
+    SessionOpen {
+        chroot: String,
+        session: String,
+    },
 }
 
 impl std::fmt::Display for Error {
@@ -70,6 +88,45 @@ impl std::fmt::Display for Error {
             ),
             Error::BuildFailed(e) => write!(f, "{}", e),
             Error::Io(path, e) => write!(f, "{}: {}", path.display(), e),
+            Error::InvalidChrootName(name) => write!(f, "invalid chroot name: {:?}", name),
+            Error::IncompatibleChrootMode(e) => write!(f, "{}", e),
+            Error::RunCommandFailed(command, e) => {
+                write!(f, "command {:?} failed to run: {}", command, e)
+            }
+            Error::EntryShared(path) => write!(
+                f,
+                "{} describes more than one chroot; not removing it",
+                path.display()
+            ),
+            Error::EntryWithoutPath(path) => write!(
+                f,
+                "{} does not record one directory or file; not removing it",
+                path.display()
+            ),
+            Error::ChrootPathChanged {
+                entry,
+                recorded,
+                expected,
+            } => write!(
+                f,
+                "sbuild path has changed: {} records {}, expected {}; not removing anything",
+                entry.display(),
+                recorded.display(),
+                expected.display()
+            ),
+            Error::RefusingToRemove(path, reason) => {
+                write!(f, "refusing to remove {:?}: {}", path, reason)
+            }
+            Error::PathShared(path) => write!(
+                f,
+                "{} describes another chroot at the same path; not removing it",
+                path.display()
+            ),
+            Error::SessionOpen { chroot, session } => write!(
+                f,
+                "chroot {} has an open schroot session ({}); not removing it",
+                chroot, session
+            ),
         }
     }
 }
@@ -85,6 +142,7 @@ pub struct Chroot {
     pub components: Vec<String>,
     pub extra: Vec<String>,
     pub build_distributions: Vec<String>,
+    pub aliases: Vec<String>,
 }
 
 impl Chroot {
@@ -109,7 +167,14 @@ impl Chroot {
             components: components.to_vec(),
             extra: extra.to_vec(),
             build_distributions: unique,
+            aliases: Vec::new(),
         }
+    }
+
+    /// Set the extra names under which schroot knows the chroot.
+    pub fn with_aliases(mut self, aliases: &[String]) -> Self {
+        self.aliases = aliases.to_vec();
+        self
     }
 }
 
@@ -176,14 +241,17 @@ pub fn chroots_from_config(config: &Config, names: &[String]) -> Result<Vec<Chro
             .filter(|b| b.base_distribution() == name && !b.build_distribution().is_empty())
             .map(|b| b.build_distribution().to_string())
             .collect();
-        chroots.push(Chroot::new(
-            &name,
-            distribution.archive_mirror_uri(),
-            distribution.chroot(),
-            &distribution.component,
-            &distribution.extra,
-            &build_distributions,
-        ));
+        chroots.push(
+            Chroot::new(
+                &name,
+                distribution.archive_mirror_uri(),
+                distribution.chroot(),
+                &distribution.component,
+                &distribution.extra,
+                &build_distributions,
+            )
+            .with_aliases(&distribution.chroot_alias),
+        );
     }
     Ok(chroots)
 }
@@ -241,6 +309,16 @@ pub fn chroot_name_for_distribution(distribution: &str, arch: &str) -> Option<St
 /// Position of the target in the command built by `mmdebstrap_command`.
 const TARGET_INDEX: usize = 3;
 
+/// Format the apt source for an extra suite of a chroot.
+fn extra_repository(chroot: &Chroot, name: &str) -> String {
+    let mut entry = format!("deb {} {}", chroot.mirror, name);
+    for component in &chroot.components {
+        entry.push(' ');
+        entry.push_str(component);
+    }
+    entry
+}
+
 /// Build the mmdebstrap command line that creates a chroot tarball.
 pub fn mmdebstrap_command(chroot: &Chroot, tarball: &Path, options: &Options) -> Vec<String> {
     let mut cmd = vec![
@@ -259,12 +337,10 @@ pub fn mmdebstrap_command(chroot: &Chroot, tarball: &Path, options: &Options) ->
         cmd.push(format!("--include={}", options.include.join(",")));
     }
     for name in &chroot.extra {
-        let mut entry = format!("deb {} {}", chroot.mirror, name);
-        for component in &chroot.components {
-            entry.push(' ');
-            entry.push_str(component);
-        }
-        cmd.push(format!("--extra-repository={}", entry));
+        cmd.push(format!(
+            "--extra-repository={}",
+            extra_repository(chroot, name)
+        ));
     }
     for hook in &options.customize_hooks {
         cmd.push(format!("--customize-hook={}", hook));
@@ -320,10 +396,26 @@ pub fn format_command(command: &[String]) -> String {
 
 /// Run a command line built by `mmdebstrap_command`.
 pub fn run_command(command: &[String]) -> Result<(), Error> {
-    let status = std::process::Command::new(&command[0])
-        .args(&command[1..])
-        .status()
-        .map_err(|e| Error::BuildFailed(format!("unable to run {}: {}", command[0], e)))?;
+    run_command_with_input(command, None)
+}
+
+/// Run a command line, optionally writing to its standard input.
+pub fn run_command_with_input(command: &[String], input: Option<&str>) -> Result<(), Error> {
+    use std::io::Write;
+    let unable = |e| Error::BuildFailed(format!("unable to run {}: {}", command[0], e));
+    let mut process = std::process::Command::new(&command[0]);
+    process.args(&command[1..]);
+    if input.is_some() {
+        process.stdin(std::process::Stdio::piped());
+    }
+    let mut child = process.spawn().map_err(unable)?;
+    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+        // The command may exit without reading all of its input
+        if let Err(e) = stdin.write_all(input.as_bytes()) {
+            log::debug!("Writing to {}: {}", command[0], e);
+        }
+    }
+    let status = child.wait().map_err(unable)?;
     if !status.success() {
         return Err(Error::BuildFailed(format!(
             "{} failed: {}",

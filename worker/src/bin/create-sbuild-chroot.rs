@@ -1,13 +1,26 @@
-use clap::Parser;
-use janitor_worker::sbuild_chroot::{self, Chroot, Options};
+use clap::{CommandFactory, Parser};
+use janitor_worker::sbuild_chroot::{self, schroot, Chroot, Options};
 use std::path::PathBuf;
 
-/// Create chroot tarballs for sbuild's unshare mode.
+/// How sbuild is going to use the chroots.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Tarballs made with mmdebstrap, for sbuild's unshare mode
+    Unshare,
+    /// Chroots made with sbuild-createchroot and registered with schroot (needs root)
+    Schroot,
+}
+
+/// Create chroots for sbuild: tarballs for its unshare mode, or schroot chroots.
 ///
 /// The chroots are described either by the distributions and campaigns in a
 /// configuration file, or, when --suite is given, by the command line alone.
 #[derive(Parser, Debug)]
 struct Args {
+    /// Kind of chroot to create
+    #[clap(long, value_enum, default_value = "unshare")]
+    mode: Mode,
+
     /// Path to configuration
     #[clap(long, default_value = "janitor.conf", conflicts_with = "suite")]
     config: PathBuf,
@@ -40,7 +53,12 @@ struct Args {
     #[clap(long, requires = "suite")]
     build_distribution: Vec<String>,
 
-    /// Base directory for chroots [default: $XDG_CACHE_HOME/sbuild or ~/.cache/sbuild]
+    /// Extra name for the chroot (with --suite and --mode schroot)
+    #[clap(long, requires = "suite")]
+    alias: Vec<String>,
+
+    /// Base directory for chroots [default with --mode unshare: $XDG_CACHE_HOME/sbuild or
+    /// ~/.cache/sbuild; required with --mode schroot]
     #[clap(long)]
     base_directory: Option<PathBuf>,
 
@@ -56,9 +74,29 @@ struct Args {
     #[clap(long)]
     user: Option<String>,
 
-    /// Recreate chroots that already exist
+    /// Recreate chroots that already exist (with --mode unshare)
     #[clap(long)]
     force: bool,
+
+    /// Do not install eatmydata and run commands under it (with --mode schroot)
+    #[clap(long)]
+    no_eatmydata: bool,
+
+    /// Create a tarball in the base directory rather than a directory (with --mode schroot)
+    #[clap(long)]
+    make_sbuild_tarball: bool,
+
+    /// sbuild chroot mode to set the chroot up for (with --mode schroot) [default: schroot]
+    #[clap(long, value_enum)]
+    sbuild_chroot_mode: Option<schroot::ChrootMode>,
+
+    /// Remove the existing chroot and its schroot definition first (with --mode schroot)
+    #[clap(long)]
+    remove_old: bool,
+
+    /// Command to run in the chroot after creating it (with --mode schroot)
+    #[clap(long)]
+    run_command: Vec<String>,
 
     /// Print what would be done, without changing anything
     #[clap(long)]
@@ -77,15 +115,148 @@ fn chroots(args: &Args) -> Result<Vec<Chroot>, String> {
             &args.component,
             &args.extra,
             &args.build_distribution,
-        )]);
+        )
+        .with_aliases(&args.alias)]);
     }
     let config = janitor::config::read_file(&args.config)
         .map_err(|e| format!("unable to read {}: {}", args.config.display(), e))?;
     sbuild_chroot::chroots_from_config(&config, &args.distribution).map_err(|e| e.to_string())
 }
 
+/// Check that the options fit the mode.
+fn check_mode(args: &Args) -> Result<(), String> {
+    let (mode, given): (&str, &[(&str, bool)]) = match args.mode {
+        Mode::Unshare => (
+            "schroot",
+            &[
+                ("--alias", !args.alias.is_empty()),
+                ("--no-eatmydata", args.no_eatmydata),
+                ("--make-sbuild-tarball", args.make_sbuild_tarball),
+                ("--sbuild-chroot-mode", args.sbuild_chroot_mode.is_some()),
+                ("--remove-old", args.remove_old),
+                ("--run-command", !args.run_command.is_empty()),
+            ],
+        ),
+        Mode::Schroot => ("unshare", &[("--force", args.force)]),
+    };
+    if let Some((option, _)) = given.iter().find(|(_, given)| *given) {
+        return Err(format!("{} can only be used with --mode {}", option, mode));
+    }
+    if args.mode == Mode::Schroot {
+        match &args.base_directory {
+            None => return Err("--base-directory is required with --mode schroot".to_string()),
+            Some(path) if !path.is_absolute() => {
+                return Err(
+                    "--base-directory must be an absolute path with --mode schroot".to_string(),
+                )
+            }
+            Some(_) => {}
+        }
+        // Only that mode registers the chroot with schroot
+        if args.sbuild_chroot_mode.unwrap_or_default() != schroot::ChrootMode::Schroot {
+            for (option, given) in [
+                ("--remove-old", args.remove_old),
+                ("--run-command", !args.run_command.is_empty()),
+            ] {
+                if given {
+                    return Err(format!("{} needs --sbuild-chroot-mode schroot", option));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn run_schroot(args: &Args, chroots: &[Chroot]) -> Result<(), String> {
+    if args.user.is_some() {
+        log::warn!("--user has no effect with --mode schroot");
+    }
+    let base_directory = args
+        .base_directory
+        .clone()
+        .ok_or("--base-directory is required with --mode schroot")?;
+    // sbuild-createchroot records the resolved path
+    let base_directory = match base_directory.canonicalize() {
+        Ok(path) => path,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => base_directory.components().collect(),
+        Err(e) => return Err(format!("{}: {}", base_directory.display(), e)),
+    };
+    let options = schroot::Options {
+        base_directory,
+        arch: match args.arch.clone() {
+            Some(arch) => arch,
+            None => janitor_worker::get_build_arch().map_err(|e| e.to_string())?,
+        },
+        include: args.include.clone(),
+        eatmydata: !args.no_eatmydata,
+        make_tarball: args.make_sbuild_tarball,
+        chroot_mode: args.sbuild_chroot_mode.unwrap_or_default(),
+    };
+    let config_dir = std::path::Path::new(schroot::DEFAULT_CONFIG_DIR);
+    let session_dir = std::path::Path::new(schroot::DEFAULT_SESSION_DIR);
+
+    // Validate everything before anything is removed or created
+    let jobs = chroots
+        .iter()
+        .map(|chroot| schroot::plan(chroot, &options))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    schroot::check_collisions(&jobs).map_err(|e| e.to_string())?;
+    let mut removals = Vec::new();
+    for job in &jobs {
+        removals.push(if args.remove_old {
+            let mounts = schroot::mount_points().map_err(|e| e.to_string())?;
+            schroot::plan_remove_old(job, config_dir, session_dir, &mounts)
+                .map_err(|e| e.to_string())?
+        } else {
+            vec![]
+        });
+    }
+
+    for (job, removals) in jobs.iter().zip(&removals) {
+        if args.dry_run {
+            let quote = |path: &std::path::Path| {
+                sbuild_chroot::format_command(&[path.to_string_lossy().into_owned()])
+            };
+            for removal in removals {
+                let rm = if removal.is_directory {
+                    "rm -rf"
+                } else {
+                    "rm -f"
+                };
+                println!("{} -- {}", rm, quote(&removal.path));
+                println!("rm -- {}", quote(&removal.entry));
+            }
+            if job.make_tarball {
+                println!("# the chroot is built in a new directory next to the tarball");
+            }
+            println!("{}", sbuild_chroot::format_command(&job.command));
+            for command in &args.run_command {
+                println!(
+                    "printf %s {} | {}",
+                    sbuild_chroot::format_command(std::slice::from_ref(command)),
+                    sbuild_chroot::format_command(&schroot::shell_command(job))
+                );
+            }
+        } else {
+            schroot::remove_old(removals, session_dir, &schroot::mount_points)
+                .map_err(|e| e.to_string())?;
+            schroot::create(
+                job,
+                &args.run_command,
+                &mut sbuild_chroot::run_command_with_input,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 fn run(args: &Args) -> Result<(), String> {
     let chroots = chroots(args)?;
+    if args.mode == Mode::Schroot {
+        return run_schroot(args, &chroots);
+    }
 
     let mut options = Options {
         base_directory: match args.base_directory.clone() {
@@ -143,6 +314,12 @@ fn run(args: &Args) -> Result<(), String> {
 
 fn main() {
     let args = Args::parse();
+    if let Err(e) = check_mode(&args) {
+        Args::command()
+            .bin_name(env!("CARGO_BIN_NAME"))
+            .error(clap::error::ErrorKind::ArgumentConflict, e)
+            .exit();
+    }
 
     args.logging.init();
 

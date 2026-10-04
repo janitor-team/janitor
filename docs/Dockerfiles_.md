@@ -56,6 +56,13 @@ Run it again after adding a campaign; an existing tarball is kept unless `--forc
 
 `mmdebstrap` has to create a user namespace to build the tarball. If it stops with `unshare failed: Operation not permitted`, start the container with `--cap-add SYS_ADMIN`.
 
+For a host that runs `sbuild` in schroot mode, `--mode schroot` creates the chroot with `sbuild-createchroot` and registers it with schroot, with an alias for each campaign. It must run as root, with an absolute `--base-directory` that only root can write to. Outside the worker image it needs `python3-breezy` installed, and `dpkg-dev` unless `--arch` is given. `--remove-old` first removes the chroot and definition from an earlier run, and refuses while a filesystem is mounted in the chroot or schroot has a session open for it; `--run-command` runs a command in the new chroot with `sbuild-shell`, which needs `sbuild` configured for schroot mode; `--dry-run` prints what would be done:
+
+```console
+# janitor-create-sbuild-chroot --mode schroot --config janitor.conf \
+    --base-directory /srv/chroots --remove-old unstable
+```
+
 **Troubleshooting**:
 
 ```console
