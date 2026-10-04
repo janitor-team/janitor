@@ -25,7 +25,7 @@ silver-platter = { workspace = true, features = ["debian"] }
 debian-analyzer = { workspace = true, optional = true }
 shlex = { workspace = true }
 axum = { workspace = true }
-nix = { workspace = true, features = ["fs"] }
+nix = { workspace = true, features = ["fs", "user"] }
 percent-encoding = "2.3.1"
 maplit = "1.0.2"
 tempfile = "3.20.0"
@@ -58,4 +58,9 @@ required-features = ["cli"]
 [[bin]]
 name = "janitor-dist"
 path = "src/bin/dist.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "janitor-create-sbuild-chroot"
+path = "src/bin/create-sbuild-chroot.rs"
 required-features = ["cli"]
