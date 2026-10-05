@@ -220,7 +220,6 @@ asyncio_default_fixture_loop_scope = "function"
 [tool.setuptools]
 script-files = [
     "create-sbuild-chroot-schroot.py",
-    "create-sbuild-chroot-unshare.py",
 ]
 include-package-data = false
 
