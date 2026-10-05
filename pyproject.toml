@@ -218,9 +218,6 @@ addopts = """
 asyncio_default_fixture_loop_scope = "function"
 
 [tool.setuptools]
-script-files = [
-    "create-sbuild-chroot-schroot.py",
-]
 include-package-data = false
 
 [tool.setuptools.packages.find]
