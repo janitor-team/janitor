@@ -516,4 +516,12 @@ mod tests {
             "runner requires a redis URL for the ActiveRunStore"
         );
     }
+
+    #[test]
+    fn test_example_config_loads() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.example.toml");
+        let config = RunnerConfig::from_file(path).unwrap();
+        assert!(config.validate().is_ok());
+        assert!(config.application.legacy_config_path.is_some());
+    }
 }
