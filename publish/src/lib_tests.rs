@@ -274,3 +274,125 @@ fn classify_forge_rate_limit_past_deadline_is_expired() {
         ForgeRateLimitDecision::Expired,
     );
 }
+
+async fn scan_listing(
+    mps: impl Iterator<
+        Item = Result<
+            (
+                Forge,
+                breezyshim::forge::MergeProposal,
+                breezyshim::forge::MergeProposalStatus,
+            ),
+            BrzError,
+        >,
+    >,
+    conn: sqlx::PgPool,
+    bucket_rate_limiter: &Mutex<Box<dyn RateLimiter>>,
+) -> bool {
+    let publish_worker = PublishWorker::new(
+        None,
+        None,
+        "http://localhost:9920/".parse().unwrap(),
+        None,
+        None,
+        None,
+    )
+    .await;
+    check_existing(
+        mps,
+        conn,
+        None,
+        &janitor::config::Config::default(),
+        &publish_worker,
+        bucket_rate_limiter,
+        Arc::new(RwLock::new(HashMap::new())),
+        &HashMap::new(),
+        None,
+        None,
+    )
+    .await
+}
+
+fn limiter_with_open(open: &HashMap<String, usize>) -> Mutex<Box<dyn RateLimiter>> {
+    let mut limiter = rate_limiter::FixedRateLimiter::new(3);
+    limiter.set_mps_per_bucket(&maplit::hashmap! { MergeProposalStatus::Open => open.clone() });
+    Mutex::new(Box::new(limiter))
+}
+
+janitor::test_with_database! {
+    schema = Core;
+    async fn test_check_existing_takes_bucket_counts_from_the_database_after_a_failed_listing(
+        test_db: TestDatabase
+    ) {
+        sqlx::query(
+            "INSERT INTO merge_proposal (url, status, rate_limit_bucket)
+             VALUES ('https://example.invalid/mp/1', 'open', 'bucket')",
+        )
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+        let limiter = limiter_with_open(&maplit::hashmap! { "bucket".to_string() => 3 });
+        let failed_listing = || {
+            std::iter::once(Err(BrzError::ConnectionError(
+                "while sending GET /api/v4/user: Connection refused".to_string(),
+            )))
+        };
+
+        // The publish gate still refreshes: a forge that is down must not stop publishing.
+        let complete = scan_listing(failed_listing(), test_db.pool().clone(), &limiter).await;
+        let per_bucket = limiter.lock().unwrap().get_stats().unwrap().per_bucket;
+        assert_eq!(
+            (complete, per_bucket),
+            (true, maplit::hashmap! { "bucket".to_string() => 1 })
+        );
+
+        sqlx::query("UPDATE merge_proposal SET status = 'merged'")
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+        let complete = scan_listing(failed_listing(), test_db.pool().clone(), &limiter).await;
+        let per_bucket = limiter.lock().unwrap().get_stats().unwrap().per_bucket;
+        assert_eq!((complete, per_bucket), (true, HashMap::new()));
+        assert!(matches!(
+            limiter.lock().unwrap().check_allowed("bucket"),
+            rate_limiter::RateLimitStatus::Allowed
+        ));
+    }
+}
+
+#[tokio::test]
+async fn test_check_existing_replaces_bucket_counts_after_a_full_listing() {
+    let open = maplit::hashmap! { "bucket".to_string() => 3 };
+    let limiter = limiter_with_open(&open);
+
+    let conn = sqlx::PgPool::connect_lazy("postgres://localhost/unused").unwrap();
+    let complete = scan_listing(std::iter::empty(), conn, &limiter).await;
+
+    let per_bucket = limiter.lock().unwrap().get_stats().unwrap().per_bucket;
+    assert_eq!((complete, per_bucket), (true, HashMap::new()));
+}
+
+fn listed(listing: Result<Vec<Result<u32, BrzError>>, BrzError>) -> Vec<Result<u32, BrzError>> {
+    listing_items(
+        "GitLab".to_string(),
+        breezyshim::forge::MergeProposalStatus::Open,
+        listing.map(Vec::into_iter),
+    )
+    .collect()
+}
+
+#[test]
+fn test_listing_items() {
+    let refused = || BrzError::ConnectionError("refused".to_string());
+    assert!(matches!(
+        listed(Err(refused()))[..],
+        [Err(BrzError::ConnectionError(_))]
+    ));
+    assert!(matches!(
+        listed(Ok(vec![Ok(1), Err(refused())]))[..],
+        [Ok(1), Err(BrzError::ConnectionError(_))]
+    ));
+    let unsupported = BrzError::UnsupportedForge("http://127.0.0.1:9/".parse().unwrap());
+    assert!(listed(Err(BrzError::ForgeLoginRequired)).is_empty());
+    assert!(listed(Err(unsupported)).is_empty());
+}

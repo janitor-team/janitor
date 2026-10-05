@@ -1286,6 +1286,19 @@ pub async fn publish_pending_ready(
 /// # Returns
 /// Ok(()) if successful, or a sqlx::Error
 pub async fn refresh_bucket_mp_counts(state: Arc<AppState>) -> Result<(), sqlx::Error> {
+    let per_bucket = bucket_mp_counts(&state.conn).await?;
+    if let Ok(mut limiter) = state.bucket_rate_limiter.lock() {
+        limiter.set_mps_per_bucket(&per_bucket);
+    } else {
+        log::error!("Failed to acquire bucket rate limiter lock");
+    }
+    Ok(())
+}
+
+/// Count the merge proposals in the database per status and bucket.
+async fn bucket_mp_counts(
+    conn: &sqlx::PgPool,
+) -> Result<HashMap<janitor::publish::MergeProposalStatus, HashMap<String, usize>>, sqlx::Error> {
     let mut per_bucket: HashMap<janitor::publish::MergeProposalStatus, HashMap<String, usize>> =
         HashMap::new();
 
@@ -1306,7 +1319,7 @@ pub async fn refresh_bucket_mp_counts(state: Arc<AppState>) -> Result<(), sqlx::
         GROUP BY 1, 2
         "#,
     )
-    .fetch_all(&state.conn)
+    .fetch_all(conn)
     .await?;
 
     for (bucket, status, count) in rows {
@@ -1319,12 +1332,7 @@ pub async fn refresh_bucket_mp_counts(state: Arc<AppState>) -> Result<(), sqlx::
             counts.insert(bucket, count as usize);
         }
     }
-    if let Ok(mut limiter) = state.bucket_rate_limiter.lock() {
-        limiter.set_mps_per_bucket(&per_bucket);
-    } else {
-        log::error!("Failed to acquire bucket rate limiter lock");
-    }
-    Ok(())
+    Ok(per_bucket)
 }
 
 /// Listen to the runner for new changes to publish.
@@ -4499,66 +4507,69 @@ pub fn iter_all_mps(
     // 502 mid-page, ...) is surfaced as a normal stream error instead of
     // panicking out of the iterator. The eager `iter_my_proposals`
     // wrapper short-circuits on the first such error and loses every
-    // proposal after it; the lazy form lets us keep going.
+    // proposal after it; the lazy form keeps the ones before it.
     //
     // Top-level errors (e.g. login required for the whole forge)
     // still come back from the call itself and short-circuit the
     // forge - we want that, since a credential failure is per-forge,
     // not per-MP.
     breezyshim::forge::iter_forge_instances().flat_map(move |forge| {
-        statuses
-            .iter()
-            .filter_map(
-                move |&status| match forge.iter_my_proposals_lazy(Some(status), None) {
-                    Ok(proposals) => {
-                        let forge_for_items = forge.clone();
-                        let forge_for_errors = forge.clone();
-                        Some(proposals.filter_map(move |item| match item {
-                            Ok(proposal) => Some(Ok((forge_for_items.clone(), proposal, status))),
-                            Err(e) => {
-                                log::warn!(
-                                    "Skipping a proposal on forge {} ({}): {}",
-                                    forge_for_errors.forge_name(),
-                                    status,
-                                    e
-                                );
-                                None
-                            }
-                        }))
-                    }
-                    Err(BrzError::ForgeLoginRequired) => {
-                        log::info!(
-                            "Skipping forge {}, no credentials known",
-                            forge.forge_name()
-                        );
-                        None
-                    }
-                    Err(BrzError::UnexpectedHttpStatus { .. }) => {
-                        log::warn!(
-                            "Got unexpected HTTP status, skipping forge {}",
-                            forge.forge_name()
-                        );
-                        None
-                    }
-                    Err(BrzError::UnsupportedForge(msg)) => {
-                        log::warn!("Unsupported forge {}: {}", forge.forge_name(), msg);
-                        None
-                    }
-                    Err(e) => {
-                        log::error!(
-                            "Error iterating proposals for forge {}: {}",
-                            forge.forge_name(),
-                            e
-                        );
-                        None
-                    }
-                },
-            )
-            .flatten()
+        statuses.iter().flat_map(move |&status| {
+            let listing = forge.iter_my_proposals_lazy(Some(status), None);
+            let forge = forge.clone();
+            listing_items(forge.forge_name(), status, listing)
+                .map(move |item| item.map(|proposal| (forge.clone(), proposal, status)))
+        })
     })
 }
 
+/// One forge listing: a failed one yields its error, a forge we cannot use yields nothing.
+fn listing_items<T>(
+    forge_name: String,
+    status: breezyshim::forge::MergeProposalStatus,
+    listing: Result<impl Iterator<Item = Result<T, BrzError>>, BrzError>,
+) -> impl Iterator<Item = Result<T, BrzError>> {
+    let (items, failed) = match listing {
+        Ok(items) => (Some(items), None),
+        Err(e) => (None, Some(Err(e))),
+    };
+    items
+        .into_iter()
+        .flatten()
+        .chain(failed)
+        .filter_map(move |item| match item {
+            Ok(item) => Some(Ok(item)),
+            Err(BrzError::ForgeLoginRequired) => {
+                log::info!("Skipping forge {}, no credentials known", forge_name);
+                None
+            }
+            Err(BrzError::UnsupportedForge(msg)) => {
+                log::warn!("Unsupported forge {}: {}", forge_name, msg);
+                None
+            }
+            Err(e) => {
+                log::warn!(
+                    "Unable to list {} proposals on forge {}: {}",
+                    status,
+                    forge_name,
+                    e
+                );
+                Some(Err(e))
+            }
+        })
+}
+
 async fn check_existing(
+    mps: impl Iterator<
+        Item = Result<
+            (
+                Forge,
+                breezyshim::forge::MergeProposal,
+                breezyshim::forge::MergeProposalStatus,
+            ),
+            BrzError,
+        >,
+    >,
     conn: sqlx::PgPool,
     redis: Option<RedisConnectionManager>,
     config: &janitor::config::Config,
@@ -4607,16 +4618,12 @@ async fn check_existing(
     // MPs covered before silent stop). Walk explicitly so each Err
     // gets logged and the loop continues.
     let mut iter_errors: usize = 0;
-    for item in iter_all_mps(None) {
+    for item in mps {
         let (forge, mp, status) = match item {
             Ok(t) => t,
-            Err(e) => {
+            // Already logged by the listing, with the forge name.
+            Err(_) => {
                 iter_errors += 1;
-                if iter_errors <= 5 {
-                    log::warn!("iter_all_mps yielded error (continuing): {}", e);
-                } else if iter_errors == 6 {
-                    log::warn!("iter_all_mps: further errors suppressed; will summarise at end");
-                }
                 continue;
             }
         };
@@ -4793,6 +4800,24 @@ async fn check_existing(
     // successful scan" only care about the timestamp.
     crate::metrics::LAST_SCAN_EXISTING_SUCCESS.set(chrono::Utc::now().timestamp() as f64);
 
+    if !was_forge_ratelimited && iter_errors > 0 {
+        log::warn!(
+            "{} listing error(s) in this scan, taking the bucket counts from the database",
+            iter_errors
+        );
+        // The database still holds the last known state of what the failed listings missed.
+        match bucket_mp_counts(&conn).await {
+            Ok(counts) => {
+                // Keep every status, so a status with no rows still counts as zero.
+                mps_per_bucket.values_mut().for_each(HashMap::clear);
+                mps_per_bucket.extend(counts);
+            }
+            Err(e) => {
+                log::error!("Unable to count merge proposals in the database: {}", e);
+                return false;
+            }
+        }
+    }
     if !was_forge_ratelimited {
         // Push the fresh bucket counts into the rate limiter so future
         // publish attempts see an up-to-date view of open proposals
