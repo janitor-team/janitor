@@ -62,10 +62,7 @@ async fn build_app(pool: PgPool) -> axum::Router {
     .await
 }
 
-async fn build_app_with_rate_limiter(
-    pool: PgPool,
-    bucket_rate_limiter: Box<dyn RateLimiter>,
-) -> axum::Router {
+async fn build_state(pool: PgPool, bucket_rate_limiter: Box<dyn RateLimiter>) -> Arc<AppState> {
     let config: &'static janitor::config::Config = Box::leak(Box::new(
         janitor::config::read_string("").expect("empty config parses"),
     ));
@@ -82,7 +79,7 @@ async fn build_app_with_rate_limiter(
         "publish-test".to_string(),
         env!("CARGO_PKG_VERSION").to_string(),
     ));
-    let state = Arc::new(AppState {
+    Arc::new(AppState {
         conn: pool,
         bucket_rate_limiter: Arc::new(Mutex::new(bucket_rate_limiter)),
         forge_rate_limiter: Arc::new(RwLock::new(HashMap::new())),
@@ -98,8 +95,14 @@ async fn build_app_with_rate_limiter(
         require_binary_diff: false,
         health_checker,
         last_full_scan_at: tokio::sync::watch::channel(None).0,
-    });
-    janitor_publish::web::app(state)
+    })
+}
+
+async fn build_app_with_rate_limiter(
+    pool: PgPool,
+    bucket_rate_limiter: Box<dyn RateLimiter>,
+) -> axum::Router {
+    janitor_publish::web::app(build_state(pool, bucket_rate_limiter).await)
 }
 
 /// A rate limiter allowing at most `max_open` open merge proposals per
@@ -830,6 +833,39 @@ test_with_database! {
         assert!(
             body["paths"]["/blockers/{id}"]["get"].is_object(),
             "{body}"
+        );
+    }
+}
+
+test_with_database! {
+    schema = Core;
+    async fn test_refresh_bucket_mp_counts_counts_open_per_bucket(test_db: TestDatabase) {
+        let pool = test_db.pool();
+        let rows = [
+            (MergeProposalStatus::Open, Some("a")),
+            (MergeProposalStatus::Open, Some("a")),
+            (MergeProposalStatus::Open, Some("b")),
+            (MergeProposalStatus::Merged, Some("a")),
+            (MergeProposalStatus::Open, None),
+        ];
+        for (i, (status, bucket)) in rows.into_iter().enumerate() {
+            sqlx::query("INSERT INTO merge_proposal (url, status, rate_limit_bucket) VALUES ($1, $2, $3)")
+                .bind(format!("https://example.invalid/mp/{i}"))
+                .bind(status)
+                .bind(bucket)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+
+        let state = build_state(pool.clone(), Box::new(FixedRateLimiter::new(5))).await;
+        janitor_publish::refresh_bucket_mp_counts(state.clone())
+            .await
+            .unwrap();
+        let limiter = state.bucket_rate_limiter.lock().unwrap();
+        assert_eq!(
+            limiter.get_stats().map(|stats| stats.per_bucket),
+            Some(maplit::hashmap! {"a".to_string() => 2, "b".to_string() => 1})
         );
     }
 }
