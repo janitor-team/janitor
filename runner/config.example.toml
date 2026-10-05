@@ -1,0 +1,17 @@
+# Example configuration for janitor-runner; pass it with --config.
+
+[database]
+# PostgreSQL URL (required).
+url = "postgresql://janitor@localhost:5432/janitor"
+
+[redis]
+# Redis URL (required).
+url = "redis://localhost:6379"
+
+[worker]
+# Required at startup unless enable_authentication = false.
+shared_secret = "change-me"
+
+[application]
+# Path to janitor.conf (text format); campaigns, git_location and logs_location come from it.
+legacy_config_path = "/mnt/janitor/janitor.conf"
