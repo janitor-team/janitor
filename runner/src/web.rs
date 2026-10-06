@@ -527,43 +527,87 @@ async fn schedule(
     }
 }
 
-/// `GET /status` -- return the live status of the queue processor as
-/// `{processing: [...], avoid_hosts: [...], rate_limit_hosts: {...}}`.
-///
-/// `processing` is the list of currently-active runs (each in the
-/// shape `ActiveRun.to_json()`). We don't track per-run keepalive
-/// timestamps, so no keepalive_age / mia / last-keepalive fields are
-/// included.
-async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+/// The live status of the queue processor, as returned by `GET /status`
+/// and published on the `queue` channel. Matches the Python runner's
+/// `QueueProcessor.status_json`.
+pub(crate) async fn status_json(
+    state: &AppState,
+) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
+    let last_keepalives = state.active_runs.last_keepalives().await?;
+    let now = Utc::now();
     let processing: Vec<serde_json::Value> = state
         .active_runs
         .list()
         .await
         .iter()
-        .map(|r| r.to_json())
+        .map(|run| {
+            let mut js = run.to_json();
+            match last_keepalives.get(&run.log_id) {
+                Some(last_keepalive) => {
+                    let age = (now - *last_keepalive).as_seconds_f64();
+                    js["last-keepalive"] = json!(
+                        crate::active_runs::format_python_datetime_seconds(*last_keepalive)
+                    );
+                    js["keepalive_age"] = json!(age);
+                    js["mia"] = json!(age > (state.run_timeout_minutes * 60) as f64);
+                }
+                None => {
+                    js["keepalive_age"] = serde_json::Value::Null;
+                    js["last-keepalive"] = serde_json::Value::Null;
+                    js["mia"] = serde_json::Value::Null;
+                }
+            }
+            js
+        })
         .collect();
 
-    let avoid_hosts = &state.avoid_hosts;
+    let rate_limit_hosts: serde_json::Map<String, serde_json::Value> = state
+        .database
+        .get_rate_limited_hosts()
+        .await?
+        .into_iter()
+        .map(|(host, until)| {
+            (
+                host,
+                json!(crate::active_runs::format_python_datetime_seconds(until)),
+            )
+        })
+        .collect();
 
-    // Rate-limited hosts come from Redis; emit an ISO-8601 timestamp
-    // per host so downstream tooling can compare to `now()`.
-    let rate_limit_hosts: serde_json::Map<String, serde_json::Value> =
-        match state.database.get_rate_limited_hosts().await {
-            Ok(map) => map
-                .into_iter()
-                .map(|(host, until)| (host, serde_json::Value::String(until.to_rfc3339())))
-                .collect(),
-            Err(e) => {
-                log::debug!("status: failed to read rate-limited hosts: {}", e);
-                serde_json::Map::new()
-            }
-        };
-
-    Json(json!({
+    Ok(json!({
         "processing": processing,
-        "avoid_hosts": avoid_hosts,
+        "avoid_hosts": state.avoid_hosts,
         "rate_limit_hosts": rate_limit_hosts,
     }))
+}
+
+/// Publish the current queue processor status on the `queue` channel.
+async fn publish_queue_status(state: &AppState) {
+    let result = match status_json(state).await {
+        Ok(payload) => state.database.publish("queue", &payload).await,
+        Err(e) => Err(e),
+    };
+    if let Err(e) = result {
+        log::error!("Failed to publish queue status event: {}", e);
+        crate::metrics::REDIS_OPERATIONS_TOTAL
+            .with_label_values(&["publish_queue_status", "error"])
+            .inc();
+    }
+}
+
+/// `GET /status` -- return the live status of the queue processor as
+/// `{processing: [...], avoid_hosts: [...], rate_limit_hosts: {...}}`.
+async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match status_json(&state).await {
+        Ok(js) => (StatusCode::OK, Json(js)),
+        Err(e) => {
+            log::error!("Failed to gather status: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"reason": format!("Failed to gather status: {}", e)})),
+            )
+        }
+    }
 }
 
 /// `GET /log/{run_id}` -- list the log files the live worker for
@@ -2250,6 +2294,75 @@ async fn finish_active_run_multipart(
     finish_run_multipart_internal(state, id, multipart, false).await
 }
 
+/// Drop a run from the active runs and release its queue item.
+async fn unclaim_run(
+    state: &AppState,
+    active_run: &ActiveRun,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    state
+        .database
+        .unassign_queue_item(active_run.queue_id)
+        .await?;
+    state.active_runs.remove(&active_run.log_id).await;
+    crate::metrics::MetricsCollector::set_active_runs(
+        &active_run.worker_name,
+        state
+            .active_runs
+            .count_for_worker(&active_run.worker_name)
+            .await as i64,
+    );
+    Ok(())
+}
+
+/// Add a newly-claimed run to the active runs and publish the new
+/// queue status.
+async fn register_run(state: &AppState, active_run: &ActiveRun) {
+    state.active_runs.store(active_run.clone()).await;
+    crate::metrics::RUN_COUNT.inc();
+    publish_queue_status(state).await;
+    crate::metrics::MetricsCollector::set_active_runs(
+        &active_run.worker_name,
+        state
+            .active_runs
+            .count_for_worker(&active_run.worker_name)
+            .await as i64,
+    );
+}
+
+/// Record `active_run` as failed with `code` and publish the result,
+/// like the Python runner's `QueueProcessor.abort_run`.
+pub(crate) async fn abort_run(
+    state: &Arc<AppState>,
+    active_run: &ActiveRun,
+    code: &str,
+    description: &str,
+    transient: Option<bool>,
+) -> Result<crate::database::FinishOutcome, Box<dyn std::error::Error + Send + Sync>> {
+    let mut result = active_run.create_result(code.to_string(), Some(description.to_string()));
+    // Python's aborted results carry no context, subpath or resume_from.
+    result.context = None;
+    result.subpath = None;
+    result.resume = None;
+    result.remotes = Some(HashMap::new());
+    result.transient = transient;
+    let outcome = state
+        .database
+        .finish_run(
+            &mut result,
+            &active_run.command,
+            active_run.instigated_context.as_ref(),
+            active_run.queue_id,
+        )
+        .await?;
+    match outcome {
+        crate::database::FinishOutcome::Stored => {
+            publish_finish_events(state, active_run, &result).await
+        }
+        crate::database::FinishOutcome::AlreadyStored => unclaim_run(state, active_run).await?,
+    }
+    Ok(outcome)
+}
+
 /// Publish the side effects that follow a committed `finish_run`:
 /// pub/sub `result`, drop the in-memory active-run entry, drop the
 /// queue-item assignment, pub/sub `queue`, bump the last-success
@@ -2261,10 +2374,10 @@ async fn finish_active_run_multipart(
 /// scheduling failure.
 async fn publish_finish_events(
     state: &Arc<AppState>,
-    run_id: &str,
+    active_run: &ActiveRun,
     janitor_result: &crate::JanitorResult,
-    queue_id: i64,
 ) {
+    let run_id = active_run.log_id.as_str();
     // The DB writes already committed. If any of these Redis side
     // effects fails we can't roll back, so we log at error, bump the
     // redis-operations counter, and continue -- dashboards/alerts
@@ -2283,33 +2396,14 @@ async fn publish_finish_events(
             .inc();
     }
 
-    state.active_runs.remove(run_id).await;
-
-    if let Err(e) = state.database.unassign_queue_item(queue_id).await {
+    if let Err(e) = unclaim_run(state, active_run).await {
         log::error!("Failed to unassign queue item from Redis: {}", e);
         crate::metrics::REDIS_OPERATIONS_TOTAL
             .with_label_values(&["unassign_queue_item", "error"])
             .inc();
     }
 
-    let processing: Vec<serde_json::Value> = state
-        .active_runs
-        .list()
-        .await
-        .iter()
-        .map(|r| r.to_json())
-        .collect();
-    let status_payload = serde_json::json!({
-        "processing": processing,
-        "avoid_hosts": [],
-        "rate_limit_hosts": {},
-    });
-    if let Err(e) = state.database.publish("queue", &status_payload).await {
-        log::error!("Failed to publish queue status event: {}", e);
-        crate::metrics::REDIS_OPERATIONS_TOTAL
-            .with_label_values(&["publish_queue_status", "error"])
-            .inc();
-    }
+    publish_queue_status(state).await;
 
     crate::metrics::LAST_SUCCESS_GAUGE.set(chrono::Utc::now().timestamp() as f64);
 
@@ -2320,23 +2414,13 @@ async fn publish_finish_events(
     let pool = state.database.pool().clone();
     let codebase = janitor_result.codebase.clone();
     let campaign = janitor_result.campaign.clone();
-    let change_set = janitor_result.change_set.clone();
+    // finish_run fills in the result's change_set, so use the run's.
+    let change_set = active_run.change_set.clone();
     let context_str = janitor_result
         .context
         .as_ref()
         .and_then(|v| v.as_str().map(|s| s.to_string()));
     let log_id_owned = run_id.to_string();
-    // Also pair a control run. A control (campaign="control",
-    // bucket="control") rebuilds the codebase at the same main
-    // branch revision with no codemod applied, which is what the
-    // publisher later needs to compute a debdiff. We pre-schedule it
-    // here so the diff is ready by the time the MR review happens,
-    // rather than discovering it's missing mid-publish and scheduling
-    // it reactively. Only worth doing for successful runs that
-    // actually produced a main_branch_revision -- without a revision
-    // there's nothing to compare against.
-    let result_code = janitor_result.code.clone();
-    let main_branch_revision = janitor_result.main_branch_revision.clone();
     tokio::spawn(async move {
         match janitor::schedule::do_schedule_regular(
             &pool,
@@ -2373,46 +2457,6 @@ async fn publish_finish_events(
                     log_id_owned,
                     e
                 );
-            }
-        }
-
-        // Skip if the run itself is a control campaign (no point
-        // producing a control-of-control) or if it didn't succeed /
-        // has no base revision to rebuild against.
-        if campaign != "control"
-            && campaign != "unchanged"
-            && result_code == "success"
-            && main_branch_revision.is_some()
-        {
-            match janitor::schedule::do_schedule_control(
-                &pool,
-                &codebase,
-                change_set.as_deref(),
-                main_branch_revision.as_ref(),
-                None,
-                false,
-                Some("control"),
-                Some("after successful run"),
-                None,
-            )
-            .await
-            {
-                Ok(_) => {}
-                Err(janitor::schedule::Error::CandidateUnavailable { .. }) => {
-                    log::debug!(
-                        "no control candidate for {} after {}",
-                        codebase,
-                        log_id_owned
-                    );
-                }
-                Err(e) => {
-                    log::warn!(
-                        "Failed to schedule control for {} after {}: {}",
-                        codebase,
-                        log_id_owned,
-                        e
-                    );
-                }
             }
         }
     });
@@ -2619,6 +2663,9 @@ async fn finish_run_multipart_internal(
                 "Run {} already stored; replying 409 so the worker stops retrying",
                 run_id
             );
+            if let Err(e) = unclaim_run(&state, &active_run).await {
+                log::error!("Failed to unclaim run {}: {}", run_id, e);
+            }
             return (
                 StatusCode::CONFLICT,
                 Json(finish_conflict_body(&run_id, &janitor_result, public)),
@@ -2647,7 +2694,7 @@ async fn finish_run_multipart_internal(
 
     // Publish the completed result to subscribers and tear down the
     // active-run state.
-    publish_finish_events(&state, &run_id, &janitor_result, active_run.queue_id).await;
+    publish_finish_events(&state, &active_run, &janitor_result).await;
     crate::metrics::MetricsCollector::set_active_runs(
         &active_run.worker_name,
         state
@@ -2797,74 +2844,6 @@ async fn private_assign(
         }
     }
     assign_work_internal(state, worker_name, request, "/active-runs").await
-}
-
-/// Abort a queue assignment by recording a failed run with the given
-/// result code. Used by the validation retry loop: when a pulled
-/// queue item has an unknown campaign or no branch_url for a
-/// non-default_empty campaign, we record the rejection in the `run`
-/// table (which also removes the row from `queue`) and then go back
-/// to pull the next item.
-///
-/// All errors are swallowed to a `log::warn!`: if we fail to
-/// persist the rejection, the broken queue item may reappear on the
-/// next loop iteration, but we'll still hit the retry cap and bail
-/// out with a useful 503 rather than looping forever.
-async fn abort_assignment(
-    state: &Arc<AppState>,
-    assignment: &crate::QueueAssignment,
-    code: &str,
-    description: &str,
-) {
-    let now = Utc::now();
-    let log_id = Uuid::new_v4().to_string();
-    let mut result = crate::JanitorResult {
-        log_id,
-        branch_url: assignment.vcs_info.branch_url.clone().unwrap_or_default(),
-        subpath: assignment.vcs_info.subpath.clone(),
-        code: code.to_string(),
-        transient: Some(false),
-        codebase: assignment.queue_item.codebase.clone(),
-        campaign: assignment.queue_item.campaign.clone(),
-        description: Some(description.to_string()),
-        codemod: None,
-        value: None,
-        logfilenames: Vec::new(),
-        start_time: now,
-        finish_time: now,
-        revision: None,
-        main_branch_revision: None,
-        change_set: assignment.queue_item.change_set.clone(),
-        tags: None,
-        remotes: None,
-        branches: None,
-        failure_details: None,
-        failure_stage: None,
-        resume: None,
-        target: None,
-        worker_name: None,
-        vcs_type: assignment.vcs_info.vcs_type.clone(),
-        target_branch_url: None,
-        context: assignment.queue_item.context.clone(),
-        builder_result: None,
-    };
-    if let Err(e) = state
-        .database
-        .finish_run(
-            &mut result,
-            &assignment.queue_item.command,
-            assignment.queue_item.context.as_ref(),
-            assignment.queue_item.id,
-        )
-        .await
-    {
-        log::warn!(
-            "Failed to record aborted assignment for queue item {} ({}): {}",
-            assignment.queue_item.id,
-            code,
-            e
-        );
-    }
 }
 
 /// Outcome of `compute_resume_from`. Carries the resume metadata (if
@@ -3167,19 +3146,51 @@ async fn assign_work_internal(
             }
         }
     }
-    // Pull queue items one at a time and, for each, validate that the
-    // campaign is known and (unless `default_empty`) that the codebase
-    // has a branch_url. On a failure we finish the run with that
-    // result_code -- recording the rejection in the `run` table and
-    // removing the row from `queue` -- and then loop to pull the next
-    // item.
+    // The worker sends its backchannel as `{"kind": "http"|"jenkins",
+    // "url": "..."}` (see janitor-worker::client::get_assignment_raw)
+    // but Backchannel's own deserializer expects `{"my_url": ...}` for
+    // Polling or `{"my_url": ..., "jenkins": ...}` for Jenkins. Translate
+    // the wire format here so we don't silently fall back to
+    // Backchannel::None and then fail every health-check with "No
+    // backchannel available".
+    let backchannel = match request.backchannel.as_ref() {
+        Some(bc_json) if bc_json.is_object() => {
+            let kind = bc_json.get("kind").and_then(|v| v.as_str());
+            let url = bc_json
+                .get("url")
+                .or_else(|| bc_json.get("my_url"))
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            match (kind, url) {
+                (Some("jenkins"), Some(u)) => Backchannel::Jenkins {
+                    my_url: u,
+                    jenkins: bc_json.get("jenkins").cloned(),
+                },
+                // Default to polling for `http`, no kind, or anything
+                // unknown: the worker's reported url is a polling target.
+                (_, Some(u)) => Backchannel::Polling { my_url: u },
+                _ => {
+                    log::warn!("Invalid backchannel configuration (no url): {:?}", bc_json);
+                    Backchannel::default()
+                }
+            }
+        }
+        _ => Backchannel::default(),
+    };
+
+    // Pull queue items one at a time, claim and register each as an
+    // active run, then validate that the campaign is known and (unless
+    // `default_empty`) that the codebase has a branch_url. On a failure
+    // we abort the run with that result_code -- recording the rejection
+    // in the `run` table and removing the row from `queue` -- and then
+    // loop to pull the next item.
     //
     // The cap protects against a pathologically broken queue wedging
     // a worker: if we burn through MAX_VALIDATION_RETRIES items in a
     // row, give up and tell the caller the queue is effectively empty.
     const MAX_VALIDATION_RETRIES: usize = 20;
     let mut validation_retries = 0usize;
-    let (assignment, log_id) = loop {
+    let (assignment, mut active_run) = loop {
         if validation_retries >= MAX_VALIDATION_RETRIES {
             log::warn!(
                 "assign: gave up after {} consecutive validation failures",
@@ -3223,29 +3234,71 @@ async fn assign_work_internal(
             }
         };
 
+        // Reserve the queue item in Redis before handing the assignment
+        // to a worker. If another worker claimed it first (race between
+        // `next_queue_item_with_rate_limiting` and this HSET NX),
+        // discard this item and loop.
+        let log_id = Uuid::new_v4().to_string();
+        if let Err(e) = state
+            .database
+            .assign_queue_item(assignment.queue_item.id, &worker_name, &log_id)
+            .await
+        {
+            if e.to_string().contains("already assigned") {
+                log::info!(
+                    "Queue item {} was already claimed by another worker; retrying",
+                    assignment.queue_item.id
+                );
+                validation_retries += 1;
+                continue;
+            }
+            // Non-conflict Redis error (connection lost etc.) --
+            // don't spin forever; fall through without the
+            // distributed lock, same as the previous behaviour.
+            log::warn!(
+                "Failed to reserve queue item {} in Redis, proceeding without lock: {}",
+                assignment.queue_item.id,
+                e
+            );
+        }
+
+        let active_run = ActiveRun {
+            worker_name: worker_name.clone(),
+            worker_link: request.worker_link.clone(),
+            queue_id: assignment.queue_item.id,
+            log_id,
+            start_time: Utc::now(),
+            finish_time: None,
+            estimated_duration: assignment.queue_item.estimated_duration,
+            campaign: assignment.queue_item.campaign.clone(),
+            change_set: assignment.queue_item.change_set.clone(),
+            command: assignment.queue_item.command.clone(),
+            backchannel: backchannel.clone(),
+            vcs_info: assignment.vcs_info.clone(),
+            codebase: assignment.queue_item.codebase.clone(),
+            instigated_context: assignment.queue_item.context.clone(),
+            resume_from: None,
+        };
+        register_run(&state, &active_run).await;
+
         let campaign_cfg_opt = state.config.get_campaign(&assignment.queue_item.campaign);
         let outcome = assignment_validation_outcome(
             campaign_cfg_opt.is_some(),
             campaign_cfg_opt.map(|c| c.default_empty()).unwrap_or(false),
             assignment.vcs_info.branch_url.is_some(),
         );
-        match outcome {
-            AssignmentValidation::Ok => {}
+        let (code, description) = match outcome {
+            AssignmentValidation::Ok => break (assignment, active_run),
             AssignmentValidation::UnknownCampaign => {
                 log::warn!(
                     "Unable to find details for campaign {:?} on queue item {}; aborting and retrying",
                     assignment.queue_item.campaign,
                     assignment.queue_item.id
                 );
-                abort_assignment(
-                    &state,
-                    &assignment,
+                (
                     "unknown-campaign",
-                    &format!("Campaign {} unknown", assignment.queue_item.campaign),
+                    format!("Campaign {} unknown", assignment.queue_item.campaign),
                 )
-                .await;
-                validation_retries += 1;
-                continue;
             }
             AssignmentValidation::NotInVcs => {
                 log::warn!(
@@ -3254,86 +3307,19 @@ async fn assign_work_internal(
                     assignment.queue_item.codebase,
                     assignment.queue_item.campaign
                 );
-                abort_assignment(
-                    &state,
-                    &assignment,
-                    "not-in-vcs",
-                    "No VCS URL known for codebase.",
-                )
-                .await;
-                validation_retries += 1;
-                continue;
+                ("not-in-vcs", "No VCS URL known for codebase.".to_string())
             }
+        };
+        if let Err(e) = abort_run(&state, &active_run, code, &description, None).await {
+            log::error!("Failed to abort run {}: {}", active_run.log_id, e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Database error"})),
+            )
+                .into_response();
         }
-
-        // Reserve the queue item in Redis before handing the assignment
-        // to a worker. If another worker claimed it first (race between
-        // `next_queue_item_with_rate_limiting` and this HSET NX),
-        // discard this item and loop.
-        let candidate_log_id = Uuid::new_v4().to_string();
-        match state
-            .database
-            .assign_queue_item(assignment.queue_item.id, &worker_name, &candidate_log_id)
-            .await
-        {
-            Ok(()) => break (assignment, candidate_log_id),
-            Err(e) => {
-                if e.to_string().contains("already assigned") {
-                    log::info!(
-                        "Queue item {} was already claimed by another worker; retrying",
-                        assignment.queue_item.id
-                    );
-                    validation_retries += 1;
-                    continue;
-                }
-                // Non-conflict Redis error (connection lost etc.) --
-                // don't spin forever; fall through without the
-                // distributed lock, same as the previous behaviour.
-                log::warn!(
-                    "Failed to reserve queue item {} in Redis, proceeding without lock: {}",
-                    assignment.queue_item.id,
-                    e
-                );
-                break (assignment, candidate_log_id);
-            }
-        }
+        validation_retries += 1;
     };
-
-    // The worker sends its backchannel as `{"kind": "http"|"jenkins",
-    // "url": "..."}` (see janitor-worker::client::get_assignment_raw)
-    // but Backchannel's own deserializer expects `{"my_url": ...}` for
-    // Polling or `{"my_url": ..., "jenkins": ...}` for Jenkins. Translate
-    // the wire format here so we don't silently fall back to
-    // Backchannel::None and then fail every health-check with "No
-    // backchannel available".
-    let backchannel = match request.backchannel.as_ref() {
-        Some(bc_json) if bc_json.is_object() => {
-            let kind = bc_json.get("kind").and_then(|v| v.as_str());
-            let url = bc_json
-                .get("url")
-                .or_else(|| bc_json.get("my_url"))
-                .and_then(|v| v.as_str())
-                .map(String::from);
-            match (kind, url) {
-                (Some("jenkins"), Some(u)) => Backchannel::Jenkins {
-                    my_url: u,
-                    jenkins: bc_json.get("jenkins").cloned(),
-                },
-                // Default to polling for `http`, no kind, or anything
-                // unknown: the worker's reported url is a polling target.
-                (_, Some(u)) => Backchannel::Polling { my_url: u },
-                _ => {
-                    log::warn!("Invalid backchannel configuration (no url): {:?}", bc_json);
-                    Backchannel::default()
-                }
-            }
-        }
-        _ => Backchannel::default(),
-    };
-
-    // `log_id` was allocated together with the Redis claim above so we
-    // don't hand the worker a fresh log id after a lost claim race.
-    let start_time = Utc::now();
 
     // Open the main branch via silver_platter (which classifies 429s
     // as BranchOpenError::RateLimited), contact the forge via
@@ -3368,13 +3354,22 @@ async fn assign_work_internal(
             log::warn!("Failed to record rate-limit for host {}: {}", host, e);
         }
 
-        abort_assignment(
+        if let Err(e) = abort_run(
             &state,
-            &assignment,
+            &active_run,
             "resume-rate-limited",
             &format!("Forge {} rate-limited us; retry after {}s", host, wait_secs),
+            None,
         )
-        .await;
+        .await
+        {
+            log::error!("Failed to abort run {}: {}", active_run.log_id, e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Database error"})),
+            )
+                .into_response();
+        }
 
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -3393,36 +3388,16 @@ async fn assign_work_internal(
     if let Some(main_branch_url) = resume_outcome.main_branch_url {
         vcs_info.branch_url = Some(main_branch_url);
     }
-    let resume_from: Option<String> = resume_assignment.as_ref().map(|r| r.run_id.clone());
-
-    let active_run = ActiveRun {
-        worker_name: worker_name.clone(),
-        worker_link: request.worker_link,
-        queue_id: assignment.queue_item.id,
-        log_id: log_id.clone(),
-        start_time,
-        finish_time: None,
-        estimated_duration: assignment.queue_item.estimated_duration,
-        campaign: assignment.queue_item.campaign.clone(),
-        change_set: assignment.queue_item.change_set.clone(),
-        command: assignment.queue_item.command.clone(),
-        backchannel,
-        vcs_info: vcs_info.clone(),
-        codebase: assignment.queue_item.codebase.clone(),
-        instigated_context: assignment.queue_item.context.clone(),
-        resume_from,
-    };
-
-    // Store active run in the in-memory store
-    state.active_runs.store(active_run.clone()).await;
-    crate::metrics::RUN_COUNT.inc();
-    crate::metrics::MetricsCollector::set_active_runs(
-        &active_run.worker_name,
-        state
-            .active_runs
-            .count_for_worker(&active_run.worker_name)
-            .await as i64,
-    );
+    active_run.vcs_info = vcs_info.clone();
+    active_run.resume_from = resume_assignment.as_ref().map(|r| r.run_id.clone());
+    if let Err(e) = state.active_runs.update(&active_run).await {
+        log::error!("Failed to update active run {}: {}", active_run.log_id, e);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Redis error"})),
+        )
+            .into_response();
+    }
 
     let campaign_config = create_campaign_config(&assignment.queue_item, &state.config);
 

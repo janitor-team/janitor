@@ -109,6 +109,18 @@ impl ActiveRunStore {
         }
     }
 
+    /// Refresh the stored copy of an already-registered run, leaving
+    /// its keepalive alone.
+    pub async fn update(
+        &self,
+        active_run: &ActiveRun,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let json = serde_json::to_string(active_run)?;
+        let mut conn = self.redis.get_multiplexed_async_connection().await?;
+        let _: () = conn.hset(&self.key, &active_run.log_id, json).await?;
+        Ok(())
+    }
+
     /// Fetch a single active run by id.
     pub async fn get(&self, run_id: &str) -> Option<ActiveRun> {
         let mut conn = self.conn().await?;
@@ -188,6 +200,19 @@ impl ActiveRunStore {
         Ok(value.as_deref().map(parse_python_datetime).transpose()?)
     }
 
+    /// Last keepalive times of all runs, keyed by run id.
+    pub async fn last_keepalives(
+        &self,
+    ) -> Result<HashMap<String, DateTime<Utc>>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = self.redis.get_multiplexed_async_connection().await?;
+        let values: HashMap<String, String> = conn.hgetall(&self.keepalive_key).await?;
+        let mut ret = HashMap::new();
+        for (run_id, value) in values {
+            ret.insert(run_id, parse_python_datetime(&value)?);
+        }
+        Ok(ret)
+    }
+
     /// Record a keepalive for `run_id` at `when`.
     pub async fn record_keepalive(
         &self,
@@ -250,6 +275,11 @@ pub fn format_python_datetime(when: DateTime<Utc>) -> String {
     } else {
         naive.format("%Y-%m-%dT%H:%M:%S%.6f").to_string()
     }
+}
+
+/// Format a timestamp like Python's naive `isoformat(timespec="seconds")`.
+pub fn format_python_datetime_seconds(when: DateTime<Utc>) -> String {
+    when.naive_utc().format("%Y-%m-%dT%H:%M:%S").to_string()
 }
 
 /// Parse a timestamp written by [`format_python_datetime`] or by the
@@ -419,6 +449,31 @@ mod tests {
             whole
         );
         assert!(parse_python_datetime("not a date").is_err());
+    }
+
+    #[tokio::test]
+    async fn update_keeps_keepalive() {
+        let Some(store) = try_test_store().await else {
+            eprintln!("skipping: Redis unavailable");
+            return;
+        };
+        let mut run = make_run("run-1", "w");
+        store.store(run.clone()).await;
+        let when = DateTime::parse_from_rfc3339("2026-10-06T12:34:56Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        store.record_keepalive("run-1", when).await.unwrap();
+        run.resume_from = Some("run-0".to_string());
+        store.update(&run).await.unwrap();
+        assert_eq!(
+            store.get("run-1").await.unwrap().resume_from.as_deref(),
+            Some("run-0")
+        );
+        assert_eq!(
+            store.last_keepalives().await.unwrap(),
+            HashMap::from([("run-1".to_string(), when)])
+        );
+        cleanup(&store).await;
     }
 
     #[tokio::test]

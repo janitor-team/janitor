@@ -1719,6 +1719,9 @@ pub struct AppState {
     /// Hosts to avoid when assigning work -- supplied via
     /// `--avoid-host`.
     pub avoid_hosts: Vec<String>,
+    /// Minutes without a keepalive after which a run is considered
+    /// missing -- supplied via `--run-timeout`.
+    pub run_timeout_minutes: u64,
 }
 
 /// Overall health of a component or the runner service as a whole,
