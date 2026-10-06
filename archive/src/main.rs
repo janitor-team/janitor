@@ -3,16 +3,14 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
-use janitor::redis::RedisConfig;
 use janitor_archive::{
     config::{ArchiveConfig, GpgConfig},
     database::ArchiveDatabase,
     error::ArchiveResult,
     manager::GeneratorManager,
     periodic::{PeriodicConfig, PeriodicServices},
-    redis::RedisSubscriber,
     repository::{RepositoryGenerationConfig, RepositoryGenerator},
     scanner::PackageScanner,
     web::ArchiveWebService,
@@ -274,21 +272,13 @@ async fn start_web_server(
         .await;
 
     // Wire the runner 'result' pub/sub listener to the generator
-    // manager.
-    if let Some(redis_url) = locations.redis.as_ref() {
-        let redis_config = RedisConfig::new(redis_url.clone());
-        match RedisSubscriber::new(redis_config, generator_manager.clone()).await {
-            Ok(mut subscriber) => match subscriber.listen_to_runner().await {
-                Ok(_handle) => info!("Runner pub/sub listener started"),
-                Err(e) => error!("Failed to start runner pub/sub listener: {}", e),
-            },
-            Err(e) => error!("Failed to connect to Redis for runner listener: {}", e),
-        }
-    } else {
-        warn!(
-            "No Redis URL in config; automatic archive regeneration on build completion is disabled"
-        );
-    }
+    // manager. Failing to set it up is fatal.
+    let _runner_listener = janitor_archive::redis::start_runner_listener(
+        locations.redis.as_deref(),
+        generator_manager.clone(),
+    )
+    .await?;
+    info!("Runner pub/sub listener started");
 
     // Kick off the 12-hour periodic republish loop, alongside the web
     // server and the runner listener.
