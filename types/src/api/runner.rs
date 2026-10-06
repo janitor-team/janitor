@@ -49,7 +49,7 @@ pub struct ResumeInfo {
 /// Request body for `POST /active-runs`. On the authenticated public
 /// app the worker name comes from the credentials extension, so most
 /// fields are optional.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct AssignRequest {
     /// Worker name (private/admin path only). The Rust worker sends
@@ -644,21 +644,6 @@ pub struct QueueItemResponse {
     pub change_set: Option<ChangeSetId>,
     /// Codebase of the item.
     pub codebase: CodebaseName,
-}
-
-/// Response for `GET /active-runs/+peek`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct PeekResponse {
-    /// The next queue item.
-    pub queue_item: QueueItemResponse,
-    /// VCS location of the codebase.
-    pub vcs_info: super::VcsInfo,
-    /// Build configuration; contains `builder_kind` when a builder
-    /// could be created.
-    pub build_config: BTreeMap<String, String>,
-    /// Estimated duration in seconds.
-    pub estimated_duration: Option<u64>,
 }
 
 /// Entry in the `GET /queue` response.
