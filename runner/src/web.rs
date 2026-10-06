@@ -1563,152 +1563,141 @@ async fn metrics() -> impl IntoResponse {
     }
 }
 
+/// Log `e` and turn it into a 500 response.
+fn internal_error(
+    context: &str,
+    e: impl std::fmt::Display,
+) -> (StatusCode, Json<serde_json::Value>) {
+    log::error!("{}: {}", context, e);
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({"error": context})),
+    )
+}
+
+/// Number of workers in each status, as (active, idle, failed).
+fn count_statuses(worker_infos: &[serde_json::Value]) -> (usize, usize, usize) {
+    let count = |status: &str| {
+        worker_infos
+            .iter()
+            .filter(|w| w["status"] == status)
+            .count()
+    };
+    (count("active"), count("idle"), count("failed"))
+}
+
 /// Public endpoint to list workers with basic information.
-async fn list_workers(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.auth_service.list_workers().await {
-        Ok(workers) => {
-            let active_runs = state.active_runs.list().await;
-            let active_workers: std::collections::HashSet<&str> =
-                active_runs.iter().map(|r| r.worker_name.as_str()).collect();
+async fn list_workers(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let workers = state
+        .auth_service
+        .list_workers()
+        .await
+        .map_err(|e| internal_error("Failed to list workers", e))?;
+    let active_runs = state.active_runs.list().await;
+    let active_workers: std::collections::HashSet<&str> =
+        active_runs.iter().map(|r| r.worker_name.as_str()).collect();
+    let last_seen_times = state
+        .database
+        .get_workers_last_seen()
+        .await
+        .map_err(|e| internal_error("Failed to read worker activity", e))?;
 
-            let last_seen_times = state
-                .database
-                .get_workers_last_seen()
-                .await
-                .unwrap_or_default();
+    let worker_infos: Vec<serde_json::Value> = workers
+        .iter()
+        .map(|worker| {
+            let status = if active_workers.contains(worker.name.as_str()) {
+                "active"
+            } else {
+                "idle"
+            };
+            let mut worker_info = json!({
+                "name": worker.name,
+                "status": status,
+                // Don't expose worker link in public endpoint
+            });
+            if let Some(last_seen_time) = last_seen_times.get(&worker.name) {
+                worker_info["last_seen"] = json!(last_seen_time);
+            }
+            worker_info
+        })
+        .collect();
 
-            let worker_infos: Vec<serde_json::Value> = workers
-                .iter()
-                .map(|worker| {
-                    let status = if active_workers.contains(worker.name.as_str()) {
-                        "active"
-                    } else {
-                        "idle"
-                    };
-
-                    let last_seen = last_seen_times.get(&worker.name).copied();
-
-                    let mut worker_info = json!({
-                        "name": worker.name,
-                        "status": status,
-                        // Don't expose worker link in public endpoint
-                    });
-
-                    // Only include last_seen if we have the data
-                    if let Some(last_seen_time) = last_seen {
-                        worker_info["last_seen"] = json!(last_seen_time);
-                    }
-
-                    worker_info
-                })
-                .collect();
-
-            let active_count = active_workers.len();
-            let total_count = workers.len();
-            let idle_count = total_count - active_count;
-
-            Json(json!({
-                "workers": worker_infos,
-                "total_workers": total_count,
-                "active_workers": active_count,
-                "idle_workers": idle_count,
-                "summary": {
-                    "total": total_count,
-                    "active": active_count,
-                    "idle": idle_count,
-                },
-                "timestamp": chrono::Utc::now()
-            }))
-        }
-        Err(e) => {
-            log::error!("Failed to list workers: {}", e);
-            Json(json!({
-                "error": "Failed to list workers",
-                "workers": [],
-                "total_workers": 0,
-                "active_workers": 0,
-                "idle_workers": 0
-            }))
-        }
-    }
+    let (active_count, idle_count, _) = count_statuses(&worker_infos);
+    let total_count = workers.len();
+    Ok(Json(json!({
+        "workers": worker_infos,
+        "total_workers": total_count,
+        "active_workers": active_count,
+        "idle_workers": idle_count,
+        "summary": {
+            "total": total_count,
+            "active": active_count,
+            "idle": idle_count,
+        },
+        "timestamp": chrono::Utc::now()
+    })))
 }
 
 /// Admin endpoint to list workers.
-async fn admin_list_workers(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.auth_service.list_workers().await {
-        Ok(workers) => {
-            let active_runs = state.active_runs.list().await;
-            let active_workers: std::collections::HashSet<&str> =
-                active_runs.iter().map(|r| r.worker_name.as_str()).collect();
+async fn admin_list_workers(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let workers = state
+        .auth_service
+        .list_workers()
+        .await
+        .map_err(|e| internal_error("Failed to list workers", e))?;
+    let active_runs = state.active_runs.list().await;
+    let active_workers: std::collections::HashSet<&str> =
+        active_runs.iter().map(|r| r.worker_name.as_str()).collect();
+    let last_seen_times = state
+        .database
+        .get_workers_last_seen()
+        .await
+        .map_err(|e| internal_error("Failed to read worker activity", e))?;
+    // Workers not seen in the last 30 minutes are considered failed.
+    let failed_workers = state
+        .database
+        .get_failed_workers(30)
+        .await
+        .map_err(|e| internal_error("Failed to read worker activity", e))?;
 
-            let last_seen_times = state
-                .database
-                .get_workers_last_seen()
-                .await
-                .unwrap_or_default();
+    let worker_infos: Vec<serde_json::Value> = workers
+        .iter()
+        .map(|worker| {
+            let status = if failed_workers.contains(&worker.name) {
+                "failed"
+            } else if active_workers.contains(worker.name.as_str()) {
+                "active"
+            } else {
+                "idle"
+            };
+            json!({
+                "name": worker.name,
+                "link": worker.link,
+                "status": status,
+                "last_seen": last_seen_times.get(&worker.name),
+            })
+        })
+        .collect();
 
-            // Workers not seen in the last 30 minutes are considered failed.
-            let failed_workers = state
-                .database
-                .get_failed_workers(30)
-                .await
-                .unwrap_or_default();
-            let failed_count = failed_workers.len();
-
-            let worker_infos: Vec<serde_json::Value> = workers
-                .iter()
-                .map(|worker| {
-                    let status = if failed_workers.contains(&worker.name) {
-                        "failed"
-                    } else if active_workers.contains(worker.name.as_str()) {
-                        "active"
-                    } else {
-                        "idle"
-                    };
-
-                    let last_seen = last_seen_times
-                        .get(&worker.name)
-                        .copied()
-                        .unwrap_or_else(chrono::Utc::now);
-
-                    json!({
-                        "name": worker.name,
-                        "link": worker.link,
-                        "status": status,
-                        "last_seen": last_seen,
-                    })
-                })
-                .collect();
-
-            let active_count = active_workers.len();
-            let total_count = workers.len();
-            let idle_count = total_count - active_count - failed_count;
-
-            Json(json!({
-                "workers": worker_infos,
-                "total_workers": total_count,
-                "active_workers": active_count,
-                "idle_workers": idle_count,
-                "summary": {
-                    "total": total_count,
-                    "active": active_count,
-                    "idle": idle_count,
-                    "failed": failed_count
-                },
-                "timestamp": chrono::Utc::now()
-            }))
-        }
-        Err(e) => {
-            log::error!("Failed to list workers: {}", e);
-            Json(json!({
-                "error": "Failed to list workers",
-                "workers": [],
-                "total_workers": 0,
-                "active_workers": 0,
-                "idle_workers": 0
-            }))
-        }
-    }
+    let (active_count, idle_count, failed_count) = count_statuses(&worker_infos);
+    let total_count = workers.len();
+    Ok(Json(json!({
+        "workers": worker_infos,
+        "total_workers": total_count,
+        "active_workers": active_count,
+        "idle_workers": idle_count,
+        "summary": {
+            "total": total_count,
+            "active": active_count,
+            "idle": idle_count,
+            "failed": failed_count
+        },
+        "timestamp": chrono::Utc::now()
+    })))
 }
 
 /// Admin endpoint to create a worker.
@@ -2716,18 +2705,18 @@ async fn authenticate_worker(
         // Use authenticate_worker which handles both Bearer and Basic auth
         match state.auth_service.authenticate_worker(auth_value).await {
             Ok(worker_auth) => {
-                // Track worker activity
-                if let Err(e) = state
+                state
                     .database
                     .track_worker_activity(&worker_auth.name)
                     .await
-                {
-                    log::warn!(
-                        "Failed to track worker activity for {}: {}",
-                        worker_auth.name,
-                        e
-                    );
-                }
+                    .map_err(|e| {
+                        log::error!(
+                            "Failed to track worker activity for {}: {}",
+                            worker_auth.name,
+                            e
+                        );
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    })?;
 
                 // Add worker name to request extensions
                 req.extensions_mut().insert(worker_auth.name);

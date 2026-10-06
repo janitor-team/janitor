@@ -1970,11 +1970,11 @@ impl RunnerDatabase {
                 let timestamp: Option<i64> =
                     redis::cmd("GET").arg(&key).query_async(&mut conn).await?;
 
-                if let Some(ts) = timestamp {
-                    if let Some(datetime) = DateTime::from_timestamp(ts, 0) {
-                        last_seen_map.insert(worker_name.to_string(), datetime);
-                    }
-                }
+                // The key can expire between KEYS and GET.
+                let Some(ts) = timestamp else { continue };
+                let datetime = DateTime::from_timestamp(ts, 0)
+                    .ok_or_else(|| format!("invalid last-seen timestamp {} for {}", ts, key))?;
+                last_seen_map.insert(worker_name.to_string(), datetime);
             }
         }
 
