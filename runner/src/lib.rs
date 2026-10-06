@@ -802,7 +802,7 @@ impl ActiveRun {
             command: self.command.clone(),
             estimated_duration: self.estimated_duration.map(|d| d.as_secs_f64()),
             current_duration: self.current_duration().as_secs_f64(),
-            start_time: self.start_time.to_rfc3339(),
+            start_time: active_runs::format_python_datetime(self.start_time),
             worker: self.worker_name.clone(),
             worker_link: self.worker_link.clone(),
             vcs: self.vcs_info.clone(),
@@ -810,6 +810,49 @@ impl ActiveRun {
             instigated_context: self.instigated_context.clone(),
             resume_from: self.resume_from.clone(),
         }
+    }
+
+    /// Parse the representation produced by [`Self::to_response`] (or by
+    /// the Python runner's `ActiveRun.json()`).
+    pub fn from_json(
+        js: &serde_json::Value,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        fn field<T: serde::de::DeserializeOwned>(
+            js: &serde_json::Value,
+            name: &str,
+        ) -> Result<T, Box<dyn std::error::Error + Send + Sync>> {
+            let value = js.get(name).cloned().unwrap_or(serde_json::Value::Null);
+            serde_json::from_value(value)
+                .map_err(|e| format!("active run field {}: {}", name, e).into())
+        }
+
+        let start_time: String = field(js, "start_time")?;
+        let estimated_duration: Option<f64> = field(js, "estimated_duration")?;
+        let backchannel = match js.get("backchannel") {
+            None | Some(serde_json::Value::Null) => Backchannel::default(),
+            Some(backchannel) => Backchannel::from_json(backchannel)?,
+        };
+        let vcs_info: Option<VcsInfo> = field(js, "vcs")?;
+        Ok(Self {
+            worker_name: field(js, "worker")?,
+            worker_link: field(js, "worker_link")?,
+            queue_id: field(js, "queue_id")?,
+            log_id: field(js, "id")?,
+            start_time: active_runs::parse_python_datetime(&start_time)?,
+            finish_time: None,
+            // Like Python, a zero estimate means no estimate.
+            estimated_duration: estimated_duration
+                .filter(|d| *d != 0.0)
+                .map(Duration::from_secs_f64),
+            campaign: field(js, "campaign")?,
+            change_set: field(js, "change_set")?,
+            command: field(js, "command")?,
+            backchannel,
+            vcs_info: vcs_info.unwrap_or_default(),
+            codebase: field(js, "codebase")?,
+            instigated_context: field(js, "instigated_context")?,
+            resume_from: field(js, "resume_from")?,
+        })
     }
 
     /// Ping the worker to check if it's still alive.
@@ -1292,6 +1335,32 @@ impl Backchannel {
                     }
                 }
             }
+        }
+    }
+
+    /// Parse the representation produced by [`Self::to_json`] (or by the
+    /// Python runner's `Backchannel.json()`).
+    pub fn from_json(
+        js: &serde_json::Value,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let obj = js
+            .as_object()
+            .ok_or_else(|| format!("backchannel is not an object: {}", js))?;
+        let my_url = match obj.get("my_url") {
+            None => return Ok(Backchannel::None {}),
+            Some(my_url) => my_url
+                .as_str()
+                .ok_or_else(|| format!("backchannel my_url is not a string: {}", my_url))?,
+        };
+        if obj.contains_key("jenkins") {
+            Ok(Backchannel::Jenkins {
+                my_url: my_url.to_string(),
+                jenkins: obj.get("jenkins").cloned().filter(|j| !j.is_null()),
+            })
+        } else {
+            Ok(Backchannel::Polling {
+                my_url: my_url.parse()?,
+            })
         }
     }
 
@@ -1881,6 +1950,40 @@ mod tests {
             }
             other => panic!("expected Jenkins, got {:?}", other),
         }
+    }
+
+    /// The untagged form the Python runner stores in Redis round-trips
+    /// through `to_json`/`from_json`.
+    #[test]
+    fn test_backchannel_python_json_roundtrip() {
+        let polling = Backchannel::Polling {
+            my_url: "http://w1:8080/".parse().unwrap(),
+        };
+        assert_eq!(
+            polling.to_json(),
+            serde_json::json!({"my_url": "http://w1:8080/"})
+        );
+        assert!(matches!(
+            Backchannel::from_json(&polling.to_json()).unwrap(),
+            Backchannel::Polling { my_url } if my_url.as_str() == "http://w1:8080/"
+        ));
+
+        let jenkins = Backchannel::Jenkins {
+            my_url: "https://jenkins.example/job/1/".to_string(),
+            jenkins: Some(serde_json::json!({"crumb": "abc"})),
+        };
+        assert!(matches!(
+            Backchannel::from_json(&jenkins.to_json()).unwrap(),
+            Backchannel::Jenkins { my_url, jenkins: Some(j) }
+                if my_url == "https://jenkins.example/job/1/" && j == serde_json::json!({"crumb": "abc"})
+        ));
+
+        assert!(matches!(
+            Backchannel::from_json(&serde_json::json!({})).unwrap(),
+            Backchannel::None {}
+        ));
+        assert!(Backchannel::from_json(&serde_json::json!({"my_url": "not a url"})).is_err());
+        assert!(Backchannel::from_json(&serde_json::json!([])).is_err());
     }
 
     #[test]
