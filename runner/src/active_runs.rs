@@ -18,30 +18,46 @@
 //! converge to the same end state.
 
 use crate::ActiveRun;
+use chrono::{DateTime, NaiveDateTime, Utc};
 use redis::AsyncCommands;
 use std::collections::HashMap;
 
 /// The default Redis hash key under which active runs are stored.
 const DEFAULT_KEY: &str = "runner:active-runs";
 
+/// Redis hash mapping run ids to the time of their last keepalive, as
+/// used by the Python runner.
+const DEFAULT_KEEPALIVE_KEY: &str = "last-keepalive";
+
 /// Shared Redis-backed store of currently-active runs, keyed by `log_id`.
 #[derive(Clone)]
 pub struct ActiveRunStore {
     redis: redis::Client,
     key: String,
+    keepalive_key: String,
 }
 
 impl ActiveRunStore {
     /// Construct a store backed by the given Redis client, using the
     /// default `runner:active-runs` hash key.
     pub fn new(redis: redis::Client) -> Self {
-        Self::with_key(redis, DEFAULT_KEY.to_string())
+        Self {
+            redis,
+            key: DEFAULT_KEY.to_string(),
+            keepalive_key: DEFAULT_KEEPALIVE_KEY.to_string(),
+        }
     }
 
     /// Construct a store with a custom hash key -- useful for tests so
-    /// parallel test cases don't collide on a shared key.
+    /// parallel test cases don't collide on a shared key. Keepalives
+    /// are kept in `<key>:last-keepalive`.
     pub fn with_key(redis: redis::Client, key: String) -> Self {
-        Self { redis, key }
+        let keepalive_key = format!("{}:last-keepalive", key);
+        Self {
+            redis,
+            key,
+            keepalive_key,
+        }
     }
 
     async fn conn(&self) -> Option<redis::aio::MultiplexedConnection> {
@@ -54,11 +70,12 @@ impl ActiveRunStore {
         }
     }
 
-    /// Record a newly-assigned active run. Overwrites any existing
-    /// entry with the same `log_id`. Errors are logged; callers don't
-    /// get a Result because no caller has anything useful to do on
-    /// Redis failure (the queue-item assignment in `assign_queue_item`
-    /// follows the same log-and-continue pattern).
+    /// Record a newly-assigned active run and treat the assignment as
+    /// its first keepalive. Overwrites any existing entry with the same
+    /// `log_id`. Errors are logged; callers don't get a Result because
+    /// no caller has anything useful to do on Redis failure (the
+    /// queue-item assignment in `assign_queue_item` follows the same
+    /// log-and-continue pattern).
     pub async fn store(&self, active_run: ActiveRun) {
         let json = match serde_json::to_string(&active_run) {
             Ok(s) => s,
@@ -74,7 +91,15 @@ impl ActiveRunStore {
         let Some(mut conn) = self.conn().await else {
             return;
         };
-        let res: redis::RedisResult<()> = conn.hset(&self.key, &active_run.log_id, json).await;
+        let res: redis::RedisResult<()> = redis::pipe()
+            .hset(&self.key, &active_run.log_id, json)
+            .hset(
+                &self.keepalive_key,
+                &active_run.log_id,
+                format_python_datetime(chrono::Utc::now()),
+            )
+            .query_async(&mut conn)
+            .await;
         if let Err(e) = res {
             log::error!(
                 "active_runs.store: HSET failed for {}: {}",
@@ -133,19 +158,45 @@ impl ActiveRunStore {
         runs
     }
 
-    /// Drop an active run from the store. Returns `true` if a row was
-    /// actually removed.
+    /// Drop an active run and its keepalive from the store. Returns
+    /// `true` if a run was actually removed.
     pub async fn remove(&self, run_id: &str) -> bool {
         let Some(mut conn) = self.conn().await else {
             return false;
         };
-        match conn.hdel::<_, _, u32>(&self.key, run_id).await {
-            Ok(n) => n > 0,
+        let res: redis::RedisResult<(u32, u32)> = redis::pipe()
+            .hdel(&self.key, run_id)
+            .hdel(&self.keepalive_key, run_id)
+            .query_async(&mut conn)
+            .await;
+        match res {
+            Ok((n, _)) => n > 0,
             Err(e) => {
                 log::warn!("active_runs.remove HDEL {}: {}", run_id, e);
                 false
             }
         }
+    }
+
+    /// Time at which the last keepalive for `run_id` was recorded, if any.
+    pub async fn last_keepalive(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<DateTime<Utc>>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut conn = self.redis.get_multiplexed_async_connection().await?;
+        let value: Option<String> = conn.hget(&self.keepalive_key, run_id).await?;
+        Ok(value.as_deref().map(parse_python_datetime).transpose()?)
+    }
+
+    /// Record a keepalive for `run_id` at `when`.
+    pub async fn record_keepalive(
+        &self,
+        run_id: &str,
+        when: DateTime<Utc>,
+    ) -> Result<(), redis::RedisError> {
+        let mut conn = self.redis.get_multiplexed_async_connection().await?;
+        conn.hset(&self.keepalive_key, run_id, format_python_datetime(when))
+            .await
     }
 
     /// Count the number of active runs for a given worker. Used by the
@@ -187,27 +238,26 @@ impl ActiveRunStore {
         }
         workers.len()
     }
+}
 
-    /// Remove runs that have been active for longer than `max_age`.
-    /// Returns the removed entries so the caller can run any cleanup
-    /// (logging, recording a worker-timeout result, etc.).
-    pub async fn drain_older_than(&self, max_age: chrono::Duration) -> Vec<ActiveRun> {
-        let cutoff = chrono::Utc::now() - max_age;
-        let runs = self.list().await;
-        let stale: Vec<ActiveRun> = runs.into_iter().filter(|r| r.start_time < cutoff).collect();
-        if stale.is_empty() {
-            return stale;
-        }
-        let Some(mut conn) = self.conn().await else {
-            return Vec::new();
-        };
-        for run in &stale {
-            let res: redis::RedisResult<u32> = conn.hdel(&self.key, &run.log_id).await;
-            if let Err(e) = res {
-                log::warn!("active_runs.drain HDEL {}: {}", run.log_id, e);
-            }
-        }
-        stale
+/// Format a timestamp the way the Python runner's naive
+/// `utcnow().isoformat()` does, so both runners can read each other's
+/// keepalives.
+pub fn format_python_datetime(when: DateTime<Utc>) -> String {
+    let naive = when.naive_utc();
+    if naive.and_utc().timestamp_subsec_micros() == 0 {
+        naive.format("%Y-%m-%dT%H:%M:%S").to_string()
+    } else {
+        naive.format("%Y-%m-%dT%H:%M:%S%.6f").to_string()
+    }
+}
+
+/// Parse a timestamp written by [`format_python_datetime`] or by the
+/// Python runner. Naive timestamps are taken to be in UTC.
+pub fn parse_python_datetime(s: &str) -> Result<DateTime<Utc>, chrono::ParseError> {
+    match NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f") {
+        Ok(naive) => Ok(naive.and_utc()),
+        Err(_) => Ok(DateTime::parse_from_rfc3339(s)?.with_timezone(&Utc)),
     }
 }
 
@@ -262,7 +312,7 @@ mod tests {
     /// Drop the test hash key so we don't leak state across runs.
     async fn cleanup(store: &ActiveRunStore) {
         if let Some(mut conn) = store.conn().await {
-            let _: redis::RedisResult<u32> = conn.del(&store.key).await;
+            let _: redis::RedisResult<u32> = conn.del(&[&store.key, &store.keepalive_key]).await;
         }
     }
 
@@ -349,22 +399,47 @@ mod tests {
         cleanup(&store).await;
     }
 
+    #[test]
+    fn python_datetime_roundtrip() {
+        let when = DateTime::parse_from_rfc3339("2026-10-06T12:34:56.123456Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(format_python_datetime(when), "2026-10-06T12:34:56.123456");
+        assert_eq!(
+            parse_python_datetime("2026-10-06T12:34:56.123456").unwrap(),
+            when
+        );
+        let whole = DateTime::parse_from_rfc3339("2026-10-06T12:34:56Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(format_python_datetime(whole), "2026-10-06T12:34:56");
+        assert_eq!(parse_python_datetime("2026-10-06T12:34:56").unwrap(), whole);
+        assert_eq!(
+            parse_python_datetime("2026-10-06T12:34:56+00:00").unwrap(),
+            whole
+        );
+        assert!(parse_python_datetime("not a date").is_err());
+    }
+
     #[tokio::test]
-    async fn drain_older_than_returns_stale_runs() {
+    async fn store_records_keepalive_and_remove_drops_it() {
         let Some(store) = try_test_store().await else {
             eprintln!("skipping: Redis unavailable");
             return;
         };
-        let mut old = make_run("old", "w");
-        old.start_time = Utc::now() - chrono::Duration::hours(10);
-        let fresh = make_run("fresh", "w");
-        store.store(old).await;
-        store.store(fresh).await;
-        let drained = store.drain_older_than(chrono::Duration::hours(1)).await;
-        assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0].log_id, "old");
-        assert!(store.get("fresh").await.is_some());
-        assert!(store.get("old").await.is_none());
+        let before = Utc::now() - chrono::Duration::seconds(1);
+        store.store(make_run("run-1", "w")).await;
+        let keepalive = store.last_keepalive("run-1").await.unwrap().unwrap();
+        assert!(keepalive >= before);
+
+        let when = DateTime::parse_from_rfc3339("2026-10-06T12:34:56.5Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        store.record_keepalive("run-1", when).await.unwrap();
+        assert_eq!(store.last_keepalive("run-1").await.unwrap(), Some(when));
+
+        assert!(store.remove("run-1").await);
+        assert_eq!(store.last_keepalive("run-1").await.unwrap(), None);
         cleanup(&store).await;
     }
 
