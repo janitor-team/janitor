@@ -398,7 +398,7 @@ impl ReleaseBuilder {
     /// Build the Release.
     pub fn build(mut self) -> Result<Release> {
         let date = self.date.unwrap_or_else(Utc::now);
-        self.inner.date = Some(date.format("%a, %d %b %Y %H:%M:%S UTC").to_string());
+        self.inner.date = Some(date.format("%a, %d %b %Y %H:%M:%S GMT").to_string());
         if let Some(valid_until) = self.valid_until {
             // TODO: store valid_until in lossy Release when that field is added
             let _ = valid_until;
@@ -450,13 +450,29 @@ mod tests {
     }
 
     #[test]
+    fn test_release_date_uses_gmt() {
+        let date = DateTime::parse_from_rfc3339("2024-03-05T07:08:09Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let release = ReleaseBuilder::new()
+            .suite("stable")
+            .date(date)
+            .build()
+            .unwrap();
+        assert_eq!(
+            release.inner.date.as_deref(),
+            Some("Tue, 05 Mar 2024 07:08:09 GMT")
+        );
+    }
+
+    #[test]
     fn test_release_roundtrip() {
         let mut release = Release::new();
         release.inner.origin = Some("Test Origin".to_string());
         release.inner.suite = Some("stable".to_string());
         release.inner.architectures = vec!["amd64".to_string()];
         release.inner.components = vec!["main".to_string()];
-        release.inner.date = Some(Utc::now().format("%a, %d %b %Y %H:%M:%S UTC").to_string());
+        release.inner.date = Some(Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string());
 
         let mut file = HashedFile::new("main/binary-amd64/Packages", 1024);
         file.add_hash(HashAlgorithm::Md5, "abc123".to_string());
