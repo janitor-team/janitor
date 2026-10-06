@@ -137,6 +137,31 @@ pub async fn export_public_keys(cfg: &GpgConfig) -> ArchiveResult<String> {
         .map_err(|e| ArchiveError::RepositoryGeneration(format!("gpg export output: {}", e)))
 }
 
+/// Export every key that has a secret key in the keyring, each as a
+/// separate armored, minimal export.
+pub async fn export_minimal_public_keys(cfg: &GpgConfig) -> ArchiveResult<Vec<String>> {
+    let mut cmd = gpg_command(cfg);
+    cmd.args(["--batch", "--with-colons", "--list-secret-keys"]);
+    let listing = gpg_output(cmd).await?;
+    let mut keys = Vec::new();
+    for fpr in secret_key_fingerprints(&String::from_utf8_lossy(&listing)) {
+        let mut cmd = gpg_command(cfg);
+        cmd.args([
+            "--batch",
+            "--armor",
+            "--export-options",
+            "export-minimal",
+            "--export",
+            &fpr,
+        ]);
+        let exported = gpg_output(cmd).await?;
+        keys.push(String::from_utf8(exported).map_err(|e| {
+            ArchiveError::RepositoryGeneration(format!("gpg export output: {}", e))
+        })?);
+    }
+    Ok(keys)
+}
+
 /// Fingerprints of the primary keys in `gpg --with-colons
 /// --list-secret-keys` output.
 fn secret_key_fingerprints(listing: &str) -> Vec<String> {

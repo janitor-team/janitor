@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::Command;
 
 use janitor_archive::config::GpgConfig;
-use janitor_archive::sign::{export_public_keys, sign_release};
+use janitor_archive::sign::{export_minimal_public_keys, export_public_keys, sign_release};
 use tempfile::TempDir;
 
 const RELEASE_BODY: &[u8] = b"Origin: test\nLabel: test\nSuite: test\nCodename: test\n";
@@ -252,4 +252,39 @@ async fn export_public_keys_fails_without_secret_keys() {
         ..GpgConfig::new(None)
     };
     assert!(export_public_keys(&cfg).await.is_err());
+}
+
+/// One minimal export per secret key, like the Python archive's
+/// `/pgp_keys`.
+#[tokio::test]
+async fn export_minimal_public_keys_one_per_secret_key() {
+    let gpg_home = TempDir::new().unwrap();
+    let first = generate_test_key(gpg_home.path());
+    generate_test_key(gpg_home.path());
+    let cfg = GpgConfig {
+        gpg_home: Some(gpg_home.path().to_path_buf()),
+        ..GpgConfig::new(Some(first))
+    };
+
+    let exported = export_minimal_public_keys(&cfg)
+        .await
+        .expect("export_minimal_public_keys");
+    assert_eq!(exported.len(), 2);
+    for key in &exported {
+        assert!(key.starts_with("-----BEGIN PGP PUBLIC KEY BLOCK-----"));
+    }
+    assert_ne!(exported[0], exported[1]);
+}
+
+#[tokio::test]
+async fn export_minimal_public_keys_empty_keyring() {
+    let gpg_home = TempDir::new().unwrap();
+    let cfg = GpgConfig {
+        gpg_home: Some(gpg_home.path().to_path_buf()),
+        ..GpgConfig::new(None)
+    };
+    assert_eq!(
+        export_minimal_public_keys(&cfg).await.unwrap(),
+        Vec::<String>::new()
+    );
 }
