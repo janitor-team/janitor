@@ -204,20 +204,37 @@ pub async fn lookup_builds(
 
 /// Decide whether an already-generated Release file is up-to-date
 /// relative to `max_finish_time`. Returns `true` if we can skip
-/// regeneration -- Release exists, has an mtime, and that mtime is
-/// newer than the newest build's finish time.
-pub async fn is_fresh(release_path: &Path, max_finish_time: Option<DateTime<Utc>>) -> bool {
-    let Some(max_finish_time) = max_finish_time else {
-        return false;
+/// regeneration -- Release exists and its `Date` field is newer than
+/// the newest build's finish time.
+pub async fn is_fresh(
+    release_path: &Path,
+    max_finish_time: Option<DateTime<Utc>>,
+) -> ArchiveResult<bool> {
+    let content = match tokio::fs::read_to_string(release_path).await {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(ArchiveError::Io(e)),
     };
-    let Ok(metadata) = tokio::fs::metadata(release_path).await else {
-        return false;
+    let invalid = |msg: String| {
+        ArchiveError::RepositoryGeneration(format!("{}: {}", release_path.display(), msg))
     };
-    let Ok(modified) = metadata.modified() else {
-        return false;
+    let release = content
+        .parse::<deb822_fast::Deb822>()
+        .map_err(|e| invalid(e.to_string()))?;
+    let date = release
+        .iter()
+        .next()
+        .and_then(|p| p.get("Date"))
+        .ok_or_else(|| invalid("no Date field".to_string()))?;
+    // apt-repository has written "UTC", which Python's email.utils
+    // accepts but chrono does not.
+    let normalized = match date.strip_suffix(" UTC") {
+        Some(prefix) => format!("{} GMT", prefix),
+        None => date.to_string(),
     };
-    let stamp: DateTime<Utc> = modified.into();
-    max_finish_time < stamp
+    let stamp = DateTime::parse_from_rfc2822(&normalized)
+        .map_err(|e| invalid(format!("invalid Date {:?}: {}", date, e)))?;
+    Ok(max_finish_time.is_some_and(|t| t < stamp))
 }
 
 /// Package provider backed by a precomputed list of `BuildInfo`,
@@ -325,7 +342,7 @@ pub async fn refresh_on_demand_dists(
 
     let (builds, max_finish_time, campaign_name) = lookup_builds(db, kind, id).await?;
 
-    if is_fresh(&release_path, max_finish_time).await {
+    if is_fresh(&release_path, max_finish_time).await? {
         debug!("On-demand dists for {}/{} still fresh, skipping", kind, id);
         return Ok(());
     }
@@ -416,7 +433,7 @@ pub async fn read_on_demand_file(base: &Path, relative: &[&str]) -> ArchiveResul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, SystemTime};
+    use std::time::SystemTime;
 
     #[test]
     fn test_parse_kind_run() {
@@ -436,14 +453,28 @@ mod tests {
         assert_eq!(parse_kind(""), OnDemandKind::Campaign);
     }
 
+    fn utc(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+
+    async fn write_release(dir: &Path, date: &str) -> PathBuf {
+        let path = dir.join("Release");
+        tokio::fs::write(
+            &path,
+            format!("Origin: janitor\nSuite: cs/x\nDate: {}\n", date),
+        )
+        .await
+        .unwrap();
+        path
+    }
+
     #[tokio::test]
     async fn test_is_fresh_no_max_finish_time() {
         // When max_finish_time is None the freshness check cannot
         // succeed, so we always regenerate.
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("Release");
-        tokio::fs::write(&path, b"anything").await.unwrap();
-        assert!(!is_fresh(&path, None).await);
+        let path = write_release(tmp.path(), "Tue, 05 Mar 2024 07:08:09 GMT").await;
+        assert!(!is_fresh(&path, None).await.unwrap());
     }
 
     #[tokio::test]
@@ -454,31 +485,46 @@ mod tests {
         // fresh -- otherwise the caller would skip regeneration and
         // then try to serve a nonexistent file.
         let now: DateTime<Utc> = SystemTime::now().into();
-        assert!(!is_fresh(&missing, Some(now)).await);
+        assert!(!is_fresh(&missing, Some(now)).await.unwrap());
     }
 
     #[tokio::test]
-    async fn test_is_fresh_stamp_newer_than_builds() {
-        // Release mtime newer than max_finish_time -> up-to-date.
-        // Write a Release file, then call is_fresh with a
-        // max_finish_time well in the past. Must be fresh.
+    async fn test_is_fresh_date_newer_than_builds() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("Release");
-        tokio::fs::write(&path, b"Origin: janitor\n").await.unwrap();
-        let past: DateTime<Utc> = (SystemTime::now() - Duration::from_secs(3600)).into();
-        assert!(is_fresh(&path, Some(past)).await);
+        let path = write_release(tmp.path(), "Tue, 05 Mar 2024 07:08:09 GMT").await;
+        assert!(is_fresh(&path, Some(utc("2024-03-05T07:08:08Z")))
+            .await
+            .unwrap());
+        // Files written before Date switched to GMT say UTC.
+        let path = write_release(tmp.path(), "Tue, 05 Mar 2024 07:08:09 UTC").await;
+        assert!(is_fresh(&path, Some(utc("2024-03-05T07:08:08Z")))
+            .await
+            .unwrap());
+    }
+
+    /// The Release Date decides, not the file's mtime.
+    #[tokio::test]
+    async fn test_is_fresh_builds_newer_than_date() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_release(tmp.path(), "Tue, 05 Mar 2024 07:08:09 GMT").await;
+        assert!(!is_fresh(&path, Some(utc("2024-03-05T07:08:09Z")))
+            .await
+            .unwrap());
+        assert!(!is_fresh(&path, Some(utc("2025-01-01T00:00:00Z")))
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
-    async fn test_is_fresh_builds_newer_than_stamp() {
-        // If max_finish_time >= stamp, regenerate. Give the Release
-        // an mtime in the past and a max_finish_time in the future.
-        // Must not be fresh.
+    async fn test_is_fresh_release_without_date() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("Release");
         tokio::fs::write(&path, b"Origin: janitor\n").await.unwrap();
-        let future: DateTime<Utc> = (SystemTime::now() + Duration::from_secs(3600)).into();
-        assert!(!is_fresh(&path, Some(future)).await);
+        let now: DateTime<Utc> = SystemTime::now().into();
+        assert!(matches!(
+            is_fresh(&path, Some(now)).await,
+            Err(ArchiveError::RepositoryGeneration(_))
+        ));
     }
 
     #[tokio::test]

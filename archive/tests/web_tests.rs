@@ -133,7 +133,7 @@ test_with_database! {
         let (status, _) = get(&app, "/dists/run/run-1/Release").await;
         assert_eq!(status, StatusCode::OK);
 
-        let binary_dir = tmp.path().join("dists/run/run-1/main/binary-amd64");
+        let binary_dir = tmp.path().join("run/run-1/main/binary-amd64");
         let packages = std::fs::read(binary_dir.join("Packages")).unwrap();
         assert_eq!(
             get(&app, "/dists/run/run-1/main/binary-amd64/Packages").await,
