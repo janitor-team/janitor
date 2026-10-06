@@ -309,17 +309,28 @@ async fn serve_suite_file(
     serve_from_suite(&state, suite, request).await
 }
 
+/// Return `segment` if it is safe to join onto a directory, i.e. it
+/// cannot escape it; otherwise 404.
+fn path_segment(segment: &str) -> Result<&str, StatusCode> {
+    if segment.is_empty()
+        || segment == "."
+        || segment == ".."
+        || segment.contains(['/', '\\', '\0'])
+    {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(segment)
+}
+
+/// Like the Python archive, serve any directory under the dists
+/// directory, not just the configured suites.
 async fn serve_from_suite(
     state: &AppState,
     suite: &str,
     request: Request,
 ) -> Result<Response, StatusCode> {
-    let repo_config = state
-        .config
-        .repositories
-        .get(suite)
-        .ok_or(StatusCode::NOT_FOUND)?;
-    serve_from_dir(repo_config.suite_path(), 2, request).await
+    let dir = state.config.archive_path.join(path_segment(suite)?);
+    serve_from_dir(dir, 2, request).await
 }
 
 /// Serve `/dists/{a}/{b}/{file}`. On-demand repositories only have
@@ -621,7 +632,7 @@ async fn prepare_on_demand(
     kind: &str,
     id: &str,
 ) -> Result<Option<PathBuf>, StatusCode> {
-    let dists_dir = state.config.archive_path.join("dists");
+    let dists_dir = &state.config.archive_path;
 
     if !is_valid_on_demand_kind(kind, state.config.runtime_config.as_deref(), &state.config) {
         debug!("Rejecting on-demand kind {}: not a known campaign", kind);
@@ -661,7 +672,7 @@ async fn prepare_on_demand(
     };
 
     match crate::on_demand::refresh_on_demand_dists(
-        &dists_dir,
+        dists_dir,
         state.database.as_ref(),
         state.scanner.clone(),
         &origin,
@@ -856,6 +867,110 @@ mod tests {
         let times = HashMap::new();
         let body = compute_ready_response(Vec::<&str>::new(), &times).unwrap();
         assert!(body.is_empty());
+    }
+
+    async fn get_from(archive_path: &std::path::Path, uri: &str) -> Response {
+        use tower::ServiceExt;
+        let pool = sqlx::PgPool::connect_lazy("postgresql://localhost/unused").unwrap();
+        let config = ArchiveConfig {
+            archive_path: archive_path.to_path_buf(),
+            ..Default::default()
+        };
+        let artifacts = archive_path.display().to_string();
+        let generator = RepositoryGenerator::new(
+            Arc::new(PackageScanner::new(&artifacts).await.unwrap()),
+            Arc::new(BuildManager::new(pool.clone())),
+            crate::repository::RepositoryGenerationConfig::default(),
+        );
+        ArchiveWebService::new(
+            config,
+            generator,
+            PackageScanner::new(&artifacts).await.unwrap(),
+            BuildManager::new(pool),
+        )
+        .await
+        .unwrap()
+        .router()
+        .oneshot(
+            axum::http::Request::builder()
+                .uri(uri)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn body_of(response: Response) -> Vec<u8> {
+        axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap()
+            .to_vec()
+    }
+
+    /// Suite files are served from any directory under the dists
+    /// directory, not just from configured suites.
+    #[tokio::test]
+    async fn test_serves_unconfigured_suite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let suite = tmp.path().join("other");
+        std::fs::create_dir_all(suite.join("main/binary-amd64")).unwrap();
+        std::fs::write(suite.join("Release"), b"Suite: other\n").unwrap();
+        std::fs::write(suite.join("main/binary-amd64/Packages"), b"pkgs").unwrap();
+
+        let response = get_from(tmp.path(), "/dists/other/Release").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_of(response).await, b"Suite: other\n");
+
+        let response = get_from(tmp.path(), "/dists/other/main/binary-amd64/Packages").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_of(response).await, b"pkgs");
+
+        let response = get_from(tmp.path(), "/dists/missing/Release").await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_serves_by_hash_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let suite = tmp.path().join("other");
+        let binary = suite.join("main/binary-amd64/by-hash/SHA256");
+        let source = suite.join("main/source/by-hash/SHA256");
+        std::fs::create_dir_all(&binary).unwrap();
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(binary.join("abc"), b"binary").unwrap();
+        std::fs::write(source.join("abc"), b"source").unwrap();
+
+        let response = get_from(
+            tmp.path(),
+            "/dists/other/main/binary-amd64/by-hash/SHA256/abc",
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_of(response).await, b"binary");
+
+        let response = get_from(tmp.path(), "/dists/other/main/source/by-hash/SHA256/abc").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_of(response).await, b"source");
+    }
+
+    #[tokio::test]
+    async fn test_rejects_escaping_segments() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dists = tmp.path().join("dists");
+        std::fs::create_dir_all(&dists).unwrap();
+        std::fs::write(tmp.path().join("Release"), b"outside").unwrap();
+        let response = get_from(&dists, "/dists/%2E%2E/Release").await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_path_segment() {
+        assert_eq!(path_segment("main"), Ok("main"));
+        assert_eq!(path_segment(""), Err(StatusCode::NOT_FOUND));
+        assert_eq!(path_segment("."), Err(StatusCode::NOT_FOUND));
+        assert_eq!(path_segment(".."), Err(StatusCode::NOT_FOUND));
+        assert_eq!(path_segment("a/b"), Err(StatusCode::NOT_FOUND));
     }
 
     fn empty_archive_config() -> ArchiveConfig {

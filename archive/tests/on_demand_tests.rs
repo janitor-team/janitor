@@ -77,3 +77,40 @@ test_with_database! {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }
+
+test_with_database! {
+    schema = Debian;
+    async fn get_dists_cs_writes_under_dists_directory(test_db: TestDatabase) {
+        sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs1', 'lintian-fixes')")
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+        let (app, tmp) = build_app(test_db.pool().clone()).await;
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/dists/cs/cs1/Release")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(tmp.path().join("cs/cs1/Release").exists());
+        assert!(!tmp.path().join("dists").exists());
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/dists/cs/cs1/main/binary-amd64/Packages")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/dists/cs/cs1/main/source/Sources")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+}
