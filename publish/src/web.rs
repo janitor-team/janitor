@@ -1794,14 +1794,15 @@ async fn autopublish(
 
 /// `GET /rate-limits/{bucket}`: current open and max-open figures for a
 /// single bucket. An unknown bucket returns 200 with
-/// `{open: null, max_open: null, remaining: null}`, not 404. Both
-/// numbers are read under one lock so they can't drift mid-call.
+/// `open` and `remaining` null, not 404. `max_open` is still set when a
+/// fixed limit is configured. Both numbers are read under one lock so
+/// they can't drift mid-call.
 #[utoipa::path(
     get,
     path = "/rate-limits/{bucket}",
     params(("bucket" = String, Path, description = "Rate-limit bucket")),
     responses(
-        (status = 200, description = "Rate limit of the bucket; all null for unknown buckets", body = BucketRateLimit),
+        (status = 200, description = "Rate limit of the bucket; open and remaining null for unknown buckets", body = BucketRateLimit),
         (status = 500, description = "Rate limiter unavailable", body = ErrorResponse),
     )
 )]
@@ -2525,8 +2526,6 @@ mod tests {
         );
     }
 
-    // --- classify_mp_status_transition ---
-
     /// Closed -> closed in any combination is a no-op update.
     /// CLOSED_STATUSES is `[closed, abandoned, rejected, applied]`,
     /// so all 16 ordered pairs should classify as NoOpUpdate.
@@ -2608,8 +2607,6 @@ mod tests {
             MpStatusTransition::Forbidden
         );
     }
-
-    // --- project_per_branch_policy ---
 
     /// Empty document projects to three empty vectors. Used by the
     /// SQL composite-array insert; an empty document is valid (a
@@ -2713,8 +2710,6 @@ mod tests {
             ]
         );
     }
-
-    // --- armor_public_key ---
 
     /// Matches `gpg --armor --export --export-options export-minimal` byte for byte.
     #[test]

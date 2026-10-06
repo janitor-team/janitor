@@ -240,6 +240,37 @@ test_with_database! {
     }
 }
 
+#[tokio::test]
+async fn rate_limits_reports_max_open_of_a_fixed_limit() {
+    let mut limiter: Box<dyn RateLimiter> = Box::new(FixedRateLimiter::new(3));
+    limiter.set_mps_per_bucket(&maplit::hashmap! {
+        MergeProposalStatus::Open => maplit::hashmap! { "lintian-fixes".to_string() => 1 },
+    });
+    let pool = PgPool::connect_lazy("postgres://localhost/unused").unwrap();
+    let app = build_app_with_rate_limiter(pool, limiter).await;
+
+    let mut bodies = Vec::new();
+    for bucket in ["lintian-fixes", "never-seen"] {
+        let req = Request::builder()
+            .uri(format!("/rate-limits/{bucket}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        bodies.push(serde_json::from_slice::<serde_json::Value>(&bytes).unwrap());
+    }
+    assert_eq!(
+        bodies,
+        vec![
+            serde_json::json!({"open": 1, "max_open": 3, "remaining": 2}),
+            serde_json::json!({"open": null, "max_open": 3, "remaining": null}),
+        ]
+    );
+}
+
 test_with_database! {
     schema = Core;
     async fn publish_endpoint_rejects_invalid_mode_with_400(test_db: TestDatabase) {
