@@ -650,9 +650,28 @@ pub struct AssignmentCodemod {
     pub environment: BTreeMap<String, String>,
 }
 
+/// Lintian settings in a Debian build assignment.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct LintianAssignment {
+    /// Lintian profile to use.
+    pub profile: String,
+    /// Tags to suppress; only sent when there are any.
+    #[serde(
+        rename = "suppress-tags",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub suppress_tags: Vec<String>,
+}
+
 /// Debian build configuration in an assignment.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct DebianBuildAssignment {
+    /// Lintian settings.
+    pub lintian: LintianAssignment,
+    /// Extra apt sources, as `deb ...` lines.
+    #[serde(rename = "build-extra-repositories")]
+    pub extra_repositories: Vec<String>,
     /// Distribution to label the build with.
     #[serde(rename = "build-distribution")]
     pub build_distribution: String,
@@ -661,32 +680,63 @@ pub struct DebianBuildAssignment {
     pub build_suffix: String,
     /// Build command; only sent when the campaign or the distribution
     /// defines one.
-    #[serde(rename = "build-command", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "build-command",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub build_command: Option<String>,
+    /// Highest version previously built for this codebase and
+    /// distribution, if any.
+    #[serde(
+        rename = "last-build-version",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub last_build_version: Option<String>,
     /// Chroot to build in.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chroot: Option<String>,
-    /// Extra apt sources, as `deb ...` lines.
-    #[serde(rename = "build-extra-repositories")]
-    pub extra_repositories: Vec<String>,
+    /// Base apt repository of the distribution, as
+    /// `<mirror> <distribution> <components>`; only sent when the
+    /// distribution has a mirror and components.
+    #[serde(
+        rename = "base-apt-repository",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub base_apt_repository: Option<String>,
+    /// Keyring for the base apt repository. Sent, possibly as null,
+    /// together with `base-apt-repository`.
+    #[serde(
+        rename = "base-apt-repository-signed-by",
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "::serde_with::rust::double_option"
+    )]
+    #[schema(value_type = Option<String>)]
+    pub base_apt_repository_signed_by: Option<Option<String>>,
     /// URL of the dependency server.
     pub dep_server_url: Option<String>,
 }
 
 /// Generic build configuration in an assignment.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct GenericBuildAssignment {
+    /// Chroot to build in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chroot: Option<String>,
     /// URL of the dependency server.
     pub dep_server_url: Option<String>,
 }
 
 /// Build configuration in an assignment; which one is sent depends on
 /// the build target.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(untagged)]
 pub enum BuildAssignmentConfig {
     /// Configuration for the `debian` target.
-    Debian(DebianBuildAssignment),
+    Debian(Box<DebianBuildAssignment>),
     /// Configuration for the `generic` target.
     Generic(GenericBuildAssignment),
 }
