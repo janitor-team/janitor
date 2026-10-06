@@ -29,29 +29,25 @@ pub struct UploadedWorkerResult {
 }
 
 /// Processor for multipart uploads from workers.
-pub struct UploadProcessor {
-    /// Base directory for storing uploaded files.
-    storage_dir: PathBuf,
-}
+#[derive(Default)]
+pub struct UploadProcessor {}
 
 impl UploadProcessor {
     /// Create a new upload processor.
-    pub fn new(storage_dir: PathBuf) -> Self {
-        Self { storage_dir }
+    pub fn new() -> Self {
+        Self {}
     }
 
-    /// Process a multipart upload from a worker.
+    /// Process a multipart upload from a worker, storing the files in
+    /// `storage_dir`.
     ///
-    /// `codebase` is the codebase name for this run; logs are stored
-    /// under `{storage_dir}/{codebase}/{run_id}/{filename}` so the
-    /// site's `FileSystemLogFileManager` (which expects the
-    /// `{root}/{codebase}/{run_id}/{name}` layout) can read them
-    /// straight off a shared volume -- no separate proxy needed.
-    /// Other categories (artifacts/build/metadata) keep the
-    /// `{storage_dir}/{run_id}/{category}/{filename}` layout.
+    /// Logs are stored under `{storage_dir}/{codebase}/{run_id}/{filename}`;
+    /// other categories (artifacts/build/metadata) under
+    /// `{storage_dir}/{run_id}/{category}/{filename}`.
     pub async fn process_upload(
         &self,
         mut multipart: Multipart,
+        storage_dir: &Path,
         run_id: &janitor_types::RunId,
         codebase: &janitor_types::CodebaseName,
     ) -> Result<UploadedWorkerResult, UploadError> {
@@ -60,14 +56,11 @@ impl UploadProcessor {
         let mut artifact_files = Vec::new();
         let mut build_files = Vec::new();
 
-        // Per-category directory layout. Logs follow the FS log
-        // manager layout so `LOG_URL=file://{storage_dir}` on the
-        // site pod can find them.
-        let run_dir = self.storage_dir.join(run_id);
+        let run_dir = storage_dir.join(run_id);
         tokio::fs::create_dir_all(&run_dir)
             .await
             .map_err(|e| UploadError::Storage(format!("Failed to create directory: {}", e)))?;
-        let logs_dir = self.storage_dir.join(codebase).join(run_id);
+        let logs_dir = storage_dir.join(codebase).join(run_id);
         tokio::fs::create_dir_all(&logs_dir)
             .await
             .map_err(|e| UploadError::Storage(format!("Failed to create logs directory: {}", e)))?;
