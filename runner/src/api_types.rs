@@ -737,45 +737,6 @@ pub struct AssignmentResponse {
     pub build: AssignmentBuild,
 }
 
-/// Health of a single active run in `GET /watchdog/health`.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct RunHealthSummary {
-    /// Run id.
-    pub log_id: RunId,
-    /// Worker processing the run.
-    pub worker_name: String,
-    /// When the run started.
-    pub start_time: DateTime<Utc>,
-    /// Estimated duration in seconds.
-    pub estimated_duration: Option<u64>,
-    /// Number of consecutive failed health checks.
-    pub failure_count: u32,
-    /// Failed health checks after which the run is terminated.
-    pub max_failures: u32,
-    /// Whether the worker responded.
-    pub alive: bool,
-    /// Status reported by the worker, or `unknown`.
-    pub status: String,
-    /// Last successful ping.
-    pub last_ping: Option<DateTime<Utc>>,
-}
-
-/// Response for `GET /watchdog/health`.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct WatchdogHealthResponse {
-    /// `ok` or `error`.
-    pub status: String,
-    /// Number of active runs.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub active_runs: Option<usize>,
-    /// Health of each active run.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub health_statuses: Option<Vec<RunHealthSummary>>,
-    /// Set when the health could not be determined.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
 /// Response for `GET /queue/stats`.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct QueueStatsResponse {

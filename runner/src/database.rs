@@ -1116,36 +1116,6 @@ INSERT INTO run (
             .map(QueueRowJoined::into_assignment))
     }
 
-    /// Clean up orphaned data and maintain database consistency.
-    pub async fn maintenance_cleanup(&self) -> Result<(), sqlx::Error> {
-        // The old "DELETE FROM active_run" query lived here but that
-        // table never existed in the real schema -- active-run state is
-        // in-process in `crate::active_runs::ActiveRunStore` and the
-        // watchdog drives eviction via `drain_older_than`. The DELETE
-        // made this function fail every maintenance tick with
-        // "relation 'active_run' does not exist"; removed.
-
-        // Clean up old rate limit entries from Redis
-        if let Some(redis_client) = self.redis() {
-            if let Ok(mut conn) = redis_client.get_multiplexed_async_connection().await {
-                let hosts: HashMap<String, String> =
-                    conn.hgetall("rate-limit-hosts").await.unwrap_or_default();
-                let now = Utc::now();
-
-                for (host, time_str) in hosts.into_iter() {
-                    if let Ok(retry_time) = DateTime::parse_from_rfc3339(&time_str) {
-                        let retry_time = retry_time.with_timezone(&Utc);
-                        if retry_time <= now {
-                            let _: () = conn.hdel("rate-limit-hosts", &host).await.unwrap_or(());
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
     /// Get all codebases from the database.
     pub async fn get_codebases(&self) -> Result<Vec<CodebaseRow>, sqlx::Error> {
         sqlx::query_as(
