@@ -7,7 +7,7 @@ use debian_control::fields::{Md5Checksum, Sha1Checksum, Sha256Checksum, Sha512Ch
 use std::fmt;
 
 /// The format of the Date and Valid-Until fields.
-const DATE_FORMAT: &str = "%a, %d %b %Y %H:%M:%S UTC";
+const DATE_FORMAT: &str = "%a, %d %b %Y %H:%M:%S GMT";
 
 /// A Release file for an APT repository.
 #[derive(Clone)]
@@ -493,8 +493,24 @@ mod tests {
             Some(date + chrono::Duration::days(7))
         );
         assert!(release.to_string().contains(
-            "Date: Tue, 05 Mar 2024 07:08:09 UTC\nValid-Until: Tue, 12 Mar 2024 07:08:09 UTC\n"
+            "Date: Tue, 05 Mar 2024 07:08:09 GMT\nValid-Until: Tue, 12 Mar 2024 07:08:09 GMT\n"
         ));
+    }
+
+    #[test]
+    fn test_release_date_uses_gmt() {
+        let date = DateTime::parse_from_rfc3339("2024-03-05T07:08:09Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let release = ReleaseBuilder::new()
+            .suite("stable")
+            .date(date)
+            .build()
+            .unwrap();
+        assert_eq!(
+            release.inner.date.as_deref(),
+            Some("Tue, 05 Mar 2024 07:08:09 GMT")
+        );
     }
 
     #[test]
@@ -504,7 +520,7 @@ mod tests {
         release.inner.suite = Some("stable".to_string());
         release.inner.architectures = vec!["amd64".to_string()];
         release.inner.components = vec!["main".to_string()];
-        release.inner.date = Some(Utc::now().format("%a, %d %b %Y %H:%M:%S UTC").to_string());
+        release.inner.date = Some(Utc::now().format(DATE_FORMAT).to_string());
         release.valid_until = Some(
             DateTime::parse_from_rfc3339("2024-03-12T07:08:09Z")
                 .unwrap()
@@ -525,7 +541,7 @@ mod tests {
         assert_eq!(release.components(), parsed.components());
         assert_eq!(release.valid_until(), parsed.valid_until());
         assert_eq!(
-            Release::from_str(&content.replace("07:08:09 UTC", "07:08:09 +0000"))
+            Release::from_str(&content.replace("07:08:09 GMT", "07:08:09 +0000"))
                 .unwrap()
                 .valid_until(),
             release.valid_until()
