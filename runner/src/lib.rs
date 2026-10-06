@@ -801,13 +801,53 @@ impl ActiveRun {
             "command": self.command,
             "estimated_duration": self.estimated_duration.map(|d| d.as_secs_f64()),
             "current_duration": self.current_duration().as_secs_f64(),
-            "start_time": self.start_time.to_rfc3339(),
+            "start_time": active_runs::format_python_datetime(self.start_time),
             "worker": self.worker_name,
             "worker_link": self.worker_link,
             "vcs": self.vcs_info,
             "backchannel": self.backchannel.to_json(),
             "instigated_context": self.instigated_context,
             "resume_from": self.resume_from
+        })
+    }
+
+    /// Parse the representation produced by [`Self::to_json`] (or by the
+    /// Python runner's `ActiveRun.json()`).
+    pub fn from_json(
+        js: &serde_json::Value,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        fn field<T: serde::de::DeserializeOwned>(
+            js: &serde_json::Value,
+            name: &str,
+        ) -> Result<T, Box<dyn std::error::Error + Send + Sync>> {
+            let value = js.get(name).cloned().unwrap_or(serde_json::Value::Null);
+            serde_json::from_value(value)
+                .map_err(|e| format!("active run field {}: {}", name, e).into())
+        }
+
+        let start_time: String = field(js, "start_time")?;
+        let estimated_duration: Option<f64> = field(js, "estimated_duration")?;
+        let backchannel: Option<Backchannel> = field(js, "backchannel")?;
+        let vcs_info: Option<VcsInfo> = field(js, "vcs")?;
+        Ok(Self {
+            worker_name: field(js, "worker")?,
+            worker_link: field(js, "worker_link")?,
+            queue_id: field(js, "queue_id")?,
+            log_id: field(js, "id")?,
+            start_time: active_runs::parse_python_datetime(&start_time)?,
+            finish_time: None,
+            // Like Python, a zero estimate means no estimate.
+            estimated_duration: estimated_duration
+                .filter(|d| *d != 0.0)
+                .map(Duration::from_secs_f64),
+            campaign: field(js, "campaign")?,
+            change_set: field(js, "change_set")?,
+            command: field(js, "command")?,
+            backchannel: backchannel.unwrap_or_default(),
+            vcs_info: vcs_info.unwrap_or_default(),
+            codebase: field(js, "codebase")?,
+            instigated_context: field(js, "instigated_context")?,
+            resume_from: field(js, "resume_from")?,
         })
     }
 
