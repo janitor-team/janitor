@@ -4019,7 +4019,7 @@ mod tests {
         assert_eq!(
             super::worker_vcs_urls(&managers, Some("git"), "foo", Some("debian/latest")),
             (
-                Some("https://janitor.example.com/git/foo,branch=debian/latest".to_string()),
+                Some("https://janitor.example.com/git/foo,branch=debian%2Flatest".to_string()),
                 Some("https://janitor.example.com/git/foo".to_string()),
             )
         );
