@@ -122,7 +122,7 @@ pub struct ActiveRunResponse {
     pub estimated_duration: Option<f64>,
     /// Time spent on the run so far, in seconds.
     pub current_duration: f64,
-    /// Start time, in RFC 3339 format.
+    /// Start time, as a naive ISO 8601 timestamp in UTC.
     pub start_time: String,
     /// Name of the worker processing the run.
     pub worker: String,

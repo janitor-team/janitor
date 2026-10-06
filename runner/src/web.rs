@@ -3716,7 +3716,7 @@ async fn assign_work_internal(
         let candidate_log_id = new_run_id();
         match state
             .database
-            .assign_queue_item(assignment.queue_item.id, &worker_name, &candidate_log_id)
+            .assign_queue_item(assignment.queue_item.id, &candidate_log_id)
             .await
         {
             Ok(()) => break (assignment, candidate_log_id),
