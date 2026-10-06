@@ -1966,13 +1966,24 @@ async fn metrics() -> impl IntoResponse {
     }
 }
 
+/// Log `e` and turn it into a 500 response.
+fn internal_error(context: &str, e: impl std::fmt::Display) -> Response {
+    log::error!("{}: {}", context, e);
+    error(StatusCode::INTERNAL_SERVER_ERROR, context)
+}
+
 /// Public endpoint to list workers with basic information.
 #[utoipa::path(
     get,
     path = "/workers",
-    responses((status = 200, description = "Registered workers", body = WorkerListResponse))
+    responses(
+        (status = 200, description = "Registered workers", body = WorkerListResponse),
+        (status = 500, description = "Workers or their activity could not be read", body = ErrorResponse),
+    )
 )]
-async fn list_workers(State(state): State<Arc<AppState>>) -> Json<WorkerListResponse> {
+async fn list_workers(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<WorkerListResponse>, Response> {
     worker_list(&state, false).await
 }
 
@@ -1981,28 +1992,23 @@ async fn list_workers(State(state): State<Arc<AppState>>) -> Json<WorkerListResp
 #[utoipa::path(
     get,
     path = "/admin/workers",
-    responses((status = 200, description = "Registered workers, including links and failed workers", body = WorkerListResponse))
+    responses(
+        (status = 200, description = "Registered workers, including links and failed workers", body = WorkerListResponse),
+        (status = 500, description = "Workers or their activity could not be read", body = ErrorResponse),
+    )
 )]
-async fn admin_list_workers(State(state): State<Arc<AppState>>) -> Json<WorkerListResponse> {
+async fn admin_list_workers(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<WorkerListResponse>, Response> {
     worker_list(&state, true).await
 }
 
-async fn worker_list(state: &AppState, admin: bool) -> Json<WorkerListResponse> {
-    let workers = match state.auth_service.list_workers().await {
-        Ok(workers) => workers,
-        Err(e) => {
-            log::error!("Failed to list workers: {}", e);
-            return Json(WorkerListResponse {
-                error: Some("Failed to list workers".to_string()),
-                workers: vec![],
-                total_workers: 0,
-                active_workers: 0,
-                idle_workers: 0,
-                summary: None,
-                timestamp: None,
-            });
-        }
-    };
+async fn worker_list(state: &AppState, admin: bool) -> Result<Json<WorkerListResponse>, Response> {
+    let workers = state
+        .auth_service
+        .list_workers()
+        .await
+        .map_err(|e| internal_error("Failed to list workers", e))?;
     let active_runs = state.active_runs.list().await;
     let active_workers: std::collections::HashSet<&str> =
         active_runs.iter().map(|r| r.worker_name.as_str()).collect();
@@ -2011,13 +2017,13 @@ async fn worker_list(state: &AppState, admin: bool) -> Json<WorkerListResponse> 
         .database
         .get_workers_last_seen()
         .await
-        .unwrap_or_default();
+        .map_err(|e| internal_error("Failed to read worker activity", e))?;
 
     let run_counts = state
         .database
         .get_worker_run_counts()
         .await
-        .unwrap_or_default();
+        .map_err(|e| internal_error("Failed to count worker runs", e))?;
 
     // Workers not seen in the last 30 minutes are considered failed.
     let failed_workers = if admin {
@@ -2025,7 +2031,7 @@ async fn worker_list(state: &AppState, admin: bool) -> Json<WorkerListResponse> 
             .database
             .get_failed_workers(30)
             .await
-            .unwrap_or_default()
+            .map_err(|e| internal_error("Failed to read worker activity", e))?
     } else {
         vec![]
     };
@@ -2040,45 +2046,35 @@ async fn worker_list(state: &AppState, admin: bool) -> Json<WorkerListResponse> 
             } else {
                 "idle"
             };
-            let last_seen = last_seen_times.get(&worker.name).copied();
-            let (link, last_seen) = if admin {
-                (
-                    Some(worker.link.clone()),
-                    Some(last_seen.unwrap_or_else(chrono::Utc::now)),
-                )
-            } else {
-                (None, last_seen)
-            };
-            let run_count = run_counts.get(&worker.name).copied().unwrap_or(0);
             WorkerInfo {
                 name: worker.name.clone(),
                 status: status.to_string(),
-                link,
-                last_seen,
-                run_count,
+                link: admin.then(|| worker.link.clone()),
+                last_seen: last_seen_times.get(&worker.name).copied(),
+                run_count: run_counts.get(&worker.name).copied().unwrap_or(0),
             }
         })
         .collect();
 
-    let active_count = active_workers.len();
+    let count = |status: &str| worker_infos.iter().filter(|w| w.status == status).count();
+    let active_count = count("active");
+    let idle_count = count("idle");
+    let failed_count = count("failed");
     let total_count = workers.len();
-    let failed_count = failed_workers.len();
-    let idle_count = total_count - active_count - failed_count;
 
-    Json(WorkerListResponse {
-        error: None,
+    Ok(Json(WorkerListResponse {
         workers: worker_infos,
         total_workers: total_count,
         active_workers: active_count,
         idle_workers: idle_count,
-        summary: Some(WorkerSummary {
+        summary: WorkerSummary {
             total: total_count,
             active: active_count,
             idle: idle_count,
             failed: admin.then_some(failed_count),
-        }),
-        timestamp: Some(chrono::Utc::now()),
-    })
+        },
+        timestamp: chrono::Utc::now(),
+    }))
 }
 
 /// Admin endpoint to create a worker.
@@ -3130,18 +3126,18 @@ async fn authenticate_worker(
         // Use authenticate_worker which handles both Bearer and Basic auth
         match state.auth_service.authenticate_worker(auth_value).await {
             Ok(worker_auth) => {
-                // Track worker activity
-                if let Err(e) = state
+                state
                     .database
                     .track_worker_activity(&worker_auth.name)
                     .await
-                {
-                    log::warn!(
-                        "Failed to track worker activity for {}: {}",
-                        worker_auth.name,
-                        e
-                    );
-                }
+                    .map_err(|e| {
+                        log::error!(
+                            "Failed to track worker activity for {}: {}",
+                            worker_auth.name,
+                            e
+                        );
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    })?;
 
                 // Add worker name to request extensions
                 req.extensions_mut().insert(worker_auth.name);
