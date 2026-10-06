@@ -315,13 +315,6 @@ impl ApplicationBuilder {
         log::info!("Initializing resume service...");
         let resume_service = Arc::new(crate::resume::ResumeService::new((*database).clone()));
 
-        let health_checker = Arc::new(crate::HealthChecker::new(
-            database.clone(),
-            vcs_manager.clone(),
-            log_manager.clone(),
-            artifact_manager.clone(),
-        ));
-
         let app_state = Arc::new(AppState {
             database,
             active_runs,
@@ -335,7 +328,6 @@ impl ApplicationBuilder {
             auth_service,
             security_service,
             resume_service,
-            health_checker,
             public_apt_archive_location: self.public_apt_archive_location,
             public_vcs_managers: Arc::new(public_vcs_managers),
             public_dep_server_url: self.public_dep_server_url,

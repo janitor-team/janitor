@@ -3877,32 +3877,10 @@ async fn public_queue_stats(State(state): State<Arc<AppState>>) -> impl IntoResp
     }
 }
 
-/// `GET /health` -- full component health report.
-async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let report = state.health_checker.report().await;
-    let code = match report.status {
-        crate::ServiceHealthStatus::Healthy | crate::ServiceHealthStatus::Degraded => {
-            StatusCode::OK
-        }
-        crate::ServiceHealthStatus::Unhealthy => StatusCode::SERVICE_UNAVAILABLE,
-    };
-    (code, Json(report))
-}
-
-/// `GET /health/live` -- cheap liveness probe: the process is
-/// responsive if we can service the request at all.
-async fn liveness(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
-    (StatusCode::OK, "alive")
-}
-
-/// `GET /health/ready` (and `/ready`) -- readiness probe: service is
-/// ready iff every component reports healthy.
-async fn readiness(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    if state.health_checker.is_ready().await {
-        (StatusCode::OK, "ready")
-    } else {
-        (StatusCode::SERVICE_UNAVAILABLE, "not ready")
-    }
+/// `GET /health` and `GET /ready`: like Python, a plain "ok" whenever
+/// the process can answer.
+async fn health() -> &'static str {
+    "ok"
 }
 
 /// Axum middleware: record request count and duration by
@@ -3933,9 +3911,6 @@ async fn record_http_metrics(
 pub fn public_app(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let public_routes = Router::new()
         .route("/", get(public_root))
-        .route("/health", get(health))
-        .route("/health/live", get(liveness))
-        .route("/health/ready", get(readiness))
         .route("/queue/stats", get(public_queue_stats))
         .route("/watchdog/health", get(public_watchdog_health));
 
@@ -3965,7 +3940,8 @@ pub fn public_app(state: Arc<AppState>) -> Router<Arc<AppState>> {
             post(public_finish_multipart).layer(DefaultBodyLimit::disable()),
         )
         .route("/active-runs/{id}", get(public_get_active_run))
-        .layer(middleware::from_fn_with_state(
+        // `route_layer` so that unknown paths get a 404 rather than a 401.
+        .route_layer(middleware::from_fn_with_state(
             Arc::clone(&state),
             authenticate_worker,
         ));
@@ -4014,9 +3990,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/active-runs/+peek", get(peek_active_run))
         .route("/queue", get(get_queue))
         .route("/health", get(health))
-        .route("/health/live", get(liveness))
-        .route("/health/ready", get(readiness))
-        .route("/ready", get(readiness))
+        .route("/ready", get(health))
         .route("/metrics", get(metrics))
         .route("/workers", get(list_workers))
         .route("/admin/workers", get(admin_list_workers))

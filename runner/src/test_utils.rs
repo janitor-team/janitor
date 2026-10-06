@@ -413,13 +413,6 @@ pub async fn create_test_app_state_with_config(
     ));
     let resume_service = Arc::new(crate::resume::ResumeService::new((*runner_db_arc).clone()));
 
-    let health_checker = Arc::new(crate::HealthChecker::new(
-        runner_db_arc.clone(),
-        vcs_manager.clone(),
-        log_manager.clone(),
-        artifact_manager.clone(),
-    ));
-
     let public_vcs_managers =
         janitor::vcs::get_vcs_managers("http://localhost:9923/").expect("valid test VCS location");
 
@@ -436,7 +429,6 @@ pub async fn create_test_app_state_with_config(
         auth_service,
         security_service,
         resume_service,
-        health_checker,
         public_apt_archive_location: None,
         public_vcs_managers: Arc::new(public_vcs_managers),
         public_dep_server_url: None,

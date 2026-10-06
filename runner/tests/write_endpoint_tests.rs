@@ -891,80 +891,63 @@ async fn post_candidates_records_unknown_codebase_via_fk_violation() {
     );
 }
 
-/// `GET /health` returns the full JSON health report with the four
-/// component checks (database, vcs, logs, artifacts) and an overall
-/// `status`. Rust-side probe -- Python's /health returns plain "ok".
+/// Like Python, the private app answers `/health` and `/ready` with a
+/// plain "ok".
 #[tokio::test]
-async fn get_health_returns_component_report() {
+async fn private_health_and_ready_return_ok() {
     let Some((app, _state)) = setup().await else {
         eprintln!("skipping: no test resources");
         return;
     };
 
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/health")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    for path in ["/health", "/ready"] {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(path)
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(
+            response.headers()["content-type"],
+            "text/plain; charset=utf-8",
+            "{path}"
+        );
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&bytes[..], b"ok", "{path}");
+    }
 
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    assert_eq!(body["service"], "janitor-runner");
-    let checks = body["checks"].as_array().expect("checks must be an array");
-    let names: Vec<&str> = checks.iter().filter_map(|c| c["name"].as_str()).collect();
-    assert!(
-        names.contains(&"database"),
-        "expected database check, got {body}"
-    );
-    assert!(names.contains(&"logs"), "expected logs check, got {body}");
-    assert!(names.contains(&"vcs"), "expected vcs check, got {body}");
-    assert!(
-        names.contains(&"artifacts"),
-        "expected artifacts check, got {body}"
-    );
+    for path in ["/health/live", "/health/ready"] {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(path)
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+    }
 }
 
-/// `GET /health/live` is a cheap liveness probe: 200 + "alive" text.
+/// The Python public app served no health routes.
 #[tokio::test]
-async fn get_health_live_returns_alive() {
-    let Some((app, _state)) = setup().await else {
+async fn public_app_has_no_health_routes() {
+    let Some((app, _state)) = test_utils::create_public_test_app_with_state_if_available()
+        .await
+        .expect("test app setup should either succeed or return None cleanly")
+    else {
         eprintln!("skipping: no test resources");
         return;
     };
 
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/health/live")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    assert_eq!(&bytes[..], b"alive");
-}
-
-/// `GET /health/ready` returns "ready" (200) when every component
-/// health check reports healthy. The mock log manager always reports
-/// healthy in tests, so this should be the expected state.
-#[tokio::test]
-async fn get_health_ready_returns_ready_when_healthy() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
-
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/health/ready")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    assert_eq!(&bytes[..], b"ready");
+    for path in ["/health", "/ready", "/health/live", "/health/ready"] {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(path)
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+    }
 }
 
 /// `GET /metrics` returns 200 with a Prometheus text-format response.
