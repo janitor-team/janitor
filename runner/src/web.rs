@@ -6,10 +6,9 @@ use crate::api_types::{
     PublishStatusUpdate, QueueEntry, QueuePositionResponse, QueueStatsResponse,
     RateLimitedResponse, ReasonResponse, ResultBranchEntry, ResumeAssignment, ResumeChainResponse,
     ResumeCheckResponse, ResumeDescendantsResponse, ResumeValidationResponse, RunDetailResponse,
-    RunFollowup, RunFollowupsResponse, RunHealthSummary, RunListResponse, RunSummary,
-    ScheduleControlResponse, ScheduleResponse, ScheduledCandidate, StatusResponse,
-    UploadCandidatesResponse, WatchdogHealthResponse, WorkerInfo, WorkerListResponse,
-    WorkerSummary,
+    RunFollowup, RunFollowupsResponse, RunListResponse, RunSummary, ScheduleControlResponse,
+    ScheduleResponse, ScheduledCandidate, StatusResponse, UploadCandidatesResponse, WorkerInfo,
+    WorkerListResponse, WorkerSummary,
 };
 use crate::{
     get_builder, metrics::MetricsCollector, ActiveRun, AppState, Backchannel, BuilderResult,
@@ -4207,62 +4206,6 @@ async fn public_finish(
     finish_run_multipart_internal(state, id, multipart, true).await
 }
 
-/// Get watchdog health information for all active runs.
-#[utoipa::path(
-    get,
-    path = "/watchdog/health",
-    responses((status = 200, description = "Health of the active runs", body = WatchdogHealthResponse))
-)]
-async fn public_watchdog_health(
-    State(state): State<Arc<AppState>>,
-) -> Json<WatchdogHealthResponse> {
-    let watchdog_config = crate::WatchdogConfig::default();
-    let watchdog = crate::Watchdog::new(
-        Arc::clone(&state.database),
-        state.active_runs.clone(),
-        watchdog_config,
-    );
-
-    match watchdog.get_detailed_health_status().await {
-        Ok(health_statuses) => {
-            // Filter to public information only
-            let public_statuses: Vec<RunHealthSummary> = health_statuses
-                .into_iter()
-                .map(|status| RunHealthSummary {
-                    log_id: status.log_id,
-                    worker_name: status.worker_name,
-                    start_time: status.start_time,
-                    estimated_duration: status.estimated_duration.map(|d| d.as_secs()),
-                    failure_count: status.failure_count,
-                    max_failures: status.max_failures,
-                    alive: status.health.as_ref().is_some_and(|h| h.alive),
-                    status: status
-                        .health
-                        .as_ref()
-                        .map_or_else(|| "unknown".to_string(), |h| h.status.clone()),
-                    last_ping: status.health.as_ref().and_then(|h| h.last_ping),
-                })
-                .collect();
-
-            Json(WatchdogHealthResponse {
-                status: "ok".to_string(),
-                active_runs: Some(public_statuses.len()),
-                health_statuses: Some(public_statuses),
-                error: None,
-            })
-        }
-        Err(e) => {
-            log::error!("Failed to get watchdog health status: {}", e);
-            Json(WatchdogHealthResponse {
-                status: "error".to_string(),
-                active_runs: None,
-                health_statuses: None,
-                error: Some("Failed to get health status".to_string()),
-            })
-        }
-    }
-}
-
 /// Get public queue statistics.
 #[utoipa::path(
     get,
@@ -4415,7 +4358,6 @@ fn public_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(liveness))
         .routes(routes!(readiness))
         .routes(routes!(public_queue_stats))
-        .routes(routes!(public_watchdog_health))
 }
 
 /// Routes of the public app that require worker credentials. The
