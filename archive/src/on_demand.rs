@@ -220,6 +220,15 @@ pub async fn is_fresh(release_path: &Path, max_finish_time: Option<DateTime<Utc>
     max_finish_time < stamp
 }
 
+/// Builds whose artifacts are missing are left out of the indices;
+/// any other scan error fails the whole publish.
+fn warn_artifacts_missing(build: &BuildInfo) {
+    warn!(
+        "Artifacts missing for {} ({}), skipping",
+        build.source_package, build.run_id
+    );
+}
+
 /// Package provider backed by a precomputed list of `BuildInfo`,
 /// plus the scanner that downloads & parses the artifacts. Unlike
 /// [`crate::repository::ArchivePackageProvider`], this does not
@@ -255,9 +264,11 @@ impl AsyncPackageProvider for PrecomputedPackageProvider {
             while let Some(result) = stream.next().await {
                 match result {
                     Ok(pkg) => file.add_package(pkg),
-                    Err(e) => {
-                        warn!("Failed to scan package from build {}: {}", build.id, e);
+                    Err(ArchiveError::ArtifactsMissing { .. }) => {
+                        warn_artifacts_missing(build);
+                        break;
                     }
+                    Err(e) => return Err(AptRepositoryError::Provider(Box::new(e))),
                 }
             }
         }
@@ -288,9 +299,11 @@ impl AsyncSourceProvider for PrecomputedSourceProvider {
             while let Some(result) = stream.next().await {
                 match result {
                     Ok(src) => file.add_source(src),
-                    Err(e) => {
-                        warn!("Failed to scan source from build {}: {}", build.id, e);
+                    Err(ArchiveError::ArtifactsMissing { .. }) => {
+                        warn_artifacts_missing(build);
+                        break;
                     }
+                    Err(e) => return Err(AptRepositoryError::Provider(Box::new(e))),
                 }
             }
         }
@@ -417,6 +430,64 @@ pub async fn read_on_demand_file(base: &Path, relative: &[&str]) -> ArchiveResul
 mod tests {
     use super::*;
     use std::time::{Duration, SystemTime};
+
+    fn build_info(run_id: &str) -> BuildInfo {
+        BuildInfo {
+            id: format!("{}/hello", run_id),
+            run_id: run_id.to_string(),
+            codebase: "hello".to_string(),
+            source_package: "hello".to_string(),
+            suite: "lintian-fixes".to_string(),
+            architecture: "amd64".to_string(),
+            component: "main".to_string(),
+            binary_files: vec![],
+            source_files: vec![],
+        }
+    }
+
+    /// Artifact store with no artifacts for `missing` and a run
+    /// directory for `broken` that cannot be retrieved (it contains a
+    /// subdirectory, which the local artifact manager fails to copy).
+    async fn scanner_with_broken_run() -> (Arc<PackageScanner>, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("broken/subdir")).unwrap();
+        let scanner = PackageScanner::new(tmp.path().to_str().unwrap())
+            .await
+            .unwrap();
+        (Arc::new(scanner), tmp)
+    }
+
+    #[tokio::test]
+    async fn test_precomputed_providers_skip_missing_artifacts() {
+        let (scanner, _tmp) = scanner_with_broken_run().await;
+        let builds = vec![build_info("missing")];
+        let packages = PrecomputedPackageProvider::new(scanner.clone(), builds.clone())
+            .get_packages("lintian-fixes", "main", "amd64")
+            .await
+            .unwrap();
+        assert_eq!(packages.to_string(), "");
+        let sources = PrecomputedSourceProvider::new(scanner, builds)
+            .get_sources("lintian-fixes", "main")
+            .await
+            .unwrap();
+        assert_eq!(sources.to_string(), "");
+    }
+
+    #[tokio::test]
+    async fn test_precomputed_providers_fail_on_other_errors() {
+        let (scanner, _tmp) = scanner_with_broken_run().await;
+        let builds = vec![build_info("missing"), build_info("broken")];
+        assert!(
+            PrecomputedPackageProvider::new(scanner.clone(), builds.clone())
+                .get_packages("lintian-fixes", "main", "amd64")
+                .await
+                .is_err()
+        );
+        assert!(PrecomputedSourceProvider::new(scanner, builds)
+            .get_sources("lintian-fixes", "main")
+            .await
+            .is_err());
+    }
 
     #[test]
     fn test_parse_kind_run() {
