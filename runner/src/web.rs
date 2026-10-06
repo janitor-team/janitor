@@ -2751,7 +2751,9 @@ async fn public_assign(
 ) -> impl IntoResponse {
     // Worker identity comes from `authenticate_worker` middleware, not
     // from the request body. Workers can't lie about who they are.
-    assign_work_internal(state, worker_name, request).await
+    // Python's public app served this under /runner; we rely on the
+    // ingress to strip that prefix.
+    assign_work_internal(state, worker_name, request, "/runner/active-runs").await
 }
 
 /// Unauthenticated assign for the private (intra-cluster) app. No
@@ -2810,9 +2812,7 @@ async fn private_assign(
                 .into_response();
         }
     }
-    assign_work_internal(state, worker_name, request)
-        .await
-        .into_response()
+    assign_work_internal(state, worker_name, request, "/active-runs").await
 }
 
 /// Abort a queue assignment by recording a failed run with the given
@@ -2892,6 +2892,8 @@ struct ResumeOutcome {
     /// resume candidate was found.
     resume: Option<ResumeAssignment>,
     rate_limit: Option<(String, Option<f64>)>,
+    /// `full_branch_url` of the main branch, if it could be opened.
+    main_branch_url: Option<String>,
 }
 
 /// Resume information as returned in the assign response's `resume`
@@ -2925,6 +2927,7 @@ async fn compute_resume_from(
     let empty = || ResumeOutcome {
         resume: None,
         rate_limit: None,
+        main_branch_url: None,
     };
     let Some(branch_url) = assignment.vcs_info.branch_url.as_deref() else {
         return empty();
@@ -2989,14 +2992,19 @@ async fn compute_resume_from(
                     .host_str()
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| url.to_string());
-                return BlockingResult::RateLimited { host, retry_after };
+                return (None, BlockingResult::RateLimited { host, retry_after });
             }
             Err(e) => {
                 log::debug!("Failed to open main branch {}: {}", open_url, e);
-                return BlockingResult::NotFound;
+                return (None, BlockingResult::NotFound);
             }
         };
-        match crate::resume::open_resume_branch(
+        // Python: full_branch_url(main_branch).rstrip("/")
+        let main_branch_url = silver_platter::vcs::full_branch_url(&main_branch)
+            .to_string()
+            .trim_end_matches('/')
+            .to_string();
+        let result = match crate::resume::open_resume_branch(
             &main_branch,
             &forge_campaign_branch_name,
             &forge_codebase,
@@ -3011,19 +3019,22 @@ async fn compute_resume_from(
             crate::resume::ResumeLookup::RateLimited { host, retry_after } => {
                 BlockingResult::RateLimited { host, retry_after }
             }
-        }
+        };
+        (Some(main_branch_url), result)
     });
 
-    let (forge_result, rate_limit) =
+    let (forge_result, rate_limit, main_branch_url) =
         match tokio::time::timeout(std::time::Duration::from_secs(60), open_fut).await {
-            Ok(Ok(BlockingResult::Found(rev, url))) => (Some((rev, url)), None),
-            Ok(Ok(BlockingResult::NotFound)) => (None, None),
-            Ok(Ok(BlockingResult::RateLimited { host, retry_after })) => {
-                (None, Some((host, retry_after)))
+            Ok(Ok((main_url, BlockingResult::Found(rev, url)))) => {
+                (Some((rev, url)), None, main_url)
+            }
+            Ok(Ok((main_url, BlockingResult::NotFound))) => (None, None, main_url),
+            Ok(Ok((main_url, BlockingResult::RateLimited { host, retry_after }))) => {
+                (None, Some((host, retry_after)), main_url)
             }
             Ok(Err(e)) => {
                 log::warn!("spawn_blocking for open_resume_branch panicked: {}", e);
-                (None, None)
+                (None, None, None)
             }
             Err(_) => {
                 log::warn!(
@@ -3031,9 +3042,14 @@ async fn compute_resume_from(
                     assignment.queue_item.codebase,
                     assignment.queue_item.campaign,
                 );
-                (None, None)
+                (None, None, None)
             }
         };
+    let no_resume = || ResumeOutcome {
+        resume: None,
+        rate_limit: None,
+        main_branch_url: main_branch_url.clone(),
+    };
     // If the forge rate-limited us, short-circuit: don't bother with
     // the VCS-manager fallback (same codebase, same rate limit) and
     // don't look up a resume run. Hand the signal back so the caller
@@ -3042,6 +3058,7 @@ async fn compute_resume_from(
         return ResumeOutcome {
             resume: None,
             rate_limit: Some(rl),
+            main_branch_url,
         };
     }
 
@@ -3051,7 +3068,7 @@ async fn compute_resume_from(
         (rev, br_url)
     } else {
         let Some(vcs_type_str) = assignment.vcs_info.vcs_type.as_deref() else {
-            return empty();
+            return no_resume();
         };
         let vcs_type: crate::vcs::VcsType = match vcs_type_str.parse() {
             Ok(t) => t,
@@ -3062,7 +3079,7 @@ async fn compute_resume_from(
                     assignment.queue_item.codebase,
                     e,
                 );
-                return empty();
+                return no_resume();
             }
         };
         let vcs_branch_name = format!("{}/main", campaign_name);
@@ -3080,7 +3097,7 @@ async fn compute_resume_from(
                     vcs_branch_name,
                     e.description,
                 );
-                return empty();
+                return no_resume();
             }
             Err(_) => {
                 log::warn!(
@@ -3088,7 +3105,7 @@ async fn compute_resume_from(
                     codebase,
                     vcs_branch_name,
                 );
-                return empty();
+                return no_resume();
             }
         };
         let Ok((rev, br_url)) = tokio::task::spawn_blocking(move || {
@@ -3099,7 +3116,7 @@ async fn compute_resume_from(
         })
         .await
         else {
-            return empty();
+            return no_resume();
         };
         (rev, br_url)
     };
@@ -3143,14 +3160,18 @@ async fn compute_resume_from(
     ResumeOutcome {
         resume,
         rate_limit: None,
+        main_branch_url,
     }
 }
 
+/// `active_runs_path` is the path of the active runs collection, used
+/// for the `Location` header of the new run.
 async fn assign_work_internal(
     state: Arc<AppState>,
     worker_name: String,
     request: AssignRequest,
-) -> impl IntoResponse {
+    active_runs_path: &str,
+) -> Response {
     let mut excluded_hosts = state.avoid_hosts.clone();
     if let Some(client_exclusions) = request.exclude_hosts.as_ref() {
         for host in client_exclusions {
@@ -3183,7 +3204,8 @@ async fn assign_work_internal(
                     "reason": "queue empty",
                     "detail": "only broken queue items available",
                 })),
-            );
+            )
+                .into_response();
         }
 
         let assignment = match state
@@ -3200,14 +3222,16 @@ async fn assign_work_internal(
                 return (
                     StatusCode::SERVICE_UNAVAILABLE,
                     Json(json!({"reason": "queue empty"})),
-                );
+                )
+                    .into_response();
             }
             Err(e) => {
                 log::error!("Failed to get next queue item: {}", e);
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(json!({"error": "Database error"})),
-                );
+                )
+                    .into_response();
             }
         };
 
@@ -3336,6 +3360,7 @@ async fn assign_work_internal(
         ResumeOutcome {
             resume: None,
             rate_limit: None,
+            main_branch_url: None,
         }
     } else {
         compute_resume_from(&state, &assignment).await
@@ -3367,10 +3392,16 @@ async fn assign_work_internal(
                 "host": host,
                 "retry_after": retry_after,
             })),
-        );
+        )
+            .into_response();
     }
 
     let resume_assignment: Option<ResumeAssignment> = resume_outcome.resume;
+    // Like Python, hand out the URL of the branch as we opened it.
+    let mut vcs_info = assignment.vcs_info.clone();
+    if let Some(main_branch_url) = resume_outcome.main_branch_url {
+        vcs_info.branch_url = Some(main_branch_url);
+    }
     let resume_from: Option<String> = resume_assignment.as_ref().map(|r| r.run_id.clone());
 
     let active_run = ActiveRun {
@@ -3385,7 +3416,7 @@ async fn assign_work_internal(
         change_set: assignment.queue_item.change_set.clone(),
         command: assignment.queue_item.command.clone(),
         backchannel,
-        vcs_info: assignment.vcs_info.clone(),
+        vcs_info: vcs_info.clone(),
         codebase: assignment.queue_item.codebase.clone(),
         instigated_context: assignment.queue_item.context.clone(),
         resume_from,
@@ -3401,134 +3432,10 @@ async fn assign_work_internal(
             .await as i64,
     );
 
-    // Generate build configuration for the worker
     let campaign_config = create_campaign_config(&assignment.queue_item, &state.config);
-    let build_config =
-        match get_builder(&campaign_config, None, None) {
-            Ok(builder) => {
-                // Use the database connection for config generation.
-                let mut config = HashMap::new();
-                config.insert("builder_kind".to_string(), builder.kind().to_string());
 
-                match state
-                    .database
-                    .get_codebase_config(&assignment.queue_item.codebase)
-                    .await
-                {
-                    Ok(Some(codebase_config)) => {
-                        if let Some(ref branch_url) = codebase_config.branch_url {
-                            config.insert("branch_url".to_string(), branch_url.clone());
-                        }
-                        if let Some(ref vcs_type) = codebase_config.vcs_type {
-                            config.insert("vcs_type".to_string(), vcs_type.clone());
-                        }
-                        if let Some(ref subpath) = codebase_config.subpath {
-                            config.insert("subpath".to_string(), subpath.clone());
-                        }
-                    }
-                    Ok(None) => {
-                        log::warn!(
-                            "No codebase config found for: {}",
-                            assignment.queue_item.codebase
-                        );
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to get codebase config from database: {}", e);
-                    }
-                }
-
-                // Distribution config comes from the loaded textproto
-                // (`Config.distribution`), not the database -- the former DB
-                // query here was a stub that always returned None and
-                // logged a warning on every worker assignment. Look the
-                // distribution up in-memory and copy the fields the worker
-                // needs onto the per-assignment config map.
-                if let Some(debian_config) = &campaign_config.debian_build {
-                    if let Some(dist) = state.config.distribution.iter().find(|d| {
-                        d.name.as_deref() == Some(debian_config.base_distribution.as_str())
-                    }) {
-                        if let Some(ref name) = dist.name {
-                            config.insert("distribution".to_string(), name.clone());
-                        }
-                        if let Some(ref m) = dist.archive_mirror_uri {
-                            config.insert("archive_mirror".to_string(), m.clone());
-                        }
-                        if let Some(ref c) = dist.chroot {
-                            config.insert("chroot".to_string(), c.clone());
-                        }
-                        if let Some(ref v) = dist.vendor {
-                            config.insert("vendor".to_string(), v.clone());
-                        }
-                    } else {
-                        log::warn!(
-                            "No distribution config found for: {}",
-                            debian_config.base_distribution
-                        );
-                    }
-                }
-
-                // Committer comes straight from the textproto (`Config.committer`).
-                // We used to also query a `campaign_config` table for a
-                // per-campaign override, but that table has never been in
-                // schema/state.sql and the query always failed -- logging
-                // a warning on every assignment and, worse, dropping back
-                // to None on Err instead of the global fallback. There's
-                // no `committer` field on `Campaign` in proto/config.proto
-                // either, so the per-campaign path was dead. Just use the
-                // global committer.
-                let committer = if state.config.committer().is_empty() {
-                    None
-                } else {
-                    Some(state.config.committer().to_string())
-                };
-
-                // Extract environment variables from command
-                let (extra_env, _clean_command) =
-                    janitor::utils::splitout_env(&assignment.queue_item.command);
-
-                // Add environment setup with proper committer
-                let mut env = crate::committer_env(committer.as_deref());
-
-                // Add extracted environment variables from command
-                for (key, value) in extra_env {
-                    env.insert(key, value);
-                }
-
-                for (key, value) in env {
-                    config.insert(format!("env_{}", key), value);
-                }
-
-                // Add campaign-specific metadata
-                config.insert(
-                    "campaign".to_string(),
-                    assignment.queue_item.campaign.clone(),
-                );
-                config.insert(
-                    "codebase".to_string(),
-                    assignment.queue_item.codebase.clone(),
-                );
-
-                if let Some(ref change_set) = assignment.queue_item.change_set {
-                    config.insert("change_set".to_string(), change_set.clone());
-                }
-
-                config
-            }
-            Err(e) => {
-                log::warn!("Failed to create builder for assignment: {}", e);
-                HashMap::new()
-            }
-        };
-
-    // Return assignment in the flat shape the worker's
-    // `janitor::api::worker::Assignment` deserializer expects:
-    // top-level id/queue_id/campaign/codebase/branch/target_repository/
-    // codemod/build/env/force-build/skip-setup-validation. Anything
-    // else from the old wrapped `{queue_item, vcs_info, active_run,
-    // build_config}` response is preserved alongside for backwards
-    // compatibility with tools that read those keys.
-    //
-    // See janitor/src/api/worker.rs::Assignment for the exact shape.
+    // See janitor/src/api/worker.rs::Assignment for the shape the
+    // worker expects.
     let (extra_env, clean_command) = janitor::utils::splitout_env(&assignment.queue_item.command);
 
     let cache_branch = cache_branch_name(&campaign_config, &state.config);
@@ -3577,7 +3484,7 @@ async fn assign_work_internal(
     let branch = json!({
         "cached_url": cached_url,
         "vcs_type": assignment.vcs_info.vcs_type,
-        "url": assignment.vcs_info.branch_url,
+        "url": vcs_info.branch_url,
         "subpath": assignment.vcs_info.subpath.clone().unwrap_or_default(),
         "additional_colocated_branches": additional_colocated_branches,
         "default-empty": campaign_config.default_empty,
@@ -3687,7 +3594,7 @@ async fn assign_work_internal(
 
     let codemod = json!({
         "command": clean_command,
-        "environment": env,
+        "environment": {},
     });
 
     let build = json!({
@@ -3696,8 +3603,17 @@ async fn assign_work_internal(
         "environment": env,
     });
 
+    let skip_setup_validation = state
+        .config
+        .get_campaign(&assignment.queue_item.campaign)
+        .is_some_and(|c| c.skip_setup_validation());
+
     let body = json!({
         "id": active_run.log_id,
+        "description": format!(
+            "{} on {}",
+            assignment.queue_item.campaign, assignment.queue_item.codebase
+        ),
         "queue_id": assignment.queue_item.id,
         "campaign": assignment.queue_item.campaign,
         "codebase": assignment.queue_item.codebase,
@@ -3705,19 +3621,22 @@ async fn assign_work_internal(
         "branch": branch,
         "resume": resume_assignment,
         "target_repository": target_repository,
-        "skip-setup-validation": false,
+        "skip-setup-validation": skip_setup_validation,
+        "command": clean_command,
         "codemod": codemod,
         "env": env,
         "build": build,
-        // Retain the legacy keys so nothing that already reads the
-        // wrapped shape (e.g. test fixtures, logs) breaks silently.
-        "queue_item": assignment.queue_item,
-        "vcs_info": assignment.vcs_info,
-        "active_run": active_run.to_json(),
-        "build_config": build_config,
     });
 
-    (StatusCode::CREATED, Json(body))
+    (
+        StatusCode::CREATED,
+        [(
+            axum::http::header::LOCATION,
+            format!("{}/{}", active_runs_path, active_run.log_id),
+        )],
+        Json(body),
+    )
+        .into_response()
 }
 
 async fn public_finish(

@@ -293,6 +293,12 @@ impl TestConfigBuilder {
         self
     }
 
+    /// Register an arbitrary campaign.
+    pub fn with_campaign_config(mut self, campaign: janitor::config::Campaign) -> Self {
+        self.campaigns.push(campaign);
+        self
+    }
+
     /// Build a janitor `Config` for tests.
     pub fn build_janitor_config(self) -> janitor::config::Config {
         let mut config = janitor::config::Config::new();

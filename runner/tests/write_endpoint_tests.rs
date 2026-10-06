@@ -1348,7 +1348,19 @@ async fn assign_one(app: axum::Router, state: &Arc<AppState>, codebase: &str) ->
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
-    get_body(response).await
+    let location = response
+        .headers()
+        .get("location")
+        .expect("201 must carry a Location header")
+        .to_str()
+        .unwrap()
+        .to_string();
+    let body = get_body(response).await;
+    assert_eq!(
+        location,
+        format!("/active-runs/{}", body["id"].as_str().unwrap())
+    );
+    body
 }
 
 /// `POST /active-runs` response envelope contract: every documented
@@ -1397,12 +1409,18 @@ async fn assign_response_envelope_has_all_documented_fields() {
         "build.config: {assignment}"
     );
 
-    // Legacy wrapper-shape keys we still emit for downstream code
-    // that reads them (test fixtures, logs).
+    assert_eq!(
+        assignment["description"],
+        json!("test-campaign on assign-envelope-cb")
+    );
+    assert_eq!(assignment["command"], json!("true"));
+    assert_eq!(assignment["skip-setup-validation"], json!(false));
+
+    // Python never sent these.
     for key in ["queue_item", "vcs_info", "active_run", "build_config"] {
         assert!(
-            assignment.get(key).is_some(),
-            "legacy `{key}` must remain in assign envelope, got {assignment}"
+            assignment.get(key).is_none(),
+            "unexpected `{key}` in assign envelope, got {assignment}"
         );
     }
 
@@ -1443,15 +1461,72 @@ async fn assign_response_envelope_has_all_documented_fields() {
         "build.environment must be an object, got {build}"
     );
 
-    // Codemod carries the command and per-execution env.
-    let codemod = &assignment["codemod"];
-    assert!(
-        codemod["command"].is_array() || codemod["command"].is_string(),
-        "codemod.command must be a string or array (Python emits string; we may split), got {codemod}"
+    // Python sent the codemod an empty environment; the command
+    // environment goes in the top-level `env`.
+    assert_eq!(
+        assignment["codemod"],
+        json!({"command": "true", "environment": {}})
     );
-    assert!(
-        codemod["environment"].is_object(),
-        "codemod.environment must be an object"
+}
+
+/// `skip-setup-validation` comes from the campaign.
+#[tokio::test]
+async fn assign_sends_campaign_skip_setup_validation() {
+    let campaign = janitor::config::Campaign {
+        name: Some("test-campaign".to_string()),
+        command: Some("true".to_string()),
+        skip_setup_validation: Some(true),
+        ..Default::default()
+    };
+    let builder = test_utils::TestConfigBuilder::new().with_campaign_config(campaign);
+    let Some((app, state)) =
+        test_utils::create_test_app_with_state_with_config_if_available(builder)
+            .await
+            .expect("test app setup should either succeed or return None cleanly")
+    else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let assignment = assign_one(app, &state, "assign-skip-validation-cb").await;
+    assert_eq!(assignment["skip-setup-validation"], json!(true));
+}
+
+/// Like Python, `branch.url` is the URL of the main branch as opened,
+/// without a trailing slash.
+#[tokio::test]
+async fn assign_sends_opened_branch_url() {
+    let Some((app, state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let td = tempfile::tempdir().unwrap();
+    let path = td.path().join("main");
+    breezyshim::controldir::create_standalone_workingtree(
+        &path,
+        &breezyshim::controldir::FORMAT_REGISTRY
+            .make_controldir("bzr")
+            .unwrap(),
+    )
+    .unwrap();
+    let url = url::Url::from_directory_path(&path).unwrap();
+    assert!(url.as_str().ends_with('/'));
+
+    let pool = state.database.pool().clone();
+    sqlx::query(
+        "INSERT INTO codebase (name, branch_url, url, vcs_type) VALUES ($1, $2, $2, 'bzr')",
+    )
+    .bind("assign-branch-url-cb")
+    .bind(url.as_str())
+    .execute(&pool)
+    .await
+    .expect("codebase insert");
+
+    let assignment = assign_one(app, &state, "assign-branch-url-cb").await;
+    assert_eq!(
+        assignment["branch"]["url"],
+        json!(url.as_str().trim_end_matches('/'))
     );
 }
 
