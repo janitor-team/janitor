@@ -37,6 +37,10 @@ pub enum AuthError {
     /// UTF-8 decode error.
     #[error("UTF-8 decode error: {0}")]
     Utf8(#[from] std::str::Utf8Error),
+
+    /// Error reading the active runs.
+    #[error("Active run store error: {0}")]
+    ActiveRuns(#[from] crate::active_runs::Error),
 }
 
 /// Worker authentication service.
@@ -182,8 +186,8 @@ impl SecurityService {
             .fetch_one(self.database.pool())
             .await?;
 
-        let active_workers = self.active_runs.distinct_worker_count().await as u64;
-        let total_active_runs = self.active_runs.len().await as u64;
+        let active_workers = self.active_runs.distinct_worker_count().await? as u64;
+        let total_active_runs = self.active_runs.len().await? as u64;
 
         Ok(SecurityStats {
             total_workers: total_workers as u64,

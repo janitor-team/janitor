@@ -1189,7 +1189,7 @@ async fn post_kill_jenkins_run_returns_501() {
         instigated_context: None,
         resume_from: None,
     };
-    state.active_runs.store(active_run).await;
+    state.active_runs.store(active_run).await.unwrap();
 
     let req = Request::builder()
         .method(Method::POST)
@@ -1208,10 +1208,11 @@ async fn post_kill_jenkins_run_returns_501() {
     );
 
     // Cleanup so the row does not leak across serial tests.
-    let _ = state
+    state
         .active_runs
         .remove(&janitor_types::RunId::new("run-kill-not-supported").unwrap())
-        .await;
+        .await
+        .unwrap();
 }
 
 /// `GET /active-runs` returns the empty list when no run is active.
@@ -1806,7 +1807,7 @@ async fn public_finish_returns_403_when_worker_does_not_own_run() {
         instigated_context: None,
         resume_from: None,
     };
-    state.active_runs.store(active_run).await;
+    state.active_runs.store(active_run).await.unwrap();
 
     // Bob attempts the finish -- the mismatch check runs before any
     // multipart parsing, so an empty body still reaches the 403 branch.
@@ -1832,10 +1833,11 @@ async fn public_finish_returns_403_when_worker_does_not_own_run() {
         "expected `Not authorized` in error, got {body}"
     );
 
-    let _ = state
+    state
         .active_runs
         .remove(&janitor_types::RunId::new("run-owned-by-alice").unwrap())
-        .await;
+        .await
+        .unwrap();
 }
 
 /// End-to-end lifecycle test: seed a codebase and campaign, enqueue
@@ -1974,6 +1976,7 @@ async fn end_to_end_assignment_lifecycle() {
             .active_runs
             .get(&janitor_types::RunId::new(run_id).unwrap())
             .await
+            .unwrap()
             .is_none(),
         "active run should be dropped from Redis after finish"
     );
@@ -2445,7 +2448,7 @@ async fn seed_active_run_for_finish(state: &Arc<AppState>, log_id: &str) {
         instigated_context: None,
         resume_from: None,
     };
-    state.active_runs.store(run).await;
+    state.active_runs.store(run).await.unwrap();
 }
 
 /// `POST /finish` with a multipart body that has no `metadata` /
@@ -2491,10 +2494,11 @@ async fn finish_multipart_without_metadata_returns_400() {
         "expected `worker_result`/`Missing` in error, got {body}"
     );
 
-    let _ = state
+    state
         .active_runs
         .remove(&janitor_types::RunId::new("run-no-metadata").unwrap())
-        .await;
+        .await
+        .unwrap();
 }
 
 /// Finish a run with `worker_result` and return the finish response's `target`.
@@ -2582,10 +2586,11 @@ async fn finish_malformed_multipart_returns_400() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    let _ = state
+    state
         .active_runs
         .remove(&janitor_types::RunId::new("run-malformed").unwrap())
-        .await;
+        .await
+        .unwrap();
 }
 
 /// `POST /finish` with a multipart part that has no `name=` in the
@@ -2623,10 +2628,11 @@ async fn finish_multipart_field_without_name_returns_400() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    let _ = state
+    state
         .active_runs
         .remove(&janitor_types::RunId::new("run-no-field-name").unwrap())
-        .await;
+        .await
+        .unwrap();
 }
 
 /// Assignment scoring by priority: given three candidates with the
@@ -3355,7 +3361,8 @@ async fn finish_with_artifact(
             instigated_context: None,
             resume_from: None,
         })
-        .await;
+        .await
+        .unwrap();
 
     let boundary = "artifact-boundary";
     let multipart_body = format!(
