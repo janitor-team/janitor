@@ -196,6 +196,10 @@ impl ArchiveWebService {
                 "/dists/{suite}/{component}/source/by-hash/{algo}/{hash}",
                 get(serve_by_hash),
             )
+            .route(
+                "/dists/{suite}/{component}/by-hash/{algo}/{hash}",
+                get(serve_component_by_hash),
+            )
             // On-demand dists: /dists/{kind=cs|run|<campaign>}/{id}/...
             .route(
                 "/dists/{kind}/{id}/{file}",
@@ -532,6 +536,60 @@ async fn serve_by_hash(
         }
         Err(_) => Err(StatusCode::NOT_FOUND),
     }
+}
+
+/// The component directory of `suite`, if both are configured.
+fn component_dir(state: &AppState, suite: &str, component: &str) -> Option<PathBuf> {
+    let repo_config = state.config.repositories.get(suite)?;
+    repo_config
+        .components
+        .iter()
+        .any(|c| c == component)
+        .then(|| repo_config.suite_path().join(component))
+}
+
+/// Serve `Contents-<arch>` or `Contents-<arch>.gz` of a suite component.
+async fn serve_contents(
+    state: &AppState,
+    suite: &str,
+    component: &str,
+    file: &str,
+) -> Result<Response, StatusCode> {
+    let dir = component_dir(state, suite, component).ok_or(StatusCode::NOT_FOUND)?;
+    let (arch, content_type) = match file.strip_suffix(".gz") {
+        Some(name) => (name, "application/gzip"),
+        None => (file, "text/plain"),
+    };
+    let arch = arch
+        .strip_prefix("Contents-")
+        .ok_or(StatusCode::NOT_FOUND)?;
+    if !state.config.repositories[suite]
+        .architectures
+        .iter()
+        .any(|a| a == arch)
+    {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    read_and_respond(dir.join(file), content_type).await
+}
+
+/// Serve the by-hash copies of a suite component's Contents files.
+async fn serve_component_by_hash(
+    Path((suite, component, algo, hash)): Path<(String, String, String, String)>,
+    State(state): State<AppState>,
+) -> Result<Response, StatusCode> {
+    let dir = component_dir(&state, &suite, &component).ok_or(StatusCode::NOT_FOUND)?;
+    let known_algo = apt_repository::HashAlgorithm::all()
+        .iter()
+        .any(|a| a.as_str() == algo);
+    if !known_algo || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    read_and_respond(
+        dir.join("by-hash").join(&algo).join(&hash),
+        "application/octet-stream",
+    )
+    .await
 }
 
 /// Serve pool files (package .deb files).
@@ -916,6 +974,11 @@ async fn serve_on_demand_release_file(
     Path((kind, id, file)): Path<(String, String, String)>,
     State(state): State<AppState>,
 ) -> Result<Response, StatusCode> {
+    // `/dists/{suite}/{component}/Contents-*` has the same shape as this
+    // route; on-demand trees have no Contents files.
+    if file.starts_with("Contents-") {
+        return serve_contents(&state, &kind, &id, &file).await;
+    }
     if !matches!(file.as_str(), "Release" | "Release.gpg" | "InRelease") {
         return Err(StatusCode::NOT_FOUND);
     }

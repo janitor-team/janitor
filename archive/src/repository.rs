@@ -342,7 +342,8 @@ impl RepositoryGenerator {
         // signature covers the updated Release. Done in-process by
         // parsing each .deb's data.tar directly, avoiding a
         // dpkg-deb subprocess per package.
-        self.generate_contents(repo_config, &build_infos).await?;
+        self.generate_contents(&async_repo, repo_config, &build_infos)
+            .await?;
 
         // Sign Release so periodic and /publish flows produce
         // Release.gpg + InRelease alongside Release.
@@ -452,6 +453,7 @@ impl RepositoryGenerator {
     ///     for the rest of the suite.
     async fn generate_contents(
         &self,
+        async_repo: &AsyncRepository,
         repo_config: &AptRepositoryConfig,
         build_infos: &[crate::scanner::BuildInfo],
     ) -> ArchiveResult<()> {
@@ -486,26 +488,28 @@ impl RepositoryGenerator {
                 );
                 let mut entries: Vec<ContentsEntry> = Vec::new();
                 for build in build_infos {
-                    match self.scanner.scan_deb_contents_for_build(build, arch).await {
-                        Ok(pkg_files) => {
-                            for (pkg_name, files) in pkg_files {
-                                if files.is_empty() {
-                                    continue;
-                                }
-                                entries.push(ContentsEntry {
-                                    // dak's Contents format uses
-                                    // `<component>/<package>`.
-                                    qualified_name: format!("{}/{}", component, pkg_name),
-                                    files,
-                                });
+                    // Builds without artifacts are left out, as they
+                    // are from Packages; any other error fails the
+                    // publish rather than silently dropping packages.
+                    let pkg_files =
+                        match self.scanner.scan_deb_contents_for_build(build, arch).await {
+                            Ok(pkg_files) => pkg_files,
+                            Err(e @ ArchiveError::ArtifactsMissing { .. }) => {
+                                warn!("Skipping contents of build {}: {}", build.id, e);
+                                continue;
                             }
+                            Err(e) => return Err(e),
+                        };
+                    for (pkg_name, files) in pkg_files {
+                        if files.is_empty() {
+                            continue;
                         }
-                        Err(e) => {
-                            warn!(
-                                "scan_deb_contents_for_build({}, {}) failed: {}",
-                                build.id, arch, e
-                            );
-                        }
+                        entries.push(ContentsEntry {
+                            // dak's Contents format uses
+                            // `<component>/<package>`.
+                            qualified_name: format!("{}/{}", component, pkg_name),
+                            files,
+                        });
                     }
                 }
 
@@ -544,6 +548,14 @@ impl RepositoryGenerator {
                 if self.config.by_hash {
                     write_by_hash(&component_dir, body.as_bytes(), &hash_algos).await?;
                     write_by_hash(&component_dir, &gz_bytes, &hash_algos).await?;
+                    // The component directory holds the Contents
+                    // by-hash files; prune them like the index ones.
+                    if let Some(keep) = async_repo.inner().by_hash_keep {
+                        async_repo
+                            .cleanup_by_hash_files_async(&component_dir, keep)
+                            .await
+                            .map_err(|e| ArchiveError::RepositoryGeneration(e.to_string()))?;
+                    }
                 }
             }
         }
