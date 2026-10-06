@@ -186,16 +186,6 @@ impl WorkerAuthService {
 
         Ok(workers)
     }
-
-    /// Check if a worker exists.
-    pub async fn worker_exists(&self, name: &str) -> Result<bool, AuthError> {
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM worker WHERE name = $1")
-            .bind(name)
-            .fetch_one(self.database.pool())
-            .await?;
-
-        Ok(count > 0)
-    }
 }
 
 /// Axum middleware for worker authentication.
@@ -288,7 +278,7 @@ impl SecurityService {
 
     /// Check if a worker can start a new run (concurrency limit).
     pub async fn can_start_run(&self, worker_name: &str) -> Result<bool, AuthError> {
-        let active_count = self.active_runs.count_for_worker(worker_name).await;
+        let active_count = self.active_runs.count_for_worker(Some(worker_name)).await;
         Ok(active_count < self.config.max_concurrent_runs_per_worker as usize)
     }
 

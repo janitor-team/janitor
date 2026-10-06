@@ -407,7 +407,7 @@ impl Watchdog {
                                 log::info!(
                                     "Worker {} (link={:?}) advanced from run {} (started {}) to {} \
                                      (started {}) -- dropping stale older entry without killing",
-                                    run.worker_name,
+                                    run.worker_label(),
                                     run.worker_link,
                                     run.log_id,
                                     run.start_time,
@@ -430,7 +430,7 @@ impl Watchdog {
                                 log::debug!(
                                     "Worker {} hasn't yet picked up run {} (still on {}, started {}); \
                                      soft-failure {}/{}",
-                                    run.worker_name,
+                                    run.worker_label(),
                                     run.log_id,
                                     other.log_id,
                                     other.start_time,
@@ -447,7 +447,7 @@ impl Watchdog {
                                 log::warn!(
                                     "Worker {} (link={:?}) drifted off run {}: reports current_run={:?}, \
                                      no matching active run -- terminating stale side",
-                                    run.worker_name,
+                                    run.worker_label(),
                                     run.worker_link,
                                     run.log_id,
                                     health.current_run_id,
@@ -526,7 +526,7 @@ impl Watchdog {
         log::info!(
             "Terminating run {} (worker: {}): {}",
             run.log_id,
-            run.worker_name,
+            run.worker_label(),
             reason.description()
         );
 
@@ -606,7 +606,7 @@ impl Watchdog {
                     "Dropped stale active run {} (campaign={}, worker={}, started {})",
                     run.log_id,
                     run.campaign,
-                    run.worker_name,
+                    run.worker_label(),
                     run.start_time
                 );
             }
@@ -747,7 +747,7 @@ pub struct RunHealthStatus {
     /// The log ID of the run.
     pub log_id: String,
     /// Name of the worker processing this run.
-    pub worker_name: String,
+    pub worker_name: Option<String>,
     /// When the run started.
     pub start_time: DateTime<Utc>,
     /// Estimated duration for the run.

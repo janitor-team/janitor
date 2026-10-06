@@ -697,8 +697,8 @@ pub struct WorkerResult {
 /// Information about an active run.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ActiveRun {
-    /// Worker name.
-    pub worker_name: String,
+    /// Worker name, if the assigning request named one.
+    pub worker_name: Option<String>,
     /// Optional worker link.
     pub worker_link: Option<String>,
     /// Queue ID.
@@ -731,6 +731,12 @@ pub struct ActiveRun {
 }
 
 impl ActiveRun {
+    /// The worker name for logs and metric labels. Like Python's
+    /// formatting of a missing worker, this is "None" when unset.
+    pub fn worker_label(&self) -> &str {
+        self.worker_name.as_deref().unwrap_or("None")
+    }
+
     /// Calculate current duration of the run.
     pub fn current_duration(&self) -> Duration {
         let now = Utc::now();
@@ -782,7 +788,7 @@ impl ActiveRun {
                 .as_ref()
                 .map(|id| ResultResume { run_id: id.clone() }),
             target: None,
-            worker_name: Some(self.worker_name.clone()),
+            worker_name: self.worker_name.clone(),
             vcs_type: self.vcs_info.vcs_type.clone(),
             target_branch_url: None,
             context: self.instigated_context.clone(),
@@ -2074,7 +2080,7 @@ mod tests {
         };
 
         let active_run = ActiveRun {
-            worker_name: "test-worker".to_string(),
+            worker_name: Some("test-worker".to_string()),
             worker_link: None,
             queue_id: 123,
             log_id: "log-456".to_string(),

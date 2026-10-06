@@ -608,7 +608,7 @@ async fn post_kill_jenkins_run_returns_501() {
     };
 
     let active_run = ActiveRun {
-        worker_name: "jenkins-worker".to_string(),
+        worker_name: Some("jenkins-worker".to_string()),
         worker_link: None,
         queue_id: 1,
         log_id: "run-kill-not-supported".to_string(),
@@ -1134,7 +1134,7 @@ async fn public_finish_returns_403_when_worker_does_not_own_run() {
         .expect("create bob");
 
     let active_run = ActiveRun {
-        worker_name: "alice".to_string(),
+        worker_name: Some("alice".to_string()),
         worker_link: None,
         queue_id: 1,
         log_id: "run-owned-by-alice".to_string(),
@@ -1314,6 +1314,87 @@ async fn end_to_end_assignment_lifecycle() {
         state.active_runs.get(run_id).await.is_none(),
         "active run should be dropped from Redis after finish"
     );
+}
+
+/// Like Python, the private assign route accepts a request without a
+/// worker name; the run is then attributed to the worker named in the
+/// result it reports at /finish.
+#[tokio::test]
+async fn private_assign_without_worker() {
+    let Some((app, state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let pool = state.database.pool().clone();
+    insert_codebase(&pool, "anon-cb").await;
+    state
+        .auth_service
+        .create_worker("reporting-worker", "pw", None)
+        .await
+        .expect("create worker");
+
+    let candidate_body = json!([{"codebase": "anon-cb", "campaign": "test-campaign"}]);
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/candidates")
+        .header("content-type", "application/json")
+        .body(Body::from(candidate_body.to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/active-runs")
+        .header("content-type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    let status = response.status();
+    let assignment = get_body(response).await;
+    assert_eq!(status, StatusCode::CREATED, "body: {assignment}");
+    let run_id = assignment["id"].as_str().unwrap().to_string();
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/active-runs/{run_id}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(get_body(response).await["worker"], Value::Null);
+
+    let boundary = "anon-boundary";
+    let worker_result =
+        r#"{"code":"success","description":"anon","worker_name":"reporting-worker"}"#;
+    let multipart_body = format!(
+        "--{boundary}\r\n\
+         Content-Disposition: form-data; name=\"metadata\"; filename=\"result.json\"\r\n\
+         Content-Type: application/json\r\n\r\n\
+         {worker_result}\r\n\
+         --{boundary}--\r\n"
+    );
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/active-runs/{run_id}/finish"))
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Body::from(multipart_body))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    let status = response.status();
+    let body = get_body(response).await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+
+    let worker: Option<String> = sqlx::query_scalar("SELECT worker FROM run WHERE id = $1")
+        .bind(&run_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(worker.as_deref(), Some("reporting-worker"));
 }
 
 /// Seed a candidate ready to be assigned, then walk the setup that
@@ -1609,7 +1690,7 @@ async fn peek_returns_503_when_queue_empty() {
 /// exercise. Returns the run_id.
 async fn seed_active_run_for_finish(state: &Arc<AppState>, log_id: &str) {
     let run = ActiveRun {
-        worker_name: "finish-worker".to_string(),
+        worker_name: Some("finish-worker".to_string()),
         worker_link: None,
         queue_id: 1,
         log_id: log_id.to_string(),
@@ -1912,8 +1993,8 @@ async fn concurrent_assign_queue_item_never_double_claims() {
     let db2 = janitor_runner::database::RunnerDatabase::new_with_redis(pool, redis_client);
 
     let (r1, r2) = tokio::join!(
-        db1.assign_queue_item(queue_id, "race-w1", "log1"),
-        db2.assign_queue_item(queue_id, "race-w2", "log2"),
+        db1.assign_queue_item(queue_id, Some("race-w1"), "log1"),
+        db2.assign_queue_item(queue_id, Some("race-w2"), "log2"),
     );
 
     let oks = [&r1, &r2].iter().filter(|r| r.is_ok()).count();

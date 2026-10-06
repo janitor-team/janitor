@@ -917,7 +917,7 @@ INSERT INTO run (
     pub async fn assign_queue_item(
         &self,
         queue_id: i64,
-        worker_name: &str,
+        worker_name: Option<&str>,
         log_id: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if let Some(redis_client) = self.redis() {
@@ -945,9 +945,11 @@ INSERT INTO run (
             if !claimed {
                 return Err(format!("Queue item {} already assigned", queue_id).into());
             }
-            let _: () = conn
-                .sadd(format!("worker-queue-items:{}", worker_name), queue_id)
-                .await?;
+            if let Some(worker_name) = worker_name {
+                let _: () = conn
+                    .sadd(format!("worker-queue-items:{}", worker_name), queue_id)
+                    .await?;
+            }
 
             // Do not EXPIRE the `assigned-queue-items` hash. The
             // previous 3600s TTL nuked the whole hash every hour --

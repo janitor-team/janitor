@@ -1568,8 +1568,10 @@ async fn list_workers(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match state.auth_service.list_workers().await {
         Ok(workers) => {
             let active_runs = state.active_runs.list().await;
-            let active_workers: std::collections::HashSet<&str> =
-                active_runs.iter().map(|r| r.worker_name.as_str()).collect();
+            let active_workers: std::collections::HashSet<&str> = active_runs
+                .iter()
+                .filter_map(|r| r.worker_name.as_deref())
+                .collect();
 
             let last_seen_times = state
                 .database
@@ -1638,8 +1640,10 @@ async fn admin_list_workers(State(state): State<Arc<AppState>>) -> impl IntoResp
     match state.auth_service.list_workers().await {
         Ok(workers) => {
             let active_runs = state.active_runs.list().await;
-            let active_workers: std::collections::HashSet<&str> =
-                active_runs.iter().map(|r| r.worker_name.as_str()).collect();
+            let active_workers: std::collections::HashSet<&str> = active_runs
+                .iter()
+                .filter_map(|r| r.worker_name.as_deref())
+                .collect();
 
             let last_seen_times = state
                 .database
@@ -2482,6 +2486,9 @@ async fn finish_run_multipart_internal(
         worker_result.code.clone(),
         worker_result.description.clone(),
     );
+    if janitor_result.worker_name.is_none() {
+        janitor_result.worker_name = worker_result.worker_name.clone();
+    }
 
     janitor_result.codemod = worker_result.codemod;
     janitor_result.main_branch_revision = worker_result.main_branch_revision;
@@ -2643,17 +2650,17 @@ async fn finish_run_multipart_internal(
     // active-run state.
     publish_finish_events(&state, &run_id, &janitor_result, active_run.queue_id).await;
     crate::metrics::MetricsCollector::set_active_runs(
-        &active_run.worker_name,
+        active_run.worker_label(),
         state
             .active_runs
-            .count_for_worker(&active_run.worker_name)
+            .count_for_worker(active_run.worker_name.as_deref())
             .await as i64,
     );
     crate::metrics::RUNS_COMPLETED_TOTAL
         .with_label_values(&[
             &janitor_result.campaign,
             &janitor_result.code,
-            &active_run.worker_name,
+            active_run.worker_label(),
         ])
         .inc();
 
@@ -2753,65 +2760,19 @@ async fn public_assign(
     // from the request body. Workers can't lie about who they are.
     // Python's public app served this under /runner; we rely on the
     // ingress to strip that prefix.
-    assign_work_internal(state, worker_name, request, "/runner/active-runs").await
+    assign_work_internal(state, Some(worker_name), request, "/runner/active-runs").await
 }
 
 /// Unauthenticated assign for the private (intra-cluster) app. No
 /// `Extension<String>` from `authenticate_worker`, so identity comes
-/// from the body. Required field -- no fallback to "unknown" (that
-/// fallback led to FK 500s on /finish when the made-up name wasn't
-/// registered).
-///
-/// Auth middleware on the public route validates the worker against
-/// the `worker` table; this private route has no middleware so we
-/// re-validate here. Otherwise an admin tool with a typo'd worker
-/// name gets a useful run assignment, does the work, then trips
-/// `run_worker_fkey` at /finish -- by which time the worker has
-/// already burned the time and the surface is a database 500.
+/// from the body. Like Python, the worker name is optional and not
+/// checked against the `worker` table; without one, the run is
+/// attributed to the worker named in the result reported at /finish.
 async fn private_assign(
     State(state): State<Arc<AppState>>,
     Json(request): Json<AssignRequest>,
 ) -> impl IntoResponse {
-    let worker_name = match request.worker.as_deref() {
-        Some(name) if !name.is_empty() => name.to_string(),
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": "missing_worker",
-                    "reason": "Set `worker` (or `node`) on the body. \
-                               This route does not authenticate the caller, \
-                               so identity must be supplied explicitly.",
-                })),
-            )
-                .into_response();
-        }
-    };
-    match state.auth_service.worker_exists(&worker_name).await {
-        Ok(true) => {}
-        Ok(false) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": "worker_not_registered",
-                    "worker": worker_name,
-                    "reason": "Worker name is not in the `worker` table. \
-                               Register it via POST /admin/workers before \
-                               assigning runs (otherwise /finish would \
-                               fail later with a FK violation).",
-                })),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            log::error!("private_assign: worker_exists lookup failed: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "worker_lookup_failed"})),
-            )
-                .into_response();
-        }
-    }
+    let worker_name = request.worker.clone();
     assign_work_internal(state, worker_name, request, "/active-runs").await
 }
 
@@ -3168,7 +3129,7 @@ async fn compute_resume_from(
 /// for the `Location` header of the new run.
 async fn assign_work_internal(
     state: Arc<AppState>,
-    worker_name: String,
+    worker_name: Option<String>,
     request: AssignRequest,
     active_runs_path: &str,
 ) -> Response {
@@ -3285,7 +3246,11 @@ async fn assign_work_internal(
         let candidate_log_id = Uuid::new_v4().to_string();
         match state
             .database
-            .assign_queue_item(assignment.queue_item.id, &worker_name, &candidate_log_id)
+            .assign_queue_item(
+                assignment.queue_item.id,
+                worker_name.as_deref(),
+                &candidate_log_id,
+            )
             .await
         {
             Ok(()) => break (assignment, candidate_log_id),
@@ -3425,10 +3390,10 @@ async fn assign_work_internal(
     // Store active run in the in-memory store
     state.active_runs.store(active_run.clone()).await;
     crate::metrics::MetricsCollector::set_active_runs(
-        &active_run.worker_name,
+        active_run.worker_label(),
         state
             .active_runs
-            .count_for_worker(&active_run.worker_name)
+            .count_for_worker(active_run.worker_name.as_deref())
             .await as i64,
     );
 
@@ -3649,12 +3614,12 @@ async fn public_finish(
     // Verify that this worker is authorized to finish this specific run
     match state.active_runs.get(&id).await {
         Some(active_run) => {
-            if active_run.worker_name != worker_name {
+            if active_run.worker_name.as_deref() != Some(worker_name.as_str()) {
                 log::warn!(
                     "Worker {} attempted to finish run {} assigned to worker {}",
                     worker_name,
                     id,
-                    active_run.worker_name
+                    active_run.worker_label()
                 );
                 return (
                     StatusCode::FORBIDDEN,
@@ -3686,12 +3651,12 @@ async fn public_finish_multipart(
     // Verify that this worker is authorized to finish this specific run
     match state.active_runs.get(&id).await {
         Some(active_run) => {
-            if active_run.worker_name != worker_name {
+            if active_run.worker_name.as_deref() != Some(worker_name.as_str()) {
                 log::warn!(
                     "Worker {} attempted to finish run {} assigned to worker {}",
                     worker_name,
                     id,
-                    active_run.worker_name
+                    active_run.worker_label()
                 );
                 return (
                     StatusCode::FORBIDDEN,
