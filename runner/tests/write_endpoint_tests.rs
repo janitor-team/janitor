@@ -995,67 +995,6 @@ async fn get_metrics_returns_prometheus_text() {
     );
 }
 
-/// `GET /queue/stats` (public router) returns the four counters the
-/// operator UI expects plus a `status` string.
-#[tokio::test]
-async fn get_public_queue_stats_returns_expected_fields() {
-    let Some((app, _state)) = test_utils::create_public_test_app_with_state_if_available()
-        .await
-        .expect("public app setup should either succeed or return None cleanly")
-    else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
-
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/queue/stats")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    for key in [
-        "queue_length",
-        "active_runs",
-        "succeeded",
-        "failed",
-        "status",
-    ] {
-        assert!(
-            body.get(key).is_some(),
-            "expected `{key}` in /queue/stats response, got {body}"
-        );
-    }
-}
-
-/// `GET /watchdog/health` (public router) returns 200 + a
-/// `health_statuses` array. With no active runs, the array is empty.
-#[tokio::test]
-async fn get_public_watchdog_health_returns_empty_when_idle() {
-    let Some((app, _state)) = test_utils::create_public_test_app_with_state_if_available()
-        .await
-        .expect("public app setup should either succeed or return None cleanly")
-    else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
-
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/watchdog/health")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    assert_eq!(body["status"], "ok");
-    assert_eq!(body["active_runs"], 0);
-    assert_eq!(body["health_statuses"], json!([]));
-}
-
 /// A worker-authenticated route on the public router returns 401
 /// when the client sends no `Authorization` header. Verifies the
 /// `authenticate_worker` middleware refuses to fall through.
@@ -1071,7 +1010,7 @@ async fn public_authed_route_without_auth_header_returns_401() {
 
     let req = Request::builder()
         .method(Method::GET)
-        .uri("/active-runs/any-id")
+        .uri("/runner/active-runs/any-id")
         .body(Body::empty())
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
@@ -1098,7 +1037,7 @@ async fn public_authed_route_with_bad_credentials_returns_401() {
     );
     let req = Request::builder()
         .method(Method::GET)
-        .uri("/active-runs/any-id")
+        .uri("/runner/active-runs/any-id")
         .header("authorization", auth)
         .body(Body::empty())
         .unwrap();
@@ -1160,7 +1099,7 @@ async fn public_finish_returns_403_when_worker_does_not_own_run() {
     );
     let req = Request::builder()
         .method(Method::POST)
-        .uri("/active-runs/run-owned-by-alice/finish")
+        .uri("/runner/active-runs/run-owned-by-alice/finish")
         .header("authorization", auth)
         .header("content-type", "multipart/form-data; boundary=x")
         .body(Body::from("--x--\r\n"))
@@ -2218,4 +2157,79 @@ async fn post_active_runs_honours_client_exclude_hosts() {
         StatusCode::SERVICE_UNAVAILABLE,
         "queue should look empty when the only candidate's host is excluded"
     );
+}
+
+/// Like Python's public app, the worker routes are mounted under
+/// `/runner/` and nothing else but `/` is served.
+#[tokio::test]
+async fn public_routes_are_under_runner_prefix() {
+    let Some((app, state)) = test_utils::create_public_test_app_with_state_if_available()
+        .await
+        .expect("public app setup should either succeed or return None cleanly")
+    else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    state
+        .auth_service
+        .create_worker("prefix-worker", "pw", None)
+        .await
+        .expect("create worker");
+    let auth = format!(
+        "Basic {}",
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            b"prefix-worker:pw"
+        )
+    );
+
+    let request = |method: Method, uri: &str, body: &str| {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", &auth)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+
+    let response = app
+        .clone()
+        .oneshot(request(Method::GET, "/", ""))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(request(Method::POST, "/runner/active-runs", "{}"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let response = app
+        .clone()
+        .oneshot(request(Method::GET, "/runner/active-runs/no-such-run", ""))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    for (method, uri) in [
+        (Method::POST, "/active-runs"),
+        (Method::GET, "/active-runs/no-such-run"),
+        (Method::POST, "/active-runs/no-such-run/finish"),
+        (Method::GET, "/health"),
+        (Method::GET, "/queue/stats"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request(method.clone(), uri, "{}"))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "{method} {uri} should not be served"
+        );
+    }
 }

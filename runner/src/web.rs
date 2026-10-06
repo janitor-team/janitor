@@ -3757,45 +3757,6 @@ async fn public_finish(
     finish_run_multipart_internal(state, id, multipart, true).await
 }
 
-async fn public_finish_multipart(
-    State(state): State<Arc<AppState>>,
-    Extension(worker_name): Extension<String>,
-    Path(id): Path<String>,
-    multipart: Multipart,
-) -> impl IntoResponse {
-    // Worker credentials are verified by authentication middleware
-    // Verify that this worker is authorized to finish this specific run
-    match state.active_runs.get(&id).await {
-        Some(active_run) => {
-            if active_run.worker_name != worker_name {
-                log::warn!(
-                    "Worker {} attempted to finish run {} assigned to worker {}",
-                    worker_name,
-                    id,
-                    active_run.worker_name
-                );
-                return (
-                    StatusCode::FORBIDDEN,
-                    Json(json!({"error": "Not authorized to finish this run"})),
-                );
-            }
-        }
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": "Run not found"})),
-            );
-        }
-    }
-
-    log::info!(
-        "Worker {} finishing run {} with multipart upload",
-        worker_name,
-        id
-    );
-    finish_run_multipart_internal(state, id, multipart, true).await
-}
-
 async fn public_get_active_run(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -3809,71 +3770,6 @@ async fn public_get_active_run(
             StatusCode::NOT_FOUND,
             Json(json!({"reason": format!("no such run {}", id)})),
         ),
-    }
-}
-
-/// Get watchdog health information for all active runs.
-async fn public_watchdog_health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let watchdog_config = crate::WatchdogConfig::default();
-    let watchdog = crate::Watchdog::new(
-        Arc::clone(&state.database),
-        state.active_runs.clone(),
-        watchdog_config,
-    );
-
-    match watchdog.get_detailed_health_status().await {
-        Ok(health_statuses) => {
-            // Filter to public information only
-            let public_statuses: Vec<_> = health_statuses.into_iter().map(|status| {
-                json!({
-                    "log_id": status.log_id,
-                    "worker_name": status.worker_name,
-                    "start_time": status.start_time,
-                    "estimated_duration": status.estimated_duration.map(|d| d.as_secs()),
-                    "failure_count": status.failure_count,
-                    "max_failures": status.max_failures,
-                    "alive": status.health.as_ref().map(|h| h.alive).unwrap_or(false),
-                    "status": status.health.as_ref().map(|h| h.status.clone()).unwrap_or_else(|| "unknown".to_string()),
-                    "last_ping": status.health.as_ref().and_then(|h| h.last_ping),
-                })
-            }).collect();
-
-            Json(json!({
-                "status": "ok",
-                "active_runs": public_statuses.len(),
-                "health_statuses": public_statuses
-            }))
-        }
-        Err(e) => {
-            log::error!("Failed to get watchdog health status: {}", e);
-            Json(json!({
-                "status": "error",
-                "error": "Failed to get health status"
-            }))
-        }
-    }
-}
-
-/// Get public queue statistics.
-async fn public_queue_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    // Active runs live in Redis, not Postgres; source them here so
-    // the count reflects reality.
-    let active_runs = state.active_runs.len().await as i64;
-    match state.database.get_queue_stats().await {
-        Ok(stats) => Json(json!({
-            "queue_length": stats.get("total").unwrap_or(&0),
-            "active_runs": active_runs,
-            "succeeded": stats.get("succeeded").unwrap_or(&0),
-            "failed": stats.get("failed").unwrap_or(&0),
-            "status": "operational"
-        })),
-        Err(e) => {
-            log::error!("Failed to get queue stats: {}", e);
-            Json(json!({
-                "status": "error",
-                "error": "Database error"
-            }))
-        }
     }
 }
 
@@ -3931,14 +3827,6 @@ async fn record_http_metrics(
 
 /// Create a router for the public API endpoints.
 pub fn public_app(state: Arc<AppState>) -> Router<Arc<AppState>> {
-    let public_routes = Router::new()
-        .route("/", get(public_root))
-        .route("/health", get(health))
-        .route("/health/live", get(liveness))
-        .route("/health/ready", get(readiness))
-        .route("/queue/stats", get(public_queue_stats))
-        .route("/watchdog/health", get(public_watchdog_health));
-
     // axum's default request body limit is 2 MiB. Worker /finish
     // uploads bundle the metadata JSON, all logs, and every artifact
     // (.changes, .deb, orig.tar.gz, debian.tar.xz, .dsc, .buildinfo)
@@ -3949,29 +3837,24 @@ pub fn public_app(state: Arc<AppState>) -> Router<Arc<AppState>> {
     // on the upload routes; the per-file size cap is enforced by
     // the upload processor itself (`max_file_size`), and the ingress
     // proxy-body-size is the network-edge ceiling.
-    // The `/runner/` prefix that workers use is an ingress concern,
-    // not a routing concern in this binary. nginx matches
-    // `/runner(/|$)(.*)` on the public site and rewrites to `/$2`
-    // before forwarding to this port, so handlers see the same
-    // shapes as the private app -- just gated by authenticate_worker.
+    //
+    // Like the Python runner, the worker routes live under `/runner/`.
     let worker_routes = Router::new()
-        .route("/active-runs", post(public_assign))
+        .route("/runner/active-runs", post(public_assign))
         .route(
-            "/active-runs/{id}/finish",
+            "/runner/active-runs/{id}/finish",
             post(public_finish).layer(DefaultBodyLimit::disable()),
         )
-        .route(
-            "/active-runs/{id}/finish-multipart",
-            post(public_finish_multipart).layer(DefaultBodyLimit::disable()),
-        )
-        .route("/active-runs/{id}", get(public_get_active_run))
+        .route("/runner/active-runs/{id}", get(public_get_active_run))
         .layer(middleware::from_fn_with_state(
             Arc::clone(&state),
             authenticate_worker,
         ));
 
-    // Combine both routers
-    public_routes.merge(worker_routes).with_state(state)
+    Router::new()
+        .route("/", get(public_root))
+        .merge(worker_routes)
+        .with_state(state)
 }
 
 /// Create a router for the private API endpoints.
