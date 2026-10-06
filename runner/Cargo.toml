@@ -54,6 +54,7 @@ tower = { version = "0.5", features = ["util"] }
 hyper = { version = "1.0", features = ["full"] }
 tower-service = "0.3"
 serial_test = "3.1.1"
+pyo3 = { workspace = true }
 futures = "0.3"
 
 [features]
