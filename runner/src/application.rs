@@ -559,7 +559,12 @@ impl Application {
         const MAX_ATTEMPTS: u32 = 30; // 30 seconds with 1-second intervals
 
         while attempts < MAX_ATTEMPTS {
-            let active_runs = self.state.active_runs.list().await;
+            let active_runs = self
+                .state
+                .active_runs
+                .list()
+                .await
+                .map_err(|e| ApplicationError::Runtime(e.to_string()))?;
             if active_runs.is_empty() {
                 log::info!("All active runs completed");
                 return Ok(());

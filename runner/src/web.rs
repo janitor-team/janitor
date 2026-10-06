@@ -115,6 +115,24 @@ struct FinishResponse {
 /// Extract avoided hosts from configuration: any archive mirror URI
 /// that looks restricted/internal has its host added to the block
 /// list, so the assignment loop skips codebases hosted there.
+/// Refresh the per-worker active run gauge from the active run store.
+async fn update_active_runs_gauge(state: &AppState, worker_name: &str) {
+    match state.active_runs.count_for_worker(worker_name).await {
+        Ok(count) => crate::metrics::MetricsCollector::set_active_runs(worker_name, count as i64),
+        Err(e) => log::error!("Failed to count active runs for {}: {}", worker_name, e),
+    }
+}
+
+/// Turn a failure to read or write the active runs into a 500, as an
+/// unhandled Redis error was in the Python runner.
+fn active_runs_error(e: crate::active_runs::Error) -> (StatusCode, Json<serde_json::Value>) {
+    log::error!("Failed to access active runs: {}", e);
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({"error": "Active run store error"})),
+    )
+}
+
 fn get_avoided_hosts(config: &janitor::config::Config) -> Vec<String> {
     config
         .distribution
@@ -239,7 +257,10 @@ async fn queue_position(
         }
     };
 
-    let active_count = state.active_runs.len().await as i64;
+    let active_count = match state.active_runs.len().await {
+        Ok(n) => n as i64,
+        Err(e) => return active_runs_error(e),
+    };
     let cumulative_wait_seconds = eta
         .as_ref()
         .map(|e| e.wait_time.microseconds as f64 / 1_000_000.0);
@@ -536,13 +557,10 @@ async fn schedule(
 /// timestamps, so no keepalive_age / mia / last-keepalive fields are
 /// included.
 async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let processing: Vec<serde_json::Value> = state
-        .active_runs
-        .list()
-        .await
-        .iter()
-        .map(|r| r.to_json())
-        .collect();
+    let processing: Vec<serde_json::Value> = match state.active_runs.list().await {
+        Ok(runs) => runs.iter().map(|r| r.to_json()).collect(),
+        Err(e) => return active_runs_error(e),
+    };
 
     let avoid_hosts = &state.avoid_hosts;
 
@@ -560,11 +578,14 @@ async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             }
         };
 
-    Json(json!({
-        "processing": processing,
-        "avoid_hosts": avoid_hosts,
-        "rate_limit_hosts": rate_limit_hosts,
-    }))
+    (
+        StatusCode::OK,
+        Json(json!({
+            "processing": processing,
+            "avoid_hosts": avoid_hosts,
+            "rate_limit_hosts": rate_limit_hosts,
+        })),
+    )
 }
 
 /// `GET /log/{run_id}` -- list the log files the live worker for
@@ -576,13 +597,14 @@ async fn log_index(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let active_run = match state.active_runs.get(&id).await {
-        Some(run) => run,
-        None => {
+        Ok(Some(run)) => run,
+        Ok(None) => {
             return (
                 StatusCode::NOT_FOUND,
                 Json(json!({"reason": format!("No such current run: {}", id)})),
             );
         }
+        Err(e) => return active_runs_error(e),
     };
     match active_run.backchannel.list_log_files().await {
         Ok(files) => (StatusCode::OK, Json(json!(files))),
@@ -610,13 +632,14 @@ async fn current_stage(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let active_run = match state.active_runs.get(&id).await {
-        Some(run) => run,
-        None => {
+        Ok(Some(run)) => run,
+        Ok(None) => {
             return (
                 StatusCode::NOT_FOUND,
                 Json(json!({"reason": format!("No such current run: {}", id)})),
             );
         }
+        Err(e) => return active_runs_error(e),
     };
     match active_run.backchannel.get_current_stage().await {
         Ok(stage) => (StatusCode::OK, Json(json!({"current_stage": stage}))),
@@ -646,12 +669,20 @@ async fn log(
         );
     }
     let active_run = match state.active_runs.get(&id).await {
-        Some(run) => run,
-        None => {
+        Ok(Some(run)) => run,
+        Ok(None) => {
             return (
                 StatusCode::NOT_FOUND,
                 [("content-type", "text/plain")],
                 format!("No such current run: {}", id).into_bytes(),
+            );
+        }
+        Err(e) => {
+            log::error!("Failed to access active runs: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("content-type", "text/plain")],
+                b"Active run store error".to_vec(),
             );
         }
     };
@@ -679,13 +710,14 @@ async fn log(
 /// support kill.
 async fn kill(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> impl IntoResponse {
     let active_run = match state.active_runs.get(&id).await {
-        Some(run) => run,
-        None => {
+        Ok(Some(run)) => run,
+        Ok(None) => {
             return (
                 StatusCode::NOT_FOUND,
                 Json(json!({"reason": format!("No such current run: {}", id)})),
             );
         }
+        Err(e) => return active_runs_error(e),
     };
     let snapshot = active_run.to_json();
     match active_run.backchannel.kill().await {
@@ -1429,9 +1461,13 @@ async fn update_run(
 }
 
 async fn get_active_runs(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let active_runs = state.active_runs.list().await;
-    let runs_json: Vec<_> = active_runs.iter().map(|r| r.to_json()).collect();
-    (StatusCode::OK, Json(runs_json))
+    match state.active_runs.list().await {
+        Ok(active_runs) => {
+            let runs_json: Vec<_> = active_runs.iter().map(|r| r.to_json()).collect();
+            (StatusCode::OK, Json(json!(runs_json)))
+        }
+        Err(e) => active_runs_error(e),
+    }
 }
 
 /// `GET /active-runs/{run_id}` -- return a single active run's JSON
@@ -1441,11 +1477,12 @@ async fn get_active_run(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match state.active_runs.get(&id).await {
-        Some(active_run) => (StatusCode::OK, Json(active_run.to_json())),
-        None => (
+        Ok(Some(active_run)) => (StatusCode::OK, Json(active_run.to_json())),
+        Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(json!({"reason": format!("no such run {}", id)})),
         ),
+        Err(e) => active_runs_error(e),
     }
 }
 
@@ -1565,9 +1602,12 @@ async fn metrics() -> impl IntoResponse {
 
 /// Public endpoint to list workers with basic information.
 async fn list_workers(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let active_runs = match state.active_runs.list().await {
+        Ok(runs) => runs,
+        Err(e) => return active_runs_error(e),
+    };
     match state.auth_service.list_workers().await {
         Ok(workers) => {
-            let active_runs = state.active_runs.list().await;
             let active_workers: std::collections::HashSet<&str> =
                 active_runs.iter().map(|r| r.worker_name.as_str()).collect();
 
@@ -1607,37 +1647,46 @@ async fn list_workers(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             let total_count = workers.len();
             let idle_count = total_count - active_count;
 
-            Json(json!({
-                "workers": worker_infos,
-                "total_workers": total_count,
-                "active_workers": active_count,
-                "idle_workers": idle_count,
-                "summary": {
-                    "total": total_count,
-                    "active": active_count,
-                    "idle": idle_count,
-                },
-                "timestamp": chrono::Utc::now()
-            }))
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "workers": worker_infos,
+                    "total_workers": total_count,
+                    "active_workers": active_count,
+                    "idle_workers": idle_count,
+                    "summary": {
+                        "total": total_count,
+                        "active": active_count,
+                        "idle": idle_count,
+                    },
+                    "timestamp": chrono::Utc::now()
+                })),
+            )
         }
         Err(e) => {
             log::error!("Failed to list workers: {}", e);
-            Json(json!({
-                "error": "Failed to list workers",
-                "workers": [],
-                "total_workers": 0,
-                "active_workers": 0,
-                "idle_workers": 0
-            }))
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "error": "Failed to list workers",
+                    "workers": [],
+                    "total_workers": 0,
+                    "active_workers": 0,
+                    "idle_workers": 0
+                })),
+            )
         }
     }
 }
 
 /// Admin endpoint to list workers.
 async fn admin_list_workers(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let active_runs = match state.active_runs.list().await {
+        Ok(runs) => runs,
+        Err(e) => return active_runs_error(e),
+    };
     match state.auth_service.list_workers().await {
         Ok(workers) => {
-            let active_runs = state.active_runs.list().await;
             let active_workers: std::collections::HashSet<&str> =
                 active_runs.iter().map(|r| r.worker_name.as_str()).collect();
 
@@ -1684,29 +1733,35 @@ async fn admin_list_workers(State(state): State<Arc<AppState>>) -> impl IntoResp
             let total_count = workers.len();
             let idle_count = total_count - active_count - failed_count;
 
-            Json(json!({
-                "workers": worker_infos,
-                "total_workers": total_count,
-                "active_workers": active_count,
-                "idle_workers": idle_count,
-                "summary": {
-                    "total": total_count,
-                    "active": active_count,
-                    "idle": idle_count,
-                    "failed": failed_count
-                },
-                "timestamp": chrono::Utc::now()
-            }))
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "workers": worker_infos,
+                    "total_workers": total_count,
+                    "active_workers": active_count,
+                    "idle_workers": idle_count,
+                    "summary": {
+                        "total": total_count,
+                        "active": active_count,
+                        "idle": idle_count,
+                        "failed": failed_count
+                    },
+                    "timestamp": chrono::Utc::now()
+                })),
+            )
         }
         Err(e) => {
             log::error!("Failed to list workers: {}", e);
-            Json(json!({
-                "error": "Failed to list workers",
-                "workers": [],
-                "total_workers": 0,
-                "active_workers": 0,
-                "idle_workers": 0
-            }))
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "error": "Failed to list workers",
+                    "workers": [],
+                    "total_workers": 0,
+                    "active_workers": 0,
+                    "idle_workers": 0
+                })),
+            )
         }
     }
 }
@@ -2281,7 +2336,12 @@ async fn publish_finish_events(
             .inc();
     }
 
-    state.active_runs.remove(run_id).await;
+    if let Err(e) = state.active_runs.remove(run_id).await {
+        log::error!("Failed to remove active run {}: {}", run_id, e);
+        crate::metrics::REDIS_OPERATIONS_TOTAL
+            .with_label_values(&["remove_active_run", "error"])
+            .inc();
+    }
 
     if let Err(e) = state.database.unassign_queue_item(queue_id).await {
         log::error!("Failed to unassign queue item from Redis: {}", e);
@@ -2290,23 +2350,28 @@ async fn publish_finish_events(
             .inc();
     }
 
-    let processing: Vec<serde_json::Value> = state
-        .active_runs
-        .list()
-        .await
-        .iter()
-        .map(|r| r.to_json())
-        .collect();
-    let status_payload = serde_json::json!({
-        "processing": processing,
-        "avoid_hosts": [],
-        "rate_limit_hosts": {},
-    });
-    if let Err(e) = state.database.publish("queue", &status_payload).await {
-        log::error!("Failed to publish queue status event: {}", e);
-        crate::metrics::REDIS_OPERATIONS_TOTAL
-            .with_label_values(&["publish_queue_status", "error"])
-            .inc();
+    match state.active_runs.list().await {
+        Ok(active_runs) => {
+            let processing: Vec<serde_json::Value> =
+                active_runs.iter().map(|r| r.to_json()).collect();
+            let status_payload = serde_json::json!({
+                "processing": processing,
+                "avoid_hosts": [],
+                "rate_limit_hosts": {},
+            });
+            if let Err(e) = state.database.publish("queue", &status_payload).await {
+                log::error!("Failed to publish queue status event: {}", e);
+                crate::metrics::REDIS_OPERATIONS_TOTAL
+                    .with_label_values(&["publish_queue_status", "error"])
+                    .inc();
+            }
+        }
+        Err(e) => {
+            log::error!("Failed to list active runs for queue status event: {}", e);
+            crate::metrics::REDIS_OPERATIONS_TOTAL
+                .with_label_values(&["publish_queue_status", "error"])
+                .inc();
+        }
     }
 
     crate::metrics::LAST_SUCCESS_GAUGE.set(chrono::Utc::now().timestamp() as f64);
@@ -2423,13 +2488,14 @@ async fn finish_run_multipart_internal(
     public: bool,
 ) -> (StatusCode, Json<serde_json::Value>) {
     let active_run = match state.active_runs.get(&run_id).await {
-        Some(run) => run,
-        None => {
+        Ok(Some(run)) => run,
+        Ok(None) => {
             return (
                 StatusCode::NOT_FOUND,
                 Json(json!({"reason": format!("no such run {}", run_id)})),
             );
         }
+        Err(e) => return active_runs_error(e),
     };
 
     // Process multipart upload. Pass the codebase so logs land in
@@ -2642,13 +2708,7 @@ async fn finish_run_multipart_internal(
     // Publish the completed result to subscribers and tear down the
     // active-run state.
     publish_finish_events(&state, &run_id, &janitor_result, active_run.queue_id).await;
-    crate::metrics::MetricsCollector::set_active_runs(
-        &active_run.worker_name,
-        state
-            .active_runs
-            .count_for_worker(&active_run.worker_name)
-            .await as i64,
-    );
+    update_active_runs_gauge(&state, &active_run.worker_name).await;
     crate::metrics::RUNS_COMPLETED_TOTAL
         .with_label_values(&[
             &janitor_result.campaign,
@@ -3391,15 +3451,10 @@ async fn assign_work_internal(
         resume_from,
     };
 
-    // Store active run in the in-memory store
-    state.active_runs.store(active_run.clone()).await;
-    crate::metrics::MetricsCollector::set_active_runs(
-        &active_run.worker_name,
-        state
-            .active_runs
-            .count_for_worker(&active_run.worker_name)
-            .await as i64,
-    );
+    if let Err(e) = state.active_runs.store(active_run.clone()).await {
+        return active_runs_error(e);
+    }
+    update_active_runs_gauge(&state, &active_run.worker_name).await;
 
     // Generate build configuration for the worker
     let campaign_config = create_campaign_config(&assignment.queue_item, &state.config);
@@ -3729,7 +3784,7 @@ async fn public_finish(
     // Worker credentials are verified by authentication middleware
     // Verify that this worker is authorized to finish this specific run
     match state.active_runs.get(&id).await {
-        Some(active_run) => {
+        Ok(Some(active_run)) => {
             if active_run.worker_name != worker_name {
                 log::warn!(
                     "Worker {} attempted to finish run {} assigned to worker {}",
@@ -3743,12 +3798,13 @@ async fn public_finish(
                 );
             }
         }
-        None => {
+        Ok(None) => {
             return (
                 StatusCode::NOT_FOUND,
                 Json(json!({"error": "Run not found"})),
             );
         }
+        Err(e) => return active_runs_error(e),
     }
 
     // Workers POST a multipart body (metadata field + one `file`
@@ -3766,7 +3822,7 @@ async fn public_finish_multipart(
     // Worker credentials are verified by authentication middleware
     // Verify that this worker is authorized to finish this specific run
     match state.active_runs.get(&id).await {
-        Some(active_run) => {
+        Ok(Some(active_run)) => {
             if active_run.worker_name != worker_name {
                 log::warn!(
                     "Worker {} attempted to finish run {} assigned to worker {}",
@@ -3780,12 +3836,13 @@ async fn public_finish_multipart(
                 );
             }
         }
-        None => {
+        Ok(None) => {
             return (
                 StatusCode::NOT_FOUND,
                 Json(json!({"error": "Run not found"})),
             );
         }
+        Err(e) => return active_runs_error(e),
     }
 
     log::info!(
@@ -3804,11 +3861,12 @@ async fn public_get_active_run(
     // endpoint) and 404s on missing -- there's no "public view"
     // stripping.
     match state.active_runs.get(&id).await {
-        Some(active_run) => (StatusCode::OK, Json(active_run.to_json())),
-        None => (
+        Ok(Some(active_run)) => (StatusCode::OK, Json(active_run.to_json())),
+        Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(json!({"reason": format!("no such run {}", id)})),
         ),
+        Err(e) => active_runs_error(e),
     }
 }
 
@@ -3858,21 +3916,30 @@ async fn public_watchdog_health(State(state): State<Arc<AppState>>) -> impl Into
 async fn public_queue_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Active runs live in Redis, not Postgres; source them here so
     // the count reflects reality.
-    let active_runs = state.active_runs.len().await as i64;
+    let active_runs = match state.active_runs.len().await {
+        Ok(n) => n as i64,
+        Err(e) => return active_runs_error(e),
+    };
     match state.database.get_queue_stats().await {
-        Ok(stats) => Json(json!({
-            "queue_length": stats.get("total").unwrap_or(&0),
-            "active_runs": active_runs,
-            "succeeded": stats.get("succeeded").unwrap_or(&0),
-            "failed": stats.get("failed").unwrap_or(&0),
-            "status": "operational"
-        })),
+        Ok(stats) => (
+            StatusCode::OK,
+            Json(json!({
+                "queue_length": stats.get("total").unwrap_or(&0),
+                "active_runs": active_runs,
+                "succeeded": stats.get("succeeded").unwrap_or(&0),
+                "failed": stats.get("failed").unwrap_or(&0),
+                "status": "operational"
+            })),
+        ),
         Err(e) => {
             log::error!("Failed to get queue stats: {}", e);
-            Json(json!({
-                "status": "error",
-                "error": "Database error"
-            }))
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "status": "error",
+                    "error": "Database error"
+                })),
+            )
         }
     }
 }

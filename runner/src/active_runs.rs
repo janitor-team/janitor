@@ -27,6 +27,22 @@ use std::collections::HashMap;
 /// other without losing in-flight runs.
 const DEFAULT_KEY: &str = "active-runs";
 
+/// Errors from talking to Redis or decoding the stored runs.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// Redis command or connection failure.
+    #[error("Redis error: {0}")]
+    Redis(#[from] redis::RedisError),
+
+    /// A stored run is not valid JSON, or a run could not be encoded.
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    /// A stored run is missing fields or has fields of the wrong type.
+    #[error("Invalid active run: {0}")]
+    InvalidRun(Box<dyn std::error::Error + Send + Sync>),
+}
+
 /// Shared Redis-backed store of currently-active runs, keyed by `log_id`.
 #[derive(Clone)]
 pub struct ActiveRunStore {
@@ -47,173 +63,101 @@ impl ActiveRunStore {
         Self { redis, key }
     }
 
-    async fn conn(&self) -> Option<redis::aio::MultiplexedConnection> {
-        match self.redis.get_multiplexed_async_connection().await {
-            Ok(c) => Some(c),
-            Err(e) => {
-                log::warn!("active_runs: redis connect failed: {}", e);
-                None
-            }
-        }
+    async fn conn(&self) -> Result<redis::aio::MultiplexedConnection, Error> {
+        Ok(self.redis.get_multiplexed_async_connection().await?)
     }
 
     /// Record a newly-assigned active run. Overwrites any existing
-    /// entry with the same `log_id`. Errors are logged; callers don't
-    /// get a Result because no caller has anything useful to do on
-    /// Redis failure (the queue-item assignment in `assign_queue_item`
-    /// follows the same log-and-continue pattern).
-    pub async fn store(&self, active_run: ActiveRun) {
-        let json = match serde_json::to_string(&active_run.to_json()) {
-            Ok(s) => s,
-            Err(e) => {
-                log::error!(
-                    "active_runs.store: serialize failed for {}: {}",
-                    active_run.log_id,
-                    e
-                );
-                return;
-            }
-        };
-        let Some(mut conn) = self.conn().await else {
-            return;
-        };
-        let res: redis::RedisResult<()> = conn.hset(&self.key, &active_run.log_id, json).await;
-        if let Err(e) = res {
-            log::error!(
-                "active_runs.store: HSET failed for {}: {}",
-                active_run.log_id,
-                e
-            );
-        }
+    /// entry with the same `log_id`.
+    pub async fn store(&self, active_run: ActiveRun) -> Result<(), Error> {
+        let json = serde_json::to_string(&active_run.to_json())?;
+        let mut conn = self.conn().await?;
+        let _: () = conn.hset(&self.key, &active_run.log_id, json).await?;
+        Ok(())
     }
 
     /// Fetch a single active run by id.
-    pub async fn get(&self, run_id: &str) -> Option<ActiveRun> {
+    pub async fn get(&self, run_id: &str) -> Result<Option<ActiveRun>, Error> {
         let mut conn = self.conn().await?;
-        let json: Option<String> = match conn.hget(&self.key, run_id).await {
-            Ok(v) => v,
-            Err(e) => {
-                log::warn!("active_runs.get HGET {}: {}", run_id, e);
-                return None;
-            }
-        };
-        let json = json?;
-        match parse_active_run(&json) {
-            Ok(r) => Some(r),
-            Err(e) => {
-                log::warn!("active_runs.get: bad row for {}: {}", run_id, e);
-                None
-            }
-        }
+        let json: Option<String> = conn.hget(&self.key, run_id).await?;
+        json.map(|json| parse_active_run(&json)).transpose()
     }
 
     /// List all currently-active runs. Sorted by `start_time` ascending
     /// so the ordering matches the Python `status_json` output.
-    pub async fn list(&self) -> Vec<ActiveRun> {
-        let Some(mut conn) = self.conn().await else {
-            return Vec::new();
-        };
-        let map: HashMap<String, String> = match conn.hgetall(&self.key).await {
-            Ok(m) => m,
-            Err(e) => {
-                log::warn!("active_runs.list HGETALL: {}", e);
-                return Vec::new();
-            }
-        };
-        let mut runs: Vec<ActiveRun> = map
-            .into_iter()
-            .filter_map(|(log_id, json)| match parse_active_run(&json) {
-                Ok(r) => Some(r),
-                Err(e) => {
-                    log::warn!("active_runs.list: bad row for {}: {}", log_id, e);
-                    None
-                }
-            })
-            .collect();
+    pub async fn list(&self) -> Result<Vec<ActiveRun>, Error> {
+        let mut conn = self.conn().await?;
+        let map: HashMap<String, String> = conn.hgetall(&self.key).await?;
+        let mut runs = map
+            .values()
+            .map(|json| parse_active_run(json))
+            .collect::<Result<Vec<_>, _>>()?;
         runs.sort_by_key(|r| r.start_time);
-        runs
+        Ok(runs)
     }
 
     /// Drop an active run from the store. Returns `true` if a row was
     /// actually removed.
-    pub async fn remove(&self, run_id: &str) -> bool {
-        let Some(mut conn) = self.conn().await else {
-            return false;
-        };
-        match conn.hdel::<_, _, u32>(&self.key, run_id).await {
-            Ok(n) => n > 0,
-            Err(e) => {
-                log::warn!("active_runs.remove HDEL {}: {}", run_id, e);
-                false
-            }
-        }
+    pub async fn remove(&self, run_id: &str) -> Result<bool, Error> {
+        let mut conn = self.conn().await?;
+        let removed: u32 = conn.hdel(&self.key, run_id).await?;
+        Ok(removed > 0)
     }
 
     /// Count the number of active runs for a given worker. Used by the
     /// concurrency-limit check in `auth::SecurityService::can_start_run`.
-    pub async fn count_for_worker(&self, worker_name: &str) -> usize {
-        self.list()
-            .await
+    pub async fn count_for_worker(&self, worker_name: &str) -> Result<usize, Error> {
+        Ok(self
+            .list()
+            .await?
             .into_iter()
             .filter(|r| r.worker_name == worker_name)
-            .count()
+            .count())
     }
 
     /// Count the total number of active runs.
-    pub async fn len(&self) -> usize {
-        let Some(mut conn) = self.conn().await else {
-            return 0;
-        };
-        match conn.hlen::<_, usize>(&self.key).await {
-            Ok(n) => n,
-            Err(e) => {
-                log::warn!("active_runs.len HLEN: {}", e);
-                0
-            }
-        }
+    pub async fn len(&self) -> Result<usize, Error> {
+        let mut conn = self.conn().await?;
+        Ok(conn.hlen(&self.key).await?)
     }
 
     /// Whether the active-run store has zero entries.
-    pub async fn is_empty(&self) -> bool {
-        self.len().await == 0
+    pub async fn is_empty(&self) -> Result<bool, Error> {
+        Ok(self.len().await? == 0)
     }
 
     /// Count the number of distinct workers with at least one active
     /// run. Used by `SecurityService::get_security_stats`.
-    pub async fn distinct_worker_count(&self) -> usize {
-        let runs = self.list().await;
-        let mut workers: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for run in runs {
-            workers.insert(run.worker_name);
-        }
-        workers.len()
+    pub async fn distinct_worker_count(&self) -> Result<usize, Error> {
+        let runs = self.list().await?;
+        let workers: std::collections::HashSet<String> =
+            runs.into_iter().map(|run| run.worker_name).collect();
+        Ok(workers.len())
     }
 
     /// Remove runs that have been active for longer than `max_age`.
     /// Returns the removed entries so the caller can run any cleanup
     /// (logging, recording a worker-timeout result, etc.).
-    pub async fn drain_older_than(&self, max_age: chrono::Duration) -> Vec<ActiveRun> {
+    pub async fn drain_older_than(
+        &self,
+        max_age: chrono::Duration,
+    ) -> Result<Vec<ActiveRun>, Error> {
         let cutoff = chrono::Utc::now() - max_age;
-        let runs = self.list().await;
+        let runs = self.list().await?;
         let stale: Vec<ActiveRun> = runs.into_iter().filter(|r| r.start_time < cutoff).collect();
         if stale.is_empty() {
-            return stale;
+            return Ok(stale);
         }
-        let Some(mut conn) = self.conn().await else {
-            return Vec::new();
-        };
+        let mut conn = self.conn().await?;
         for run in &stale {
-            let res: redis::RedisResult<u32> = conn.hdel(&self.key, &run.log_id).await;
-            if let Err(e) = res {
-                log::warn!("active_runs.drain HDEL {}: {}", run.log_id, e);
-            }
+            let _: u32 = conn.hdel(&self.key, &run.log_id).await?;
         }
-        stale
+        Ok(stale)
     }
 }
 
-fn parse_active_run(json: &str) -> Result<ActiveRun, Box<dyn std::error::Error + Send + Sync>> {
-    ActiveRun::from_json(&serde_json::from_str(json)?)
+fn parse_active_run(json: &str) -> Result<ActiveRun, Error> {
+    ActiveRun::from_json(&serde_json::from_str(json)?).map_err(Error::InvalidRun)
 }
 
 /// Format a timestamp the way the Python runner's naive
@@ -287,9 +231,8 @@ mod tests {
 
     /// Drop the test hash key so we don't leak state across runs.
     async fn cleanup(store: &ActiveRunStore) {
-        if let Some(mut conn) = store.conn().await {
-            let _: redis::RedisResult<u32> = conn.del(&store.key).await;
-        }
+        let mut conn = store.conn().await.unwrap();
+        let _: u32 = conn.del(&store.key).await.unwrap();
     }
 
     #[tokio::test]
@@ -298,8 +241,8 @@ mod tests {
             eprintln!("skipping: Redis unavailable");
             return;
         };
-        store.store(make_run("run-1", "worker-a")).await;
-        let got = store.get("run-1").await.unwrap();
+        store.store(make_run("run-1", "worker-a")).await.unwrap();
+        let got = store.get("run-1").await.unwrap().unwrap();
         assert_eq!(got.log_id, "run-1");
         assert_eq!(got.worker_name, "worker-a");
         cleanup(&store).await;
@@ -311,7 +254,7 @@ mod tests {
             eprintln!("skipping: Redis unavailable");
             return;
         };
-        assert!(store.get("absent").await.is_none());
+        assert!(store.get("absent").await.unwrap().is_none());
         cleanup(&store).await;
     }
 
@@ -327,10 +270,16 @@ mod tests {
         r1.start_time = Utc::now() - chrono::Duration::seconds(30);
         r2.start_time = Utc::now() - chrono::Duration::seconds(10);
         r3.start_time = Utc::now() - chrono::Duration::seconds(20);
-        store.store(r2).await;
-        store.store(r3).await;
-        store.store(r1).await;
-        let ids: Vec<String> = store.list().await.into_iter().map(|r| r.log_id).collect();
+        store.store(r2).await.unwrap();
+        store.store(r3).await.unwrap();
+        store.store(r1).await.unwrap();
+        let ids: Vec<String> = store
+            .list()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.log_id)
+            .collect();
         assert_eq!(ids, vec!["a".to_string(), "c".to_string(), "b".to_string()]);
         cleanup(&store).await;
     }
@@ -341,9 +290,9 @@ mod tests {
             eprintln!("skipping: Redis unavailable");
             return;
         };
-        store.store(make_run("run-1", "w")).await;
-        assert!(store.remove("run-1").await);
-        assert!(!store.remove("run-1").await);
+        store.store(make_run("run-1", "w")).await.unwrap();
+        assert!(store.remove("run-1").await.unwrap());
+        assert!(!store.remove("run-1").await.unwrap());
         cleanup(&store).await;
     }
 
@@ -353,12 +302,12 @@ mod tests {
             eprintln!("skipping: Redis unavailable");
             return;
         };
-        store.store(make_run("run-1", "worker-a")).await;
-        store.store(make_run("run-2", "worker-a")).await;
-        store.store(make_run("run-3", "worker-b")).await;
-        assert_eq!(store.count_for_worker("worker-a").await, 2);
-        assert_eq!(store.count_for_worker("worker-b").await, 1);
-        assert_eq!(store.count_for_worker("worker-c").await, 0);
+        store.store(make_run("run-1", "worker-a")).await.unwrap();
+        store.store(make_run("run-2", "worker-a")).await.unwrap();
+        store.store(make_run("run-3", "worker-b")).await.unwrap();
+        assert_eq!(store.count_for_worker("worker-a").await.unwrap(), 2);
+        assert_eq!(store.count_for_worker("worker-b").await.unwrap(), 1);
+        assert_eq!(store.count_for_worker("worker-c").await.unwrap(), 0);
         cleanup(&store).await;
     }
 
@@ -368,10 +317,10 @@ mod tests {
             eprintln!("skipping: Redis unavailable");
             return;
         };
-        store.store(make_run("run-1", "worker-a")).await;
-        store.store(make_run("run-2", "worker-a")).await;
-        store.store(make_run("run-3", "worker-b")).await;
-        assert_eq!(store.distinct_worker_count().await, 2);
+        store.store(make_run("run-1", "worker-a")).await.unwrap();
+        store.store(make_run("run-2", "worker-a")).await.unwrap();
+        store.store(make_run("run-3", "worker-b")).await.unwrap();
+        assert_eq!(store.distinct_worker_count().await.unwrap(), 2);
         cleanup(&store).await;
     }
 
@@ -384,13 +333,16 @@ mod tests {
         let mut old = make_run("old", "w");
         old.start_time = Utc::now() - chrono::Duration::hours(10);
         let fresh = make_run("fresh", "w");
-        store.store(old).await;
-        store.store(fresh).await;
-        let drained = store.drain_older_than(chrono::Duration::hours(1)).await;
+        store.store(old).await.unwrap();
+        store.store(fresh).await.unwrap();
+        let drained = store
+            .drain_older_than(chrono::Duration::hours(1))
+            .await
+            .unwrap();
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].log_id, "old");
-        assert!(store.get("fresh").await.is_some());
-        assert!(store.get("old").await.is_none());
+        assert!(store.get("fresh").await.unwrap().is_some());
+        assert!(store.get("old").await.unwrap().is_none());
         cleanup(&store).await;
     }
 
@@ -431,7 +383,7 @@ mod tests {
             .await
             .unwrap();
 
-        let run = store.get("run-py").await.unwrap();
+        let run = store.get("run-py").await.unwrap().unwrap();
         assert_eq!(run.queue_id, 42);
         assert_eq!(run.worker_name, "w1");
         assert_eq!(
@@ -453,7 +405,7 @@ mod tests {
             crate::Backchannel::Polling { ref my_url } if my_url == "http://w1:8080/"
         ));
 
-        store.store(run).await;
+        store.store(run).await.unwrap();
         let stored: String = conn.hget(&store.key, "run-py").await.unwrap();
         let mut stored: serde_json::Value = serde_json::from_str(&stored).unwrap();
         let mut expected = python_json.clone();
@@ -474,13 +426,40 @@ mod tests {
             eprintln!("skipping: Redis unavailable");
             return;
         };
-        store.store(make_run("persisted", "worker-a")).await;
+        store
+            .store(make_run("persisted", "worker-a"))
+            .await
+            .unwrap();
         // Build a second store that shares only the redis client + key
         // -- equivalent to what happens when the runner restarts and
         // reconstructs `ActiveRunStore::new(redis)` from scratch.
         let reconstructed = ActiveRunStore::with_key(store.redis.clone(), store.key.clone());
-        let got = reconstructed.get("persisted").await.unwrap();
+        let got = reconstructed.get("persisted").await.unwrap().unwrap();
         assert_eq!(got.worker_name, "worker-a");
+        cleanup(&store).await;
+    }
+
+    #[tokio::test]
+    async fn redis_errors_are_returned() {
+        // Nothing listens on port 1.
+        let store = ActiveRunStore::new(redis::Client::open("redis://127.0.0.1:1/").unwrap());
+        assert!(store.get("run-1").await.is_err());
+        assert!(store.list().await.is_err());
+        assert!(store.len().await.is_err());
+        assert!(store.remove("run-1").await.is_err());
+        assert!(store.store(make_run("run-1", "w")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn invalid_rows_are_errors() {
+        let Some(store) = try_test_store().await else {
+            eprintln!("skipping: Redis unavailable");
+            return;
+        };
+        let mut conn = store.conn().await.unwrap();
+        let _: () = conn.hset(&store.key, "bad", "not json").await.unwrap();
+        assert!(store.get("bad").await.is_err());
+        assert!(store.list().await.is_err());
         cleanup(&store).await;
     }
 }

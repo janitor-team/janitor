@@ -627,7 +627,7 @@ async fn post_kill_jenkins_run_returns_501() {
         instigated_context: None,
         resume_from: None,
     };
-    state.active_runs.store(active_run).await;
+    state.active_runs.store(active_run).await.unwrap();
 
     let req = Request::builder()
         .method(Method::POST)
@@ -646,7 +646,11 @@ async fn post_kill_jenkins_run_returns_501() {
     );
 
     // Cleanup so the row does not leak across serial tests.
-    let _ = state.active_runs.remove("run-kill-not-supported").await;
+    state
+        .active_runs
+        .remove("run-kill-not-supported")
+        .await
+        .unwrap();
 }
 
 /// `GET /active-runs` returns the empty list when no run is active.
@@ -1150,7 +1154,7 @@ async fn public_finish_returns_403_when_worker_does_not_own_run() {
         instigated_context: None,
         resume_from: None,
     };
-    state.active_runs.store(active_run).await;
+    state.active_runs.store(active_run).await.unwrap();
 
     // Bob attempts the finish -- the mismatch check runs before any
     // multipart parsing, so an empty body still reaches the 403 branch.
@@ -1176,7 +1180,11 @@ async fn public_finish_returns_403_when_worker_does_not_own_run() {
         "expected `Not authorized` in error, got {body}"
     );
 
-    let _ = state.active_runs.remove("run-owned-by-alice").await;
+    state
+        .active_runs
+        .remove("run-owned-by-alice")
+        .await
+        .unwrap();
 }
 
 /// End-to-end lifecycle test: seed a codebase and campaign, enqueue
@@ -1311,7 +1319,7 @@ async fn end_to_end_assignment_lifecycle() {
     // ActiveRun should be gone from Redis after finish -- the run is
     // no longer in-flight, so /kill and /active-runs/{id} must 404.
     assert!(
-        state.active_runs.get(run_id).await.is_none(),
+        state.active_runs.get(run_id).await.unwrap().is_none(),
         "active run should be dropped from Redis after finish"
     );
 }
@@ -1550,7 +1558,7 @@ async fn seed_active_run_for_finish(state: &Arc<AppState>, log_id: &str) {
         instigated_context: None,
         resume_from: None,
     };
-    state.active_runs.store(run).await;
+    state.active_runs.store(run).await.unwrap();
 }
 
 /// `POST /finish` with a multipart body that has no `metadata` /
@@ -1596,7 +1604,7 @@ async fn finish_multipart_without_metadata_returns_400() {
         "expected `worker_result`/`Missing` in error, got {body}"
     );
 
-    let _ = state.active_runs.remove("run-no-metadata").await;
+    state.active_runs.remove("run-no-metadata").await.unwrap();
 }
 
 /// `POST /finish` with malformed multipart (unterminated body) yields
@@ -1627,7 +1635,7 @@ async fn finish_malformed_multipart_returns_400() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    let _ = state.active_runs.remove("run-malformed").await;
+    state.active_runs.remove("run-malformed").await.unwrap();
 }
 
 /// `POST /finish` with a multipart part that has no `name=` in the
@@ -1665,7 +1673,7 @@ async fn finish_multipart_field_without_name_returns_400() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    let _ = state.active_runs.remove("run-no-field-name").await;
+    state.active_runs.remove("run-no-field-name").await.unwrap();
 }
 
 /// Assignment scoring by priority: given three candidates with the
