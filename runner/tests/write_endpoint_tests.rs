@@ -1530,6 +1530,87 @@ async fn assign_sends_opened_branch_url() {
     );
 }
 
+/// Like Python, `additional_colocated_branches` comes from the branches
+/// that exist next to the opened main branch.
+#[tokio::test]
+async fn assign_picks_existing_colocated_branches() {
+    use breezyshim::branch::Branch;
+    use breezyshim::workingtree::WorkingTree;
+
+    let mut campaign = janitor::config::Campaign {
+        name: Some("test-campaign".to_string()),
+        command: Some("true".to_string()),
+        ..Default::default()
+    };
+    campaign.set_debian_build(janitor::config::DebianBuild {
+        base_distribution: Some("unstable".to_string()),
+        ..Default::default()
+    });
+    let builder = test_utils::TestConfigBuilder::new().with_campaign_config(campaign);
+    let Some((app, state)) =
+        test_utils::create_test_app_with_state_with_config_if_available(builder)
+            .await
+            .expect("test app setup should either succeed or return None cleanly")
+    else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let td = tempfile::tempdir().unwrap();
+    let wt = breezyshim::controldir::create_standalone_workingtree(
+        td.path(),
+        &breezyshim::controldir::FORMAT_REGISTRY
+            .make_controldir("git")
+            .unwrap(),
+    )
+    .unwrap();
+    let revid = wt
+        .build_commit()
+        .message("initial")
+        .allow_pointless(true)
+        .commit()
+        .unwrap();
+    let controldir = wt.branch().controldir();
+    for name in ["upstream", "pristine-tar", "unrelated"] {
+        controldir
+            .create_branch(Some(name))
+            .unwrap()
+            .generate_revision_history(&revid)
+            .unwrap();
+    }
+
+    let pool = state.database.pool().clone();
+    sqlx::query(
+        "INSERT INTO codebase (name, branch_url, url, vcs_type) VALUES ($1, $2, $2, 'git')",
+    )
+    .bind("assign-colocated-cb")
+    .bind(wt.branch().get_user_url().as_str())
+    .execute(&pool)
+    .await
+    .expect("codebase insert");
+
+    let assignment = assign_one(app, &state, "assign-colocated-cb").await;
+    assert_eq!(
+        assignment["branch"]["additional_colocated_branches"],
+        json!(["pristine-tar", "upstream"])
+    );
+}
+
+#[tokio::test]
+async fn assign_sends_no_colocated_branches_for_unopenable_branch() {
+    let Some((app, state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    // example.invalid can not be opened.
+    let assignment = assign_one(app, &state, "assign-colocated-unreachable-cb").await;
+    assert_eq!(
+        assignment["branch"]["additional_colocated_branches"],
+        Value::Null
+    );
+}
+
 /// `GET /active-runs/+peek` returns 201 + the peek envelope when a
 /// queue item is available, and 503 with `{reason: "queue empty"}`
 /// when it isn't. The peek shape is

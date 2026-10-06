@@ -730,41 +730,6 @@ async fn get_codebases(State(state): State<Arc<AppState>>) -> impl IntoResponse 
 }
 
 /// `POST /codebases` -- bulk upsert codebase rows. Mirrors
-/// Best-effort name of the codebase's main branch, for deciding which
-/// colocated branches a build needs.
-///
-/// Python opens the branch and reads `main_branch.name`; the Rust
-/// runner never opens it during assignment, so recover the name from
-/// the stored branch URL instead -- breezy's `,branch=<name>` segment
-/// or a `?branch=<name>` query -- and fall back to "main" when the URL
-/// carries no branch at all (the common case for a default branch).
-fn main_branch_name(branch_url: Option<&str>) -> String {
-    const DEFAULT: &str = "main";
-    let url = match branch_url {
-        Some(u) => u,
-        None => return DEFAULT.to_string(),
-    };
-    for sep in [",branch=", "?branch=", "&branch="] {
-        if let Some((_, rest)) = url.split_once(sep) {
-            let name = rest.split(['&', ',', '#']).next().unwrap_or("");
-            if !name.is_empty() {
-                // The value is percent-encoded in the `?branch=` form.
-                return percent_encoding::percent_decode_str(name)
-                    .decode_utf8_lossy()
-                    .into_owned();
-            }
-        }
-    }
-    // Debian Vcs-Git style: "https://.../pkg.git -b <branch>".
-    if let Some((_, rest)) = url.split_once(" -b ") {
-        let name = rest.trim();
-        if !name.is_empty() {
-            return name.to_string();
-        }
-    }
-    DEFAULT.to_string()
-}
-
 /// `POST /codebases` -- bulk upsert codebases. Returns 200 with an
 /// empty object on success.
 async fn update_codebases(
@@ -2894,6 +2859,9 @@ struct ResumeOutcome {
     rate_limit: Option<(String, Option<f64>)>,
     /// `full_branch_url` of the main branch, if it could be opened.
     main_branch_url: Option<String>,
+    /// Colocated branches the builder wants, if the main branch could
+    /// be opened.
+    additional_colocated_branches: Option<Vec<String>>,
 }
 
 /// Resume information as returned in the assign response's `resume`
@@ -2928,6 +2896,7 @@ async fn compute_resume_from(
         resume: None,
         rate_limit: None,
         main_branch_url: None,
+        additional_colocated_branches: None,
     };
     let Some(branch_url) = assignment.vcs_info.branch_url.as_deref() else {
         return empty();
@@ -2974,6 +2943,23 @@ async fn compute_resume_from(
             retry_after: Option<f64>,
         },
     }
+    /// What we learned from the main branch once it was open.
+    struct OpenedMainBranch {
+        /// `full_branch_url` of the main branch.
+        url: String,
+        additional_colocated_branches: Vec<String>,
+    }
+    let builder = match get_builder(
+        &create_campaign_config(&assignment.queue_item, &state.config),
+        None,
+        None,
+    ) {
+        Ok(builder) => builder,
+        Err(e) => {
+            log::warn!("Failed to create builder for colocated branches: {}", e);
+            return empty();
+        }
+    };
     let open_fut = tokio::task::spawn_blocking(move || {
         use silver_platter::vcs::BranchOpenError;
         let main_branch = match silver_platter::vcs::open_branch(&open_url, None, None, None) {
@@ -3004,6 +2990,17 @@ async fn compute_resume_from(
             .to_string()
             .trim_end_matches('/')
             .to_string();
+        // The worker wants a list of names rather than Python's
+        // name => role dict; sort them since HashMap order is random.
+        let mut colocated: Vec<String> = builder
+            .additional_colocated_branches(&main_branch)
+            .into_keys()
+            .collect();
+        colocated.sort();
+        let opened = OpenedMainBranch {
+            url: main_branch_url,
+            additional_colocated_branches: colocated,
+        };
         let result = match crate::resume::open_resume_branch(
             &main_branch,
             &forge_campaign_branch_name,
@@ -3020,17 +3017,15 @@ async fn compute_resume_from(
                 BlockingResult::RateLimited { host, retry_after }
             }
         };
-        (Some(main_branch_url), result)
+        (Some(opened), result)
     });
 
-    let (forge_result, rate_limit, main_branch_url) =
+    let (forge_result, rate_limit, opened) =
         match tokio::time::timeout(std::time::Duration::from_secs(60), open_fut).await {
-            Ok(Ok((main_url, BlockingResult::Found(rev, url)))) => {
-                (Some((rev, url)), None, main_url)
-            }
-            Ok(Ok((main_url, BlockingResult::NotFound))) => (None, None, main_url),
-            Ok(Ok((main_url, BlockingResult::RateLimited { host, retry_after }))) => {
-                (None, Some((host, retry_after)), main_url)
+            Ok(Ok((opened, BlockingResult::Found(rev, url)))) => (Some((rev, url)), None, opened),
+            Ok(Ok((opened, BlockingResult::NotFound))) => (None, None, opened),
+            Ok(Ok((opened, BlockingResult::RateLimited { host, retry_after }))) => {
+                (None, Some((host, retry_after)), opened)
             }
             Ok(Err(e)) => {
                 log::warn!("spawn_blocking for open_resume_branch panicked: {}", e);
@@ -3045,10 +3040,14 @@ async fn compute_resume_from(
                 (None, None, None)
             }
         };
+    let (main_branch_url, additional_colocated_branches) = opened
+        .map(|o| (o.url, o.additional_colocated_branches))
+        .unzip();
     let no_resume = || ResumeOutcome {
         resume: None,
         rate_limit: None,
         main_branch_url: main_branch_url.clone(),
+        additional_colocated_branches: additional_colocated_branches.clone(),
     };
     // If the forge rate-limited us, short-circuit: don't bother with
     // the VCS-manager fallback (same codebase, same rate limit) and
@@ -3059,6 +3058,7 @@ async fn compute_resume_from(
             resume: None,
             rate_limit: Some(rl),
             main_branch_url,
+            additional_colocated_branches,
         };
     }
 
@@ -3161,6 +3161,7 @@ async fn compute_resume_from(
         resume,
         rate_limit: None,
         main_branch_url,
+        additional_colocated_branches,
     }
 }
 
@@ -3361,6 +3362,7 @@ async fn assign_work_internal(
             resume: None,
             rate_limit: None,
             main_branch_url: None,
+            additional_colocated_branches: None,
         }
     } else {
         compute_resume_from(&state, &assignment).await
@@ -3452,41 +3454,12 @@ async fn assign_work_internal(
         cache_branch.as_deref(),
     );
 
-    // Colocated branches the worker must fetch alongside the main
-    // branch (`upstream`, `pristine-tar`, … for Debian packaging).
-    // Python's `runner.py::next_item` asks the builder for these and
-    // normalises the result to a list before serialising, because the
-    // worker's `Branch::additional_colocated_branches` is a
-    // `Vec<String>`, not a map (upstream 6594167a3). The Rust builder
-    // likewise returns a `HashMap<name, branch>`, so send its keys.
-    let additional_colocated_branches: Option<Vec<String>> =
-        match get_builder(&campaign_config, None, None) {
-            Ok(builder) => {
-                let main_branch = main_branch_name(assignment.vcs_info.branch_url.as_deref());
-                let mut names: Vec<String> = builder
-                    .additional_colocated_branches(&main_branch)
-                    .into_keys()
-                    .collect();
-                // Stable order so the assignment JSON doesn't churn
-                // between requests (HashMap iteration is unordered).
-                names.sort();
-                Some(names)
-            }
-            Err(e) => {
-                log::warn!(
-                    "Failed to create builder for colocated branches: {}; sending none",
-                    e
-                );
-                None
-            }
-        };
-
     let branch = json!({
         "cached_url": cached_url,
         "vcs_type": assignment.vcs_info.vcs_type,
         "url": vcs_info.branch_url,
         "subpath": assignment.vcs_info.subpath.clone().unwrap_or_default(),
-        "additional_colocated_branches": additional_colocated_branches,
+        "additional_colocated_branches": resume_outcome.additional_colocated_branches,
         "default-empty": campaign_config.default_empty,
     });
 
@@ -3955,7 +3928,7 @@ pub fn app(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::{
-        assignment_validation_outcome, candidate_preflight, main_branch_name, AssignmentValidation,
+        assignment_validation_outcome, candidate_preflight, AssignmentValidation,
         CandidatePreflight,
     };
     use crate::CampaignConfig;
@@ -4733,51 +4706,5 @@ distribution {
                 .await
                 .unwrap();
         assert_eq!(surviving_followups, vec!["r-keep".to_string()]);
-    }
-
-    /// The assignment's `additional_colocated_branches` depends on the
-    /// main branch's name, which the Rust runner has to recover from
-    /// the stored branch URL (Python reads it off the opened branch).
-    #[test]
-    fn test_main_branch_name() {
-        // No URL and no branch marker: the default branch.
-        assert_eq!(main_branch_name(None), "main");
-        assert_eq!(
-            main_branch_name(Some("https://salsa.debian.org/foo/bar.git")),
-            "main"
-        );
-
-        // breezy's native form.
-        assert_eq!(
-            main_branch_name(Some(
-                "https://salsa.debian.org/foo/bar.git,branch=debian/sid"
-            )),
-            "debian/sid"
-        );
-
-        // Query-string form, including percent-encoded separators.
-        assert_eq!(
-            main_branch_name(Some("https://example.com/foo?branch=debian%2Fmaster")),
-            "debian/master"
-        );
-        assert_eq!(
-            main_branch_name(Some("https://example.com/foo?x=1&branch=upstream")),
-            "upstream"
-        );
-
-        // Debian Vcs-Git style, as it round-trips through the codebase
-        // table.
-        assert_eq!(
-            main_branch_name(Some(
-                "https://salsa.debian.org/foo/bar.git -b debian/master"
-            )),
-            "debian/master"
-        );
-
-        // An empty branch value is not a branch name.
-        assert_eq!(
-            main_branch_name(Some("https://example.com/foo?branch=")),
-            "main"
-        );
     }
 }
