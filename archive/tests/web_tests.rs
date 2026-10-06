@@ -26,11 +26,25 @@ fn apt_repo(name: &str, archive: &Path) -> AptRepositoryConfig {
 
 async fn generator(pool: &sqlx::PgPool, archive: &Path) -> RepositoryGenerator {
     let location = archive.join("artifacts").display().to_string();
+    let runtime_config = janitor::config::read_string(
+        r#"
+        campaign {
+            name: "lintian-fixes"
+            debian_build { build_distribution: "unchanged" }
+        }
+        apt_repository {
+            name: "unchanged"
+            select { campaign: "lintian-fixes" }
+        }
+        "#,
+    )
+    .unwrap();
     RepositoryGenerator::new(
         Arc::new(PackageScanner::new(&location).await.unwrap()),
         Arc::new(ArchiveDatabase::new(pool.clone())),
         RepositoryGenerationConfig::default(),
     )
+    .with_runtime_config(Arc::new(runtime_config))
 }
 
 async fn build_app(pool: sqlx::PgPool) -> (axum::Router, TempDir) {
