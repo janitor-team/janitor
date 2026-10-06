@@ -3,13 +3,12 @@ use crate::api_types::{
     AssignmentCodemod, AssignmentResponse, AssignmentTargetRepository, BuildAssignmentConfig,
     CleanupRunsResponse, CurrentStageResponse, DebianBuildAssignment, EmptyResponse, ErrorResponse,
     FinishConflictResponse, FinishResponse, GenericBuildAssignment, MessageResponse, PeekResponse,
-    PublishStatusUpdate, QueueEntry, QueuePositionResponse, QueueStatsResponse,
-    RateLimitedResponse, ReasonResponse, ResultBranchEntry, ResumeAssignment, ResumeChainResponse,
-    ResumeCheckResponse, ResumeDescendantsResponse, ResumeValidationResponse, RunDetailResponse,
-    RunFollowup, RunFollowupsResponse, RunHealthSummary, RunListResponse, RunSummary,
-    ScheduleControlResponse, ScheduleResponse, ScheduledCandidate, StatusResponse,
-    UploadCandidatesResponse, WatchdogHealthResponse, WorkerInfo, WorkerListResponse,
-    WorkerSummary,
+    PublishStatusUpdate, QueueEntry, QueuePositionResponse, QueueStatsResponse, ReasonResponse,
+    ResultBranchEntry, ResumeAssignment, ResumeChainResponse, ResumeCheckResponse,
+    ResumeDescendantsResponse, ResumeValidationResponse, RunDetailResponse, RunFollowup,
+    RunFollowupsResponse, RunHealthSummary, RunListResponse, RunSummary, ScheduleControlResponse,
+    ScheduleResponse, ScheduledCandidate, StatusResponse, UploadCandidatesResponse,
+    WatchdogHealthResponse, WorkerInfo, WorkerListResponse, WorkerSummary,
 };
 use crate::{
     get_builder, metrics::MetricsCollector, ActiveRun, AppState, Backchannel, BuilderResult,
@@ -3249,8 +3248,9 @@ async fn authenticate_worker(
         (status = 201, description = "Work was assigned", body = AssignmentResponse,
          headers(("Location" = String, description = "URL of the new active run"))),
         (status = 500, description = "Database error", body = ErrorResponse),
-        (status = 503, description = "Queue is empty, or a forge rate-limited the runner \
-                                     (body is then a `RateLimitedResponse`)", body = ReasonResponse),
+        (status = 429, description = "A forge rate-limited the runner", body = ReasonResponse,
+         headers(("Retry-After" = u64, description = "Seconds to wait before asking again"))),
+        (status = 503, description = "Queue is empty", body = ReasonResponse),
     )
 )]
 async fn public_assign(
@@ -3286,8 +3286,9 @@ async fn public_assign(
          headers(("Location" = String, description = "URL of the new active run"))),
         (status = 400, description = "Worker is missing or not registered", body = AssignRejectedResponse),
         (status = 500, description = "Database error", body = ErrorResponse),
-        (status = 503, description = "Queue is empty, or a forge rate-limited the runner \
-                                     (body is then a `RateLimitedResponse`)", body = ReasonResponse),
+        (status = 429, description = "A forge rate-limited the runner", body = ReasonResponse,
+         headers(("Retry-After" = u64, description = "Seconds to wait before asking again"))),
+        (status = 503, description = "Queue is empty", body = ReasonResponse),
     )
 )]
 async fn private_assign(
@@ -3409,6 +3410,28 @@ async fn abort_assignment(
     }
 }
 
+/// Seconds to wait before retrying a rate-limited forge that didn't
+/// say how long to wait.
+const DEFAULT_RETRY_AFTER: u64 = 120;
+
+/// Seconds a worker should wait after the forge rate-limited us;
+/// like Python, a missing or zero wait means DEFAULT_RETRY_AFTER.
+fn retry_after_secs(retry_after: Option<f64>) -> u64 {
+    retry_after
+        .filter(|s| *s > 0.0)
+        .map_or(DEFAULT_RETRY_AFTER, |s| s.ceil() as u64)
+}
+
+/// The 429 response Python sent when a forge rate-limited us.
+fn rate_limited_response(wait_secs: u64) -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(axum::http::header::RETRY_AFTER, wait_secs.to_string())],
+        Json(ReasonResponse::new("rate limited")),
+    )
+        .into_response()
+}
+
 /// Outcome of `compute_resume_from`. Carries the resume metadata (if
 /// any) and a forge rate-limit signal so the caller can record it in
 /// Redis via `rate_limit_host`.
@@ -3418,12 +3441,22 @@ struct ResumeOutcome {
     /// per-role branches, resume-branch URL). Populated only when a
     /// resume candidate was found.
     resume: Option<ResumeAssignment>,
-    rate_limit: Option<(String, Option<f64>)>,
+    rate_limit: Option<RateLimit>,
     /// `full_branch_url` of the main branch, if it could be opened.
     main_branch_url: Option<String>,
     /// Colocated branches the builder wants, if the main branch could
     /// be opened.
     additional_colocated_branches: Option<Vec<String>>,
+}
+
+/// A forge rate-limited us while opening the main or resume branch.
+struct RateLimit {
+    /// Host to put in the runner's `rate-limit-hosts` set.
+    host: String,
+    /// Forge-supplied wait in seconds, if any.
+    retry_after: Option<f64>,
+    /// Result code to record for the aborted run.
+    code: &'static str,
 }
 
 /// Resume-branch lookup. Opens the main branch, asks the forge (via
@@ -3439,6 +3472,7 @@ async fn compute_resume_from(
     state: &Arc<AppState>,
     assignment: &crate::QueueAssignment,
 ) -> ResumeOutcome {
+    let refresh = assignment.queue_item.refresh;
     let Some(branch_url) = assignment.vcs_info.branch_url.as_deref() else {
         return ResumeOutcome::default();
     };
@@ -3479,10 +3513,7 @@ async fn compute_resume_from(
         /// (resume-branch revision, resume-branch URL as reported by the forge)
         Found(String, String),
         NotFound,
-        RateLimited {
-            host: String,
-            retry_after: Option<f64>,
-        },
+        RateLimited(RateLimit),
     }
     /// What we learned from the main branch once it was open.
     struct OpenedMainBranch {
@@ -3519,7 +3550,14 @@ async fn compute_resume_from(
                     .host_str()
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| url.to_string());
-                return (None, BlockingResult::RateLimited { host, retry_after });
+                return (
+                    None,
+                    BlockingResult::RateLimited(RateLimit {
+                        host,
+                        retry_after,
+                        code: "pull-rate-limited",
+                    }),
+                );
             }
             Err(e) => {
                 log::debug!("Failed to open main branch {}: {}", open_url, e);
@@ -3542,6 +3580,10 @@ async fn compute_resume_from(
             url: main_branch_url,
             additional_colocated_branches: colocated,
         };
+        // Python doesn't look for a resume branch when refreshing.
+        if refresh {
+            return (Some(opened), BlockingResult::NotFound);
+        }
         let result = match crate::resume::open_resume_branch(
             &main_branch,
             &forge_campaign_branch_name,
@@ -3555,7 +3597,11 @@ async fn compute_resume_from(
             }
             crate::resume::ResumeLookup::NotFound => BlockingResult::NotFound,
             crate::resume::ResumeLookup::RateLimited { host, retry_after } => {
-                BlockingResult::RateLimited { host, retry_after }
+                BlockingResult::RateLimited(RateLimit {
+                    host,
+                    retry_after,
+                    code: "resume-rate-limited",
+                })
             }
         };
         (Some(opened), result)
@@ -3565,9 +3611,7 @@ async fn compute_resume_from(
         match tokio::time::timeout(std::time::Duration::from_secs(60), open_fut).await {
             Ok(Ok((opened, BlockingResult::Found(rev, url)))) => (Some((rev, url)), None, opened),
             Ok(Ok((opened, BlockingResult::NotFound))) => (None, None, opened),
-            Ok(Ok((opened, BlockingResult::RateLimited { host, retry_after }))) => {
-                (None, Some((host, retry_after)), opened)
-            }
+            Ok(Ok((opened, BlockingResult::RateLimited(rl)))) => (None, Some(rl), opened),
             Ok(Err(e)) => {
                 log::warn!("spawn_blocking for open_resume_branch panicked: {}", e);
                 (None, None, None)
@@ -3606,6 +3650,8 @@ async fn compute_resume_from(
     // public VCS manager for `<campaign>/main` on this codebase.
     let (resume_revision, resume_branch_url) = if let Some((rev, br_url)) = forge_result {
         (rev, br_url)
+    } else if refresh {
+        return no_resume();
     } else {
         let Some(vcs_type_str) = assignment.vcs_info.vcs_type.as_deref() else {
             return no_resume();
@@ -3898,43 +3944,33 @@ async fn assign_work_internal(
     // Non-rate-limit errors (no forge, no credentials, network
     // failure) are swallowed as "no resume". Rate-limit errors are
     // surfaced so we can record the host and refuse the assignment.
-    let resume_outcome = if assignment.queue_item.refresh {
-        ResumeOutcome::default()
-    } else {
-        compute_resume_from(&state, &assignment).await
-    };
+    let resume_outcome = compute_resume_from(&state, &assignment).await;
 
-    if let Some((host, retry_after)) = resume_outcome.rate_limit {
+    if let Some(rl) = resume_outcome.rate_limit {
         // Record the host in Redis so `next_queue_item_with_rate_limiting`
-        // skips it until the forge-supplied `retry_after`. Fall back
-        // to a conservative 30 minutes if the forge didn't include a
-        // Retry-After header.
-        let wait_secs = retry_after.unwrap_or(1800.0).max(0.0);
+        // skips it until the forge-supplied `retry_after`, falling
+        // back to DEFAULT_RETRY_AFTER like Python.
+        let wait_secs = retry_after_secs(rl.retry_after);
         let until = chrono::Utc::now() + chrono::Duration::seconds(wait_secs as i64);
         crate::metrics::RATE_LIMITED_COUNT
-            .with_label_values(&[&host])
+            .with_label_values(&[&rl.host])
             .inc();
-        if let Err(e) = state.database.rate_limit_host(&host, until).await {
-            log::warn!("Failed to record rate-limit for host {}: {}", host, e);
+        if let Err(e) = state.database.rate_limit_host(&rl.host, until).await {
+            log::warn!("Failed to record rate-limit for host {}: {}", rl.host, e);
         }
 
         abort_assignment(
             &state,
             &assignment,
-            "resume-rate-limited",
-            &format!("Forge {} rate-limited us; retry after {}s", host, wait_secs),
+            rl.code,
+            &format!(
+                "Forge {} rate-limited us; retry after {}s",
+                rl.host, wait_secs
+            ),
         )
         .await;
 
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(RateLimitedResponse {
-                reason: "rate limited".to_string(),
-                host,
-                retry_after,
-            }),
-        )
-            .into_response();
+        return rate_limited_response(wait_secs);
     }
 
     let resume_assignment: Option<ResumeAssignment> = resume_outcome.resume;
@@ -4359,19 +4395,11 @@ struct FinishUpload {
 /// Name of the security scheme for worker credentials.
 const WORKER_AUTH: &str = "worker_auth";
 
-/// Base of the OpenAPI documents. `RateLimitedResponse` is listed
-/// explicitly because the assign endpoints can only reference one 503
-/// body. utoipa only collects schemas from request and response bodies,
-/// so the identifier types used as parameters are listed too.
+/// Base of the OpenAPI documents. utoipa only collects schemas from
+/// request and response bodies, so the identifier types used as
+/// parameters are listed explicitly.
 #[derive(utoipa::OpenApi)]
-#[openapi(components(schemas(
-    RateLimitedResponse,
-    RunId,
-    CodebaseName,
-    Campaign,
-    LogFilename,
-    ArtifactName
-)))]
+#[openapi(components(schemas(RunId, CodebaseName, Campaign, LogFilename, ArtifactName)))]
 struct RunnerApi;
 
 fn openapi_router() -> OpenApiRouter<Arc<AppState>> {
@@ -4614,6 +4642,29 @@ mod tests {
                 .collect();
             assert_eq!(missing, Vec::<&str>::new());
         }
+    }
+
+    /// Python defaulted to 120 seconds when the forge gave no wait.
+    #[test]
+    fn test_retry_after_secs() {
+        assert_eq!(super::retry_after_secs(None), 120);
+        assert_eq!(super::retry_after_secs(Some(0.0)), 120);
+        assert_eq!(super::retry_after_secs(Some(30.0)), 30);
+        assert_eq!(super::retry_after_secs(Some(29.5)), 30);
+    }
+
+    /// Python answered 429 with a Retry-After header, not 503.
+    #[test]
+    fn test_rate_limited_response() {
+        let response = super::rate_limited_response(120);
+        assert_eq!(response.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .unwrap(),
+            "120"
+        );
     }
 
     /// Exhaustive 2x2x2 matrix for assignment_validation_outcome:
