@@ -116,12 +116,14 @@ struct ScheduleControlRequest {
 
 /// Look up an active run, or build the 404 response for a missing one.
 async fn current_run(state: &AppState, id: &RunId) -> Result<ActiveRun, Response> {
-    state.active_runs.get(id).await.ok_or_else(|| {
-        reason(
+    match state.active_runs.get(id).await {
+        Ok(Some(run)) => Ok(run),
+        Ok(None) => Err(reason(
             StatusCode::NOT_FOUND,
             format!("No such current run: {}", id),
-        )
-    })
+        )),
+        Err(e) => Err(active_runs_error(e)),
+    }
 }
 
 /// Build a `{"reason": ...}` response.
@@ -137,6 +139,21 @@ fn error(status: StatusCode, error: impl Into<String>) -> Response {
 /// Response for a failed database operation; the caller logs the cause.
 fn db_error() -> Response {
     error(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
+}
+
+/// Turn a failure to read or write the active runs into a 500, as an
+/// unhandled Redis error was in the Python runner.
+fn active_runs_error(e: crate::active_runs::Error) -> Response {
+    log::error!("Failed to access active runs: {}", e);
+    error(StatusCode::INTERNAL_SERVER_ERROR, "Active run store error")
+}
+
+/// Refresh the per-worker active run gauge from the active run store.
+async fn update_active_runs_gauge(state: &AppState, worker_name: &str) {
+    match state.active_runs.count_for_worker(worker_name).await {
+        Ok(count) => crate::metrics::MetricsCollector::set_active_runs(worker_name, count as i64),
+        Err(e) => log::error!("Failed to count active runs for {}: {}", worker_name, e),
+    }
 }
 
 /// Extract avoided hosts from configuration: any archive mirror URI
@@ -273,7 +290,10 @@ async fn queue_position(
         }
     };
 
-    let active_count = state.active_runs.len().await as i64;
+    let active_count = match state.active_runs.len().await {
+        Ok(n) => n as i64,
+        Err(e) => return active_runs_error(e),
+    };
     let cumulative_wait_seconds = eta
         .as_ref()
         .and_then(|e| e.wait_time.as_ref())
@@ -544,16 +564,16 @@ async fn schedule(
 #[utoipa::path(
     get,
     path = "/status",
-    responses((status = 200, description = "Queue processor status", body = StatusResponse))
+    responses(
+        (status = 200, description = "Queue processor status", body = StatusResponse),
+        (status = 500, description = "Active runs could not be read", body = ErrorResponse),
+    )
 )]
-async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
-    let processing: Vec<ActiveRunResponse> = state
-        .active_runs
-        .list()
-        .await
-        .iter()
-        .map(ActiveRun::to_response)
-        .collect();
+async fn status(State(state): State<Arc<AppState>>) -> Response {
+    let processing: Vec<ActiveRunResponse> = match state.active_runs.list().await {
+        Ok(runs) => runs.iter().map(ActiveRun::to_response).collect(),
+        Err(e) => return active_runs_error(e),
+    };
 
     // Rate-limited hosts come from Redis; emit an ISO-8601 timestamp
     // per host so downstream tooling can compare to `now()`.
@@ -574,6 +594,7 @@ async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
         avoid_hosts: state.avoid_hosts.clone(),
         rate_limit_hosts,
     })
+    .into_response()
 }
 
 /// `GET /log/{run_id}` -- list the log files of a run. For an active
@@ -590,7 +611,11 @@ async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
     )
 )]
 async fn log_index(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> Response {
-    if let Some(active_run) = state.active_runs.get(&id).await {
+    let active_run = match state.active_runs.get(&id).await {
+        Ok(run) => run,
+        Err(e) => return active_runs_error(e),
+    };
+    if let Some(active_run) = active_run {
         return match active_run.backchannel.list_log_files().await {
             Ok(files) => Json(files).into_response(),
             Err(e) => {
@@ -684,7 +709,17 @@ async fn log(
     let text_response = |status: StatusCode, body: String| {
         (status, [("content-type", "text/plain")], body).into_response()
     };
-    if let Some(active_run) = state.active_runs.get(&id).await {
+    let active_run = match state.active_runs.get(&id).await {
+        Ok(run) => run,
+        Err(e) => {
+            log::error!("Failed to access active runs: {}", e);
+            return text_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Active run store error".to_string(),
+            );
+        }
+    };
+    if let Some(active_run) = active_run {
         return match active_run.backchannel.get_log_file(&filename).await {
             Ok(content) => {
                 (StatusCode::OK, [("content-type", "text/plain")], content).into_response()
@@ -1809,11 +1844,22 @@ async fn update_run(
 #[utoipa::path(
     get,
     path = "/active-runs",
-    responses((status = 200, description = "Active runs", body = Vec<ActiveRunResponse>))
+    responses(
+        (status = 200, description = "Active runs", body = Vec<ActiveRunResponse>),
+        (status = 500, description = "Active runs could not be read", body = ErrorResponse),
+    )
 )]
-async fn get_active_runs(State(state): State<Arc<AppState>>) -> Json<Vec<ActiveRunResponse>> {
-    let active_runs = state.active_runs.list().await;
-    Json(active_runs.iter().map(ActiveRun::to_response).collect())
+async fn get_active_runs(State(state): State<Arc<AppState>>) -> Response {
+    match state.active_runs.list().await {
+        Ok(active_runs) => Json(
+            active_runs
+                .iter()
+                .map(ActiveRun::to_response)
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Err(e) => active_runs_error(e),
+    }
 }
 
 /// `GET /active-runs/{run_id}` -- return a single active run's JSON
@@ -1825,12 +1871,14 @@ async fn get_active_runs(State(state): State<Arc<AppState>>) -> Json<Vec<ActiveR
     responses(
         (status = 200, description = "The active run", body = ActiveRunResponse),
         (status = 404, description = "Run is not active", body = ReasonResponse),
+        (status = 500, description = "Active runs could not be read", body = ErrorResponse),
     )
 )]
 async fn get_active_run(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> Response {
     match state.active_runs.get(&id).await {
-        Some(active_run) => Json(active_run.to_response()).into_response(),
-        None => reason(StatusCode::NOT_FOUND, format!("no such run {}", id)),
+        Ok(Some(active_run)) => Json(active_run.to_response()).into_response(),
+        Ok(None) => reason(StatusCode::NOT_FOUND, format!("no such run {}", id)),
+        Err(e) => active_runs_error(e),
     }
 }
 
@@ -1970,9 +2018,14 @@ async fn metrics() -> impl IntoResponse {
 #[utoipa::path(
     get,
     path = "/workers",
-    responses((status = 200, description = "Registered workers", body = WorkerListResponse))
+    responses(
+        (status = 200, description = "Registered workers", body = WorkerListResponse),
+        (status = 500, description = "Active runs could not be read", body = ErrorResponse),
+    )
 )]
-async fn list_workers(State(state): State<Arc<AppState>>) -> Json<WorkerListResponse> {
+async fn list_workers(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<WorkerListResponse>, Response> {
     worker_list(&state, false).await
 }
 
@@ -1981,18 +2034,24 @@ async fn list_workers(State(state): State<Arc<AppState>>) -> Json<WorkerListResp
 #[utoipa::path(
     get,
     path = "/admin/workers",
-    responses((status = 200, description = "Registered workers, including links and failed workers", body = WorkerListResponse))
+    responses(
+        (status = 200, description = "Registered workers, including links and failed workers", body = WorkerListResponse),
+        (status = 500, description = "Active runs could not be read", body = ErrorResponse),
+    )
 )]
-async fn admin_list_workers(State(state): State<Arc<AppState>>) -> Json<WorkerListResponse> {
+async fn admin_list_workers(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<WorkerListResponse>, Response> {
     worker_list(&state, true).await
 }
 
-async fn worker_list(state: &AppState, admin: bool) -> Json<WorkerListResponse> {
+async fn worker_list(state: &AppState, admin: bool) -> Result<Json<WorkerListResponse>, Response> {
+    let active_runs = state.active_runs.list().await.map_err(active_runs_error)?;
     let workers = match state.auth_service.list_workers().await {
         Ok(workers) => workers,
         Err(e) => {
             log::error!("Failed to list workers: {}", e);
-            return Json(WorkerListResponse {
+            return Ok(Json(WorkerListResponse {
                 error: Some("Failed to list workers".to_string()),
                 workers: vec![],
                 total_workers: 0,
@@ -2000,10 +2059,9 @@ async fn worker_list(state: &AppState, admin: bool) -> Json<WorkerListResponse> 
                 idle_workers: 0,
                 summary: None,
                 timestamp: None,
-            });
+            }));
         }
     };
-    let active_runs = state.active_runs.list().await;
     let active_workers: std::collections::HashSet<&str> =
         active_runs.iter().map(|r| r.worker_name.as_str()).collect();
 
@@ -2065,7 +2123,7 @@ async fn worker_list(state: &AppState, admin: bool) -> Json<WorkerListResponse> 
     let failed_count = failed_workers.len();
     let idle_count = total_count - active_count - failed_count;
 
-    Json(WorkerListResponse {
+    Ok(Json(WorkerListResponse {
         error: None,
         workers: worker_infos,
         total_workers: total_count,
@@ -2078,7 +2136,7 @@ async fn worker_list(state: &AppState, admin: bool) -> Json<WorkerListResponse> 
             failed: admin.then_some(failed_count),
         }),
         timestamp: Some(chrono::Utc::now()),
-    })
+    }))
 }
 
 /// Admin endpoint to create a worker.
@@ -2712,7 +2770,12 @@ async fn publish_finish_events(
             .inc();
     }
 
-    state.active_runs.remove(run_id).await;
+    if let Err(e) = state.active_runs.remove(run_id).await {
+        log::error!("Failed to remove active run {}: {}", run_id, e);
+        crate::metrics::REDIS_OPERATIONS_TOTAL
+            .with_label_values(&["remove_active_run", "error"])
+            .inc();
+    }
 
     if let Err(e) = state.database.unassign_queue_item(queue_id).await {
         log::error!("Failed to unassign queue item from Redis: {}", e);
@@ -2721,23 +2784,27 @@ async fn publish_finish_events(
             .inc();
     }
 
-    let status_payload = serde_json::to_value(StatusResponse {
-        processing: state
-            .active_runs
-            .list()
-            .await
-            .iter()
-            .map(ActiveRun::to_response)
-            .collect(),
-        avoid_hosts: vec![],
-        rate_limit_hosts: BTreeMap::new(),
-    })
-    .expect("StatusResponse is plain data");
-    if let Err(e) = state.database.publish("queue", &status_payload).await {
-        log::error!("Failed to publish queue status event: {}", e);
-        crate::metrics::REDIS_OPERATIONS_TOTAL
-            .with_label_values(&["publish_queue_status", "error"])
-            .inc();
+    match state.active_runs.list().await {
+        Ok(active_runs) => {
+            let status_payload = serde_json::to_value(StatusResponse {
+                processing: active_runs.iter().map(ActiveRun::to_response).collect(),
+                avoid_hosts: vec![],
+                rate_limit_hosts: BTreeMap::new(),
+            })
+            .expect("StatusResponse is plain data");
+            if let Err(e) = state.database.publish("queue", &status_payload).await {
+                log::error!("Failed to publish queue status event: {}", e);
+                crate::metrics::REDIS_OPERATIONS_TOTAL
+                    .with_label_values(&["publish_queue_status", "error"])
+                    .inc();
+            }
+        }
+        Err(e) => {
+            log::error!("Failed to list active runs for queue status event: {}", e);
+            crate::metrics::REDIS_OPERATIONS_TOTAL
+                .with_label_values(&["publish_queue_status", "error"])
+                .inc();
+        }
     }
 
     crate::metrics::LAST_SUCCESS_GAUGE.set(chrono::Utc::now().timestamp() as f64);
@@ -2877,10 +2944,11 @@ async fn finish_run_multipart_internal(
     public: bool,
 ) -> Response {
     let active_run = match state.active_runs.get(&run_id).await {
-        Some(run) => run,
-        None => {
+        Ok(Some(run)) => run,
+        Ok(None) => {
             return reason(StatusCode::NOT_FOUND, format!("no such run {}", run_id));
         }
+        Err(e) => return active_runs_error(e),
     };
 
     // Process multipart upload. Pass the codebase so logs land in
@@ -3082,13 +3150,7 @@ async fn finish_run_multipart_internal(
     // Publish the completed result to subscribers and tear down the
     // active-run state.
     publish_finish_events(&state, &run_id, &janitor_result, active_run.queue_id).await;
-    crate::metrics::MetricsCollector::set_active_runs(
-        &active_run.worker_name,
-        state
-            .active_runs
-            .count_for_worker(&active_run.worker_name)
-            .await as i64,
-    );
+    update_active_runs_gauge(&state, &active_run.worker_name).await;
 
     let response = FinishResponse {
         id: run_id,
@@ -3857,16 +3919,11 @@ async fn assign_work_internal(
         resume_from,
     };
 
-    // Store active run in the in-memory store
-    state.active_runs.store(active_run.clone()).await;
+    if let Err(e) = state.active_runs.store(active_run.clone()).await {
+        return active_runs_error(e);
+    }
     crate::metrics::RUN_COUNT.inc();
-    crate::metrics::MetricsCollector::set_active_runs(
-        &active_run.worker_name,
-        state
-            .active_runs
-            .count_for_worker(&active_run.worker_name)
-            .await as i64,
-    );
+    update_active_runs_gauge(&state, &active_run.worker_name).await;
 
     let campaign_config = create_campaign_config(&assignment.queue_item, &state.config);
 
@@ -4079,7 +4136,7 @@ async fn public_finish(
     // Worker credentials are verified by authentication middleware
     // Verify that this worker is authorized to finish this specific run
     match state.active_runs.get(&id).await {
-        Some(active_run) => {
+        Ok(Some(active_run)) => {
             if active_run.worker_name != worker_name {
                 log::warn!(
                     "Worker {} attempted to finish run {} assigned to worker {}",
@@ -4090,9 +4147,10 @@ async fn public_finish(
                 return error(StatusCode::FORBIDDEN, "Not authorized to finish this run");
             }
         }
-        None => {
+        Ok(None) => {
             return error(StatusCode::NOT_FOUND, "Run not found");
         }
+        Err(e) => return active_runs_error(e),
     }
 
     // Workers POST a multipart body (metadata field + one `file`
@@ -4161,13 +4219,18 @@ async fn public_watchdog_health(
 #[utoipa::path(
     get,
     path = "/queue/stats",
-    responses((status = 200, description = "Queue statistics", body = QueueStatsResponse))
+    responses(
+        (status = 200, description = "Queue statistics", body = QueueStatsResponse),
+        (status = 500, description = "Active runs could not be read", body = ErrorResponse),
+    )
 )]
-async fn public_queue_stats(State(state): State<Arc<AppState>>) -> Json<QueueStatsResponse> {
+async fn public_queue_stats(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<QueueStatsResponse>, Response> {
     // Active runs live in Redis, not Postgres; source them here so
     // the count reflects reality.
-    let active_runs = state.active_runs.len().await as i64;
-    match state.database.get_queue_stats().await {
+    let active_runs = state.active_runs.len().await.map_err(active_runs_error)? as i64;
+    Ok(match state.database.get_queue_stats().await {
         Ok(stats) => {
             let count = |key: &str| Some(stats.get(key).copied().unwrap_or(0));
             Json(QueueStatsResponse {
@@ -4190,7 +4253,7 @@ async fn public_queue_stats(State(state): State<Arc<AppState>>) -> Json<QueueSta
                 error: Some("Database error".to_string()),
             })
         }
-    }
+    })
 }
 
 /// `GET /health` -- full component health report.
@@ -5536,20 +5599,19 @@ distribution {
     async fn test_finished_run_logs() {
         use axum::http::{Request, StatusCode};
         use tower::ServiceExt;
-        let Ok(Some(db)) = crate::test_utils::TestDatabase::new_optional_with_schema(
-            crate::test_utils::TestSchema::Core,
-        )
-        .await
+        // Looking up the active runs needs Redis.
+        let Some(state) = crate::test_utils::create_test_app_state_if_available()
+            .await
+            .unwrap()
         else {
-            eprintln!("Skipping: no Postgres available");
             return;
         };
         sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs1', 'mycampaign')")
-            .execute(&db.pool)
+            .execute(state.database.pool())
             .await
             .unwrap();
         sqlx::query("INSERT INTO codebase (name) VALUES ('foo')")
-            .execute(&db.pool)
+            .execute(state.database.pool())
             .await
             .unwrap();
         sqlx::query(
@@ -5558,10 +5620,9 @@ distribution {
              VALUES ('run-1', 'cmd', NOW(), NOW(), 'success', 'mycampaign', 'cs1', \
              'foo', ARRAY['build.log', 'worker.log'])",
         )
-        .execute(&db.pool)
+        .execute(state.database.pool())
         .await
         .unwrap();
-        let state = crate::test_utils::create_test_app_state_without_redis(db);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("build.log");
@@ -5638,6 +5699,27 @@ distribution {
                 ),
             ]
         );
+    }
+
+    /// Like in the Python runner, an unreachable active run store is a
+    /// 500 rather than looking like there are no active runs.
+    #[tokio::test]
+    async fn test_active_run_store_errors_are_500() {
+        use axum::http::{Method, StatusCode};
+        for uri in [
+            "/status",
+            "/active-runs",
+            "/active-runs/run-1",
+            "/active-runs/run-1/current-stage",
+            "/workers",
+        ] {
+            assert_eq!(
+                offline_request(Method::GET, uri, None).await,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "{}",
+                uri
+            );
+        }
     }
 
     #[tokio::test]
