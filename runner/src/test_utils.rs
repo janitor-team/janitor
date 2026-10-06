@@ -46,6 +46,7 @@ pub struct TestConfigBuilder {
     artifact_manager: Option<Arc<janitor::artifacts::ArtifactManager>>,
     backup_artifact_manager: Option<Arc<janitor::artifacts::ArtifactManager>>,
     redirect_artifact_downloads: Option<bool>,
+    vcs_manager: Option<Arc<RunnerVcsManager>>,
 }
 
 impl TestConfigBuilder {
@@ -92,6 +93,12 @@ impl TestConfigBuilder {
     /// Set `AppState::redirect_artifact_downloads`; it defaults to true.
     pub fn with_redirect_artifact_downloads(mut self, redirect: bool) -> Self {
         self.redirect_artifact_downloads = Some(redirect);
+        self
+    }
+
+    /// Use `manager` instead of the default empty VCS manager.
+    pub fn with_vcs_manager(mut self, manager: Arc<RunnerVcsManager>) -> Self {
+        self.vcs_manager = Some(manager);
         self
     }
 
@@ -211,9 +218,11 @@ fn assemble_app_state(
         .unwrap_or_else(|| Arc::new(janitor::artifacts::ArtifactManager::in_memory()));
     let backup_artifact_manager = config_builder.backup_artifact_manager.take();
     let redirect_artifact_downloads = config_builder.redirect_artifact_downloads.unwrap_or(true);
+    let vcs_manager = config_builder
+        .vcs_manager
+        .take()
+        .unwrap_or_else(|| Arc::new(RunnerVcsManager::new(std::collections::HashMap::new())));
     let config = Arc::new(config_builder.build_janitor_config());
-
-    let vcs_manager = Arc::new(RunnerVcsManager::new(std::collections::HashMap::new()));
     let error_tracker = Arc::new(ErrorTracker::new(
         crate::error_tracking::ErrorTrackingConfig::default(),
     ));
