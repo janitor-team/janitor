@@ -612,12 +612,13 @@ async def refresh_on_demand_dists(
         if kind == "run":
             # /run/{run_id}
             row = await conn.fetchrow(
-                "SELECT suite, max(finish_time) FROM run WHERE id = $1", id
+                "SELECT suite, finish_time FROM run WHERE id = $1", id
             )
             if row is None:
                 raise web.HTTPNotFound(text=f"no such run: {id}")
             campaign, max_finish_time = row
             builds = await get_builds_for_run(db, id)
+            description = f"Run {id}"
             campaign_config = get_campaign_config(config, campaign)
         elif kind == "cs":
             # /cs/{change_set_id}

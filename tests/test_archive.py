@@ -25,7 +25,13 @@ import pytest
 from debian.deb822 import Release
 
 from janitor.config import read_string as read_config_string
-from janitor.debian.archive import HashedFileWriter, create_app, write_suite_files
+from janitor.debian.archive import (
+    GeneratorManager,
+    HashedFileWriter,
+    PackageInfoProvider,
+    create_app,
+    write_suite_files,
+)
 
 
 async def create_client(aiohttp_client, config=None):
@@ -101,3 +107,99 @@ async def test_write_suite_files_leaves_no_partial_gpg_files_on_signing_failure(
         assert os.path.exists(os.path.join(base_path, "Release"))
         assert not os.path.exists(os.path.join(base_path, "Release.gpg"))
         assert not os.path.exists(os.path.join(base_path, "InRelease"))
+
+
+ON_DEMAND_CONFIG = """\
+origin: "janitor.example.org"
+distribution {
+  name: "unstable"
+  archive_mirror_uri: "http://deb.debian.org/debian"
+  component: "main"
+  chroot: "unstable-amd64-sbuild"
+  vendor: "debian"
+}
+campaign {
+  name: "some-campaign"
+  branch_name: "some-campaign"
+  debian_build {
+    base_distribution: "unstable"
+    build_distribution: "some-campaign"
+  }
+}
+"""
+
+
+PACKAGES = b"Package: pkg\nVersion: 1.0-1\nArchitecture: amd64\n\n"
+SOURCES = b"Package: pkg\nVersion: 1.0-1\n\n"
+
+
+class OnePackageInfoProvider(PackageInfoProvider):
+    async def packages_for_run(self, run_id, suite_name, package, arch):
+        yield PACKAGES
+
+    async def sources_for_run(self, run_id, suite_name, package):
+        yield SOURCES
+
+
+async def _add_run(con, run_id):
+    await con.execute(
+        "INSERT INTO codebase (name, branch_url, url, subpath, vcs_type) "
+        "VALUES ('pkg', 'https://example.com/pkg', 'https://example.com/pkg', "
+        "'', 'git')"
+    )
+    await con.execute(
+        "INSERT INTO change_set (id, campaign) "
+        "VALUES ('some-change-set', 'some-campaign')"
+    )
+    await con.execute(
+        "INSERT INTO run (id, suite, codebase, result_code, finish_time, "
+        "logfilenames, change_set) "
+        "VALUES ($1, 'some-campaign', 'pkg', 'success', now(), '{}', "
+        "'some-change-set')",
+        run_id,
+    )
+    await con.execute(
+        "INSERT INTO debian_build (run_id, version, distribution, source) "
+        "VALUES ($1, '1.0-1', 'some-campaign', 'pkg')",
+        run_id,
+    )
+
+
+async def _on_demand_client(aiohttp_client, db, dists_dir):
+    config = read_config_string(ON_DEMAND_CONFIG)
+    generator_manager = GeneratorManager(
+        dists_dir, db, config, OnePackageInfoProvider(), None
+    )
+    return await aiohttp_client(
+        await create_app(generator_manager, config, dists_dir, db, gpg_context=None)
+    )
+
+
+async def test_on_demand_dists_run(aiohttp_client, db, con, tmp_path):
+    """/dists/run/{run_id} serves a Release and the packages built by that run."""
+    run_id = "some-run-id"
+    await _add_run(con, run_id)
+    client = await _on_demand_client(aiohttp_client, db, str(tmp_path))
+
+    resp = await client.get(f"/dists/run/{run_id}/Release")
+    assert resp.status == 200, await resp.text()
+    body = await resp.read()
+    assert (tmp_path / "run" / run_id / "Release").read_bytes() == body
+    release = Release(body)
+    assert release["Suite"] == f"run/{run_id}"
+    assert release["Label"] == f"Run {run_id}"
+    assert release["Origin"] == "janitor.example.org"
+    assert release["Components"] == "main"
+
+    resp = await client.get(f"/dists/run/{run_id}/main/binary-amd64/Packages")
+    assert (resp.status, await resp.read()) == (200, PACKAGES)
+    resp = await client.get(f"/dists/run/{run_id}/main/source/Sources")
+    assert (resp.status, await resp.read()) == (200, SOURCES)
+
+
+async def test_on_demand_dists_unknown_run(aiohttp_client, db, tmp_path):
+    """An unknown run id is a 404, not a crash further down."""
+    client = await _on_demand_client(aiohttp_client, db, str(tmp_path))
+
+    resp = await client.get("/dists/run/no-such-run/Release")
+    assert (resp.status, await resp.text()) == (404, "no such run: no-such-run")
