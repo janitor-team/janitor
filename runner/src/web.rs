@@ -2911,6 +2911,11 @@ struct ResumeAssignment {
     branches: Vec<(String, Option<String>, Option<String>, Option<String>)>,
 }
 
+/// Whether a worker without credentials can read the resume branch at `url`.
+fn resume_branch_url_usable(url: &url::Url) -> bool {
+    !janitor::vcs::is_authenticated_url(url)
+}
+
 /// Resume-branch lookup. Opens the main branch, asks the forge (via
 /// silver_platter) for a previously proposed branch matching the
 /// campaign's branch name, and if found looks up a prior successful
@@ -2967,7 +2972,7 @@ async fn compute_resume_from(
     let open_url = url.clone();
     enum BlockingResult {
         /// (resume-branch revision, resume-branch URL as reported by the forge)
-        Found(String, String),
+        Found(String, url::Url),
         NotFound,
         RateLimited {
             host: String,
@@ -3012,7 +3017,7 @@ async fn compute_resume_from(
             crate::resume::ResumeLookup::Found(b) => {
                 use breezyshim::branch::Branch as _;
                 let rev = b.last_revision().to_string();
-                let url = b.get_user_url().to_string();
+                let url = b.get_user_url();
                 BlockingResult::Found(rev, url)
             }
             crate::resume::ResumeLookup::NotFound => BlockingResult::NotFound,
@@ -3111,7 +3116,7 @@ async fn compute_resume_from(
         let Ok((rev, br_url)) = tokio::task::spawn_blocking(move || {
             use breezyshim::branch::Branch as _;
             let rev = branch.last_revision().to_string();
-            let url = branch.get_user_url().to_string();
+            let url = branch.get_user_url();
             (rev, url)
         })
         .await
@@ -3137,6 +3142,16 @@ async fn compute_resume_from(
         .check_resume_result(&assignment.queue_item.campaign, &resume_revision)
         .await
     {
+        Ok(Some(info)) if !resume_branch_url_usable(&resume_branch_url) => {
+            crate::resume::note_resume_branch_skipped(
+                &assignment.queue_item.codebase,
+                &assignment.queue_item.campaign,
+                &info.run_id,
+                &resume_branch_url,
+                crate::resume::SKIP_REQUIRES_AUTHENTICATION,
+            );
+            None
+        }
         Ok(Some(info)) => {
             log::info!(
                 "Resuming {}/{} from run {}",
@@ -3147,7 +3162,7 @@ async fn compute_resume_from(
             Some(ResumeAssignment {
                 run_id: info.run_id,
                 result: info.result,
-                branch_url: resume_branch_url,
+                branch_url: resume_branch_url.to_string(),
                 branches: info.result_branches,
             })
         }
@@ -3955,8 +3970,8 @@ pub fn app(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::{
-        assignment_validation_outcome, candidate_preflight, main_branch_name, AssignmentValidation,
-        CandidatePreflight,
+        assignment_validation_outcome, candidate_preflight, main_branch_name,
+        resume_branch_url_usable, AssignmentValidation, CandidatePreflight,
     };
     use crate::CampaignConfig;
     use serde_json::json;
@@ -4779,5 +4794,25 @@ distribution {
             main_branch_name(Some("https://example.com/foo?branch=")),
             "main"
         );
+    }
+
+    /// Resume branches that need credentials are not handed to workers.
+    #[test]
+    fn test_resume_branch_url_usable() {
+        for url in [
+            "git+ssh://git@github.com/janitor-bot/foo.git,branch=lintian-fixes",
+            "git+ssh://git@salsa.debian.org/janitor-bot/foo.git",
+            "bzr+ssh://bazaar.launchpad.net/~janitor-bot/foo/lintian-fixes",
+        ] {
+            assert!(!resume_branch_url_usable(&url.parse().unwrap()), "{}", url);
+        }
+        for url in [
+            "https://github.com/janitor-bot/foo.git,branch=lintian-fixes",
+            "https://janitor.example.com/git/foo,branch=lintian-fixes%2Fmain",
+            "https://janitor.example.com/bzr/foo/lintian-fixes/main",
+            "git://example.com/foo.git",
+        ] {
+            assert!(resume_branch_url_usable(&url.parse().unwrap()), "{}", url);
+        }
     }
 }

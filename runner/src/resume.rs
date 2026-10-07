@@ -320,6 +320,34 @@ impl ResumeService {
     }
 }
 
+/// Reason label for a resume branch that a worker without credentials cannot read.
+pub const SKIP_REQUIRES_AUTHENTICATION: &str = "requires-authentication";
+
+/// Warn about and count a resume branch that is not used, so the run starts afresh.
+pub fn note_resume_branch_skipped(
+    codebase: &str,
+    campaign: &str,
+    run_id: &str,
+    branch_url: &url::Url,
+    reason: &str,
+) {
+    // Keep credentials out of the log.
+    let mut shown_url = branch_url.clone();
+    let _ = shown_url.set_password(None);
+    let _ = shown_url.set_username("");
+    shown_url.set_query(None);
+    shown_url.set_fragment(None);
+    log::warn!(
+        "Not resuming {}/{} from run {}: skipping resume branch {} ({})",
+        codebase,
+        campaign,
+        run_id,
+        shown_url,
+        reason,
+    );
+    crate::metrics::MetricsCollector::record_resume_branch_skipped(reason);
+}
+
 /// Outcome of attempting to locate a resume branch on the forge.
 ///
 /// `RateLimited` surfaces `BranchOpenError::RateLimited` from
