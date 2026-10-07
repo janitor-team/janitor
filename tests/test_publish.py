@@ -19,10 +19,12 @@ from datetime import timedelta
 from typing import cast
 
 import pytest
+from breezy.errors import TransportError
 from breezy.forge import Forge
 
 import janitor.publish as publish
 from janitor import utcnow
+from janitor._publish import FixedRateLimiter
 from janitor.config import read_string as read_config_string
 from janitor.publish import create_app
 
@@ -185,7 +187,9 @@ def _one_proposal(monkeypatch, forge, mp):
     # Only the forge iteration is replaced, since a real one would need a
     # forge to talk to.
     monkeypatch.setattr(
-        publish, "iter_all_mps", lambda statuses=None: iter([(forge, mp, "open")])
+        publish,
+        "iter_all_mps",
+        lambda statuses=None, unreachable_forges=None: iter([(forge, mp, "open")]),
     )
 
 
@@ -261,3 +265,164 @@ async def test_check_existing_keeps_going_after_an_unexpected_status(
     )
 
     assert mp.read_attempts == 1
+
+
+class _UnreachableForge:
+    """A forge whose API cannot be reached at all."""
+
+    def __repr__(self):
+        return "<UnreachableForge>"
+
+    def iter_my_proposals(self, status=None):
+        raise TransportError("Connection refused")
+
+
+class _WorkingForge:
+    """A forge that returns one proposal per status."""
+
+    def __repr__(self):
+        return "<WorkingForge>"
+
+    def iter_my_proposals(self, status=None):
+        yield f"proposal-{status}"
+
+
+def test_iter_all_mps_skips_an_unreachable_forge(monkeypatch):
+    """One forge being unreachable must not stop the others being listed."""
+    monkeypatch.setattr(
+        publish,
+        "iter_forge_instances",
+        lambda: iter([_UnreachableForge(), _WorkingForge()]),
+    )
+
+    found = list(publish.iter_all_mps(statuses=["open"]))
+
+    assert [mp for _forge, mp, _status in found] == ["proposal-open"]
+
+
+def test_iter_all_mps_reports_a_forge_it_could_not_reach(monkeypatch):
+    """A skipped forge has to be visible to the caller, not just to the log."""
+    monkeypatch.setattr(
+        publish,
+        "iter_forge_instances",
+        lambda: iter([_UnreachableForge(), _WorkingForge()]),
+    )
+    unreachable: list[Forge] = []
+
+    list(publish.iter_all_mps(statuses=["open"], unreachable_forges=unreachable))
+
+    assert [repr(forge) for forge in unreachable] == ["<UnreachableForge>"]
+
+
+class _PartlyBrokenForge:
+    """A forge that serves some statuses and fails on others."""
+
+    def __init__(self, failing):
+        self.failing = failing
+
+    def __repr__(self):
+        return "<PartlyBrokenForge>"
+
+    def iter_my_proposals(self, status=None):
+        if status in self.failing:
+            raise TransportError("Connection reset by peer")
+        yield f"proposal-{status}"
+
+
+def test_iter_all_mps_keeps_listing_after_one_status_fails(monkeypatch):
+    """A forge that fails partway still has its other statuses listed.
+
+    Losing the rest means those proposals go unscanned, so their status and
+    merge details stay as they were and last_scanned is left behind.
+    """
+    monkeypatch.setattr(
+        publish,
+        "iter_forge_instances",
+        lambda: iter([_PartlyBrokenForge({"merged"})]),
+    )
+
+    found = list(publish.iter_all_mps(statuses=["open", "merged", "closed"]))
+
+    assert [mp for _forge, mp, _status in found] == [
+        "proposal-open",
+        "proposal-closed",
+    ]
+
+
+def test_iter_all_mps_reports_a_forge_once_however_many_statuses_fail(monkeypatch):
+    """The report is about the forge, so a forge appears in it at most once."""
+    monkeypatch.setattr(
+        publish,
+        "iter_forge_instances",
+        lambda: iter([_PartlyBrokenForge({"open", "merged", "closed"})]),
+    )
+    unreachable: list[Forge] = []
+
+    list(
+        publish.iter_all_mps(
+            statuses=["open", "merged", "closed"], unreachable_forges=unreachable
+        )
+    )
+
+    assert [repr(forge) for forge in unreachable] == ["<PartlyBrokenForge>"]
+
+
+def _stand_in_for_the_scan(monkeypatch, proposals=(), unreachable=()):
+    # Listing proposals goes out to a forge over the network, so this is the
+    # one part of a scan that has to be stood in for.
+    triples = list(proposals)
+    skipped = list(unreachable)
+
+    def iter_all_mps(statuses=None, unreachable_forges=None):
+        if unreachable_forges is not None:
+            unreachable_forges.extend(skipped)
+        return iter(triples)
+
+    monkeypatch.setattr(publish, "iter_all_mps", iter_all_mps)
+
+
+def _limiter_holding(bucket, count):
+    limiter = FixedRateLimiter(5)
+    limiter.set_mps_per_bucket({"open": {bucket: count}})
+    return limiter
+
+
+async def _scan(con, bucket_rate_limiter):
+    await publish.check_existing(
+        conn=con,
+        redis=None,
+        config=None,
+        publish_worker=None,
+        bucket_rate_limiter=bucket_rate_limiter,
+        forge_rate_limiter={},
+        vcs_managers=None,
+    )
+
+
+async def test_check_existing_takes_the_counts_from_a_complete_scan(
+    con, monkeypatch
+) -> None:
+    """A complete scan is the whole picture, so it replaces what came before."""
+    bucket_rate_limiter = _limiter_holding("some-bucket", 2)
+    _stand_in_for_the_scan(monkeypatch)
+
+    await _scan(con, bucket_rate_limiter)
+
+    assert bucket_rate_limiter.get_stats() == {}
+
+
+async def test_check_existing_drops_the_counts_from_an_incomplete_scan(
+    con, monkeypatch
+) -> None:
+    """A scan missing a forge must not be reported as the whole picture.
+
+    Otherwise a forge that is briefly unreachable reads as a forge with no
+    open proposals, the rate limiter is told the quota those proposals take
+    up is free, and the next cycle publishes on top of them.
+    """
+    bucket_rate_limiter = _limiter_holding("some-bucket", 2)
+    _stand_in_for_the_scan(monkeypatch, unreachable=[_StubForge()])
+
+    await _scan(con, bucket_rate_limiter)
+
+    assert bucket_rate_limiter.get_stats() == {"some-bucket": 2}
