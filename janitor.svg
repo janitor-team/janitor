@@ -1,0 +1,130 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="100%" height="100%">
+  <defs>
+    <!-- Background is completely transparent; gradients tuned for high-contrast visibility on white -->
+    
+    <!-- Outer energy arc: vivid coral-orange -->
+    <linearGradient id="warmArcGrad" x1="20%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#059669"/>
+      <stop offset="25%" stop-color="#10b981"/>
+      <stop offset="55%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#ea580c"/>
+    </linearGradient>
+
+    <!-- Handle & ferrule gradient: emerald into deep teal -->
+    <linearGradient id="handleGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="50%" stop-color="#0d9488"/>
+      <stop offset="100%" stop-color="#0f766e"/>
+    </linearGradient>
+
+    <!-- Git circuit lines: rich cyan-blue to indigo -->
+    <linearGradient id="circuitGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0284c7"/>
+      <stop offset="60%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#4338ca"/>
+    </linearGradient>
+
+    <!-- Bristles: cohesive transition across teal, azure, and deep royal blue -->
+    <linearGradient id="bristleGrad1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0d9488"/>
+      <stop offset="100%" stop-color="#0284c7"/>
+    </linearGradient>
+    <linearGradient id="bristleGrad2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0284c7"/>
+      <stop offset="100%" stop-color="#2563eb"/>
+    </linearGradient>
+    <linearGradient id="bristleGrad3" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#3730a3"/>
+    </linearGradient>
+  </defs>
+
+  <g transform="translate(0, 0)">
+    <!-- Outer Right Dynamic Arc -->
+    <path d="M 285 78 C 365 95 408 178 385 260 C 374 298 348 335 310 354" 
+          fill="none" stroke="url(#warmArcGrad)" stroke-width="12" stroke-linecap="round"/>
+
+    <!-- Subtle speed-lines along the sweep perimeter -->
+    <path d="M 338 332 C 358 310 368 285 370 262" 
+          fill="none" stroke="#f97316" stroke-width="5" stroke-linecap="round" opacity="0.75"/>
+    <path d="M 312 376 C 300 382 284 388 266 390" 
+          fill="none" stroke="#ea580c" stroke-width="4.5" stroke-linecap="round" opacity="0.65"/>
+
+    <!-- Left Circular Enclosure & Git Branches -->
+    <path d="M 240 68 C 170 70 112 125 106 198 C 100 270 128 322 170 358" 
+          fill="none" stroke="url(#circuitGrad)" stroke-width="10" stroke-linecap="round"/>
+
+    <!-- Git Branch Circuit Paths -->
+    <path d="M 148 108 C 148 135 174 150 196 150 L 265 150" 
+          fill="none" stroke="#0284c7" stroke-width="8" stroke-linecap="round"/>
+    
+    <path d="M 136 160 C 136 195 190 195 210 220 C 220 232 216 260 195 272 C 172 285 155 265 152 245" 
+          fill="none" stroke="#2563eb" stroke-width="8" stroke-linecap="round"/>
+          
+    <path d="M 124 235 C 130 292 188 320 236 312" 
+          fill="none" stroke="#3b82f6" stroke-width="7" stroke-linecap="round"/>
+
+    <path d="M 218 80 C 218 108 245 120 272 120" 
+          fill="none" stroke="#059669" stroke-width="7" stroke-linecap="round"/>
+
+    <!-- Git Nodes / Commit Dots -->
+    <circle cx="242" cy="70" r="10" fill="#ffffff" stroke="#10b981" stroke-width="6"/>
+    <circle cx="270" cy="120" r="9" fill="#ffffff" stroke="#f59e0b" stroke-width="6"/>
+    <circle cx="265" cy="150" r="8.5" fill="#ffffff" stroke="#0d9488" stroke-width="5.5"/>
+    <circle cx="148" cy="110" r="9" fill="#ffffff" stroke="#0284c7" stroke-width="6"/>
+    <circle cx="136" cy="162" r="9.5" fill="#ffffff" stroke="#2563eb" stroke-width="6"/>
+    <circle cx="218" cy="214" r="8" fill="#ffffff" stroke="#2563eb" stroke-width="5"/>
+    <circle cx="180" cy="226" r="8" fill="#ffffff" stroke="#3b82f6" stroke-width="5"/>
+
+    <!-- Sweeping Bristles (Abstract Fluid Ribbons) -->
+    <!-- Layer 1: Dark Indigo/Blue base sweep -->
+    <path d="M 270 290 C 235 340 185 365 140 340 C 182 372 236 368 288 320 Z" 
+          fill="url(#bristleGrad3)"/>
+    <path d="M 280 300 C 255 370 205 385 165 372 C 210 398 270 388 305 325 Z" 
+          fill="url(#bristleGrad3)"/>
+
+    <!-- Layer 2: Main Cyan / Cobalt flow -->
+    <path d="M 275 270 C 230 330 190 338 135 315 C 160 340 215 360 285 298 Z" 
+          fill="url(#bristleGrad2)"/>
+    <path d="M 288 282 C 250 360 215 370 182 396 C 230 405 285 380 318 312 Z" 
+          fill="url(#bristleGrad2)"/>
+
+    <!-- Layer 3: Vivid Emerald / Teal foreground plumes -->
+    <path d="M 270 248 C 248 310 208 340 156 332 C 205 352 260 335 292 278 Z" 
+          fill="url(#bristleGrad1)"/>
+    <path d="M 292 268 C 275 348 240 388 215 412 C 258 410 300 372 322 290 Z" 
+          fill="url(#bristleGrad1)"/>
+    <path d="M 302 270 C 298 335 280 380 262 418 C 295 398 325 350 332 295 Z" 
+          fill="#0d9488"/>
+
+    <!-- Broom Ferrule / Collar -->
+    <path d="M 252 238 C 272 222 305 244 322 284 C 302 295 272 275 252 238 Z" 
+          fill="#0f766e"/>
+    <path d="M 248 234 C 266 215 304 238 318 280" 
+          fill="none" stroke="#ffffff" stroke-width="4.5" stroke-linecap="round"/>
+    <path d="M 256 244 C 272 228 305 248 318 286" 
+          fill="none" stroke="#044e46" stroke-width="3" stroke-linecap="round"/>
+
+    <!-- Broom Handle -->
+    <path d="M 288 226 L 334 116 C 342 98 358 92 370 98 C 382 104 382 122 374 138 L 316 250 Z" 
+          fill="url(#handleGrad)"/>
+    
+    <!-- Handle Core Highlight -->
+    <path d="M 334 122 L 362 108" 
+          fill="none" stroke="#a7f3d0" stroke-width="4" stroke-linecap="round" opacity="0.9"/>
+
+    <!-- Clean Sparks / Precision Stars -->
+    <!-- Spark 1 (Upper right) -->
+    <path d="M 338 214 Q 343 214 345 208 Q 347 214 352 214 Q 347 214 345 220 Q 343 214 338 214 Z" 
+          fill="#0d9488"/>
+    <!-- Spark 2 (Near handle) -->
+    <path d="M 352 188 Q 355 188 357 183 Q 359 188 364 188 Q 359 188 357 193 Q 355 188 352 188 Z" 
+          fill="#10b981"/>
+    <!-- Spark 3 (Center cavity) -->
+    <path d="M 218 260 Q 222 260 224 254 Q 226 260 230 260 Q 226 260 224 266 Q 222 260 218 260 Z" 
+          fill="#0284c7"/>
+    <!-- Spark 4 (Lower sweep) -->
+    <path d="M 276 400 Q 279 400 281 395 Q 283 400 288 400 Q 283 400 281 405 Q 279 400 276 400 Z" 
+          fill="#059669"/>
+  </g>
+</svg>
