@@ -11,7 +11,7 @@
 # postgresql-contrib name back would fail this task outright with "no
 # package matching" on a fresh trixie box.
 - name: Install Postgres + debversion extension
-  apt:
+  ansible.builtin.apt:
     name:
       - postgresql
       # community.postgresql's modules (postgresql_user/_db/_query/_script
@@ -25,7 +25,7 @@
 - name: Find installed Postgres version's debversion package
   # Package name is versioned (postgresql-17-debversion etc); resolve the
   # major version actually installed rather than hardcoding one.
-  shell: |
+  ansible.builtin.shell: |
     set -o pipefail
     pg_lsclusters --no-header | awk '{print $1}' | head -1
   args:
@@ -34,20 +34,21 @@
   changed_when: false
 
 - name: Install debversion for the installed Postgres major version
-  apt:
+  ansible.builtin.apt:
     name: "postgresql-{{ pg_version.stdout }}-debversion"
     state: present
 
 - name: Bump max_connections
   # Several janitor services each open an asyncpg pool (default min_size=10)
   # concurrently on cold boot - default max_connections=100 loses that race.
-  lineinfile:
+  ansible.builtin.lineinfile:
     path: "/etc/postgresql/{{ pg_version.stdout }}/main/postgresql.conf"
     regexp: "^max_connections ="
     line: "max_connections = {{ postgres_max_connections }}\t\t\t# (change requires restart)"
-  notify: restart postgresql
+  notify: Restart postgresql
 
-- meta: flush_handlers
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers
 
 - name: Grant postgres traverse access into the deploy user's home directory
   # /home/{{ ansible_user }} is 0700 by default - postgresql_script below
@@ -56,10 +57,11 @@
   # regardless of that file's own (world-readable) permissions. Grant
   # postgres specifically, not everyone, since acl (needed for this) is
   # already required by roles/base for become_user's own temp-file ACLs.
-  command: setfacl -m u:postgres:--x /home/{{ ansible_user }}
+  ansible.builtin.command: setfacl -m u:postgres:--x /home/{{ ansible_user }}
   changed_when: true
 
 - name: Create janitor Postgres role
+  become: true
   become_user: postgres
   community.postgresql.postgresql_user:
     name: janitor
@@ -74,12 +76,14 @@
   # query_result key, and "Load state schema" crashes trying to read it.
   # postgresql_db is idempotent, so running this unconditionally is safe
   # when the database already exists too.
+  become: true
   become_user: postgres
   community.postgresql.postgresql_db:
     name: janitor
     owner: janitor
 
 - name: Check whether the janitor schema is already loaded
+  become: true
   become_user: postgres
   community.postgresql.postgresql_query:
     db: janitor
@@ -89,6 +93,7 @@
 - name: Load state schema
   # Undocumented anywhere in janitor's own repo outside CI - without this
   # every service connects fine and fails silently on its first real query.
+  become: true
   become_user: postgres
   community.postgresql.postgresql_script:
     db: janitor
@@ -96,6 +101,7 @@
   when: not schema_check.query_result[0].loaded
 
 - name: Load debian schema
+  become: true
   become_user: postgres
   community.postgresql.postgresql_script:
     db: janitor
@@ -112,6 +118,7 @@
 # unconditionally (not gated on schema_check) since it's idempotent and
 # cheap either way.
 - name: Grant janitor privileges on the tables state.sql/debian.sql created
+  become: true
   become_user: postgres
   community.postgresql.postgresql_privs:
     db: janitor
@@ -123,6 +130,7 @@
     state: present
 
 - name: Grant janitor privileges on sequences (SERIAL/IDENTITY columns)
+  become: true
   become_user: postgres
   community.postgresql.postgresql_privs:
     db: janitor
@@ -142,6 +150,7 @@
   # sensitive-name redaction recognizes (unlike a "password:" keyed arg
   # elsewhere in this role), so worker_password would otherwise show up
   # in plaintext in -v output.
+  become: true
   become_user: postgres
   community.postgresql.postgresql_query:
     db: janitor

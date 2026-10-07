@@ -1,6 +1,6 @@
 ---
 - name: Install base packages
-  apt:
+  ansible.builtin.apt:
     name:
       - podman
       - buildah
@@ -24,11 +24,11 @@
   # detached podman containers / user-level systemd units) once no login
   # session remains open - containers die ~4 min after the last SSH session
   # closes. Must happen before any container or quadlet unit is started.
-  command: loginctl enable-linger {{ ansible_user }}
+  ansible.builtin.command: loginctl enable-linger {{ ansible_user }}
   changed_when: false
 
 - name: Get deploy user's uid (needed for XDG_RUNTIME_DIR with user-scope systemd)
-  getent:
+  ansible.builtin.getent:
     database: passwd
     key: "{{ ansible_user }}"
 
@@ -46,5 +46,5 @@
   become_user: "{{ ansible_user }}"
   environment:
     XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
-  command: systemctl --user enable --now dbus.socket
+  ansible.builtin.command: systemctl --user enable --now dbus.socket
   changed_when: true

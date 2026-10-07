@@ -26,7 +26,7 @@
       # required shape ("Name <email>") legitimately contains @ and
       # whitespace by design, so the same forbidden-character rule would
       # reject every valid value for it.
-      assert:
+      ansible.builtin.assert:
         that:
           - not (lookup('vars', item, default='') | regex_search("[@:/%'\"\\s]"))
         fail_msg: >

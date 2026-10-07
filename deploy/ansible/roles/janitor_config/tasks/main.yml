@@ -5,7 +5,7 @@
   # janitor_home/data/* or janitor.conf below - the worker container takes
   # its config entirely via --base-url/--external-address/env, not a
   # mounted config file (see janitor_quadlet/templates/worker.container.j2).
-  file:
+  ansible.builtin.file:
     path: "{{ janitor_home }}/data/{{ item }}"
     state: directory
     owner: "{{ ansible_user }}"
@@ -23,7 +23,7 @@
   # NOT tracked by git - janitor.conf's protobuf-text format has no
   # separate secrets mechanism, and this file contains the DB password
   # and OAuth client secret in plaintext.
-  template:
+  ansible.builtin.template:
     src: janitor.conf.j2
     dest: "{{ janitor_home }}/janitor.conf"
     owner: "{{ ansible_user }}"
@@ -32,7 +32,7 @@
   when: deploy_janitor_conf
 
 - name: Create breezy config directory
-  file:
+  ansible.builtin.file:
     path: "/home/{{ ansible_user }}/.config/breezy"
     state: directory
     owner: "{{ ansible_user }}"
@@ -43,7 +43,7 @@
   # API auth to breezy's own config file, not janitor.conf.
   # retrieve_github_token() reads private_token, not token - both keys
   # included to be safe, per breezy's own source.
-  template:
+  ansible.builtin.template:
     src: authentication.conf.j2
     dest: "/home/{{ ansible_user }}/.config/breezy/authentication.conf"
     owner: "{{ ansible_user }}"
@@ -57,7 +57,7 @@
   # (get_user_ignores() -> _set_user_ignores()) and hard-panics on the
   # read-only mount instead of handling ENOENT/EROFS gracefully. Pre-seeding
   # it with breezy's own USER_DEFAULTS list means it never needs to write.
-  copy:
+  ansible.builtin.copy:
     src: breezy-ignore
     dest: "/home/{{ ansible_user }}/.config/breezy/ignore"
     owner: "{{ ansible_user }}"
@@ -66,7 +66,7 @@
 - name: Deploy breezy whoami
   # Same read-only-mount reasoning as the ignore file above. Without this,
   # the worker panics with NoWhoami on its first real commit.
-  template:
+  ansible.builtin.template:
     src: breezy.conf.j2
     dest: "/home/{{ ansible_user }}/.config/breezy/breezy.conf"
     owner: "{{ ansible_user }}"
@@ -82,7 +82,7 @@
 # "Connection closed by ... [preauth]" on the forge's own SSH server log,
 # i.e. no key was offered because none existed.
 - name: Ensure ~/.ssh directory exists
-  file:
+  ansible.builtin.file:
     path: "/home/{{ ansible_user }}/.ssh"
     state: directory
     owner: "{{ ansible_user }}"
@@ -92,7 +92,7 @@
 - name: Generate an SSH keypair for the bot account
   # creates: makes this idempotent - re-running the playbook never
   # regenerates (and so never invalidates) an already-registered key.
-  command:
+  ansible.builtin.command:
     cmd: >-
       ssh-keygen -t ed25519 -f /home/{{ ansible_user }}/.ssh/id_ed25519
       -N "" -C "{{ janitor_github_org }}-publish"
@@ -106,14 +106,14 @@
   # ssh-keyscan against github.com - keyscan's TOFU has no way to tell a
   # real host key from one presented by an on-path attacker; this endpoint
   # is exactly what GitHub's own docs recommend for automation.
-  uri:
+  ansible.builtin.uri:
     url: https://api.github.com/meta
     return_content: true
   register: github_meta
   when: "'publish' in janitor_services"
 
 - name: Pin GitHub's SSH host keys in known_hosts
-  copy:
+  ansible.builtin.copy:
     dest: "/home/{{ ansible_user }}/.ssh/known_hosts"
     content: "{{ github_meta.json.ssh_keys | map('regex_replace', '^', 'github.com ') | join('\n') }}\n"
     owner: "{{ ansible_user }}"
@@ -121,7 +121,7 @@
   when: "'publish' in janitor_services"
 
 - name: Read the bot's SSH public key
-  command: cat /home/{{ ansible_user }}/.ssh/id_ed25519.pub
+  ansible.builtin.command: cat /home/{{ ansible_user }}/.ssh/id_ed25519.pub
   register: bot_ssh_pubkey
   changed_when: false
   when: "'publish' in janitor_services"
@@ -132,7 +132,7 @@
   # documented repo + workflow (see group_vars/all.yml), and silently
   # adding an SSH key to a real bot account isn't something to do without
   # a human looking at it.
-  debug:
+  ansible.builtin.debug:
     msg: >-
       Add this public key to the {{ janitor_github_org }} bot account
       (https://github.com/settings/keys) so publish can open and resume

@@ -16,7 +16,7 @@
 # lost on every container restart/rebuild - provisioned here so it survives.
 
 - name: Create quadlet unit directory
-  file:
+  ansible.builtin.file:
     path: "/home/{{ ansible_user }}/.config/containers/systemd"
     state: directory
     owner: "{{ ansible_user }}"
@@ -36,7 +36,7 @@
   # Applied to every unit in this loop, not just worker's, since that's
   # simpler than splitting the task and there's no downside - each unit
   # only needs to be readable by the user account that runs it.
-  template:
+  ansible.builtin.template:
     src: "{{ item }}.container.j2"
     dest: "/home/{{ ansible_user }}/.config/containers/systemd/janitor-{{ item }}.container"
     owner: "{{ ansible_user }}"
@@ -44,10 +44,11 @@
   loop: "{{ janitor_services }}"
   loop_control:
     label: "{{ item }}"
-  notify: reload user systemd
+  notify: Reload user systemd
   no_log: true
 
-- meta: flush_handlers
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers
 
 # Started in dependency tiers rather than all at once: tier 0 (git_store,
 # bzr_store) has no janitor-side deps, tier 1 (differ/archive/auto_upload)
@@ -70,7 +71,7 @@
   become_user: "{{ ansible_user }}"
   environment:
     XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
-  systemd:
+  ansible.builtin.systemd:
     name: "janitor-{{ item }}.service"
     scope: user
     state: started
@@ -90,7 +91,7 @@
   become_user: "{{ ansible_user }}"
   environment:
     XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
-  command: podman exec janitor-worker true
+  ansible.builtin.command: podman exec janitor-worker true
   register: worker_ready
   until: worker_ready.rc == 0
   retries: 10
@@ -105,7 +106,7 @@
   become_user: "{{ ansible_user }}"
   environment:
     XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
-  command: podman exec janitor-worker test -f /root/.cache/sbuild/unstable-amd64-sbuild.tar.xz
+  ansible.builtin.command: podman exec janitor-worker test -f /root/.cache/sbuild/unstable-amd64-sbuild.tar.xz
   register: chroot_tarball_check
   changed_when: false
   failed_when: false
@@ -116,32 +117,35 @@
   become_user: "{{ ansible_user }}"
   environment:
     XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
-  command: podman exec janitor-worker mkdir -p /root/.cache/sbuild
+  ansible.builtin.command: podman exec janitor-worker mkdir -p /root/.cache/sbuild
   when: "'worker' in janitor_services and chroot_tarball_check.rc != 0"
+  changed_when: true
 
 - name: Build the sbuild chroot tarball (mmdebstrap, ~3 minutes)
   become: true
   become_user: "{{ ansible_user }}"
   environment:
     XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
-  command: >
+  ansible.builtin.command: >
     podman exec janitor-worker
     mmdebstrap --variant=buildd unstable
     /root/.cache/sbuild/unstable-amd64-sbuild.tar.xz
     http://deb.debian.org/debian --mode=unshare --arch=amd64 --components=main
   when: "'worker' in janitor_services and chroot_tarball_check.rc != 0"
+  changed_when: true
 
 - name: Extract the chroot tarball to a directory (excluding /dev - see mknod note above)
   become: true
   become_user: "{{ ansible_user }}"
   environment:
     XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
-  command: >
+  ansible.builtin.command: >
     podman exec janitor-worker sh -c
     "mkdir -p /root/.cache/sbuild/unstable-amd64-sbuild-dir &&
     tar --exclude=dev -C /root/.cache/sbuild/unstable-amd64-sbuild-dir
     -xf /root/.cache/sbuild/unstable-amd64-sbuild.tar.xz"
   when: "'worker' in janitor_services and chroot_tarball_check.rc != 0"
+  changed_when: true
 
 - name: Register the schroot chroot (type=directory, not type=file - see mknod note above)
   become: true
@@ -153,7 +157,7 @@
   # shell. Folded style collapses them all onto one line, so `cat` never
   # sees a heredoc at all and instead tries to read "[unstable-amd64-sbuild]",
   # "type=directory", etc. as literal filenames and fails on each.
-  command: |
+  ansible.builtin.command: |
     podman exec janitor-worker sh -c
     "cat > /etc/schroot/chroot.d/unstable-amd64-sbuild.conf << 'EOF'
     [unstable-amd64-sbuild]
@@ -165,19 +169,22 @@
     profile=sbuild
     EOF"
   when: "'worker' in janitor_services"
+  changed_when: true
 
 - name: Disable the /sys bind-mount in the sbuild schroot profile (fails inside this container)
   become: true
   become_user: "{{ ansible_user }}"
   environment:
     XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
-  command: podman exec janitor-worker sed -i 's|^/sys|#/sys|' /etc/schroot/sbuild/fstab
+  ansible.builtin.command: podman exec janitor-worker sed -i 's|^/sys|#/sys|' /etc/schroot/sbuild/fstab
   when: "'worker' in janitor_services"
+  changed_when: true
 
 - name: Create the sbuild scratch build directory the schroot profile's fstab expects
   become: true
   become_user: "{{ ansible_user }}"
   environment:
     XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
-  command: podman exec janitor-worker mkdir -p /var/lib/sbuild/build
+  ansible.builtin.command: podman exec janitor-worker mkdir -p /var/lib/sbuild/build
   when: "'worker' in janitor_services"
+  changed_when: true

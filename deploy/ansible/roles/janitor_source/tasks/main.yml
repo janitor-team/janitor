@@ -3,7 +3,7 @@
 # expectations both come from this checkout regardless of which image
 # path below is used, so the clone always happens.
 - name: Clone janitor
-  git:
+  ansible.builtin.git:
     repo: "{{ janitor_repo }}"
     dest: "{{ janitor_home }}"
     version: "{{ janitor_branch }}"
@@ -19,15 +19,17 @@
 # rejects the resulting "archive:" (empty) tag outright with "invalid
 # reference format" - killing build-all at the very first image.
 - name: Check whether the janitor checkout is already marked git-safe
+  become: true
   become_user: "{{ ansible_user }}"
-  command: git config --global --get-all safe.directory
+  ansible.builtin.command: git config --global --get-all safe.directory
   register: git_safe_directories
   changed_when: false
   failed_when: false
 
 - name: Mark the janitor checkout safe for git commands make build-all shells out to
+  become: true
   become_user: "{{ ansible_user }}"
-  command: git config --global --add safe.directory {{ janitor_home }}
+  ansible.builtin.command: git config --global --add safe.directory {{ janitor_home }}
   changed_when: true
   when: janitor_home not in git_safe_directories.stdout_lines
 
@@ -37,8 +39,9 @@
   # check below matches against, so a config-only re-run (no new commit)
   # doesn't pay for a multi-hour --no-cache rebuild just to redeploy
   # quadlet units.
+  become: true
   become_user: "{{ ansible_user }}"
-  command: git rev-parse HEAD
+  ansible.builtin.command: git rev-parse HEAD
   args:
     chdir: "{{ janitor_home }}"
   register: janitor_head_sha
@@ -46,8 +49,9 @@
   when: not use_prebuilt_images
 
 - name: Check whether images for this commit SHA are already built
+  become: true
   become_user: "{{ ansible_user }}"
-  command: podman images --format "{{ '{{.Repository}}:{{.Tag}}' }}"
+  ansible.builtin.command: podman images --format "{{ '{{.Repository}}:{{.Tag}}' }}"
   register: existing_images_for_sha_check
   changed_when: false
   when: not use_prebuilt_images
@@ -61,7 +65,7 @@
   # a modest instance) would just reproduce the same output.
   vars:
     sha_tagged_repos: "{{ existing_images_for_sha_check.stdout_lines | select('search', ':' + janitor_head_sha.stdout) | map('regex_replace', ':[^:]*$', '') | unique | list }}"
-  set_fact:
+  ansible.builtin.set_fact:
     images_already_built_for_head: "{{ (sha_tagged_repos | select('search', 'jelmer/janitor/') | list | length) >= (janitor_dockerfile_images | length) }}"
   when: not use_prebuilt_images
 
@@ -80,8 +84,9 @@
   # else ever reads from - quadlet then fails with "image not known" since
   # Pull=never stops it from papering over the gap with an on-demand pull
   # as root.
+  become: true
   become_user: "{{ ansible_user }}"
-  command: make build-all
+  ansible.builtin.command: make build-all
   args:
     chdir: "{{ janitor_home }}"
   register: build_result
@@ -97,8 +102,9 @@
   # unit), so nothing needs them pulled on this faster path.
   # become_user: see the build task above - must land in the same rootless
   # per-uid store the quadlet units actually run podman against.
+  become: true
   become_user: "{{ ansible_user }}"
-  command: podman pull ghcr.io/jelmer/janitor/{{ item }}:latest
+  ansible.builtin.command: podman pull ghcr.io/jelmer/janitor/{{ item }}:latest
   loop: "{{ janitor_services }}"
   when: use_prebuilt_images
   changed_when: true
@@ -106,8 +112,9 @@
 - name: Verify what actually built/pulled
   # become_user: must inspect the same store the two tasks above populated,
   # not root's - otherwise this "verifies" an empty store and passes anyway.
+  become: true
   become_user: "{{ ansible_user }}"
-  command: podman images --format "{{ '{{.Repository}}:{{.Tag}}' }}"
+  ansible.builtin.command: podman images --format "{{ '{{.Repository}}:{{.Tag}}' }}"
   register: built_images
   changed_when: false
 
@@ -124,7 +131,7 @@
   # path this only expects the smaller set actually pulled.
   vars:
     expected_images: "{{ (use_prebuilt_images) | ternary(janitor_services, janitor_dockerfile_images) }}"
-  assert:
+  ansible.builtin.assert:
     that:
       - built_images.stdout_lines | map('regex_replace', ':[^:]*$', '') | unique | select('search', 'jelmer/janitor/') | list | length >= (expected_images | length)
     fail_msg: >
