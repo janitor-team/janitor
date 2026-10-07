@@ -44,6 +44,9 @@ debsign_failed_count = Counter(
 upload_failed_count = Counter(
     "upload_failed", "Number of packages for which uploading failed."
 )
+result_handling_failed_count = Counter(
+    "result_handling_failed", "Number of result messages that could not be handled."
+)
 
 
 async def run_web_server(listen_addr, port, config):
@@ -158,15 +161,25 @@ async def listen_to_runner(
     source_only: bool = False,
 ):
     async def handle_result_message(msg):
-        result = json.loads(msg["data"])
+        log_id = None
+        try:
+            result = json.loads(msg["data"])
+            log_id = result.get("log_id")
 
-        if is_debian_upload_target(result, distributions):
-            await upload_build_result(
-                result["log_id"],
-                artifact_manager,
-                dput_host,
-                debsign_keyid=debsign_keyid,
-                source_only=source_only,
+            if is_debian_upload_target(result, distributions):
+                await upload_build_result(
+                    result["log_id"],
+                    artifact_manager,
+                    dput_host,
+                    debsign_keyid=debsign_keyid,
+                    source_only=source_only,
+                )
+        except Exception:
+            result_handling_failed_count.inc()
+            logging.exception(
+                "Unhandled error processing result for %s",
+                log_id,
+                extra={"run_id": log_id},
             )
 
     try:

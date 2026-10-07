@@ -15,8 +15,14 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
+import asyncio
+import json
+import logging
 import os
 
+from fakeredis.aioredis import FakeRedis
+
+from janitor.artifacts import LocalArtifactManager
 from janitor.debian import auto_upload
 from janitor.debian.auto_upload import is_debian_upload_target
 
@@ -122,3 +128,115 @@ async def test_debsign_failure_skips_dput(monkeypatch):
     )
 
     assert dput_calls == []
+
+
+def _debian_result(log_id):
+    return {
+        "code": "success",
+        "log_id": log_id,
+        "target": {"name": "debian", "details": {"build_distribution": "unstable"}},
+    }
+
+
+async def _publish_until_subscribed(redis, payload):
+    for _ in range(200):
+        if await redis.publish("result", payload):
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("nothing subscribed to the result channel")
+
+
+async def _wait_for(predicate):
+    for _ in range(200):
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("timed out waiting for the listener to catch up")
+
+
+def _artifacts_without_changes(root, log_id):
+    """Store artifacts for a run that built no .changes file."""
+    os.mkdir(os.path.join(root, log_id))
+    with open(os.path.join(root, log_id, "build.log"), "w") as f:
+        f.write("dummy\n")
+
+
+def _uploads_started(caplog):
+    prefix = "Uploading results for "
+    return [m.removeprefix(prefix) for m in caplog.messages if m.startswith(prefix)]
+
+
+def _logged_errors(caplog):
+    return [r.exc_info[0] for r in caplog.records if r.exc_info]
+
+
+async def test_listener_survives_an_unexpected_upload_error(tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    # a directory among the artifacts can not be retrieved, which raises OSError
+    os.makedirs(tmp_path / "bad" / "subdir")
+    _artifacts_without_changes(tmp_path, "good")
+
+    redis = FakeRedis()
+    listener = asyncio.create_task(
+        auto_upload.listen_to_runner(
+            redis,
+            LocalArtifactManager(str(tmp_path)),
+            "local",
+            distributions=["unstable"],
+        )
+    )
+    try:
+        # a non-debian result is skipped, so this only waits for the subscription
+        await _publish_until_subscribed(
+            redis, json.dumps({"code": "success", "target": {"name": "generic"}})
+        )
+
+        await redis.publish("result", json.dumps(_debian_result("bad")))
+        await redis.publish("result", json.dumps(_debian_result("good")))
+
+        await _wait_for(lambda: "good" in _uploads_started(caplog))
+        assert _uploads_started(caplog) == ["bad", "good"]
+        (error,) = _logged_errors(caplog)
+        assert issubclass(error, OSError)
+        assert not listener.done()
+    finally:
+        listener.cancel()
+        try:
+            await listener
+        except asyncio.CancelledError:
+            pass
+
+
+async def test_result_without_a_log_id_is_not_uploaded(tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    _artifacts_without_changes(tmp_path, "good")
+
+    redis = FakeRedis()
+    listener = asyncio.create_task(
+        auto_upload.listen_to_runner(
+            redis,
+            LocalArtifactManager(str(tmp_path)),
+            "local",
+            distributions=["unstable"],
+        )
+    )
+    try:
+        await _publish_until_subscribed(
+            redis, json.dumps({"code": "success", "target": {"name": "generic"}})
+        )
+
+        no_log_id = _debian_result("unused")
+        del no_log_id["log_id"]
+        await redis.publish("result", json.dumps(no_log_id))
+        await redis.publish("result", json.dumps(_debian_result("good")))
+
+        await _wait_for(lambda: "good" in _uploads_started(caplog))
+        assert _uploads_started(caplog) == ["good"]
+        assert _logged_errors(caplog) == [KeyError]
+        assert not listener.done()
+    finally:
+        listener.cancel()
+        try:
+            await listener
+        except asyncio.CancelledError:
+            pass
