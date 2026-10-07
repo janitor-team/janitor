@@ -108,6 +108,22 @@ pub enum FinishOutcome {
     AlreadyStored,
 }
 
+/// A codebase entry's VCS URL and the key it came from. Absent, null
+/// and empty all mean "no VCS URL". `Err` carries the bad key.
+pub(crate) fn effective_branch_url(
+    entry: &serde_json::Value,
+) -> Result<Option<(&'static str, &str)>, &'static str> {
+    for key in ["branch_url", "url"] {
+        match entry.get(key) {
+            None | Some(serde_json::Value::Null) => continue,
+            Some(serde_json::Value::String(s)) if s.is_empty() => continue,
+            Some(serde_json::Value::String(s)) => return Ok(Some((key, s))),
+            Some(_) => return Err(key),
+        }
+    }
+    Ok(None)
+}
+
 /// Database manager for runner operations using shared infrastructure.
 #[derive(Clone)]
 pub struct RunnerDatabase {
@@ -1563,27 +1579,17 @@ INSERT INTO run (
         let mut tx = self.pool().begin().await?;
 
         for codebase in codebases {
-            // Parse URL parameters if branch_url is provided
-            let (url, branch_url, branch) =
-                if let Some(branch_url_str) = codebase.get("branch_url").and_then(|v| v.as_str()) {
-                    // For now, simple handling - in the real implementation this would parse URL parameters
-                    (
-                        Some(branch_url_str.to_string()),
-                        Some(branch_url_str.to_string()),
-                        codebase
-                            .get("branch")
-                            .and_then(|v| v.as_str())
-                            .map(String::from),
-                    )
-                } else if let Some(url_str) = codebase.get("url").and_then(|v| v.as_str()) {
-                    let branch = codebase
+            let (url, branch_url, branch) = match effective_branch_url(codebase).ok().flatten() {
+                Some((_, value)) => (
+                    Some(value.to_string()),
+                    Some(value.to_string()),
+                    codebase
                         .get("branch")
                         .and_then(|v| v.as_str())
-                        .map(String::from);
-                    (Some(url_str.to_string()), Some(url_str.to_string()), branch)
-                } else {
-                    (None, None, None)
-                };
+                        .map(String::from),
+                ),
+                None => (None, None, None),
+            };
 
             sqlx::query(
                 r#"

@@ -126,6 +126,18 @@ async fn post_codebases_upserts_and_is_visible_via_get() {
             "name": "test-codebase-b",
             "branch_url": "https://example.invalid/b",
             "vcs_type": "git"
+        },
+        // Not an http(s) scheme, and still a URL the worker can take.
+        {
+            "name": "test-codebase-c",
+            "branch_url": "git+ssh://example.invalid/c",
+            "vcs_type": "git"
+        },
+        {
+            "name": "test-codebase-d",
+            "branch_url": "https://example.invalid/d-branch",
+            "url": "https://example.invalid/d-url",
+            "vcs_type": "git"
         }
     ]);
 
@@ -142,7 +154,9 @@ async fn post_codebases_upserts_and_is_visible_via_get() {
     // `GET /codebases` -- the latter would just re-run the same code
     // path we already exercised in the POST.
     let names: Vec<String> = sqlx::query_scalar(
-        "SELECT name FROM codebase WHERE name IN ('test-codebase-a', 'test-codebase-b')
+        "SELECT name FROM codebase
+         WHERE name IN ('test-codebase-a', 'test-codebase-b', 'test-codebase-c',
+                        'test-codebase-d')
          ORDER BY name",
     )
     .fetch_all(state.database.pool())
@@ -150,8 +164,345 @@ async fn post_codebases_upserts_and_is_visible_via_get() {
     .expect("query codebases");
     assert_eq!(
         names,
-        vec!["test-codebase-a".to_string(), "test-codebase-b".to_string()]
+        vec![
+            "test-codebase-a".to_string(),
+            "test-codebase-b".to_string(),
+            "test-codebase-c".to_string(),
+            "test-codebase-d".to_string()
+        ]
     );
+
+    // `branch_url` wins over `url`, and the winner is written to both.
+    let pair: (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT branch_url, url FROM codebase WHERE name = 'test-codebase-d'")
+            .fetch_one(state.database.pool())
+            .await
+            .expect("query test-codebase-d");
+    assert_eq!(
+        pair,
+        (
+            Some("https://example.invalid/d-branch".to_string()),
+            Some("https://example.invalid/d-branch".to_string())
+        ),
+        "branch_url must take precedence over url"
+    );
+}
+
+/// `POST /codebases` rejects an entry whose `branch_url` is not a URL,
+/// and writes nothing at all. An entry with no VCS URL sits ahead of
+/// the bad one, so the guard has to keep scanning to reach it.
+#[tokio::test]
+async fn post_codebases_rejects_a_plain_path_branch_url() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let body = json!([
+        {
+            "name": "test-codebase-good",
+            "branch_url": "https://example.invalid/good",
+            "vcs_type": "git"
+        },
+        {"name": "test-codebase-novcs"},
+        {
+            "name": "test-codebase-plainpath",
+            "branch_url": "/srv/git/plainpath",
+            "vcs_type": "git"
+        }
+    ]);
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/codebases")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = get_body(response).await;
+    let reason = body["reason"].as_str().expect("reason should be a string");
+    assert!(
+        reason.contains("test-codebase-plainpath"),
+        "reason should name the codebase, got {reason}"
+    );
+    assert!(
+        !reason.contains("/srv/git/plainpath"),
+        "reason should not echo the url, got {reason}"
+    );
+    assert!(
+        reason.contains("relative URL without a base"),
+        "reason should carry the parse error, got {reason}"
+    );
+
+    let names: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM codebase
+         WHERE name IN ('test-codebase-good', 'test-codebase-novcs',
+                        'test-codebase-plainpath')",
+    )
+    .fetch_all(state.database.pool())
+    .await
+    .expect("query codebases");
+    assert!(
+        names.is_empty(),
+        "nothing should have been written, got {names:?}"
+    );
+}
+
+/// `upload_codebases` falls back to `url` when `branch_url` is absent
+/// and stores that value in both columns, so the guard has to check the
+/// same fallback or the entry lands anyway.
+#[tokio::test]
+async fn post_codebases_rejects_a_plain_path_in_url() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let body = json!([
+        {
+            "name": "test-codebase-urlonly",
+            "url": "/srv/git/urlonly",
+            "vcs_type": "git"
+        }
+    ]);
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/codebases")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = get_body(response).await;
+    let reason = body["reason"].as_str().expect("reason should be a string");
+    assert!(
+        reason.contains("test-codebase-urlonly"),
+        "reason should name the codebase, got {reason}"
+    );
+    assert!(
+        reason.contains("invalid url") && !reason.contains("branch_url"),
+        "the request carried no branch_url, so the reason must not name one, got {reason}"
+    );
+
+    let rows: Vec<(Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT branch_url, url FROM codebase WHERE name = 'test-codebase-urlonly'")
+            .fetch_all(state.database.pool())
+            .await
+            .expect("query codebases");
+    assert!(
+        rows.is_empty(),
+        "nothing should have been written, got {rows:?}"
+    );
+
+    // An empty `branch_url` is absent, so the fallback still reaches `url`.
+    let body = json!([
+        {
+            "name": "test-codebase-emptybranch",
+            "branch_url": "",
+            "url": "/srv/git/bad",
+            "vcs_type": "git"
+        }
+    ]);
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/codebases")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = get_body(response).await;
+    let reason = body["reason"].as_str().expect("reason should be a string");
+    assert!(
+        reason.contains("invalid url"),
+        "an empty branch_url must not hide the url, got {reason}"
+    );
+
+    let found: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM codebase WHERE name = 'test-codebase-emptybranch'")
+            .fetch_all(state.database.pool())
+            .await
+            .expect("query codebases");
+    assert!(found.is_empty(), "nothing should have been written");
+}
+
+/// A `branch_url` that is present but not a string used to be skipped
+/// by both the guard and the writer, so the row landed with no VCS URL
+/// at all while the caller got a 200.
+#[tokio::test]
+async fn post_codebases_rejects_a_non_string_branch_url() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    for (name, key, entry) in [
+        (
+            "test-codebase-numbranch",
+            "branch_url",
+            json!({"name": "test-codebase-numbranch", "branch_url": 123, "vcs_type": "git"}),
+        ),
+        (
+            "test-codebase-numurl",
+            "url",
+            json!({"name": "test-codebase-numurl", "url": ["a"], "vcs_type": "git"}),
+        ),
+    ] {
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/codebases")
+            .header("content-type", "application/json")
+            .body(Body::from(json!([entry]).to_string()))
+            .unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "for {name}");
+
+        let body = get_body(response).await;
+        let reason = body["reason"].as_str().expect("reason should be a string");
+        assert!(
+            reason.contains(name) && reason.contains(key),
+            "reason should name the codebase and the key, got {reason}"
+        );
+
+        let found: Vec<String> = sqlx::query_scalar("SELECT name FROM codebase WHERE name = $1")
+            .bind(name)
+            .fetch_all(state.database.pool())
+            .await
+            .expect("query codebases");
+        assert!(
+            found.is_empty(),
+            "nothing should have been written for {name}"
+        );
+    }
+}
+
+/// The schema allows a codebase with no VCS URL. Absent, null and
+/// empty all mean the same thing and all store NULL, so two empty
+/// entries in one request do not collide on `unique(branch_url,
+/// subpath)`.
+#[tokio::test]
+async fn post_codebases_accepts_a_missing_or_empty_branch_url() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let body = json!([
+        {"name": "test-codebase-nourl"},
+        {"name": "test-codebase-nullurl", "branch_url": null, "vcs_type": "git"},
+        {"name": "test-codebase-emptyurl", "branch_url": "", "vcs_type": "git"},
+        {"name": "test-codebase-emptyurl2", "branch_url": "", "vcs_type": "git"}
+    ]);
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/codebases")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT name, branch_url, url FROM codebase
+         WHERE name IN ('test-codebase-nourl', 'test-codebase-nullurl',
+                        'test-codebase-emptyurl', 'test-codebase-emptyurl2')
+         ORDER BY name",
+    )
+    .fetch_all(state.database.pool())
+    .await
+    .expect("query codebases");
+    assert_eq!(
+        rows,
+        vec![
+            ("test-codebase-emptyurl".to_string(), None, None),
+            ("test-codebase-emptyurl2".to_string(), None, None),
+            ("test-codebase-nourl".to_string(), None, None),
+            ("test-codebase-nullurl".to_string(), None, None),
+        ]
+    );
+}
+
+/// The schema needs a name or a `branch_url`, so an entry carrying
+/// neither cannot be stored at all.
+#[tokio::test]
+async fn post_codebases_rejects_an_entry_with_no_name_and_no_url() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    for entry in [json!({}), json!({"branch_url": ""}), json!({"url": ""})] {
+        let payload = json!([entry]).to_string();
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/codebases")
+            .header("content-type", "application/json")
+            .body(Body::from(payload.clone()))
+            .unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "for {payload}");
+
+        let body = get_body(response).await;
+        let reason = body["reason"].as_str().expect("reason should be a string");
+        assert!(
+            reason.contains("must have a name"),
+            "reason should name the missing key, got {reason}"
+        );
+    }
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM codebase")
+        .fetch_one(state.database.pool())
+        .await
+        .expect("count codebases");
+    assert_eq!(count, 0, "nothing should have been written");
+}
+
+/// The 400 body is read inside the cluster, but a `branch_url` can
+/// carry userinfo and these are the values that failed to parse, so the
+/// message carries the parse error rather than the URL.
+#[tokio::test]
+async fn post_codebases_does_not_echo_userinfo_in_the_reason() {
+    let Some((app, _state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    for bad in [
+        "https://user:hunter2@",
+        "http://user:hunter2@example.invalid:notaport/x",
+    ] {
+        let body = json!([{
+            "name": "test-codebase-userinfo",
+            "branch_url": bad,
+            "vcs_type": "git"
+        }]);
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/codebases")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "for {bad}");
+
+        let body = get_body(response).await;
+        let reason = body["reason"].as_str().expect("reason should be a string");
+        assert!(
+            !reason.contains("hunter2"),
+            "reason should not carry userinfo, got {reason}"
+        );
+        assert!(
+            reason.contains("test-codebase-userinfo"),
+            "reason should name the codebase, got {reason}"
+        );
+    }
 }
 
 /// `POST /schedule` with a nonexistent `run_id` returns 404 with the
@@ -2293,4 +2644,68 @@ async fn post_active_runs_honours_client_exclude_hosts() {
         StatusCode::SERVICE_UNAVAILABLE,
         "queue should look empty when the only candidate's host is excluded"
     );
+}
+
+/// A queue item whose codebase has a plain path as `branch_url` is finished and the next one is assigned.
+#[tokio::test]
+async fn assign_skips_queue_item_with_plain_path_branch_url() {
+    let Some((app, state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let pool = state.database.pool().clone();
+    sqlx::query(
+        "INSERT INTO codebase (name, branch_url, url, vcs_type)
+         VALUES ('path-cb', '/srv/git/path-cb', '/srv/git/path-cb', 'git')",
+    )
+    .execute(&pool)
+    .await
+    .expect("codebase insert");
+    insert_codebase(&pool, "url-cb").await;
+    state
+        .auth_service
+        .create_worker("path-worker", "path-pw", None)
+        .await
+        .expect("create worker");
+
+    // `path-cb` has the lowest priority value, so it is pulled first.
+    for (cb, prio) in [("path-cb", 1i64), ("url-cb", 100)] {
+        sqlx::query(
+            "INSERT INTO queue (codebase, suite, command, priority)
+             VALUES ($1, 'test-campaign', 'true', $2)",
+        )
+        .bind(cb)
+        .bind(prio)
+        .execute(&pool)
+        .await
+        .expect("insert queue row");
+    }
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/active-runs")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"worker": "path-worker"}).to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = get_body(response).await;
+    assert_eq!(
+        body["codebase"], "url-cb",
+        "plain-path branch_url must not be assigned, got branch {}",
+        body["branch"]
+    );
+
+    let runs: Vec<(String, Option<bool>)> =
+        sqlx::query_as("SELECT result_code, failure_transient FROM run WHERE codebase = 'path-cb'")
+            .fetch_all(&pool)
+            .await
+            .expect("run lookup");
+    assert_eq!(runs, vec![("invalid-branch-url".to_string(), Some(false))]);
+    let queued: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM queue WHERE codebase = 'path-cb'")
+        .fetch_one(&pool)
+        .await
+        .expect("queue lookup");
+    assert_eq!(queued, 0, "the rejected item must leave the queue");
 }
