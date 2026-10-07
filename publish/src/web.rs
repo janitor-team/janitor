@@ -1579,6 +1579,7 @@ async fn check_stragglers(
 async fn scan(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     async fn scan(state: Arc<AppState>) {
         crate::check_existing(
+            crate::iter_all_mps(None),
             state.conn.clone(),
             state.redis.clone(),
             state.config,

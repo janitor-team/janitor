@@ -245,3 +245,114 @@ fn test_publish_one_error_fields() {
     assert_eq!(deserialized.code, "test-error");
     assert_eq!(deserialized.description, "Test error description");
 }
+
+async fn scan_listing(
+    mps: impl Iterator<
+        Item = Result<
+            (
+                Forge,
+                breezyshim::forge::MergeProposal,
+                breezyshim::forge::MergeProposalStatus,
+            ),
+            BrzError,
+        >,
+    >,
+    bucket_rate_limiter: &Mutex<Box<dyn RateLimiter>>,
+) -> bool {
+    let publish_worker = PublishWorker::new(
+        None,
+        None,
+        "http://localhost:9920/".parse().unwrap(),
+        None,
+        None,
+        None,
+    )
+    .await;
+    check_existing(
+        mps,
+        sqlx::PgPool::connect_lazy("postgresql://localhost/postgres").unwrap(),
+        None,
+        &janitor::config::Config::default(),
+        &publish_worker,
+        bucket_rate_limiter,
+        Arc::new(RwLock::new(HashMap::new())),
+        &HashMap::new(),
+        None,
+        None,
+    )
+    .await
+}
+
+fn limiter_with_open(open: &HashMap<String, usize>) -> Mutex<Box<dyn RateLimiter>> {
+    let mut limiter = rate_limiter::FixedRateLimiter::new(3);
+    limiter.set_mps_per_bucket(&maplit::hashmap! { MergeProposalStatus::Open => open.clone() });
+    Mutex::new(Box::new(limiter))
+}
+
+#[tokio::test]
+async fn test_check_existing_keeps_bucket_counts_when_a_forge_was_not_listed() {
+    let open = maplit::hashmap! { "bucket".to_string() => 3 };
+    let limiter = limiter_with_open(&open);
+
+    let complete = scan_listing(
+        std::iter::once(Err(BrzError::ConnectionError(
+            "while sending GET /api/v4/user: Connection refused".to_string(),
+        ))),
+        &limiter,
+    )
+    .await;
+
+    assert!(!complete, "a listing that lost a forge is not a full scan");
+    assert_eq!(
+        limiter.lock().unwrap().get_stats().unwrap().per_bucket,
+        open
+    );
+}
+
+#[tokio::test]
+async fn test_check_existing_replaces_bucket_counts_after_a_full_listing() {
+    let open = maplit::hashmap! { "bucket".to_string() => 3 };
+    let limiter = limiter_with_open(&open);
+
+    let complete = scan_listing(std::iter::empty(), &limiter).await;
+
+    assert!(complete);
+    assert_eq!(
+        limiter.lock().unwrap().get_stats().unwrap().per_bucket,
+        HashMap::new()
+    );
+}
+
+fn listed(listing: Result<Vec<Result<u32, BrzError>>, BrzError>) -> Vec<Result<u32, BrzError>> {
+    listing_items(
+        "GitLab".to_string(),
+        breezyshim::forge::MergeProposalStatus::Open,
+        listing.map(Vec::into_iter),
+    )
+    .collect()
+}
+
+#[test]
+fn test_listing_items_yields_the_error_of_a_failed_listing() {
+    let items = listed(Err(BrzError::ConnectionError("refused".to_string())));
+    assert!(matches!(items[..], [Err(BrzError::ConnectionError(_))]));
+}
+
+#[test]
+fn test_listing_items_yields_an_error_met_part_way() {
+    let items = listed(Ok(vec![
+        Ok(1),
+        Err(BrzError::ConnectionError("reset".to_string())),
+    ]));
+    assert!(matches!(
+        items[..],
+        [Ok(1), Err(BrzError::ConnectionError(_))]
+    ));
+}
+
+#[test]
+fn test_listing_items_skips_a_forge_without_credentials() {
+    let unsupported = BrzError::UnsupportedForge("http://127.0.0.1:9/".parse().unwrap());
+    assert!(listed(Err(BrzError::ForgeLoginRequired)).is_empty());
+    assert!(listed(Err(unsupported)).is_empty());
+}
