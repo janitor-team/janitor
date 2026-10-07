@@ -1421,7 +1421,7 @@ async def handle_policy_get(request):
                     "mode": p["mode"],
                     "max_frequency_days": p["frequency_days"],
                 }
-                for p in row["per_branch_policy"]
+                for p in (row["per_branch_policy"] or [])
             },
         }
     )
@@ -1440,7 +1440,7 @@ async def handle_full_policy_get(request):
                         "mode": p["mode"],
                         "max_frequency_days": p["frequency_days"],
                     }
-                    for p in row["per_branch_policy"]
+                    for p in (row["per_branch_policy"] or [])
                 },
             }
             for row in rows
@@ -1613,7 +1613,7 @@ async def get_publish_policy(conn: asyncpg.Connection, codebase: str, campaign: 
         return (
             {
                 v["role"]: (v["mode"], v["frequency_days"])
-                for v in row["per_branch_policy"]
+                for v in (row["per_branch_policy"] or [])
             },
             row["command"],
             row["rate_limit_bucket"],
@@ -1653,6 +1653,7 @@ async def publish_request(request):
         publish_policy, _, rate_limit_bucket = await get_publish_policy(
             conn, codebase, campaign
         )
+        publish_policy = publish_policy or {}
 
         logger.info("Handling request to publish %s/%s", codebase, campaign)
 
