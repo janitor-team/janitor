@@ -32,7 +32,7 @@ import warnings
 from collections.abc import AsyncIterable, Iterator
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, cast
 
 import aioredlock
@@ -456,15 +456,17 @@ async def consider_publish_run(
     attempt_count = await get_publish_attempt_count(
         conn, run.revision, {"differ-unreachable"}
     )
-    next_try_time = calculate_next_try_time(run.finish_time, attempt_count)
-    if utcnow() < next_try_time:
+    next_try_time = calculate_next_try_time(
+        run.finish_time.replace(tzinfo=timezone.utc), attempt_count
+    )
+    if datetime.now(timezone.utc) < next_try_time:
         logger.info(
             "Not attempting to push %s / %s (%s) due to "
             "exponential backoff. Next try in %s.",
             run.codebase,
             run.campaign,
             run.id,
-            next_try_time - utcnow(),
+            next_try_time - datetime.now(timezone.utc),
             extra={"run_id": run.id},
         )
         exponential_backoff_count.inc()
@@ -2090,9 +2092,11 @@ WHERE run.id = $1
         },
     }
 
-    next_try_time = calculate_next_try_time(run["finish_time"], attempt_count)
+    next_try_time = calculate_next_try_time(
+        run["finish_time"].replace(tzinfo=timezone.utc), attempt_count
+    )
     ret["backoff"] = {
-        "result": utcnow() >= next_try_time,
+        "result": datetime.now(timezone.utc) >= next_try_time,
         "details": {
             "attempt_count": attempt_count,
             "next_try_time": next_try_time.isoformat(),
