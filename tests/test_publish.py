@@ -62,6 +62,70 @@ async def test_policy_get(aiohttp_client, db):
     }
 
 
+async def _insert_run_for_blockers(conn):
+    from janitor.runner import store_change_set, store_run
+
+    finish_time = utcnow() - timedelta(hours=1)
+    await conn.execute(
+        "INSERT INTO codebase (name, branch_url, url) VALUES ($1, $2, $2)",
+        "mypkg",
+        "https://example.com/mypkg.git",
+    )
+    await conn.execute(
+        "INSERT INTO candidate (codebase, suite, command, publish_policy) "
+        "VALUES ('mypkg', 'lintian-fixes', 'true', 'mypolicy')"
+    )
+    await store_change_set(conn, "run-1", campaign="lintian-fixes")
+    await store_run(
+        conn,
+        run_id="run-1",
+        codebase="mypkg",
+        campaign="lintian-fixes",
+        vcs_type="git",
+        subpath="",
+        start_time=finish_time - timedelta(minutes=5),
+        finish_time=finish_time,
+        command="true",
+        result_code="success",
+        codemod_result={},
+        main_branch_revision=b"base-revid",
+        revision=b"revid",
+        description=None,
+        context=None,
+        instigated_context=None,
+        logfilenames=[],
+        value=1,
+        change_set="run-1",
+        branch_url="https://example.com/mypkg.git",
+    )
+
+
+async def test_blockers_without_rate_limit_bucket(aiohttp_client, db):
+    import aiozipkin
+
+    config = read_config_string("")
+    app = await create_app(vcs_managers={}, db=db, redis=None, config=config)
+    # The blockers route reads the request span, so the app needs a tracer.
+    endpoint = aiozipkin.create_endpoint("janitor.publish", ipv4="127.0.0.1", port=80)
+    aiozipkin.setup(app, await aiozipkin.create_custom(endpoint))
+    client = await aiohttp_client(app)
+
+    resp = await client.put(
+        "/policy/mypolicy",
+        json={"per_branch": {"main": {"mode": "propose"}}},
+    )
+    assert resp.status == 200
+    async with db.acquire() as conn:
+        await _insert_run_for_blockers(conn)
+
+    resp = await client.get("/blockers/run-1")
+    assert resp.status == 200
+    assert (await resp.json())["propose_rate_limit"] == {
+        "details": {"bucket": None},
+        "result": True,
+    }
+
+
 async def test_credentials_missing_ssh_dir_returns_no_keys(aiohttp_client, monkeypatch):
     from aiohttp import web
 
