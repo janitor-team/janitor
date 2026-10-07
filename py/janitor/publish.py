@@ -29,7 +29,7 @@ import sys
 import time
 import uuid
 import warnings
-from collections.abc import AsyncIterable, Iterator
+from collections.abc import AsyncIterable, Iterable, Iterator
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -75,7 +75,7 @@ from silver_platter import (
     _open_branch as open_branch,
 )
 
-from . import set_user_agent, state, utcnow
+from . import retry_after_seconds, set_user_agent, state, utcnow
 from ._launchpad import override_launchpad_consumer_name
 from ._publish import (
     BucketRateLimited,
@@ -3236,6 +3236,7 @@ async def check_existing(
     vcs_managers,
     modify_limit=None,
     unexpected_limit: int = 5,
+    mps: Optional[Iterable[tuple[Forge, MergeProposal, str]]] = None,
 ):
     mps_per_bucket: dict[str, dict[str, int]] = {
         "open": {},
@@ -3260,7 +3261,10 @@ async def check_existing(
     check_only = False
     was_forge_ratelimited = False
 
-    for forge, mp, status in iter_all_mps():
+    if mps is None:
+        mps = iter_all_mps()
+
+    for forge, mp, status in mps:
         status_count[status] += 1
         if forge in forge_rate_limiter:
             if utcnow() < forge_rate_limiter[forge]:
@@ -3293,10 +3297,11 @@ async def check_existing(
             logger.warning(
                 "Rate-limited accessing %s. Skipping %r for this cycle.", mp.url, forge
             )
-            if e.retry_after is None:
+            retry_seconds = retry_after_seconds(getattr(e, "retry_after", None))
+            if retry_seconds is None:
                 retry_after = timedelta(minutes=30)
             else:
-                retry_after = timedelta(seconds=e.retry_after)
+                retry_after = timedelta(seconds=retry_seconds)
             forge_rate_limiter[forge] = utcnow() + retry_after
             continue
         except UnexpectedHttpStatus as e:

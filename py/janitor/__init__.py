@@ -16,9 +16,11 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
 
+import math
 import shlex
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 from urllib.request import build_opener, install_opener
 
 from breezy.transport import http as _mod_http
@@ -66,3 +68,13 @@ def splitout_env(command):
         (key, value) = args.pop(0).split("=", 1)
         env[key] = value
     return env, shlex.join(args)
+
+
+MAX_RETRY_AFTER = 24 * 60 * 60
+
+
+def retry_after_seconds(value: Optional[float]) -> Optional[int]:
+    """Clamp a Retry-After to whole positive seconds, at most a day."""
+    if value is None or not math.isfinite(value) or value <= 0:
+        return None
+    return min(math.ceil(value), MAX_RETRY_AFTER)

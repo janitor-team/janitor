@@ -15,14 +15,16 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
+import math
 from datetime import timedelta
 from typing import cast
 
 import pytest
-from breezy.forge import Forge
+from breezy.forge import Forge, MergeProposal
+from silver_platter import BranchRateLimited
 
 import janitor.publish as publish
-from janitor import utcnow
+from janitor import MAX_RETRY_AFTER, utcnow
 from janitor.config import read_string as read_config_string
 from janitor.publish import create_app
 
@@ -261,3 +263,54 @@ async def test_check_existing_keeps_going_after_an_unexpected_status(
     )
 
     assert mp.read_attempts == 1
+
+
+_UNSET = object()
+
+
+class _RateLimitedMergeProposal:
+    """A proposal whose read is refused with a rate limit."""
+
+    url = "https://example.com/mypkg/merge_requests/1"
+
+    def __init__(self, retry_after):
+        self.retry_after = retry_after
+
+    def get_source_revision(self):
+        e = BranchRateLimited(self.url, "rate limited")
+        if self.retry_after is not _UNSET:
+            e.retry_after = self.retry_after
+        raise e
+
+
+@pytest.mark.parametrize(
+    "retry_after, longest",
+    [
+        pytest.param(_UNSET, 30 * 60, id="unset-1800"),
+        (math.inf, 30 * 60),
+        (math.nan, 30 * 60),
+        (-5, 30 * 60),
+        (1e10, MAX_RETRY_AFTER),
+        (41.2, 42),
+    ],
+)
+async def test_check_existing_bounds_the_backoff_from_retry_after(
+    con, retry_after, longest
+) -> None:
+    forge = cast(Forge, _StubForge())
+    mp = cast(MergeProposal, _RateLimitedMergeProposal(retry_after))
+    forge_rate_limiter: dict = {}
+
+    await publish.check_existing(
+        conn=con,
+        redis=None,
+        config=None,
+        publish_worker=None,
+        bucket_rate_limiter=publish.NonRateLimiter(),
+        forge_rate_limiter=forge_rate_limiter,
+        vcs_managers=None,
+        mps=[(forge, mp, "open")],
+    )
+
+    wait = forge_rate_limiter[forge] - utcnow()
+    assert timedelta(0) < wait <= timedelta(seconds=longest)
