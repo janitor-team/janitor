@@ -3719,6 +3719,7 @@ dependencies = [
  "shlex 2.0.1",
  "silver-platter",
  "sqlx",
+ "tempfile",
  "tokio",
  "url",
  "uuid",

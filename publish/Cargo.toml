@@ -45,6 +45,10 @@ uuid = { version = "1", features = ["v4"] }
 name = "janitor-publish-one"
 path = "src/bin/janitor-publish-one.rs"
 
+[[bin]]
+name = "janitor-render-publish-template"
+path = "src/bin/janitor-render-publish-template.rs"
+
 [dev-dependencies]
 maplit = { workspace = true }
 protobuf = "3"
@@ -54,3 +58,4 @@ protobuf = "3"
 janitor = { path = "..", features = ["testing"] }
 janitor-runner = { path = "../runner" }
 serial_test = "3"
+tempfile = { workspace = true }

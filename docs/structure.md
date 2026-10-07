@@ -16,3 +16,10 @@
   - `reprocess-logs bulk [--run-id <id>...] [--dry-run] [--reschedule]` - reprocess stored build logs in bulk, restricted to the given run IDs if any are passed
   - `publish autopublish` - trigger an autopublish pass
   - `publish scan` - rescan merge proposal statuses
+- `janitor-render-publish-template` - prints the merge proposal description a run would get, without publishing anything. It needs the database from `janitor.conf` and a directory of proposal templates:
+
+  ```console
+  $ janitor-render-publish-template --config janitor.conf --template-env-path ./proposal-templates --run-id <run-id>
+  ```
+
+  `--format txt` renders the plain text template, and `--external-url` sets the `external_url` the templates link to. The `debdiff` variable is not set, since that comes from the differ at publish time.
