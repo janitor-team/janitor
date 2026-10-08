@@ -6,10 +6,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
-    extract::{Form, Path, State},
-    http::{HeaderMap, HeaderValue, StatusCode},
-    response::{IntoResponse, Response},
-    routing::{get, post},
+    body::Bytes,
+    extract::{Path, State},
+    http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri},
+    response::{IntoResponse, Redirect, Response},
+    routing::{get, post, MethodRouter},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -57,8 +58,8 @@ pub struct AppState {
     pub last_publish_times: LastPublishTimes,
 }
 
-/// Body accepted by `POST /publish`. Plain form body with an
-/// optional `campaign` field. Absent campaign means "trigger every
+/// Body accepted by `POST /publish`. Form body with an optional
+/// `campaign` field. Absent campaign means "trigger every
 /// apt_repository that consumes a debian_build campaign".
 #[derive(Debug, Default, Deserialize)]
 pub struct PublishRequest {
@@ -140,13 +141,14 @@ impl ArchiveWebService {
         Ok(Self { state })
     }
 
-    /// Create the Axum router with all routes.
-    pub fn router(&self) -> Router {
-        Router::new()
+    /// The routes served, with the method each one accepts.
+    fn routes(&self) -> Vec<(&'static str, Method, MethodRouter<AppState>)> {
+        let mut routes = vec![
+            ("/", Method::GET, get(index)),
             // Plain "ok" health endpoint. No health aggregation --
             // the periodic services keep their own /health state
             // internally.
-            .route("/health", get(shared::health_ok))
+            ("/health", Method::GET, get(shared::health_ok)),
             // /ready returns 500 with a list of apt_repository
             // suites that have never been published yet, plaintext
             // body listing whatever *has* been published. Handled
@@ -154,78 +156,121 @@ impl ArchiveWebService {
             // because the shared one only knows about generic
             // health checks and can't tell that a suite is still
             // missing its first Release file.
-            .route("/ready", get(archive_ready_handler))
+            ("/ready", Method::GET, get(archive_ready_handler)),
             // Repository serving endpoints
-            .route("/dists/{suite}/Release", get(serve_release))
-            .route("/dists/{suite}/Release.gpg", get(serve_release_gpg))
-            .route("/dists/{suite}/InRelease", get(serve_inrelease))
+            ("/dists/{suite}/Release", Method::GET, get(serve_release)),
+            (
+                "/dists/{suite}/Release.gpg",
+                Method::GET,
+                get(serve_release_gpg),
+            ),
+            (
+                "/dists/{suite}/InRelease",
+                Method::GET,
+                get(serve_inrelease),
+            ),
             // axum 0.8 requires whole-segment captures, so the
             // `binary-:arch` partial captures of axum 0.7 become
             // `{binary_arch}` here; the handlers strip the
             // `binary-` prefix from the captured value.
-            .route(
+            (
                 "/dists/{suite}/{component}/{binary_arch}/Packages",
+                Method::GET,
                 get(serve_packages),
-            )
-            .route(
+            ),
+            (
                 "/dists/{suite}/{component}/{binary_arch}/Packages.gz",
+                Method::GET,
                 get(serve_packages_gz),
-            )
-            .route(
+            ),
+            (
                 "/dists/{suite}/{component}/{binary_arch}/Packages.bz2",
+                Method::GET,
                 get(serve_packages_bz2),
-            )
-            .route(
+            ),
+            (
                 "/dists/{suite}/{component}/source/Sources",
+                Method::GET,
                 get(serve_sources),
-            )
-            .route(
+            ),
+            (
                 "/dists/{suite}/{component}/source/Sources.gz",
+                Method::GET,
                 get(serve_sources_gz),
-            )
-            .route(
+            ),
+            (
                 "/dists/{suite}/{component}/source/Sources.bz2",
+                Method::GET,
                 get(serve_sources_bz2),
-            )
+            ),
             // By-hash serving
-            .route(
+            (
                 "/dists/{suite}/{component}/{binary_arch}/by-hash/{algo}/{hash}",
+                Method::GET,
                 get(serve_by_hash),
-            )
-            .route(
+            ),
+            (
                 "/dists/{suite}/{component}/source/by-hash/{algo}/{hash}",
+                Method::GET,
                 get(serve_by_hash),
-            )
+            ),
             // On-demand dists: /dists/{kind=cs|run|<campaign>}/{id}/...
-            .route(
+            (
                 "/dists/{kind}/{id}/{file}",
+                Method::GET,
                 get(serve_on_demand_release_file),
-            )
-            .route(
+            ),
+            (
                 "/dists/{kind}/{id}/{component}/{binary_arch}/{file}",
+                Method::GET,
                 get(serve_on_demand_component_file),
-            )
-            .route(
+            ),
+            (
                 "/dists/{kind}/{id}/{component}/source/{file}",
+                Method::GET,
                 get(serve_on_demand_source_file),
-            )
-            .route(
+            ),
+            (
                 "/dists/{kind}/{id}/{component}/{binary_arch}/by-hash/{algo}/{hash}",
+                Method::GET,
                 get(serve_on_demand_binary_by_hash),
-            )
-            .route(
+            ),
+            (
                 "/dists/{kind}/{id}/{component}/source/by-hash/{algo}/{hash}",
+                Method::GET,
                 get(serve_on_demand_source_by_hash),
-            )
+            ),
             // Publishing and management endpoints
-            .route("/publish", post(publish_repository))
-            .route("/last-publish", get(last_publish_status))
-            .route("/gpg-key", get(serve_gpg_key))
-            .route("/pgp_keys", get(handle_pgp_keys))
+            ("/publish", Method::POST, post(publish_repository)),
+            ("/last-publish", Method::GET, get(last_publish_status)),
+            ("/gpg-key", Method::GET, get(serve_gpg_key)),
             // Static file serving for pool. Catch-all uses the
             // axum 0.8 `{*name}` syntax (was `*path` in 0.7).
-            .route("/pool/{*path}", get(serve_pool_file))
-            .route("/metrics", get(shared::metrics_ok))
+            ("/pool/{*path}", Method::GET, get(serve_pool_file)),
+            ("/metrics", Method::GET, get(shared::metrics_ok)),
+        ];
+        if self.state.config.gpg.is_some() {
+            routes.push(("/pgp_keys", Method::GET, get(handle_pgp_keys)));
+        }
+        routes
+    }
+
+    /// Create the Axum router with all routes.
+    pub fn router(&self) -> Router {
+        let mut router = Router::new();
+        let mut known = matchit::Router::new();
+        for (path, method, handler) in self.routes() {
+            router = router.route(path, handler);
+            known
+                .insert(path, method)
+                .expect("route patterns accepted by axum are valid for matchit");
+        }
+        let known = Arc::new(known);
+        router
+            .fallback(move |method: Method, uri: Uri| {
+                let known = known.clone();
+                async move { normalize_path(&known, &method, &uri) }
+            })
             .with_state(self.state.clone())
     }
 
@@ -250,6 +295,54 @@ impl ArchiveWebService {
 
         Ok(())
     }
+}
+
+/// `GET /` -- empty body.
+async fn index() -> &'static str {
+    ""
+}
+
+/// Paths to try when a request matches no route, in the order
+/// aiohttp's `normalize_path_middleware(append_slash=True)` tries
+/// them: duplicate slashes merged, a slash appended, or both.
+fn normalized_path_candidates(path: &str) -> Vec<String> {
+    fn merge_slashes(path: &str) -> String {
+        let mut out = String::with_capacity(path.len());
+        for c in path.chars() {
+            if !(c == '/' && out.ends_with('/')) {
+                out.push(c);
+            }
+        }
+        out
+    }
+    let mut candidates = vec![merge_slashes(path)];
+    if !path.ends_with('/') {
+        candidates.push(format!("{}/", path));
+    }
+    candidates.push(merge_slashes(&format!("{}/", path)));
+    candidates
+        .into_iter()
+        .map(|p| format!("/{}", p.trim_start_matches('/')))
+        .collect()
+}
+
+/// Fallback for requests that match no route: redirect to a
+/// normalized path if that one does match, else 404.
+fn normalize_path(known: &matchit::Router<Method>, method: &Method, uri: &Uri) -> Response {
+    let allowed = |route_method: &Method| {
+        route_method == method || (*route_method == Method::GET && *method == Method::HEAD)
+    };
+    let target = normalized_path_candidates(uri.path())
+        .into_iter()
+        .find(|candidate| known.at(candidate).is_ok_and(|m| allowed(m.value)));
+    let Some(mut target) = target else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if let Some(query) = uri.query() {
+        target.push('?');
+        target.push_str(query);
+    }
+    Redirect::permanent(&target).into_response()
 }
 
 /// Serve the on-disk Release file for a configured suite. If the
@@ -632,10 +725,45 @@ pub(crate) fn publish_apply_filter<'a>(
         .collect()
 }
 
+/// Read the `/publish` form body the way aiohttp's `request.post()`
+/// does: urlencoded bodies are parsed, and bodies of any other type
+/// (including none at all) carry no fields.
+pub(crate) fn parse_publish_request(
+    content_type: Option<&str>,
+    body: &[u8],
+) -> Result<PublishRequest, StatusCode> {
+    // aiohttp treats a missing Content-Type as application/octet-stream.
+    let mime = content_type
+        .map(|ct| {
+            ct.split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase()
+        })
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    match mime.as_str() {
+        "" | "application/x-www-form-urlencoded" => Ok(PublishRequest {
+            campaign: form_urlencoded::parse(body)
+                .find(|(key, _)| key == "campaign")
+                .map(|(_, value)| value.into_owned()),
+        }),
+        // TODO: parse multipart bodies, which aiohttp accepts too.
+        "multipart/form-data" => Err(StatusCode::UNSUPPORTED_MEDIA_TYPE),
+        _ => Ok(PublishRequest::default()),
+    }
+}
+
 async fn publish_repository(
     State(state): State<AppState>,
-    Form(request): Form<PublishRequest>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> Result<Json<PublishResponse>, StatusCode> {
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .map(|v| v.to_str().map_err(|_| StatusCode::BAD_REQUEST))
+        .transpose()?;
+    let request = parse_publish_request(content_type, &body)?;
     info!("Repository publish request: {:?}", request);
 
     let Some(manager) = state.generator_manager.as_ref() else {
@@ -749,15 +877,15 @@ async fn serve_gpg_key(State(state): State<AppState>) -> Result<Response, Status
     Ok((headers, key_data).into_response())
 }
 
-/// `GET /pgp_keys` -- return the signing PGP public keys as a JSON
-/// array of armored strings. When no GPG is configured, returns an
-/// empty JSON array.
+/// `GET /pgp_keys` -- a JSON array with a minimal armored export of
+/// every key in the keyring that has a secret key. Only routed when
+/// signing is enabled.
 async fn handle_pgp_keys(State(state): State<AppState>) -> Response {
     let Some(gpg_config) = &state.config.gpg else {
-        return Json(Vec::<String>::new()).into_response();
+        return StatusCode::NOT_FOUND.into_response();
     };
-    match crate::sign::export_public_keys(gpg_config).await {
-        Ok(key_data) => Json(vec![key_data]).into_response(),
+    match crate::sign::export_minimal_public_keys(gpg_config).await {
+        Ok(keys) => Json(keys).into_response(),
         Err(e) => {
             warn!("Failed to export GPG public keys: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
@@ -1164,6 +1292,166 @@ mod tests {
         let times = HashMap::new();
         let body = compute_ready_response(Vec::<&str>::new(), &times).unwrap();
         assert!(body.is_empty());
+    }
+
+    async fn test_router(config: ArchiveConfig) -> Router {
+        let pool = sqlx::PgPool::connect_lazy("postgresql://localhost/unused").unwrap();
+        let generator = || {
+            let pool = pool.clone();
+            async move {
+                RepositoryGenerator::new(
+                    Arc::new(PackageScanner::new("local://").await.unwrap()),
+                    Arc::new(BuildManager::new(pool)),
+                    crate::repository::RepositoryGenerationConfig::default(),
+                )
+            }
+        };
+        let manager = GeneratorManager::new(
+            config.clone(),
+            generator().await,
+            PackageScanner::new("local://").await.unwrap(),
+            BuildManager::new(pool.clone()),
+            crate::manager::GeneratorManagerConfig::default(),
+        )
+        .await
+        .unwrap();
+        ArchiveWebService::with_publish_observer(
+            config,
+            generator().await,
+            PackageScanner::new("local://").await.unwrap(),
+            BuildManager::new(pool),
+            Arc::new(manager),
+            new_last_publish_times(),
+        )
+        .await
+        .unwrap()
+        .router()
+    }
+
+    async fn request(router: Router, method: Method, uri: &str) -> Response {
+        use tower::ServiceExt;
+        router
+            .oneshot(
+                axum::http::Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_index_returns_empty_body() {
+        use axum::body::to_bytes;
+        let response = request(test_router(empty_archive_config()).await, Method::GET, "/").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 64).await.unwrap();
+        assert_eq!(&body[..], b"");
+    }
+
+    #[tokio::test]
+    async fn test_publish_without_body() {
+        use axum::body::to_bytes;
+        let response = request(
+            test_router(empty_archive_config()).await,
+            Method::POST,
+            "/publish",
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 64).await.unwrap();
+        assert_eq!(&body[..], b"{}");
+    }
+
+    #[test]
+    fn test_parse_publish_request() {
+        let form = Some("application/x-www-form-urlencoded");
+        assert_eq!(
+            parse_publish_request(form, b"campaign=lintian-fixes")
+                .unwrap()
+                .campaign
+                .as_deref(),
+            Some("lintian-fixes")
+        );
+        assert_eq!(parse_publish_request(form, b"").unwrap().campaign, None);
+        assert_eq!(
+            parse_publish_request(Some("text/plain"), b"campaign=x")
+                .unwrap()
+                .campaign,
+            None
+        );
+        assert_eq!(
+            parse_publish_request(None, b"campaign=x").unwrap().campaign,
+            None
+        );
+        assert_eq!(
+            parse_publish_request(Some("multipart/form-data; boundary=x"), b"").unwrap_err(),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+    }
+
+    #[tokio::test]
+    async fn test_duplicate_slashes_redirect() {
+        let response = request(
+            test_router(empty_archive_config()).await,
+            Method::GET,
+            "//health?x=1",
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT);
+        assert_eq!(
+            response.headers().get(header::LOCATION).unwrap(),
+            "/health?x=1"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unknown_path_not_found() {
+        let router = test_router(empty_archive_config()).await;
+        let response = request(router.clone(), Method::GET, "//nonexistent").await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        // /publish only accepts POST.
+        let response = request(router, Method::GET, "//publish").await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_normalized_path_candidates() {
+        assert_eq!(
+            normalized_path_candidates("//dists//x"),
+            vec!["/dists/x", "/dists//x/", "/dists/x/"]
+        );
+        assert_eq!(normalized_path_candidates("/a/"), vec!["/a/", "/a/"]);
+    }
+
+    #[tokio::test]
+    async fn test_pgp_keys_not_routed_without_gpg() {
+        let response = request(
+            test_router(empty_archive_config()).await,
+            Method::GET,
+            "/pgp_keys",
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_pgp_keys_routed_with_gpg() {
+        use axum::body::to_bytes;
+        let gpg_home = tempfile::tempdir().unwrap();
+        let config = ArchiveConfig {
+            gpg: Some(crate::config::GpgConfig {
+                gpg_home: Some(gpg_home.path().to_path_buf()),
+                ..crate::config::GpgConfig::new(None)
+            }),
+            ..empty_archive_config()
+        };
+        let response = request(test_router(config).await, Method::GET, "/pgp_keys").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 64).await.unwrap();
+        assert_eq!(&body[..], b"[]");
     }
 
     fn empty_archive_config() -> ArchiveConfig {
