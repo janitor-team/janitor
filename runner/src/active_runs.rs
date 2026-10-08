@@ -150,11 +150,11 @@ impl ActiveRunStore {
 
     /// Count the number of active runs for a given worker. Used by the
     /// concurrency-limit check in `auth::SecurityService::can_start_run`.
-    pub async fn count_for_worker(&self, worker_name: &str) -> usize {
+    pub async fn count_for_worker(&self, worker_name: Option<&str>) -> usize {
         self.list()
             .await
             .into_iter()
-            .filter(|r| r.worker_name == worker_name)
+            .filter(|r| r.worker_name.as_deref() == worker_name)
             .count()
     }
 
@@ -183,7 +183,9 @@ impl ActiveRunStore {
         let runs = self.list().await;
         let mut workers: std::collections::HashSet<String> = std::collections::HashSet::new();
         for run in runs {
-            workers.insert(run.worker_name);
+            if let Some(worker_name) = run.worker_name {
+                workers.insert(worker_name);
+            }
         }
         workers.len()
     }
@@ -219,7 +221,7 @@ mod tests {
 
     fn make_run(log_id: &str, worker: &str) -> ActiveRun {
         ActiveRun {
-            worker_name: worker.to_string(),
+            worker_name: Some(worker.to_string()),
             worker_link: None,
             queue_id: 0,
             log_id: log_id.to_string(),
@@ -275,7 +277,7 @@ mod tests {
         store.store(make_run("run-1", "worker-a")).await;
         let got = store.get("run-1").await.unwrap();
         assert_eq!(got.log_id, "run-1");
-        assert_eq!(got.worker_name, "worker-a");
+        assert_eq!(got.worker_name.as_deref(), Some("worker-a"));
         cleanup(&store).await;
     }
 
@@ -330,9 +332,9 @@ mod tests {
         store.store(make_run("run-1", "worker-a")).await;
         store.store(make_run("run-2", "worker-a")).await;
         store.store(make_run("run-3", "worker-b")).await;
-        assert_eq!(store.count_for_worker("worker-a").await, 2);
-        assert_eq!(store.count_for_worker("worker-b").await, 1);
-        assert_eq!(store.count_for_worker("worker-c").await, 0);
+        assert_eq!(store.count_for_worker(Some("worker-a")).await, 2);
+        assert_eq!(store.count_for_worker(Some("worker-b")).await, 1);
+        assert_eq!(store.count_for_worker(Some("worker-c")).await, 0);
         cleanup(&store).await;
     }
 
@@ -384,7 +386,7 @@ mod tests {
         // reconstructs `ActiveRunStore::new(redis)` from scratch.
         let reconstructed = ActiveRunStore::with_key(store.redis.clone(), store.key.clone());
         let got = reconstructed.get("persisted").await.unwrap();
-        assert_eq!(got.worker_name, "worker-a");
+        assert_eq!(got.worker_name.as_deref(), Some("worker-a"));
         cleanup(&store).await;
     }
 }

@@ -157,7 +157,7 @@ fn test_active_run_structure() {
     use janitor::queue::VcsInfo;
 
     let active_run = ActiveRun {
-        worker_name: "test-worker".to_string(),
+        worker_name: Some("test-worker".to_string()),
         worker_link: Some("http://worker:8080".to_string()),
         queue_id: 789,
         log_id: "run-log-456".to_string(),
