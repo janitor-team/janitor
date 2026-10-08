@@ -196,7 +196,7 @@ async fn estimate_success_probability_and_duration(
         context: Option<String>,
         failure_details: Option<serde_json::Value>,
         duration: PgInterval,
-        start_time: chrono::DateTime<chrono::Utc>,
+        start_time: chrono::NaiveDateTime,
     }
 
     // In some cases, we want to ignore certain results when guessing whether a future run is going to
@@ -204,7 +204,7 @@ async fn estimate_success_probability_and_duration(
     // clearer error message.
     fn ignore_result_code(run: &Run) -> bool {
         match run.result_code.as_str() {
-            "worker-failure" => (chrono::Utc::now() - run.start_time).num_days() > 0,
+            "worker-failure" => (chrono::Utc::now().naive_utc() - run.start_time).num_days() > 0,
             _ => false,
         }
     }
@@ -1011,6 +1011,49 @@ mod tests {
         assert!(MINIMUM_COST > 0.0);
         assert!(MINIMUM_NORMALIZED_CODEBASE_VALUE > 0.0);
         assert!(DEFAULT_NORMALIZED_CODEBASE_VALUE > MINIMUM_NORMALIZED_CODEBASE_VALUE);
+    }
+
+    #[tokio::test]
+    async fn test_estimate_success_probability_with_previous_runs() {
+        let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+            eprintln!("TEST_DATABASE_URL not set, skipping");
+            return;
+        };
+        // A single connection so the temporary table stays visible.
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TEMPORARY TABLE run (
+                codebase text, suite text, result_code text,
+                instigated_context text, context text, failure_details json,
+                failure_transient boolean,
+                start_time timestamp, finish_time timestamp)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO run VALUES
+                ('foo', 'lintian-fixes', 'success', NULL, NULL, NULL, NULL,
+                 '2024-01-01 10:00:00', '2024-01-01 10:01:00'),
+                ('foo', 'lintian-fixes', 'worker-failure', NULL, NULL, NULL, NULL,
+                 '2024-01-02 10:00:00', '2024-01-02 10:00:30')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let (probability, duration, total) =
+            estimate_success_probability_and_duration(&pool, "foo", "lintian-fixes", None)
+                .await
+                .unwrap();
+        // The old worker-failure run is ignored.
+        assert_eq!(total, 1);
+        assert_eq!(duration, Duration::seconds(60));
+        assert_eq!(probability, 0.5);
     }
 }
 
