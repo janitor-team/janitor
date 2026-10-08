@@ -1530,6 +1530,134 @@ async fn assign_sends_opened_branch_url() {
     );
 }
 
+/// Serve 429 responses, with the given `Retry-After` header if any, to
+/// every request. Returns the base URL.
+async fn serve_rate_limited(retry_after: Option<&'static str>) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = socket.read(&mut buf).await.unwrap();
+            let header = retry_after
+                .map(|r| format!("Retry-After: {r}\r\n"))
+                .unwrap_or_default();
+            let response = format!(
+                "HTTP/1.1 429 Too Many Requests\r\n{header}Content-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+    format!("http://{addr}/repo")
+}
+
+/// Schedule `codebase` at `branch_url`, ask for an assignment and
+/// return the response status, `Retry-After` header and the result
+/// code recorded for the aborted run.
+async fn assign_rate_limited(
+    branch_url: &str,
+    codebase: &str,
+    refresh: bool,
+) -> Option<(StatusCode, Option<String>, String)> {
+    let (app, state) = setup_with_campaign().await?;
+    let pool = state.database.pool().clone();
+    sqlx::query(
+        "INSERT INTO codebase (name, branch_url, url, vcs_type) VALUES ($1, $2, $2, 'git')",
+    )
+    .bind(codebase)
+    .bind(branch_url)
+    .execute(&pool)
+    .await
+    .expect("codebase insert");
+    state
+        .auth_service
+        .create_worker("envelope-worker", "envelope-pw", None)
+        .await
+        .expect("create worker");
+    let candidate_body = json!([{ "codebase": codebase, "campaign": "test-campaign" }]);
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/candidates")
+        .header("content-type", "application/json")
+        .body(Body::from(candidate_body.to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    sqlx::query("UPDATE queue SET refresh = $1 WHERE codebase = $2")
+        .bind(refresh)
+        .bind(codebase)
+        .execute(&pool)
+        .await
+        .expect("set refresh");
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/active-runs")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"worker": "envelope-worker"}).to_string()))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    let status = response.status();
+    let retry_after = response
+        .headers()
+        .get("retry-after")
+        .map(|v| v.to_str().unwrap().to_string());
+    let result_code: String = sqlx::query_scalar("SELECT result_code FROM run WHERE codebase = $1")
+        .bind(codebase)
+        .fetch_one(&pool)
+        .await
+        .expect("aborted run must be recorded");
+    Some((status, retry_after, result_code))
+}
+
+/// Like Python, a rate-limited forge gets a 429 with the forge's
+/// `Retry-After`, and the run is recorded as `pull-rate-limited` --
+/// also for refresh items, since Python always opened the main branch.
+#[tokio::test]
+// TODO: Enable once silver-platter classifies breezy's
+// UnexpectedHttpStatus 429 as BranchOpenError::RateLimited.
+#[ignore = "silver-platter 0.8.4 does not detect 429 from UnexpectedHttpStatus"]
+async fn assign_returns_429_when_main_branch_is_rate_limited() {
+    let url = serve_rate_limited(Some("30")).await;
+    let Some(result) = assign_rate_limited(&url, "assign-rate-limited-cb", true).await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    assert_eq!(
+        result,
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            Some("30".to_string()),
+            "pull-rate-limited".to_string()
+        )
+    );
+}
+
+/// Without a `Retry-After` from the forge, Python told the worker to
+/// retry after 120 seconds.
+#[tokio::test]
+// TODO: Enable once silver-platter classifies breezy's
+// UnexpectedHttpStatus 429 as BranchOpenError::RateLimited.
+#[ignore = "silver-platter 0.8.4 does not detect 429 from UnexpectedHttpStatus"]
+async fn assign_rate_limited_defaults_retry_after() {
+    let url = serve_rate_limited(None).await;
+    let Some(result) = assign_rate_limited(&url, "assign-rate-limited-default-cb", false).await
+    else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    assert_eq!(
+        result,
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            Some("120".to_string()),
+            "pull-rate-limited".to_string()
+        )
+    );
+}
+
 /// `GET /active-runs/+peek` returns 201 + the peek envelope when a
 /// queue item is available, and 503 with `{reason: "queue empty"}`
 /// when it isn't. The peek shape is
