@@ -97,6 +97,20 @@ struct ScheduleControlRequest {
     estimated_duration: Option<f64>,
 }
 
+/// Convert a requested estimated duration in seconds. Like Python, a
+/// zero estimate means no estimate.
+fn requested_estimated_duration(secs: Option<f64>) -> Option<chrono::Duration> {
+    secs.filter(|secs| *secs != 0.0)
+        .map(|secs| chrono::Duration::microseconds((secs * 1e6).round() as i64))
+}
+
+/// Seconds for the `estimated_duration_seconds` response field; Python
+/// returned null for a zero duration.
+fn estimated_duration_seconds(duration: chrono::Duration) -> Option<f64> {
+    (!duration.is_zero())
+        .then(|| duration.num_seconds() as f64 + (duration.subsec_nanos() as f64) / 1e9)
+}
+
 /// Response for finishing a run.
 #[derive(Debug, Serialize)]
 struct FinishResponse {
@@ -321,9 +335,7 @@ async fn schedule_control(
         (codebase, rev)
     };
 
-    let estimated_duration = request
-        .estimated_duration
-        .map(|secs| chrono::Duration::milliseconds((secs * 1000.0) as i64));
+    let estimated_duration = requested_estimated_duration(request.estimated_duration);
     let main_branch_revision = breezyshim::RevisionId::from(main_branch_revision.into_bytes());
 
     let result = janitor::schedule::do_schedule_control(
@@ -348,8 +360,7 @@ async fn schedule_control(
                 "bucket": bucket,
                 "codebase": codebase,
                 "queue_id": queue_id,
-                "estimated_duration_seconds": duration.num_seconds() as f64
-                    + (duration.subsec_nanos() as f64) / 1e9,
+                "estimated_duration_seconds": estimated_duration_seconds(duration),
             })),
         ),
         Err(janitor::schedule::Error::CandidateUnavailable { .. }) => (
@@ -468,9 +479,7 @@ async fn schedule(
         }
     };
 
-    let estimated_duration = request
-        .estimated_duration
-        .map(|secs| chrono::Duration::milliseconds((secs * 1000.0) as i64));
+    let estimated_duration = requested_estimated_duration(request.estimated_duration);
 
     let result = janitor::schedule::do_schedule(
         pool,
@@ -507,8 +516,7 @@ async fn schedule(
                     "bucket": bucket,
                     "codebase": codebase,
                     "queue_id": queue_id,
-                    "estimated_duration_seconds": duration.num_seconds() as f64
-                        + (duration.subsec_nanos() as f64) / 1e9,
+                    "estimated_duration_seconds": estimated_duration_seconds(duration),
                     "queue_position": queue_position,
                     "queue_wait_time": queue_wait_time,
                 })),
@@ -3955,12 +3963,31 @@ pub fn app(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::{
-        assignment_validation_outcome, candidate_preflight, main_branch_name, AssignmentValidation,
-        CandidatePreflight,
+        assignment_validation_outcome, candidate_preflight, estimated_duration_seconds,
+        main_branch_name, requested_estimated_duration, AssignmentValidation, CandidatePreflight,
     };
     use crate::CampaignConfig;
     use serde_json::json;
     use std::collections::HashSet;
+
+    #[test]
+    fn test_requested_estimated_duration() {
+        assert_eq!(requested_estimated_duration(None), None);
+        assert_eq!(requested_estimated_duration(Some(0.0)), None);
+        assert_eq!(
+            requested_estimated_duration(Some(1.5)),
+            Some(chrono::Duration::milliseconds(1500))
+        );
+    }
+
+    #[test]
+    fn test_estimated_duration_seconds() {
+        assert_eq!(estimated_duration_seconds(chrono::Duration::zero()), None);
+        assert_eq!(
+            estimated_duration_seconds(chrono::Duration::milliseconds(1500)),
+            Some(1.5)
+        );
+    }
 
     /// Exhaustive 2x2x2 matrix for assignment_validation_outcome:
     ///   - unknown campaign always loses (regardless of other inputs)
