@@ -358,6 +358,23 @@ impl RedisSubscriber {
     }
 }
 
+/// Connect to `redis_location` and start the runner `result` listener.
+///
+/// A missing location or an unreachable server is an error, so the
+/// service refuses to run without automatic regeneration on build
+/// completion.
+pub async fn start_runner_listener(
+    redis_location: Option<&str>,
+    generator_manager: Arc<GeneratorManager>,
+) -> ArchiveResult<JoinHandle<()>> {
+    let url = redis_location.ok_or_else(|| {
+        ArchiveError::InvalidConfiguration("redis_location must be set".to_string())
+    })?;
+    let mut subscriber =
+        RedisSubscriber::new(RedisConfig::new(url.to_string()), generator_manager).await?;
+    subscriber.listen_to_runner().await
+}
+
 /// Publishes [`ArchiveEvent`]s on the `"archive:events"` channel.
 pub struct RedisPublisher {
     redis_manager: Arc<RedisManager>,
@@ -410,6 +427,53 @@ impl RedisPublisher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn test_generator_manager() -> Arc<GeneratorManager> {
+        let pool = sqlx::PgPool::connect_lazy("postgresql://localhost/unused").unwrap();
+        let scanner = crate::scanner::PackageScanner::new("local://")
+            .await
+            .unwrap();
+        let generator = crate::repository::RepositoryGenerator::new(
+            Arc::new(
+                crate::scanner::PackageScanner::new("local://")
+                    .await
+                    .unwrap(),
+            ),
+            Arc::new(crate::database::ArchiveDatabase::new(pool.clone())),
+            crate::repository::RepositoryGenerationConfig::default(),
+        );
+        Arc::new(
+            GeneratorManager::new(
+                crate::config::ArchiveConfig::default(),
+                generator,
+                scanner,
+                crate::database::ArchiveDatabase::new(pool),
+                crate::manager::GeneratorManagerConfig::default(),
+            )
+            .await
+            .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_start_runner_listener_requires_location() {
+        let result = start_runner_listener(None, test_generator_manager().await).await;
+        assert!(
+            matches!(result, Err(ArchiveError::InvalidConfiguration(_))),
+            "expected InvalidConfiguration"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_start_runner_listener_unreachable() {
+        let result =
+            start_runner_listener(Some("redis://127.0.0.1:1/"), test_generator_manager().await)
+                .await;
+        assert!(
+            matches!(result, Err(ArchiveError::Redis(_))),
+            "expected Redis error"
+        );
+    }
 
     #[test]
     fn test_archive_event_channel() {
