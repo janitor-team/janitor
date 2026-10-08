@@ -1530,24 +1530,9 @@ async fn assign_sends_opened_branch_url() {
     );
 }
 
-/// `GET /active-runs/+peek` returns 201 + the peek envelope when a
-/// queue item is available, and 503 with `{reason: "queue empty"}`
-/// when it isn't. The peek shape is
-/// `{queue_item, vcs_info, build_config, estimated_duration}` --
-/// smaller than a full assign response because peek doesn't reserve
-/// or wire up a worker.
-#[tokio::test]
-async fn peek_returns_queue_item_shape_when_available() {
-    let Some((app, state)) = setup_with_campaign().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
-
-    let pool = state.database.pool().clone();
-    insert_codebase(&pool, "peek-cb").await;
-    // Enqueue via POST /candidates so the queue row + campaign
-    // config are wired the same way an assign would see them.
-    let body = json!([{ "codebase": "peek-cb", "campaign": "test-campaign" }]);
+/// Schedule `codebase` for test-campaign via `POST /candidates`.
+async fn schedule_test_candidate(app: &axum::Router, codebase: &str) {
+    let body = json!([{ "codebase": codebase, "campaign": "test-campaign" }]);
     let req = Request::builder()
         .method(Method::POST)
         .uri("/candidates")
@@ -1558,31 +1543,144 @@ async fn peek_returns_queue_item_shape_when_available() {
         app.clone().oneshot(req).await.unwrap().status(),
         StatusCode::OK
     );
+}
 
+async fn peek(app: &axum::Router) -> axum::response::Response {
     let req = Request::builder()
         .method(Method::GET)
         .uri("/active-runs/+peek")
         .body(Body::empty())
         .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    app.clone().oneshot(req).await.unwrap()
+}
 
+/// Like Python, `GET /active-runs/+peek` returns the assignment a
+/// worker would get, with a Location header, without claiming it.
+#[tokio::test]
+async fn peek_returns_assignment_without_claiming() {
+    let Some((app, state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let pool = state.database.pool().clone();
+    insert_codebase(&pool, "peek-cb").await;
+    schedule_test_candidate(&app, "peek-cb").await;
+
+    let response = peek(&app).await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let location = response.headers().get("location").cloned();
+    let body = get_body(response).await;
+    let id = body["id"].as_str().expect("assignment id").to_string();
+    assert_eq!(
+        location.as_ref().map(|l| l.to_str().unwrap()),
+        Some(format!("/active-runs/{id}").as_str())
+    );
+    assert_eq!(body["codebase"], json!("peek-cb"));
+    assert_eq!(body["campaign"], json!("test-campaign"));
+    assert!(body["branch"].is_object(), "{body}");
+    assert!(body["build"].is_object(), "{body}");
+    assert!(state.active_runs.get(&id).await.is_none());
+
+    // Not claimed, so it can be peeked again.
+    let response = peek(&app).await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let again = get_body(response).await;
+    assert_eq!(again["queue_id"], body["queue_id"]);
+}
+
+/// Peek skips codebases on hosts passed with --avoid-host.
+#[tokio::test]
+async fn peek_honours_avoid_hosts() {
+    let Some((_app, state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let mut avoiding = (*state).clone();
+    avoiding.avoid_hosts = vec!["example.invalid".to_string()];
+    let app = janitor_runner::web::app(Arc::new(avoiding));
+
+    let pool = state.database.pool().clone();
+    insert_codebase(&pool, "peek-avoid-cb").await;
+    schedule_test_candidate(&app, "peek-avoid-cb").await;
+
+    let response = peek(&app).await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+/// Like Python, the resume fallback looks for `<campaign>/main` in the
+/// VCS store as workers see it (--public-vcs-location).
+#[tokio::test]
+async fn assign_resumes_from_public_vcs_store() {
+    use breezyshim::workingtree::WorkingTree;
+
+    let Some((_app, state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let td = tempfile::tempdir().unwrap();
+    let store = url::Url::from_directory_path(td.path()).unwrap();
+    let mut public = (*state).clone();
+    public.public_vcs_managers = Arc::new(janitor::vcs::get_vcs_managers(store.as_str()).unwrap());
+    let state = Arc::new(public);
+    let app = janitor_runner::web::app(state.clone());
+
+    let path = td.path().join("bzr/resume-cb/test-campaign/main");
+    std::fs::create_dir_all(&path).unwrap();
+    let wt = breezyshim::controldir::create_standalone_workingtree(
+        &path,
+        &breezyshim::controldir::FORMAT_REGISTRY
+            .make_controldir("bzr")
+            .unwrap(),
+    )
+    .unwrap();
+    let revid = wt
+        .build_commit()
+        .message("initial")
+        .allow_pointless(true)
+        .commit()
+        .unwrap();
+
+    let pool = state.database.pool().clone();
+    sqlx::query(
+        "INSERT INTO codebase (name, branch_url, url, vcs_type)
+         VALUES ('resume-cb', 'https://example.invalid/resume-cb',
+                 'https://example.invalid/resume-cb', 'bzr')",
+    )
+    .execute(&pool)
+    .await
+    .expect("codebase insert");
+    schedule_test_candidate(&app, "resume-cb").await;
+    sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs-resume', 'test-campaign')")
+        .execute(&pool)
+        .await
+        .expect("insert change_set");
+    sqlx::query(
+        "INSERT INTO run (id, suite, codebase, result_code, revision, start_time,
+                          finish_time, logfilenames, change_set)
+         VALUES ('run-resume-1', 'test-campaign', 'resume-cb', 'success', $1,
+                 NOW() - INTERVAL '1 minute', NOW(), '{}', 'cs-resume')",
+    )
+    .bind(revid.to_string())
+    .execute(&pool)
+    .await
+    .expect("insert run");
+    state
+        .auth_service
+        .create_worker("resume-worker", "resume-pw", None)
+        .await
+        .expect("create worker");
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/active-runs")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"worker": "resume-worker"}).to_string()))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
     let body = get_body(response).await;
-    for key in ["queue_item", "vcs_info", "build_config"] {
-        assert!(
-            body.get(key).is_some(),
-            "peek envelope missing `{key}`, got {body}"
-        );
-    }
-    // estimated_duration is optional (null when the queue row hasn't
-    // been through a run yet), but the key must be present.
-    assert!(
-        body.get("estimated_duration").is_some(),
-        "peek envelope missing `estimated_duration`, got {body}"
-    );
-    let queue_item = &body["queue_item"];
-    assert_eq!(queue_item["codebase"], "peek-cb");
-    assert_eq!(queue_item["campaign"], "test-campaign");
+    assert_eq!(body["resume"]["run_id"], json!("run-resume-1"), "{body}");
 }
 
 #[tokio::test]

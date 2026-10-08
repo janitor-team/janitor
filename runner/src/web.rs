@@ -25,7 +25,7 @@ use uuid::Uuid;
 /// public app's `/active-runs` route (workers reach it via the ingress
 /// `/runner/(.*)` -> `/$2`) ignores this field entirely and reads
 /// the worker name from the credentials extension instead.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct AssignRequest {
     /// Worker name (private/admin path only). The Rust worker sends
     /// this as `node`; older Python workers sent `worker`.
@@ -110,20 +110,6 @@ struct FinishResponse {
     artifacts: Vec<String>,
     /// Result information.
     result: serde_json::Value,
-}
-
-/// Extract avoided hosts from configuration: any archive mirror URI
-/// that looks restricted/internal has its host added to the block
-/// list, so the assignment loop skips codebases hosted there.
-fn get_avoided_hosts(config: &janitor::config::Config) -> Vec<String> {
-    config
-        .distribution
-        .iter()
-        .filter_map(|d| d.archive_mirror_uri.as_deref())
-        .filter(|m| m.contains("restricted") || m.contains("internal"))
-        .filter_map(|m| url::Url::parse(m).ok())
-        .filter_map(|u| u.host_str().map(str::to_string))
-        .collect()
 }
 
 /// Create campaign configuration from actual config files and queue item.
@@ -1452,58 +1438,43 @@ async fn get_active_run(
 /// `GET /active-runs/+peek` -- preview the next assignment without
 /// claiming it.
 ///
-/// Returns:
-///   * 503 `{reason: "queue empty"}` when there's nothing to assign
-///   * 429 `{reason}` + `Retry-After` header when forge-rate-limited
-///   * 201 `<assignment dict>` + `Location: /active-runs/{run_id}`
-///     header on success
-///
-/// Currently uses the simplified `next_queue_item_with_rate_limiting`
-/// helper, so the success body is the build_config / queue_item /
-/// vcs_info shape it produces rather than a full assignment dict.
-async fn peek_active_run(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let avoided_hosts = get_avoided_hosts(&state.config);
-    match state
-        .database
-        .next_queue_item_with_rate_limiting(None, None, &avoided_hosts)
-        .await
-    {
-        Ok(Some(assignment)) => {
-            let campaign_config = create_campaign_config(&assignment.queue_item, &state.config);
-            let build_config = match get_builder(&campaign_config, None, None) {
-                Ok(builder) => {
-                    let mut config = HashMap::new();
-                    config.insert("builder_kind".to_string(), builder.kind().to_string());
-                    config
-                }
-                Err(_) => HashMap::new(),
-            };
-
-            (
-                StatusCode::CREATED,
-                Json(json!({
-                    "queue_item": assignment.queue_item.to_json(),
-                    "vcs_info": assignment.vcs_info,
-                    "build_config": build_config,
-                    "estimated_duration": assignment
-                        .queue_item
-                        .estimated_duration
-                        .map(|d| d.as_secs()),
-                })),
-            )
-        }
-        Ok(None) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"reason": "queue empty"})),
-        ),
-        Err(e) => {
-            log::error!("Failed to peek queue item: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Database error"})),
-            )
-        }
+/// Like Python, this builds the full assignment (claiming the item
+/// while doing so) and then releases the claim again.
+async fn peek_active_run(State(state): State<Arc<AppState>>) -> Response {
+    let assignment =
+        match next_assignment(state.clone(), String::new(), AssignRequest::default()).await {
+            Ok(assignment) => assignment,
+            Err(response) => return response,
+        };
+    let log_id = assignment["id"]
+        .as_str()
+        .expect("assignment id is a string")
+        .to_string();
+    let queue_id = assignment["queue_id"]
+        .as_i64()
+        .expect("assignment queue_id is an integer");
+    state.active_runs.remove(&log_id).await;
+    crate::metrics::MetricsCollector::set_active_runs(
+        "",
+        state.active_runs.count_for_worker("").await as i64,
+    );
+    if let Err(e) = state.database.unassign_queue_item(queue_id).await {
+        log::error!("Failed to release peeked queue item {}: {}", queue_id, e);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Failed to release queue item"})),
+        )
+            .into_response();
     }
+    (
+        StatusCode::CREATED,
+        [(
+            axum::http::header::LOCATION,
+            format!("/active-runs/{}", log_id),
+        )],
+        Json(assignment),
+    )
+        .into_response()
 }
 
 /// Query parameters for `GET /queue` (`?limit=N`).
@@ -2911,6 +2882,10 @@ struct ResumeAssignment {
     branches: Vec<(String, Option<String>, Option<String>, Option<String>)>,
 }
 
+/// How long to wait for the VCS store when looking for a resume branch
+/// (Python's VCS_STORE_BRANCH_OPEN_TIMEOUT).
+const VCS_STORE_BRANCH_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Resume-branch lookup. Opens the main branch, asks the forge (via
 /// silver_platter) for a previously proposed branch matching the
 /// campaign's branch name, and if found looks up a prior successful
@@ -3083,20 +3058,37 @@ async fn compute_resume_from(
             }
         };
         let vcs_branch_name = format!("{}/main", campaign_name);
-        let open =
-            state
-                .vcs_manager
-                .open_branch_with_metrics(vcs_type, &codebase, &vcs_branch_name);
-        let branch = match tokio::time::timeout(std::time::Duration::from_secs(30), open).await {
-            Ok(Ok(Some(b))) => b,
-            Ok(Ok(None)) => return empty(),
-            Ok(Err(e)) => {
+        // Like Python, look in the VCS store as workers see it.
+        if !state.public_vcs_managers.contains_key(&vcs_type) {
+            log::warn!(
+                "Unsupported vcs {} for resume branch of {}",
+                vcs_type,
+                codebase
+            );
+            return no_resume();
+        }
+        let managers = state.public_vcs_managers.clone();
+        let open_codebase = codebase.clone();
+        let open_branch_name = vcs_branch_name.clone();
+        let open = tokio::task::spawn_blocking(move || {
+            managers[&vcs_type]
+                .get_branch(&open_codebase, &open_branch_name)
+                .map_err(|e| e.to_string())
+        });
+        let branch = match tokio::time::timeout(VCS_STORE_BRANCH_OPEN_TIMEOUT, open).await {
+            Ok(Ok(Ok(Some(b)))) => b,
+            Ok(Ok(Ok(None))) => return no_resume(),
+            Ok(Ok(Err(e))) => {
                 log::debug!(
                     "VCS-manager resume fallback failed for {}/{}: {}",
                     codebase,
                     vcs_branch_name,
-                    e.description,
+                    e,
                 );
+                return no_resume();
+            }
+            Ok(Err(e)) => {
+                log::warn!("spawn_blocking for VCS store resume branch panicked: {}", e);
                 return no_resume();
             }
             Err(_) => {
@@ -3172,6 +3164,32 @@ async fn assign_work_internal(
     request: AssignRequest,
     active_runs_path: &str,
 ) -> Response {
+    let assignment = match next_assignment(state, worker_name, request).await {
+        Ok(assignment) => assignment,
+        Err(response) => return response,
+    };
+    let log_id = assignment["id"]
+        .as_str()
+        .expect("assignment id is a string");
+    (
+        StatusCode::CREATED,
+        [(
+            axum::http::header::LOCATION,
+            format!("{}/{}", active_runs_path, log_id),
+        )],
+        Json(assignment),
+    )
+        .into_response()
+}
+
+/// Claim the next queue item for `worker_name` and build its
+/// assignment, or the error response to send instead (Python's
+/// `next_item`).
+async fn next_assignment(
+    state: Arc<AppState>,
+    worker_name: String,
+    request: AssignRequest,
+) -> Result<serde_json::Value, Response> {
     let mut excluded_hosts = state.avoid_hosts.clone();
     if let Some(client_exclusions) = request.exclude_hosts.as_ref() {
         for host in client_exclusions {
@@ -3198,14 +3216,14 @@ async fn assign_work_internal(
                 "assign: gave up after {} consecutive validation failures",
                 MAX_VALIDATION_RETRIES
             );
-            return (
+            return Err((
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(json!({
                     "reason": "queue empty",
                     "detail": "only broken queue items available",
                 })),
             )
-                .into_response();
+                .into_response());
         }
 
         let assignment = match state
@@ -3219,19 +3237,19 @@ async fn assign_work_internal(
         {
             Ok(Some(assignment)) => assignment,
             Ok(None) => {
-                return (
+                return Err((
                     StatusCode::SERVICE_UNAVAILABLE,
                     Json(json!({"reason": "queue empty"})),
                 )
-                    .into_response();
+                    .into_response());
             }
             Err(e) => {
                 log::error!("Failed to get next queue item: {}", e);
-                return (
+                return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(json!({"error": "Database error"})),
                 )
-                    .into_response();
+                    .into_response());
             }
         };
 
@@ -3385,7 +3403,7 @@ async fn assign_work_internal(
         )
         .await;
 
-        return (
+        return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({
                 "reason": "rate limited",
@@ -3393,7 +3411,7 @@ async fn assign_work_internal(
                 "retry_after": retry_after,
             })),
         )
-            .into_response();
+            .into_response());
     }
 
     let resume_assignment: Option<ResumeAssignment> = resume_outcome.resume;
@@ -3628,15 +3646,7 @@ async fn assign_work_internal(
         "build": build,
     });
 
-    (
-        StatusCode::CREATED,
-        [(
-            axum::http::header::LOCATION,
-            format!("{}/{}", active_runs_path, active_run.log_id),
-        )],
-        Json(body),
-    )
-        .into_response()
+    Ok(body)
 }
 
 async fn public_finish(
