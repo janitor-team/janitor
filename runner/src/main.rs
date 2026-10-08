@@ -112,18 +112,10 @@ async fn main() -> Result<(), i32> {
     //   from outside the cluster -- endpoints include kill, schedule,
     //   admin/workers, candidates upload, etc.
     // - public (--public-port, default 9919): worker-facing app
-    //   (`web::public_app`) with `authenticate_worker` middleware on
-    //   the `/runner/...` worker routes. This is what the nginx
-    //   ingress should target.
-    //
-    // The public listener was missing entirely -- only the private
-    // app was being bound. The nginx ingress was forwarding
-    // `/runner/(.*)` -> port 9911 (rewrite-target /$2) so all worker
-    // traffic landed on the no-auth private app, defeating
-    // authenticate_worker and exposing every admin endpoint to the
-    // internet. Bind both now; ingress should be repointed at the
-    // public port (and stop stripping `/runner/` since public_app
-    // already mounts its routes under `/runner/`).
+    //   (`web::public_app`), which like the Python runner mounts the
+    //   worker routes under `/runner/` behind `authenticate_worker`.
+    //   A reverse proxy should forward `/runner/` to this port
+    //   without stripping the prefix.
     app.run_with_graceful_shutdown(|state| async move {
         let trace = || axum::middleware::from_fn(janitor_runner::tracing::http_tracing_middleware);
 
