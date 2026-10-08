@@ -92,6 +92,13 @@ Several container images are provided
  * [ghcr.io/jelmer/janitor/bzr_store](https://github.com/users/jelmer/packages/container/package/janitor%2Fbzr_store) - storage for Bazaar
  * [ghcr.io/jelmer/janitor/worker](https://github.com/users/jelmer/packages/container/package/janitor%2Fworker) - Base for workers
 
+Screenshots
+===========
+
+See [docs/tour.md](docs/tour.md) for a full visual walkthrough.
+
+![Queue page listing codebases waiting to be processed, headed by bsdgames and lolcat](docs/images/tour/queue.png)
+
 Contributing
 ============
 
