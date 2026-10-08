@@ -172,6 +172,14 @@ impl RunnerDatabase {
         self.shared_db.redis()
     }
 
+    /// Open a connection to Redis, which the runner state lives in.
+    async fn redis_connection(
+        &self,
+    ) -> Result<redis::aio::MultiplexedConnection, Box<dyn std::error::Error + Send + Sync>> {
+        let client = self.redis().ok_or("Redis is not configured")?;
+        Ok(client.get_multiplexed_async_connection().await?)
+    }
+
     /// Convert a database Run to JanitorResult.
     pub fn run_to_janitor_result(&self, run: Run) -> JanitorResult {
         JanitorResult {
@@ -860,12 +868,10 @@ INSERT INTO run (
         host: &str,
         retry_after: DateTime<Utc>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
-            let _: () = conn
-                .hset("rate-limit-hosts", host, retry_after.to_rfc3339())
-                .await?;
-        }
+        let mut conn = self.redis_connection().await?;
+        let _: () = conn
+            .hset("rate-limit-hosts", host, retry_after.to_rfc3339())
+            .await?;
         Ok(())
     }
 
@@ -875,17 +881,15 @@ INSERT INTO run (
     ) -> Result<HashMap<String, DateTime<Utc>>, Box<dyn std::error::Error + Send + Sync>> {
         let mut result = HashMap::new();
 
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
-            let hosts: HashMap<String, String> = conn.hgetall("rate-limit-hosts").await?;
+        let mut conn = self.redis_connection().await?;
+        let hosts: HashMap<String, String> = conn.hgetall("rate-limit-hosts").await?;
 
-            let now = Utc::now();
-            for (host, time_str) in hosts {
-                if let Ok(retry_time) = DateTime::parse_from_rfc3339(&time_str) {
-                    let retry_time = retry_time.with_timezone(&Utc);
-                    if retry_time > now {
-                        result.insert(host, retry_time);
-                    }
+        let now = Utc::now();
+        for (host, time_str) in hosts {
+            if let Ok(retry_time) = DateTime::parse_from_rfc3339(&time_str) {
+                let retry_time = retry_time.with_timezone(&Utc);
+                if retry_time > now {
+                    result.insert(host, retry_time);
                 }
             }
         }
@@ -899,14 +903,12 @@ INSERT INTO run (
     ) -> Result<Vec<i64>, Box<dyn std::error::Error + Send + Sync>> {
         let mut result = Vec::new();
 
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
-            let items: Vec<String> = conn.hkeys("assigned-queue-items").await?;
+        let mut conn = self.redis_connection().await?;
+        let items: Vec<String> = conn.hkeys("assigned-queue-items").await?;
 
-            for item in items {
-                if let Ok(id) = item.parse::<i64>() {
-                    result.push(id);
-                }
+        for item in items {
+            if let Ok(id) = item.parse::<i64>() {
+                result.push(id);
             }
         }
 
@@ -920,42 +922,40 @@ INSERT INTO run (
         worker_name: &str,
         log_id: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
+        let mut conn = self.redis_connection().await?;
 
-            // Store assignment with worker info and timestamp
-            let assignment_info = serde_json::json!({
-                "worker_name": worker_name,
-                "log_id": log_id,
-                "assigned_at": Utc::now().to_rfc3339(),
-            });
+        // Store assignment with worker info and timestamp
+        let assignment_info = serde_json::json!({
+            "worker_name": worker_name,
+            "log_id": log_id,
+            "assigned_at": Utc::now().to_rfc3339(),
+        });
 
-            // Atomically claim the queue item. HSETNX only writes the field
-            // when it does not already exist, so two concurrent assigns for
-            // the same queue_id can never both win. The previous
-            // hget-then-hset check was racy: both callers could observe the
-            // slot unclaimed and both proceed to hset.
-            let claimed: bool = conn
-                .hset_nx(
-                    "assigned-queue-items",
-                    queue_id.to_string(),
-                    assignment_info.to_string(),
-                )
-                .await?;
-            if !claimed {
-                return Err(format!("Queue item {} already assigned", queue_id).into());
-            }
-            let _: () = conn
-                .sadd(format!("worker-queue-items:{}", worker_name), queue_id)
-                .await?;
-
-            // Do not EXPIRE the `assigned-queue-items` hash. The
-            // previous 3600s TTL nuked the whole hash every hour --
-            // which silently freed long-running runs' claims and
-            // undermined the double-assignment guard around them.
-            // Python never sets a TTL; stale entries are removed
-            // explicitly via `finish_run` / `unassign_queue_item`.
+        // Atomically claim the queue item. HSETNX only writes the field
+        // when it does not already exist, so two concurrent assigns for
+        // the same queue_id can never both win. The previous
+        // hget-then-hset check was racy: both callers could observe the
+        // slot unclaimed and both proceed to hset.
+        let claimed: bool = conn
+            .hset_nx(
+                "assigned-queue-items",
+                queue_id.to_string(),
+                assignment_info.to_string(),
+            )
+            .await?;
+        if !claimed {
+            return Err(format!("Queue item {} already assigned", queue_id).into());
         }
+        let _: () = conn
+            .sadd(format!("worker-queue-items:{}", worker_name), queue_id)
+            .await?;
+
+        // Do not EXPIRE the `assigned-queue-items` hash. The
+        // previous 3600s TTL nuked the whole hash every hour --
+        // which silently freed long-running runs' claims and
+        // undermined the double-assignment guard around them.
+        // Python never sets a TTL; stale entries are removed
+        // explicitly via `finish_run` / `unassign_queue_item`.
 
         Ok(())
     }
@@ -966,27 +966,25 @@ INSERT INTO run (
     ) -> Result<Vec<(i64, String, String, String)>, Box<dyn std::error::Error + Send + Sync>> {
         let mut result = Vec::new();
 
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
-            let assignments: HashMap<String, String> = conn.hgetall("assigned-queue-items").await?;
+        let mut conn = self.redis_connection().await?;
+        let assignments: HashMap<String, String> = conn.hgetall("assigned-queue-items").await?;
 
-            for (queue_id_str, assignment_info_str) in assignments {
-                if let (Ok(queue_id), Ok(assignment_info)) = (
-                    queue_id_str.parse::<i64>(),
-                    serde_json::from_str::<serde_json::Value>(&assignment_info_str),
+        for (queue_id_str, assignment_info_str) in assignments {
+            if let (Ok(queue_id), Ok(assignment_info)) = (
+                queue_id_str.parse::<i64>(),
+                serde_json::from_str::<serde_json::Value>(&assignment_info_str),
+            ) {
+                if let (Some(worker_name), Some(log_id), Some(assigned_at)) = (
+                    assignment_info.get("worker_name").and_then(|v| v.as_str()),
+                    assignment_info.get("log_id").and_then(|v| v.as_str()),
+                    assignment_info.get("assigned_at").and_then(|v| v.as_str()),
                 ) {
-                    if let (Some(worker_name), Some(log_id), Some(assigned_at)) = (
-                        assignment_info.get("worker_name").and_then(|v| v.as_str()),
-                        assignment_info.get("log_id").and_then(|v| v.as_str()),
-                        assignment_info.get("assigned_at").and_then(|v| v.as_str()),
-                    ) {
-                        result.push((
-                            queue_id,
-                            worker_name.to_string(),
-                            log_id.to_string(),
-                            assigned_at.to_string(),
-                        ));
-                    }
+                    result.push((
+                        queue_id,
+                        worker_name.to_string(),
+                        log_id.to_string(),
+                        assigned_at.to_string(),
+                    ));
                 }
             }
         }
@@ -1001,16 +999,14 @@ INSERT INTO run (
     ) -> Result<Vec<i64>, Box<dyn std::error::Error + Send + Sync>> {
         let mut result = Vec::new();
 
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
-            let queue_ids: Vec<String> = conn
-                .smembers(format!("worker-queue-items:{}", worker_name))
-                .await?;
+        let mut conn = self.redis_connection().await?;
+        let queue_ids: Vec<String> = conn
+            .smembers(format!("worker-queue-items:{}", worker_name))
+            .await?;
 
-            for queue_id_str in queue_ids {
-                if let Ok(queue_id) = queue_id_str.parse::<i64>() {
-                    result.push(queue_id);
-                }
+        for queue_id_str in queue_ids {
+            if let Ok(queue_id) = queue_id_str.parse::<i64>() {
+                result.push(queue_id);
             }
         }
 
@@ -1022,15 +1018,11 @@ INSERT INTO run (
         &self,
         queue_id: i64,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
-            let exists: bool = conn
-                .hexists("assigned-queue-items", queue_id.to_string())
-                .await?;
-            Ok(exists)
-        } else {
-            Ok(false)
-        }
+        let mut conn = self.redis_connection().await?;
+        let exists: bool = conn
+            .hexists("assigned-queue-items", queue_id.to_string())
+            .await?;
+        Ok(exists)
     }
 
     /// Get the worker assigned to a queue item.
@@ -1038,22 +1030,20 @@ INSERT INTO run (
         &self,
         queue_id: i64,
     ) -> Result<Option<(String, String)>, Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
+        let mut conn = self.redis_connection().await?;
 
-            if let Ok(assignment_info_str) = conn
-                .hget::<&str, String, String>("assigned-queue-items", queue_id.to_string())
-                .await
+        if let Some(assignment_info_str) = conn
+            .hget::<&str, String, Option<String>>("assigned-queue-items", queue_id.to_string())
+            .await?
+        {
+            if let Ok(assignment_info) =
+                serde_json::from_str::<serde_json::Value>(&assignment_info_str)
             {
-                if let Ok(assignment_info) =
-                    serde_json::from_str::<serde_json::Value>(&assignment_info_str)
-                {
-                    if let (Some(worker_name), Some(log_id)) = (
-                        assignment_info.get("worker_name").and_then(|v| v.as_str()),
-                        assignment_info.get("log_id").and_then(|v| v.as_str()),
-                    ) {
-                        return Ok(Some((worker_name.to_string(), log_id.to_string())));
-                    }
+                if let (Some(worker_name), Some(log_id)) = (
+                    assignment_info.get("worker_name").and_then(|v| v.as_str()),
+                    assignment_info.get("log_id").and_then(|v| v.as_str()),
+                ) {
+                    return Ok(Some((worker_name.to_string(), log_id.to_string())));
                 }
             }
         }
@@ -1061,19 +1051,15 @@ INSERT INTO run (
         Ok(None)
     }
 
-    /// Publish a JSON payload to a Redis pub/sub channel. A runner
-    /// without Redis configured is a no-op rather than an error,
-    /// matching the existing pattern in [`Self::unassign_queue_item`].
+    /// Publish a JSON payload to a Redis pub/sub channel.
     pub async fn publish(
         &self,
         channel: &str,
         payload: &serde_json::Value,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
-            let body = serde_json::to_string(payload)?;
-            let _: () = conn.publish(channel, body).await?;
-        }
+        let mut conn = self.redis_connection().await?;
+        let body = serde_json::to_string(payload)?;
+        let _: () = conn.publish(channel, body).await?;
         Ok(())
     }
 
@@ -1082,32 +1068,30 @@ INSERT INTO run (
         &self,
         queue_id: i64,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
+        let mut conn = self.redis_connection().await?;
 
-            if let Ok(assignment_info_str) = conn
-                .hget::<&str, String, String>("assigned-queue-items", queue_id.to_string())
-                .await
+        if let Some(assignment_info_str) = conn
+            .hget::<&str, String, Option<String>>("assigned-queue-items", queue_id.to_string())
+            .await?
+        {
+            if let Ok(assignment_info) =
+                serde_json::from_str::<serde_json::Value>(&assignment_info_str)
             {
-                if let Ok(assignment_info) =
-                    serde_json::from_str::<serde_json::Value>(&assignment_info_str)
+                if let Some(worker_name) =
+                    assignment_info.get("worker_name").and_then(|v| v.as_str())
                 {
-                    if let Some(worker_name) =
-                        assignment_info.get("worker_name").and_then(|v| v.as_str())
-                    {
-                        // Remove from worker's set
-                        let _: () = conn
-                            .srem(format!("worker-queue-items:{}", worker_name), queue_id)
-                            .await?;
-                    }
+                    // Remove from worker's set
+                    let _: () = conn
+                        .srem(format!("worker-queue-items:{}", worker_name), queue_id)
+                        .await?;
                 }
             }
-
-            // Remove from assignments hash
-            let _: () = conn
-                .hdel("assigned-queue-items", queue_id.to_string())
-                .await?;
         }
+
+        // Remove from assignments hash
+        let _: () = conn
+            .hdel("assigned-queue-items", queue_id.to_string())
+            .await?;
 
         Ok(())
     }
@@ -1119,22 +1103,20 @@ INSERT INTO run (
         status: &str,
         current_run: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
+        let mut conn = self.redis_connection().await?;
 
-            let health_info = serde_json::json!({
-                "status": status,
-                "current_run": current_run,
-                "last_heartbeat": Utc::now().to_rfc3339(),
-            });
+        let health_info = serde_json::json!({
+            "status": status,
+            "current_run": current_run,
+            "last_heartbeat": Utc::now().to_rfc3339(),
+        });
 
-            let _: () = conn
-                .hset("worker-health", worker_name, health_info.to_string())
-                .await?;
+        let _: () = conn
+            .hset("worker-health", worker_name, health_info.to_string())
+            .await?;
 
-            // Set expiration for worker health (cleanup stale workers)
-            let _: () = conn.expire("worker-health", 1800).await?; // 30 minutes
-        }
+        // Set expiration for worker health (cleanup stale workers)
+        let _: () = conn.expire("worker-health", 1800).await?; // 30 minutes
 
         Ok(())
     }
@@ -1144,24 +1126,12 @@ INSERT INTO run (
         &self,
         worker_name: &str,
     ) -> Result<Option<serde_json::Value>, Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
+        let mut conn = self.redis_connection().await?;
 
-            match conn
-                .hget::<&str, &str, String>("worker-health", worker_name)
-                .await
-            {
-                Ok(health_str) => {
-                    let health_info: serde_json::Value = serde_json::from_str(&health_str)?;
-                    return Ok(Some(health_info));
-                }
-                Err(_) => {
-                    // Worker health not found
-                }
-            }
-        }
-
-        Ok(None)
+        let health_str: Option<String> = conn.hget("worker-health", worker_name).await?;
+        Ok(health_str
+            .map(|health_str| serde_json::from_str(&health_str))
+            .transpose()?)
     }
 
     /// Get all worker health statuses.
@@ -1170,14 +1140,12 @@ INSERT INTO run (
     ) -> Result<HashMap<String, serde_json::Value>, Box<dyn std::error::Error + Send + Sync>> {
         let mut result = HashMap::new();
 
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
-            let workers: HashMap<String, String> = conn.hgetall("worker-health").await?;
+        let mut conn = self.redis_connection().await?;
+        let workers: HashMap<String, String> = conn.hgetall("worker-health").await?;
 
-            for (worker_name, health_str) in workers {
-                if let Ok(health_info) = serde_json::from_str::<serde_json::Value>(&health_str) {
-                    result.insert(worker_name, health_info);
-                }
+        for (worker_name, health_str) in workers {
+            if let Ok(health_info) = serde_json::from_str::<serde_json::Value>(&health_str) {
+                result.insert(worker_name, health_info);
             }
         }
 
@@ -1191,26 +1159,21 @@ INSERT INTO run (
         holder: &str,
         ttl_seconds: u64,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
+        let mut conn = self.redis_connection().await?;
 
-            // Use SET with NX (only if not exists) and EX (expiration)
-            let result: Option<String> = conn
-                .set_options(
-                    format!("lock:{}", lock_name),
-                    holder,
-                    redis::SetOptions::default()
-                        .conditional_set(redis::ExistenceCheck::NX)
-                        .get(true)
-                        .with_expiration(redis::SetExpiry::EX(ttl_seconds)),
-                )
-                .await?;
+        // Use SET with NX (only if not exists) and EX (expiration)
+        let result: Option<String> = conn
+            .set_options(
+                format!("lock:{}", lock_name),
+                holder,
+                redis::SetOptions::default()
+                    .conditional_set(redis::ExistenceCheck::NX)
+                    .get(true)
+                    .with_expiration(redis::SetExpiry::EX(ttl_seconds)),
+            )
+            .await?;
 
-            Ok(result.is_some())
-        } else {
-            // No Redis, assume lock acquired
-            Ok(true)
-        }
+        Ok(result.is_some())
     }
 
     /// Release coordination lock in Redis.
@@ -1219,29 +1182,24 @@ INSERT INTO run (
         lock_name: &str,
         holder: &str,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
+        let mut conn = self.redis_connection().await?;
 
-            // Lua script to atomically check holder and delete
-            let script = r#"
-                if redis.call("GET", KEYS[1]) == ARGV[1] then
-                    return redis.call("DEL", KEYS[1])
-                else
-                    return 0
-                end
-            "#;
+        // Lua script to atomically check holder and delete
+        let script = r#"
+            if redis.call("GET", KEYS[1]) == ARGV[1] then
+                return redis.call("DEL", KEYS[1])
+            else
+                return 0
+            end
+        "#;
 
-            let result: i32 = redis::Script::new(script)
-                .key(format!("lock:{}", lock_name))
-                .arg(holder)
-                .invoke_async(&mut conn)
-                .await?;
+        let result: i32 = redis::Script::new(script)
+            .key(format!("lock:{}", lock_name))
+            .arg(holder)
+            .invoke_async(&mut conn)
+            .await?;
 
-            Ok(result == 1)
-        } else {
-            // No Redis, assume lock released
-            Ok(true)
-        }
+        Ok(result == 1)
     }
 
     /// Assign the next queue item, filtering out rate-limited hosts
@@ -1251,15 +1209,16 @@ INSERT INTO run (
         codebase: Option<&str>,
         campaign: Option<&str>,
         avoid_hosts: &[String],
-    ) -> Result<Option<QueueAssignment>, sqlx::Error> {
-        let rate_limited_hosts = self.get_rate_limited_hosts().await.unwrap_or_default();
+    ) -> Result<Option<QueueAssignment>, Box<dyn std::error::Error + Send + Sync>> {
+        let rate_limited_hosts = self.get_rate_limited_hosts().await?;
         let mut exclude_hosts = avoid_hosts.to_vec();
         exclude_hosts.extend(rate_limited_hosts.keys().cloned());
 
-        let assigned_items = self.get_assigned_queue_items().await.unwrap_or_default();
+        let assigned_items = self.get_assigned_queue_items().await?;
 
-        self.next_queue_item_with_scoring(codebase, campaign, &exclude_hosts, &assigned_items)
-            .await
+        Ok(self
+            .next_queue_item_with_scoring(codebase, campaign, &exclude_hosts, &assigned_items)
+            .await?)
     }
 
     /// Assign the next queue item using a computed score (candidate
@@ -1463,7 +1422,9 @@ INSERT INTO run (
     }
 
     /// Clean up orphaned data and maintain database consistency.
-    pub async fn maintenance_cleanup(&self) -> Result<(), sqlx::Error> {
+    pub async fn maintenance_cleanup(
+        &self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // The old "DELETE FROM active_run" query lived here but that
         // table never existed in the real schema -- active-run state is
         // in-process in `crate::active_runs::ActiveRunStore` and the
@@ -1472,19 +1433,15 @@ INSERT INTO run (
         // "relation 'active_run' does not exist"; removed.
 
         // Clean up old rate limit entries from Redis
-        if let Some(redis_client) = self.redis() {
-            if let Ok(mut conn) = redis_client.get_multiplexed_async_connection().await {
-                let hosts: HashMap<String, String> =
-                    conn.hgetall("rate-limit-hosts").await.unwrap_or_default();
-                let now = Utc::now();
+        let mut conn = self.redis_connection().await?;
+        let hosts: HashMap<String, String> = conn.hgetall("rate-limit-hosts").await?;
+        let now = Utc::now();
 
-                for (host, time_str) in hosts.into_iter() {
-                    if let Ok(retry_time) = DateTime::parse_from_rfc3339(&time_str) {
-                        let retry_time = retry_time.with_timezone(&Utc);
-                        if retry_time <= now {
-                            let _: () = conn.hdel("rate-limit-hosts", &host).await.unwrap_or(());
-                        }
-                    }
+        for (host, time_str) in hosts.into_iter() {
+            if let Ok(retry_time) = DateTime::parse_from_rfc3339(&time_str) {
+                let retry_time = retry_time.with_timezone(&Utc);
+                if retry_time <= now {
+                    let _: () = conn.hdel("rate-limit-hosts", &host).await?;
                 }
             }
         }
@@ -1982,18 +1939,16 @@ impl RunnerDatabase {
         &self,
         worker_name: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(redis) = self.redis() {
-            let mut conn = redis.get_multiplexed_async_connection().await?;
-            let key = format!("worker:last_seen:{}", worker_name);
-            let timestamp = chrono::Utc::now().timestamp();
-            let _: () = redis::cmd("SET")
-                .arg(&key)
-                .arg(timestamp)
-                .arg("EX")
-                .arg(86400) // Expire after 24 hours
-                .query_async(&mut conn)
-                .await?;
-        }
+        let mut conn = self.redis_connection().await?;
+        let key = format!("worker:last_seen:{}", worker_name);
+        let timestamp = chrono::Utc::now().timestamp();
+        let _: () = redis::cmd("SET")
+            .arg(&key)
+            .arg(timestamp)
+            .arg("EX")
+            .arg(86400) // Expire after 24 hours
+            .query_async(&mut conn)
+            .await?;
         Ok(())
     }
 
@@ -2003,23 +1958,21 @@ impl RunnerDatabase {
     ) -> Result<HashMap<String, DateTime<Utc>>, Box<dyn std::error::Error + Send + Sync>> {
         let mut last_seen_map = HashMap::new();
 
-        if let Some(redis) = self.redis() {
-            let mut conn = redis.get_multiplexed_async_connection().await?;
+        let mut conn = self.redis_connection().await?;
 
-            let keys: Vec<String> = redis::cmd("KEYS")
-                .arg("worker:last_seen:*")
-                .query_async(&mut conn)
-                .await?;
+        let keys: Vec<String> = redis::cmd("KEYS")
+            .arg("worker:last_seen:*")
+            .query_async(&mut conn)
+            .await?;
 
-            for key in keys {
-                if let Some(worker_name) = key.strip_prefix("worker:last_seen:") {
-                    let timestamp: Option<i64> =
-                        redis::cmd("GET").arg(&key).query_async(&mut conn).await?;
+        for key in keys {
+            if let Some(worker_name) = key.strip_prefix("worker:last_seen:") {
+                let timestamp: Option<i64> =
+                    redis::cmd("GET").arg(&key).query_async(&mut conn).await?;
 
-                    if let Some(ts) = timestamp {
-                        if let Some(datetime) = DateTime::from_timestamp(ts, 0) {
-                            last_seen_map.insert(worker_name.to_string(), datetime);
-                        }
+                if let Some(ts) = timestamp {
+                    if let Some(datetime) = DateTime::from_timestamp(ts, 0) {
+                        last_seen_map.insert(worker_name.to_string(), datetime);
                     }
                 }
             }
@@ -2059,5 +2012,28 @@ impl RunnerDatabase {
         }
 
         Ok(failed_workers)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn db_without_redis() -> RunnerDatabase {
+        let pool = PgPool::connect_lazy("postgresql://localhost/unused").unwrap();
+        RunnerDatabase::new(pool)
+    }
+
+    #[tokio::test]
+    async fn test_redis_operations_require_redis() {
+        let db = db_without_redis();
+        assert!(db.rate_limit_host("example.com", Utc::now()).await.is_err());
+        assert!(db.get_rate_limited_hosts().await.is_err());
+        assert!(db.get_assigned_queue_items().await.is_err());
+        assert!(db.assign_queue_item(1, "worker", "log-id").await.is_err());
+        assert!(db.unassign_queue_item(1).await.is_err());
+        assert!(db.publish("result", &serde_json::json!({})).await.is_err());
+        assert!(db.track_worker_activity("worker").await.is_err());
+        assert!(db.get_workers_last_seen().await.is_err());
     }
 }
