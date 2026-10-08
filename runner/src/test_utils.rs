@@ -371,9 +371,15 @@ pub async fn create_test_app_state_with_config(
     // Load the production schema so write-path tests hit the same
     // tables (with the same constraints and types) as production.
     janitor::schema::setup_test_database(test_db.pool()).await?;
-    let janitor_db = test_db.into_janitor_database();
-    let runner_db = RunnerDatabase::from_database(janitor_db);
-    let runner_db_arc = Arc::new(runner_db);
+    // Queue claims live under a fixed Redis key shared by all tests, so
+    // keep queue ids distinct between test databases.
+    let first_queue_id = uuid::Uuid::new_v4().as_u128() % 1_000_000_000 + 1;
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "ALTER SEQUENCE queue_id_seq RESTART WITH {}",
+        first_queue_id
+    )))
+    .execute(test_db.pool())
+    .await?;
 
     let redis_url =
         std::env::var("TEST_REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
@@ -387,6 +393,10 @@ pub async fn create_test_app_state_with_config(
         .query_async(&mut conn)
         .await
         .map_err(|e| format!("Test redis PING failed: {}", e))?;
+
+    let janitor_db = test_db.into_janitor_database();
+    let runner_db = RunnerDatabase::new_with_redis(janitor_db.pool().clone(), redis_client.clone());
+    let runner_db_arc = Arc::new(runner_db);
 
     let log_manager = Arc::new(MockLogFileManager);
     let artifact_manager = Arc::new(MockArtifactManager);
