@@ -3731,48 +3731,6 @@ async fn public_get_active_run(
     }
 }
 
-/// Get watchdog health information for all active runs.
-async fn public_watchdog_health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let watchdog_config = crate::WatchdogConfig::default();
-    let watchdog = crate::Watchdog::new(
-        Arc::clone(&state.database),
-        state.active_runs.clone(),
-        watchdog_config,
-    );
-
-    match watchdog.get_detailed_health_status().await {
-        Ok(health_statuses) => {
-            // Filter to public information only
-            let public_statuses: Vec<_> = health_statuses.into_iter().map(|status| {
-                json!({
-                    "log_id": status.log_id,
-                    "worker_name": status.worker_name,
-                    "start_time": status.start_time,
-                    "estimated_duration": status.estimated_duration.map(|d| d.as_secs()),
-                    "failure_count": status.failure_count,
-                    "max_failures": status.max_failures,
-                    "alive": status.health.as_ref().map(|h| h.alive).unwrap_or(false),
-                    "status": status.health.as_ref().map(|h| h.status.clone()).unwrap_or_else(|| "unknown".to_string()),
-                    "last_ping": status.health.as_ref().and_then(|h| h.last_ping),
-                })
-            }).collect();
-
-            Json(json!({
-                "status": "ok",
-                "active_runs": public_statuses.len(),
-                "health_statuses": public_statuses
-            }))
-        }
-        Err(e) => {
-            log::error!("Failed to get watchdog health status: {}", e);
-            Json(json!({
-                "status": "error",
-                "error": "Failed to get health status"
-            }))
-        }
-    }
-}
-
 /// Get public queue statistics.
 async fn public_queue_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Active runs live in Redis, not Postgres; source them here so
@@ -3855,8 +3813,7 @@ pub fn public_app(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/health", get(health))
         .route("/health/live", get(liveness))
         .route("/health/ready", get(readiness))
-        .route("/queue/stats", get(public_queue_stats))
-        .route("/watchdog/health", get(public_watchdog_health));
+        .route("/queue/stats", get(public_queue_stats));
 
     // axum's default request body limit is 2 MiB. Worker /finish
     // uploads bundle the metadata JSON, all logs, and every artifact

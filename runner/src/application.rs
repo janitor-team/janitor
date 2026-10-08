@@ -404,13 +404,12 @@ impl Application {
         // hung runs get aborted even during startup races. The task is
         // abandoned on process exit.
         let watchdog_state = self.state.clone();
-        let watchdog_config =
-            crate::watchdog::WatchdogConfig::from_run_timeout_minutes(self.run_timeout_minutes);
+        let run_timeout_minutes = self.run_timeout_minutes;
         tokio::spawn(async move {
-            let mut watchdog = crate::watchdog::Watchdog::new(
+            let watchdog = crate::watchdog::Watchdog::new(
                 watchdog_state.database.clone(),
                 watchdog_state.active_runs.clone(),
-                watchdog_config,
+                run_timeout_minutes,
             );
             watchdog.start().await;
         });

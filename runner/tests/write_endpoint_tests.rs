@@ -1030,32 +1030,6 @@ async fn get_public_queue_stats_returns_expected_fields() {
     }
 }
 
-/// `GET /watchdog/health` (public router) returns 200 + a
-/// `health_statuses` array. With no active runs, the array is empty.
-#[tokio::test]
-async fn get_public_watchdog_health_returns_empty_when_idle() {
-    let Some((app, _state)) = test_utils::create_public_test_app_with_state_if_available()
-        .await
-        .expect("public app setup should either succeed or return None cleanly")
-    else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
-
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/watchdog/health")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    assert_eq!(body["status"], "ok");
-    assert_eq!(body["active_runs"], 0);
-    assert_eq!(body["health_statuses"], json!([]));
-}
-
 /// A worker-authenticated route on the public router returns 401
 /// when the client sends no `Authorization` header. Verifies the
 /// `authenticate_worker` middleware refuses to fall through.
