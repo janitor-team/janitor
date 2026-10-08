@@ -115,6 +115,29 @@ async def test_history(aiohttp_client, db):
     client = await create_client(aiohttp_client, db)
     resp = await client.get("/cupboard/history")
     assert resp.status == 200
+    text = await resp.text()
+    assert "the pipeline may never have been given any candidates" in text
+    assert "<table" not in text
+
+
+async def test_history_with_runs(aiohttp_client, db):
+    client = await create_client(aiohttp_client, db)
+    async with db.acquire() as conn:
+        await _insert_codebase(conn, "foo")
+        now = utcnow()
+        await _insert_run(
+            conn,
+            run_id="somerun",
+            codebase="foo",
+            start_time=now - timedelta(minutes=30),
+            finish_time=now,
+        )
+
+    resp = await client.get("/cupboard/history")
+    assert resp.status == 200
+    text = await resp.text()
+    assert "the pipeline may never have been given any candidates" not in text
+    assert "<table" in text
 
 
 async def test_queue(aiohttp_client, db):
