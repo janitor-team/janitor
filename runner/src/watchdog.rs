@@ -219,7 +219,7 @@ impl Watchdog {
 
     /// Check all active runs for timeouts and health issues.
     async fn check_active_runs(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let active_runs = self.active_runs.list().await;
+        let active_runs = self.active_runs.list().await?;
         let now = Utc::now();
 
         log::debug!("Checking {} active runs", active_runs.len());
@@ -399,7 +399,7 @@ impl Watchdog {
                         //    -- genuine drift / lost assignment. Kill
                         //    the stale side.
                         let other_run = match health.current_run_id.as_ref() {
-                            Some(other) => self.active_runs.get(other).await,
+                            Some(other) => self.active_runs.get(other).await?,
                             None => None,
                         };
                         match other_run {
@@ -414,7 +414,7 @@ impl Watchdog {
                                     other.log_id,
                                     other.start_time,
                                 );
-                                self.active_runs.remove(&run.log_id).await;
+                                self.active_runs.remove(&run.log_id).await?;
                                 Ok(None)
                             }
                             Some(other) => {
@@ -577,7 +577,7 @@ impl Watchdog {
             log::info!("Recorded terminated run {} as {}", run.log_id, result_code);
         }
 
-        self.active_runs.remove(&run.log_id).await;
+        self.active_runs.remove(&run.log_id).await?;
 
         // Clean up health failure tracking
         self.health_failures.remove(&run.log_id);
@@ -598,7 +598,7 @@ impl Watchdog {
         let stale = self
             .active_runs
             .drain_older_than(chrono::Duration::hours(self.config.max_run_age_hours))
-            .await;
+            .await?;
         if !stale.is_empty() {
             log::info!("Cleaned up {} stale active runs", stale.len());
             for run in stale {
@@ -626,7 +626,7 @@ impl Watchdog {
         &mut self,
         run_id: &str,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(run) = self.active_runs.get(run_id).await {
+        if let Some(run) = self.active_runs.get(run_id).await? {
             self.terminate_run(&run, TerminationReason::ManualKill)
                 .await?;
             Ok(true)
@@ -647,7 +647,7 @@ impl Watchdog {
     pub async fn get_detailed_health_status(
         &self,
     ) -> Result<Vec<RunHealthStatus>, Box<dyn std::error::Error + Send + Sync>> {
-        let active_runs = self.active_runs.list().await;
+        let active_runs = self.active_runs.list().await?;
         let mut health_statuses = Vec::new();
 
         for run in active_runs {
@@ -680,7 +680,7 @@ impl Watchdog {
         &mut self,
         run_id: &str,
     ) -> Result<Option<RunHealthStatus>, Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(run) = self.active_runs.get(run_id).await {
+        if let Some(run) = self.active_runs.get(run_id).await? {
             let now = Utc::now();
 
             let termination_reason = self.check_worker_health(&run, now).await?;

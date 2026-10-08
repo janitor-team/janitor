@@ -627,7 +627,7 @@ async fn post_kill_jenkins_run_returns_501() {
         instigated_context: None,
         resume_from: None,
     };
-    state.active_runs.store(active_run).await;
+    state.active_runs.store(active_run).await.unwrap();
 
     let req = Request::builder()
         .method(Method::POST)
@@ -646,7 +646,11 @@ async fn post_kill_jenkins_run_returns_501() {
     );
 
     // Cleanup so the row does not leak across serial tests.
-    let _ = state.active_runs.remove("run-kill-not-supported").await;
+    state
+        .active_runs
+        .remove("run-kill-not-supported")
+        .await
+        .unwrap();
 }
 
 /// `GET /active-runs` returns the empty list when no run is active.
@@ -1150,7 +1154,7 @@ async fn public_finish_returns_403_when_worker_does_not_own_run() {
         instigated_context: None,
         resume_from: None,
     };
-    state.active_runs.store(active_run).await;
+    state.active_runs.store(active_run).await.unwrap();
 
     // Bob attempts the finish -- the mismatch check runs before any
     // multipart parsing, so an empty body still reaches the 403 branch.
@@ -1176,7 +1180,11 @@ async fn public_finish_returns_403_when_worker_does_not_own_run() {
         "expected `Not authorized` in error, got {body}"
     );
 
-    let _ = state.active_runs.remove("run-owned-by-alice").await;
+    state
+        .active_runs
+        .remove("run-owned-by-alice")
+        .await
+        .unwrap();
 }
 
 /// End-to-end lifecycle test: seed a codebase and campaign, enqueue
@@ -1311,7 +1319,7 @@ async fn end_to_end_assignment_lifecycle() {
     // ActiveRun should be gone from Redis after finish -- the run is
     // no longer in-flight, so /kill and /active-runs/{id} must 404.
     assert!(
-        state.active_runs.get(run_id).await.is_none(),
+        state.active_runs.get(run_id).await.unwrap().is_none(),
         "active run should be dropped from Redis after finish"
     );
 }
@@ -1625,7 +1633,7 @@ async fn seed_active_run_for_finish(state: &Arc<AppState>, log_id: &str) {
         instigated_context: None,
         resume_from: None,
     };
-    state.active_runs.store(run).await;
+    state.active_runs.store(run).await.unwrap();
 }
 
 /// `POST /finish` with a multipart body that has no `metadata` /
@@ -1671,7 +1679,7 @@ async fn finish_multipart_without_metadata_returns_400() {
         "expected `worker_result`/`Missing` in error, got {body}"
     );
 
-    let _ = state.active_runs.remove("run-no-metadata").await;
+    state.active_runs.remove("run-no-metadata").await.unwrap();
 }
 
 /// `POST /finish` with malformed multipart (unterminated body) yields
@@ -1702,7 +1710,7 @@ async fn finish_malformed_multipart_returns_400() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    let _ = state.active_runs.remove("run-malformed").await;
+    state.active_runs.remove("run-malformed").await.unwrap();
 }
 
 /// `POST /finish` with a multipart part that has no `name=` in the
@@ -1740,7 +1748,7 @@ async fn finish_multipart_field_without_name_returns_400() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    let _ = state.active_runs.remove("run-no-field-name").await;
+    state.active_runs.remove("run-no-field-name").await.unwrap();
 }
 
 /// Assignment scoring by priority: given three candidates with the
@@ -1909,11 +1917,11 @@ async fn concurrent_assign_queue_item_never_double_claims() {
         pool.clone(),
         redis_client.clone(),
     );
-    let db2 = janitor_runner::database::RunnerDatabase::new_with_redis(pool, redis_client);
+    let db2 = janitor_runner::database::RunnerDatabase::new_with_redis(pool, redis_client.clone());
 
     let (r1, r2) = tokio::join!(
-        db1.assign_queue_item(queue_id, "race-w1", "log1"),
-        db2.assign_queue_item(queue_id, "race-w2", "log2"),
+        db1.assign_queue_item(queue_id, "log1"),
+        db2.assign_queue_item(queue_id, "log2"),
     );
 
     let oks = [&r1, &r2].iter().filter(|r| r.is_ok()).count();
@@ -1931,6 +1939,72 @@ async fn concurrent_assign_queue_item_never_double_claims() {
     assert!(
         msg.contains("already assigned"),
         "loser error should mention `already assigned`, got: {msg}"
+    );
+
+    // Like Python, the claim maps the queue id to the bare run id.
+    use redis::AsyncCommands;
+    let mut conn = redis_client
+        .get_multiplexed_async_connection()
+        .await
+        .unwrap();
+    let claimed_by: String = conn
+        .hget("assigned-queue-items", queue_id.to_string())
+        .await
+        .unwrap();
+    assert_eq!(claimed_by, if r1.is_ok() { "log1" } else { "log2" });
+    db1.unassign_queue_item(queue_id).await.unwrap();
+    let exists: bool = conn
+        .hexists("assigned-queue-items", queue_id.to_string())
+        .await
+        .unwrap();
+    assert!(!exists);
+}
+
+/// Rate limits are stored as naive UTC timestamps, as the Python
+/// runner writes and expects them.
+#[tokio::test]
+async fn rate_limited_hosts_use_python_timestamps() {
+    test_utils::ensure_redis().await;
+    let Ok(redis_url) = std::env::var("TEST_REDIS_URL") else {
+        eprintln!("skipping: no TEST_REDIS_URL");
+        return;
+    };
+    let redis_client = redis::Client::open(redis_url.as_str()).unwrap();
+    let pool = sqlx::PgPool::connect_lazy("postgresql:///unused").unwrap();
+    let db = janitor_runner::database::RunnerDatabase::new_with_redis(pool, redis_client.clone());
+    let host = format!("{}.example.invalid", uuid::Uuid::new_v4().simple());
+    let python_host = format!("python-{}", host);
+
+    use redis::AsyncCommands;
+    let mut conn = redis_client
+        .get_multiplexed_async_connection()
+        .await
+        .unwrap();
+    let _: () = conn
+        .hset(
+            "rate-limit-hosts",
+            &python_host,
+            "2099-01-02T03:04:05.123456",
+        )
+        .await
+        .unwrap();
+    let until = chrono::DateTime::parse_from_rfc3339("2099-01-02T03:04:05Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    db.rate_limit_host(&host, until).await.unwrap();
+
+    let stored: String = conn.hget("rate-limit-hosts", &host).await.unwrap();
+    let hosts = db.get_rate_limited_hosts().await;
+    let _: () = conn
+        .hdel("rate-limit-hosts", &[&host, &python_host])
+        .await
+        .unwrap();
+    assert_eq!(stored, "2099-01-02T03:04:05");
+    let hosts = hosts.unwrap();
+    assert_eq!(hosts.get(&host), Some(&until));
+    assert_eq!(
+        hosts.get(&python_host),
+        Some(&(until + chrono::Duration::microseconds(123456)))
     );
 }
 
