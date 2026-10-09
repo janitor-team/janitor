@@ -211,6 +211,10 @@ impl RateLimiter for FixedRateLimiter {
                 per_bucket: open_mps_per_bucket.clone(),
             })
     }
+
+    fn get_max_open(&self, _bucket: &str) -> Option<usize> {
+        Some(self.max_mps_per_bucket)
+    }
 }
 
 /// Rate limiter that gradually increases the limit based on absorbed merge proposals.
