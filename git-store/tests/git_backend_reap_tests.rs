@@ -26,6 +26,21 @@ async fn process_group_zero_makes_child_its_own_group_leader() {
     let _ = child.wait().await;
 }
 
+/// True once `pid` no longer exists or is only a zombie.
+fn is_gone(pid: i32) -> bool {
+    if unsafe { libc::kill(pid, 0) } < 0 {
+        return true;
+    }
+    // The state is the first field after the parenthesised command name.
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| {
+            stat.rsplit_once(") ")
+                .map(|(_, rest)| rest.starts_with('Z'))
+        })
+        .unwrap_or(false)
+}
+
 #[tokio::test]
 async fn killpg_reaches_grandchildren_in_the_same_group() {
     // Shell forks a background sleep (the "grandchild") then execs
@@ -59,10 +74,9 @@ async fn killpg_reaches_grandchildren_in_the_same_group() {
         .expect("child reaped");
 
     // Give the kernel a moment to deliver and the grandchild's
-    // parent (sh, now dead) to reparent it to PID 1, which then
-    // reaps it. `kill -0` reports ESRCH once gone.
+    // parent (sh, now dead) to reparent it to PID 1; reaped or left a zombie, it is gone.
     for _ in 0..50 {
-        if unsafe { libc::kill(grandchild_pid, 0) } < 0 {
+        if is_gone(grandchild_pid) {
             return;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
