@@ -3786,7 +3786,6 @@ dependencies = [
  "maplit",
  "nix",
  "ognibuild",
- "percent-encoding",
  "prometheus 0.14.0",
  "reqwest 0.13.5",
  "serde",

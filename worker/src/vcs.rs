@@ -17,13 +17,8 @@ pub fn push_branch(
     tag_selector: Option<Box<dyn Fn(String) -> bool>>,
     possible_transports: &mut Option<Vec<Transport>>,
 ) -> Result<(), BrzError> {
-    let (url, params) = breezyshim::urlutils::split_segment_parameters(url);
-    let branch_name = params.get("branch").map(|s| {
-        percent_encoding::percent_decode(s.as_bytes())
-            .decode_utf8()
-            .unwrap()
-            .to_string()
-    });
+    let branch_name = janitor::vcs::segment_branch_name(url);
+    let (url, _params) = breezyshim::urlutils::split_segment_parameters(url);
     let vcs_type = vcs_type.map_or_else(
         || source_branch.controldir().cloning_metadir(),
         |t| {
@@ -497,5 +492,43 @@ mod tests {
             }
         );
         std::mem::drop(td);
+    }
+}
+
+#[cfg(test)]
+mod segment_branch_name_tests {
+    use super::*;
+
+    #[test]
+    fn test_decodes_a_slash_in_the_name() {
+        // cache_branch_name returns "<vendor>/latest", and get_branch_url
+        // escapes it.
+        let url = Url::parse("http://git-store:9923/mypkg,branch=debian%2Flatest").unwrap();
+        assert_eq!(
+            janitor::vcs::segment_branch_name(&url).as_deref(),
+            Some("debian/latest")
+        );
+    }
+
+    #[test]
+    fn test_round_trips_what_get_branch_url_writes() {
+        // The pair that matters: the writer escapes, the reader gets it back.
+        // Fails on upstream/main, where get_branch_url does not escape.
+        use janitor::vcs::VcsManager;
+        let mgr =
+            janitor::vcs::RemoteGitVcsManager::new(Url::parse("http://git-store:9923/").unwrap());
+        let url = mgr.get_branch_url("mypkg", "debian/latest");
+        assert_eq!(
+            janitor::vcs::segment_branch_name(&url).as_deref(),
+            Some("debian/latest")
+        );
+    }
+
+    #[test]
+    fn test_none_for_a_path_based_url() {
+        // The bzr managers build a path instead of a segment parameter, so
+        // there is nothing to read and the caller keeps its old behaviour.
+        let url = Url::parse("http://bzr-store:9929/mypkg/lintian-fixes/main").unwrap();
+        assert_eq!(janitor::vcs::segment_branch_name(&url), None);
     }
 }
