@@ -1,5 +1,7 @@
 ## Structure 
 
+See [tools.md](tools.md) for what each command and script in the tree does.
+
 - `./reschedule.py` - a tool for users of the janitor and can be run by anybody locally
 - `./helpers/*` - all need to run inside of a janitor deployment (and talk to the database, etc) by an admin.
 - `janitor-admin` - admin CLI that talks to a running janitor site over its public HTTP API (`--url`, default `https://janitor.debian.net`, or `JANITOR_URL`). Mutating subcommands need `--user`/`--password` (or `JANITOR_USER`/`JANITOR_PASSWORD`) for HTTP basic auth. Run with `cargo run --bin janitor-admin -- <args>`.
