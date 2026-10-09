@@ -97,6 +97,34 @@ unset:
 For a Janitor instance, you probably want a custom website in combination with
 the Janitor API. See the existing instances for inspiration.
 
+## Moving logs to another store
+
+`janitor-migrate-logs` moves the log files of every run from one log store to
+another, for example when changing `logs_location` from a local directory to a
+bucket. It is built from the top-level crate:
+
+```console
+$ cargo run --release --bin janitor-migrate-logs -- \
+    --config janitor.conf /srv/janitor/logs gs://my-bucket
+```
+
+A location is anything `logs_location` accepts. A log is removed from the old
+store only once it is in the new one. `--dry-run` lists what would be moved,
+and `--keep` copies without removing anything.
+
+Point `logs_location` at the new store first, so that runs finishing in the
+meantime are not left behind. The tool can be run again: logs that have
+already been moved are skipped. It exits with a non-zero status if any run
+failed. Each log is held in memory while it is moved, so lower
+`--concurrency` (100 by default) if the logs are large.
+
+A log that the new store already has is not imported again and is not removed
+from the old store, so giving the same store as both locations changes
+nothing, and a run without `--keep` after a `--keep` copy leaves the old
+copies in place. Each such log is named in the output. A file left half
+written in a local directory by an interrupted run counts as already there,
+so remove it before running again.
+
 ## Registering workers
 
 Workers authenticate to the site with a name and password stored in the `worker`
