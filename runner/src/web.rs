@@ -2563,11 +2563,19 @@ async fn finish_run_multipart_internal(
         )
         .await
         {
-            log::warn!(
+            // Python let these errors fail the request; the run is not
+            // recorded, so the worker can retry.
+            log::error!(
                 "Failed to store log file {} from run {}: {}",
                 log_file.filename,
                 run_id,
                 e
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    json!({"reason": format!("Failed to store log file {}: {}", log_file.filename, e)}),
+                ),
             );
         }
     }

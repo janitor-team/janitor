@@ -274,6 +274,7 @@ impl crate::logs::LogFileManager for MockLogFileManager {
 #[derive(Default)]
 pub struct TestConfigBuilder {
     campaigns: Vec<janitor::config::Campaign>,
+    log_manager: Option<Arc<dyn crate::logs::LogFileManager>>,
     artifact_manager: Option<Arc<dyn janitor::artifacts::ArtifactManager>>,
     backup_artifact_manager: Option<Arc<dyn janitor::artifacts::ArtifactManager>>,
 }
@@ -298,6 +299,12 @@ impl TestConfigBuilder {
     /// Register an arbitrary campaign.
     pub fn with_campaign_config(mut self, campaign: janitor::config::Campaign) -> Self {
         self.campaigns.push(campaign);
+        self
+    }
+
+    /// Use `manager` instead of a mock as the log manager.
+    pub fn with_log_manager(mut self, manager: Arc<dyn crate::logs::LogFileManager>) -> Self {
+        self.log_manager = Some(manager);
         self
     }
 
@@ -408,7 +415,10 @@ pub async fn create_test_app_state_with_config(
         .await
         .map_err(|e| format!("Test redis PING failed: {}", e))?;
 
-    let log_manager = Arc::new(MockLogFileManager);
+    let log_manager: Arc<dyn crate::logs::LogFileManager> = config_builder
+        .log_manager
+        .take()
+        .unwrap_or_else(|| Arc::new(MockLogFileManager));
     let artifact_manager: Arc<dyn janitor::artifacts::ArtifactManager> = config_builder
         .artifact_manager
         .take()
