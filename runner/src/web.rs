@@ -3153,6 +3153,27 @@ async fn compute_resume_from(
     }
 }
 
+/// Seconds to rate-limit a host for when the forge gave no usable Retry-After.
+const DEFAULT_RATE_LIMIT_WAIT_SECS: i64 = 1800;
+
+/// Longest Retry-After, in seconds, accepted from a forge.
+const MAX_RATE_LIMIT_WAIT_SECS: i64 = 86400;
+
+/// A Retry-After from the forge that is NaN, negative or longer than a day.
+#[derive(Debug)]
+struct BadRetryAfter(f64);
+
+/// Seconds to rate-limit a host for, given the forge's Retry-After.
+fn rate_limit_wait_secs(retry_after: Option<f64>) -> Result<i64, BadRetryAfter> {
+    match retry_after {
+        None => Ok(DEFAULT_RATE_LIMIT_WAIT_SECS),
+        Some(secs) if (0.0..=MAX_RATE_LIMIT_WAIT_SECS as f64).contains(&secs) => {
+            Ok(secs.ceil() as i64)
+        }
+        Some(secs) => Err(BadRetryAfter(secs)),
+    }
+}
+
 /// `active_runs_path` is the path of the active runs collection, used
 /// for the `Location` header of the new run.
 async fn assign_work_internal(
@@ -3359,30 +3380,45 @@ async fn assign_work_internal(
         // Record the host in Redis so `next_queue_item_with_rate_limiting`
         // skips it until the forge-supplied `retry_after`. Fall back
         // to a conservative 30 minutes if the forge didn't include a
-        // Retry-After header.
-        let wait_secs = retry_after.unwrap_or(1800.0).max(0.0);
-        let until = chrono::Utc::now() + chrono::Duration::seconds(wait_secs as i64);
+        // Retry-After header, or sent a bad one, which is also an error.
+        let wait = rate_limit_wait_secs(retry_after);
+        if let Err(BadRetryAfter(raw)) = &wait {
+            log::error!("Forge {} sent an invalid Retry-After: {}", host, raw);
+        }
+        let wait_secs = *wait.as_ref().unwrap_or(&DEFAULT_RATE_LIMIT_WAIT_SECS);
+        let until = chrono::Utc::now() + chrono::Duration::seconds(wait_secs);
         if let Err(e) = state.database.rate_limit_host(&host, until).await {
             log::warn!("Failed to record rate-limit for host {}: {}", host, e);
         }
 
-        abort_assignment(
-            &state,
-            &assignment,
-            "resume-rate-limited",
-            &format!("Forge {} rate-limited us; retry after {}s", host, wait_secs),
-        )
-        .await;
+        let description = match &wait {
+            Ok(_) => format!("Forge {} rate-limited us; retry after {}s", host, wait_secs),
+            Err(BadRetryAfter(raw)) => format!(
+                "Forge {} rate-limited us with an invalid Retry-After ({}); retry after {}s",
+                host, raw, wait_secs
+            ),
+        };
+        abort_assignment(&state, &assignment, "resume-rate-limited", &description).await;
 
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
-                "reason": "rate limited",
-                "host": host,
-                "retry_after": retry_after,
-            })),
-        )
-            .into_response();
+        return match wait {
+            Ok(_) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "reason": "rate limited",
+                    "host": host,
+                    "retry_after": retry_after,
+                })),
+            ),
+            Err(BadRetryAfter(raw)) => (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": "invalid Retry-After from forge",
+                    "host": host,
+                    "retry_after": raw.to_string(),
+                })),
+            ),
+        }
+        .into_response();
     }
 
     let resume_assignment: Option<ResumeAssignment> = resume_outcome.resume;
@@ -3944,8 +3980,8 @@ pub fn app(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::{
-        assignment_validation_outcome, candidate_preflight, main_branch_name, AssignmentValidation,
-        CandidatePreflight,
+        assignment_validation_outcome, candidate_preflight, main_branch_name, rate_limit_wait_secs,
+        AssignmentValidation, BadRetryAfter, CandidatePreflight,
     };
     use crate::CampaignConfig;
     use serde_json::json;
@@ -4722,6 +4758,83 @@ distribution {
                 .await
                 .unwrap();
         assert_eq!(surviving_followups, vec!["r-keep".to_string()]);
+    }
+
+    /// A missing Retry-After gives the default wait.
+    #[test]
+    fn test_rate_limit_wait_secs_absent() {
+        assert!(matches!(rate_limit_wait_secs(None), Ok(1800)));
+    }
+
+    /// A whole number of seconds, up to a day, is used as given.
+    #[test]
+    fn test_rate_limit_wait_secs_normal() {
+        assert!(matches!(rate_limit_wait_secs(Some(60.0)), Ok(60)));
+        assert!(matches!(rate_limit_wait_secs(Some(86400.0)), Ok(86400)));
+    }
+
+    /// A fraction is rounded up to whole seconds.
+    #[test]
+    fn test_rate_limit_wait_secs_fraction() {
+        assert!(matches!(rate_limit_wait_secs(Some(0.2)), Ok(1)));
+        assert!(matches!(rate_limit_wait_secs(Some(1.5)), Ok(2)));
+    }
+
+    /// Zero means the forge can be tried again now.
+    #[test]
+    fn test_rate_limit_wait_secs_zero() {
+        assert!(matches!(rate_limit_wait_secs(Some(0.0)), Ok(0)));
+        assert!(matches!(rate_limit_wait_secs(Some(-0.0)), Ok(0)));
+    }
+
+    /// A negative Retry-After is an error carrying the value.
+    #[test]
+    fn test_rate_limit_wait_secs_negative() {
+        let wait = rate_limit_wait_secs(Some(-5.0));
+        assert!(
+            matches!(wait, Err(BadRetryAfter(v)) if v == -5.0),
+            "{wait:?}"
+        );
+        let wait = rate_limit_wait_secs(Some(f64::NEG_INFINITY));
+        assert!(
+            matches!(wait, Err(BadRetryAfter(v)) if v == f64::NEG_INFINITY),
+            "{wait:?}"
+        );
+    }
+
+    /// NaN is an error carrying the value.
+    #[test]
+    fn test_rate_limit_wait_secs_nan() {
+        let wait = rate_limit_wait_secs(Some(f64::NAN));
+        assert!(
+            matches!(wait, Err(BadRetryAfter(v)) if v.is_nan()),
+            "{wait:?}"
+        );
+    }
+
+    /// Infinity is an error carrying the value.
+    #[test]
+    fn test_rate_limit_wait_secs_infinite() {
+        let wait = rate_limit_wait_secs(Some(f64::INFINITY));
+        assert!(
+            matches!(wait, Err(BadRetryAfter(v)) if v == f64::INFINITY),
+            "{wait:?}"
+        );
+    }
+
+    /// A Retry-After longer than a day is an error carrying the value.
+    #[test]
+    fn test_rate_limit_wait_secs_too_long() {
+        let wait = rate_limit_wait_secs(Some(86400.5));
+        assert!(
+            matches!(wait, Err(BadRetryAfter(v)) if v == 86400.5),
+            "{wait:?}"
+        );
+        let wait = rate_limit_wait_secs(Some(1e12));
+        assert!(
+            matches!(wait, Err(BadRetryAfter(v)) if v == 1e12),
+            "{wait:?}"
+        );
     }
 
     /// The assignment's `additional_colocated_branches` depends on the
