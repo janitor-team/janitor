@@ -1,33 +1,6 @@
-# https://hub.docker.com/_/debian
-FROM docker.io/debian:testing-slim AS build
-MAINTAINER Jelmer Vernooij <jelmer@jelmer.uk>
-
-ARG DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update --yes \
- && apt-get install --yes --no-install-recommends \
-        auto-apt-proxy \
-        iproute2 \
- && apt-get upgrade --yes \
- && apt-get satisfy --yes --no-install-recommends \
-       ## Standard packages: ./CONTRIBUTING.md
-        ca-certificates \
-        cargo \
-        g++ \
-        gcc \
-        libclang-dev \
-        libpython3-dev \
-        libssl-dev \
-        nettle-dev \
-        pkg-config \
-        protobuf-compiler \
-       ## Extra packages
-        python3-minimal \
- && apt-get clean
-
-COPY . /code
-
-RUN cargo build --release --manifest-path /code/publish/Cargo.toml --bin janitor-publish --bin janitor-publish-one
+# Build stage: see Dockerfile_rust_builder
+ARG RUST_BUILDER=localhost/janitor/rust_builder:latest
+FROM ${RUST_BUILDER} AS build
 
 FROM docker.io/debian:testing-slim
 MAINTAINER Jelmer Vernooij <jelmer@jelmer.uk>

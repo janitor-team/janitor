@@ -25,15 +25,8 @@ jobs:
     strategy:
       matrix:
         dockerfile_suffix:
-          - 'archive'
-          - 'auto_upload'
-          - 'bzr_store'
-          - 'differ'
-          - 'git_store'
           - 'mail_filter'
           - 'ognibuild_dep'
-          - 'publish'
-          - 'runner'
           - 'site'
           - 'worker'
       fail-fast: false
@@ -123,3 +116,71 @@ jobs:
           registry: ghcr.io
           username: ${{ env.GHCR_OWNER }}
           password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+
+  # One job, so that the seven images share one cargo build in one store.
+  build-rust:
+    name: Build and Push (Rust services)
+    runs-on: ubuntu-latest
+    env:
+      GHCR_OWNER: ${{ vars.GHCR_OWNER || github.repository_owner }}
+      # Same image format as redhat-actions/buildah-build produces.
+      BUILDAH_FORMAT: docker
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: 'true'
+
+      # Image refs must be lowercase; owner/repo names may not be.
+      - name: Determine image base
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          IMAGE_BASE="ghcr.io/${GHCR_OWNER}/${REPO_NAME}"
+          echo "IMAGE_BASE=${IMAGE_BASE,,}" | tee -a "$GITHUB_ENV"
+
+      - name: Determine image tags to set
+        run: |
+          set -x
+          TAGS="latest"
+          if [[ '${{ github.event_name }}' == 'push' ]]; then
+            TAGS="${TAGS} ${{ github.sha }}"
+            TAGS="${TAGS} $(echo -n ${{ github.ref_name }} | tr / -)"
+          elif [[ '${{ github.event_name }}' == 'pull_request' ]]; then
+            TAGS="${TAGS} ${{ github.sha }}"
+          elif [[ '${{ github.event_name }}' == 'schedule' ]]; then
+            TAGS="${TAGS} nightly"
+          else
+            echo "Skipping tags: ${{ github.event_name }}" 1>&2
+            exit 1
+          fi
+          echo "TAGS=${TAGS}" | tee -a $GITHUB_ENV
+
+      - name: Login to GitHub Packages (ghcr.io)
+        if: |
+          github.event_name != 'pull_request'
+        uses: redhat-actions/podman-login@v1
+        with:
+          registry: ghcr.io
+          username: ${{ env.GHCR_OWNER }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Build the shared Rust build stage
+        run: make rust-builder
+
+      - name: Build and test the Rust service images
+        run: make --keep-going smoke-rust
+
+      - name: Push the Rust service images
+        if: |
+          github.event_name != 'pull_request'
+        run: |
+          set -x
+          for suffix in $(make --silent rust-images); do
+            for tag in ${TAGS}; do
+              buildah tag "${IMAGE_BASE}/${suffix}:latest" \
+                "${IMAGE_BASE}/${suffix}:${tag}"
+              buildah push "${IMAGE_BASE}/${suffix}:${tag}"
+            done
+          done
