@@ -30,6 +30,7 @@ BUG_ERROR_RESULT_CODES = [
     "worker-clone-incomplete-read",
     "worker-clone-malformed-transform",
     "chroot-not-found",
+    "session-binary-not-found",
     "worker-killed",
 ]
 
@@ -60,6 +61,8 @@ TRANSIENT_ERROR_RESULT_CODES = [
     "apt-file-fetch-failure",
     "pull-rate-limited",
     "session-setup-failure",
+    "session-io-error",
+    "session-process-error",
     "run-disappeared",
     "branch-temporarily-unavailable",
 ]

@@ -4770,9 +4770,9 @@ dependencies = [
 
 [[package]]
 name = "ognibuild"
-version = "0.2.19"
+version = "0.2.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "203a26be2960b73852c2fc2de9fa06f370bbec4e25403d506cf14aa3882150db"
+checksum = "faf9b817864584914f0c594bab51a4d8ccd9ff37d6ad0626488c9c787400ba94"
 dependencies = [
  "apt-sources",
  "breezyshim",
