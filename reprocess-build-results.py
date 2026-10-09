@@ -24,8 +24,6 @@ import sys
 from aiohttp import ClientSession
 from yarl import URL
 
-loop = asyncio.get_event_loop()
-
 parser = argparse.ArgumentParser()
 parser.add_argument(
     "--log-timeout",
@@ -52,17 +50,17 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 
 async def reprocess_logs(base_url, run_ids=None, dry_run=False, reschedule=False):
-    params = {}
+    params = []
     if dry_run:
-        params["dry_run"] = "1"
+        params.append(("dry_run", "1"))
     if reschedule:
-        params["reschedule"] = "1"
-    if run_ids:
-        params["run_ids"] = run_ids
-    url = URL(base_url) / "cupboard/api/mass-reschedule"
-    async with ClientSession() as session, session.post(url, params=params) as resp:
+        params.append(("reschedule", "1"))
+    for run_id in run_ids or []:
+        params.append(("run_id", run_id))
+    url = URL(base_url) / "cupboard/api/reprocess-logs"
+    async with ClientSession() as session, session.post(url, data=params) as resp:
         if resp.status != 200:
-            logging.fatal("rescheduling failed: %d", resp.status)
+            logging.fatal("reprocessing failed: %d", resp.status)
             return 1
         for entry in await resp.json():
             logging.info("%r", entry)
