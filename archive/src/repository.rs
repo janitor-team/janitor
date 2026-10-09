@@ -147,44 +147,49 @@ async fn write_by_hash(
 /// feed a given apt_repository. Free function so the mapping can
 /// be unit-tested without constructing a full RepositoryGenerator.
 ///
-/// Falls back to `[repo_config.suite]` when no runtime_config is
-/// available or the apt_repository has no `select` entries -- same
-/// behavior as the manager's fan-out map.
+/// Every selected campaign must exist and have a `debian_build`
+/// block; a missing `build_distribution` defaults to the campaign
+/// name, as in the runner.
 pub(crate) fn build_distributions_for(
     runtime_config: Option<&janitor::config::Config>,
     repo_config: &AptRepositoryConfig,
-) -> Vec<String> {
-    let Some(rt) = runtime_config else {
-        return vec![repo_config.suite.clone()];
-    };
-    let Some(apt_repo) = rt
+) -> ArchiveResult<Vec<String>> {
+    let invalid = |msg: String| ArchiveError::InvalidConfiguration(msg);
+    let rt = runtime_config.ok_or_else(|| {
+        invalid(format!(
+            "no janitor.conf loaded to resolve apt_repository {}",
+            repo_config.name
+        ))
+    })?;
+    let apt_repo = rt
         .apt_repository
         .iter()
         .find(|r| r.name.as_deref() == Some(&repo_config.name))
-    else {
-        return vec![repo_config.suite.clone()];
-    };
-    let mut out = Vec::new();
-    for select in &apt_repo.select {
-        let Some(name) = select.campaign.as_deref() else {
-            continue;
-        };
-        if let Some(campaign) = rt.get_campaign(name) {
-            if campaign.has_debian_build() {
-                if let Some(dist) = campaign.debian_build().build_distribution.as_deref() {
-                    out.push(dist.to_string());
-                    continue;
-                }
+        .ok_or_else(|| invalid(format!("unknown apt_repository {}", repo_config.name)))?;
+    apt_repo
+        .select
+        .iter()
+        .map(|select| {
+            let name = select.campaign();
+            let campaign = rt.get_campaign(name).ok_or_else(|| {
+                invalid(format!(
+                    "apt_repository {} selects unknown campaign {:?}",
+                    repo_config.name, name
+                ))
+            })?;
+            if !campaign.has_debian_build() {
+                return Err(invalid(format!(
+                    "apt_repository {} selects campaign {} without debian_build",
+                    repo_config.name, name
+                )));
             }
-            // Campaign known but no explicit build_distribution:
-            // fall back to the campaign name.
-            out.push(name.to_string());
-        }
-    }
-    if out.is_empty() {
-        out.push(repo_config.suite.clone());
-    }
-    out
+            Ok(campaign
+                .debian_build()
+                .build_distribution
+                .clone()
+                .unwrap_or_else(|| name.to_string()))
+        })
+        .collect()
 }
 
 impl RepositoryGenerator {
@@ -221,9 +226,8 @@ impl RepositoryGenerator {
 
     /// Attach a runtime `janitor.conf` so the generator can resolve
     /// `apt_repository.select` entries to their target
-    /// `debian_build.distribution` values. Without this the generator
-    /// falls back to querying by the apt_repository's own name,
-    /// which only works when name == build_distribution.
+    /// `debian_build.distribution` values. Without this, generating a
+    /// repository fails.
     pub fn with_runtime_config(mut self, cfg: Arc<janitor::config::Config>) -> Self {
         self.runtime_config = Some(cfg);
         self
@@ -232,9 +236,11 @@ impl RepositoryGenerator {
     /// Collect the list of `debian_build.distribution` values that
     /// feed a given apt_repository, using the loaded janitor.conf to
     /// walk `apt_repository.select[*] -> campaign.debian_build
-    /// .build_distribution`. Falls back to a name-based query using
-    /// `[repo_config.suite]` when no runtime config is available.
-    fn build_distributions_for(&self, repo_config: &AptRepositoryConfig) -> Vec<String> {
+    /// .build_distribution`.
+    fn build_distributions_for(
+        &self,
+        repo_config: &AptRepositoryConfig,
+    ) -> ArchiveResult<Vec<String>> {
         build_distributions_for(self.runtime_config.as_deref(), repo_config)
     }
 
@@ -246,7 +252,7 @@ impl RepositoryGenerator {
         repo_config: &AptRepositoryConfig,
     ) -> ArchiveResult<Vec<crate::database::BuildRecord>> {
         let mut all = Vec::new();
-        for dist in self.build_distributions_for(repo_config) {
+        for dist in self.build_distributions_for(repo_config)? {
             let mut chunk = self.build_manager.get_builds_for_suite(&dist).await?;
             all.append(&mut chunk);
         }
@@ -664,7 +670,7 @@ mod tests {
         )
         .unwrap();
         let repo = make_repo("unstable", "unstable");
-        let dists = build_distributions_for(Some(&cfg), &repo);
+        let dists = build_distributions_for(Some(&cfg), &repo).unwrap();
         assert_eq!(dists, vec!["lintian-fixes-unstable"]);
     }
 
@@ -691,38 +697,43 @@ mod tests {
         )
         .unwrap();
         let repo = make_repo("unstable", "unstable");
-        let dists = build_distributions_for(Some(&cfg), &repo);
+        let dists = build_distributions_for(Some(&cfg), &repo).unwrap();
         assert_eq!(dists, vec!["lf-dist", "fr-dist"]);
     }
 
-    /// No runtime_config -> fall back to repo.suite. Supports
-    /// env-only deployments that don't provide a runtime config.
     #[test]
-    fn build_distributions_for_no_runtime_falls_back_to_suite() {
+    fn build_distributions_for_no_runtime_fails() {
         let repo = make_repo("unstable", "unstable-suite");
-        let dists = build_distributions_for(None, &repo);
-        assert_eq!(dists, vec!["unstable-suite"]);
+        assert!(matches!(
+            build_distributions_for(None, &repo),
+            Err(ArchiveError::InvalidConfiguration(_))
+        ));
     }
 
-    /// Runtime config present but the apt_repository isn't declared
-    /// there -> fall back to repo.suite. Guards against
-    /// misconfiguration between env vars and the protobuf
-    /// janitor.conf.
     #[test]
-    fn build_distributions_for_missing_apt_repo_falls_back() {
+    fn build_distributions_for_missing_apt_repo_fails() {
         let cfg = janitor::config::read_string(r#"apt_repository { name: "other" }"#).unwrap();
         let repo = make_repo("unstable", "unstable-suite");
-        let dists = build_distributions_for(Some(&cfg), &repo);
-        assert_eq!(dists, vec!["unstable-suite"]);
+        assert!(matches!(
+            build_distributions_for(Some(&cfg), &repo),
+            Err(ArchiveError::InvalidConfiguration(_))
+        ));
     }
 
-    /// Select entry naming a campaign without a `debian_build`
-    /// block or `build_distribution` -> fall back to the campaign
-    /// name itself. This is the defensive path called out in the
-    /// helper's comment; the fallback should still yield exactly
-    /// one distribution rather than dropping the select.
+    /// No select entries: nothing to publish, rather than guessing
+    /// that the repository name is a build distribution.
     #[test]
-    fn build_distributions_for_campaign_without_build_distribution() {
+    fn build_distributions_for_no_selects() {
+        let cfg = janitor::config::read_string(r#"apt_repository { name: "unstable" }"#).unwrap();
+        let repo = make_repo("unstable", "unstable-suite");
+        assert_eq!(
+            build_distributions_for(Some(&cfg), &repo).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn build_distributions_for_campaign_without_debian_build_fails() {
         let cfg = janitor::config::read_string(
             r#"
                 campaign { name: "generic" }
@@ -734,8 +745,52 @@ mod tests {
         )
         .unwrap();
         let repo = make_repo("unstable", "unstable-suite");
-        let dists = build_distributions_for(Some(&cfg), &repo);
-        assert_eq!(dists, vec!["generic"]);
+        assert!(matches!(
+            build_distributions_for(Some(&cfg), &repo),
+            Err(ArchiveError::InvalidConfiguration(_))
+        ));
+    }
+
+    #[test]
+    fn build_distributions_for_unknown_campaign_fails() {
+        let cfg = janitor::config::read_string(
+            r#"
+                apt_repository {
+                    name: "unstable"
+                    select { campaign: "missing" }
+                }
+            "#,
+        )
+        .unwrap();
+        let repo = make_repo("unstable", "unstable-suite");
+        assert!(matches!(
+            build_distributions_for(Some(&cfg), &repo),
+            Err(ArchiveError::InvalidConfiguration(_))
+        ));
+    }
+
+    /// `debian_build` without `build_distribution`: the runner builds
+    /// for a distribution named after the campaign.
+    #[test]
+    fn build_distributions_for_defaults_to_campaign_name() {
+        let cfg = janitor::config::read_string(
+            r#"
+                campaign {
+                    name: "lintian-fixes"
+                    debian_build { base_distribution: "unstable" }
+                }
+                apt_repository {
+                    name: "unstable"
+                    select { campaign: "lintian-fixes" }
+                }
+            "#,
+        )
+        .unwrap();
+        let repo = make_repo("unstable", "unstable-suite");
+        assert_eq!(
+            build_distributions_for(Some(&cfg), &repo).unwrap(),
+            vec!["lintian-fixes"]
+        );
     }
 
     /// `gzip_bytes` produces a valid gzip stream -- round-trip
