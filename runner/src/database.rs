@@ -7,6 +7,7 @@ use redis::AsyncCommands;
 use sqlx::postgres::types::PgInterval;
 use sqlx::{PgPool, Row};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Wire-shape of a queue row joined against `codebase`, used by both
 /// scoring lookups and single-item fetches. Kept next to those
@@ -112,6 +113,78 @@ pub enum FinishOutcome {
 #[derive(Clone)]
 pub struct RunnerDatabase {
     shared_db: janitor::database::Database,
+}
+
+/// Releases a queue item claim on drop unless disarmed.
+pub struct QueueItemClaimGuard {
+    database: Arc<RunnerDatabase>,
+    queue_id: i64,
+    log_id: String,
+    armed: bool,
+}
+
+impl QueueItemClaimGuard {
+    /// Guard the claim on `queue_id` owned by `log_id`.
+    pub fn new(database: Arc<RunnerDatabase>, queue_id: i64, log_id: &str) -> Self {
+        Self {
+            database,
+            queue_id,
+            log_id: log_id.to_string(),
+            armed: true,
+        }
+    }
+
+    /// Leave any claim in place; nothing is released on drop.
+    pub fn disarm(mut self) {
+        self.armed = false;
+    }
+
+    /// Release the claim now instead of on drop.
+    pub async fn release(mut self) {
+        self.armed = false;
+        release_claim_logged(&self.database, self.queue_id, &self.log_id).await;
+    }
+}
+
+impl Drop for QueueItemClaimGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let database = self.database.clone();
+        let queue_id = self.queue_id;
+        let log_id = std::mem::take(&mut self.log_id);
+        // Drop cannot await, so the release runs as a detached task.
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    release_claim_logged(&database, queue_id, &log_id).await;
+                });
+            }
+            Err(e) => {
+                log::error!(
+                    "Cannot release claim on queue item {} for {}: {}",
+                    queue_id,
+                    log_id,
+                    e
+                );
+            }
+        }
+    }
+}
+
+async fn release_claim_logged(database: &RunnerDatabase, queue_id: i64, log_id: &str) {
+    if let Err(e) = database.release_queue_item_claim(queue_id, log_id).await {
+        log::error!(
+            "Failed to release claim on queue item {} for {}: {}",
+            queue_id,
+            log_id,
+            e
+        );
+        crate::metrics::REDIS_OPERATIONS_TOTAL
+            .with_label_values(&["unassign_queue_item", "error"])
+            .inc();
+    }
 }
 
 impl RunnerDatabase {
@@ -1110,6 +1183,50 @@ INSERT INTO run (
         }
 
         Ok(())
+    }
+
+    /// Remove a queue item assignment from Redis only if `log_id` still owns it.
+    pub async fn release_queue_item_claim(
+        &self,
+        queue_id: i64,
+        log_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(redis_client) = self.redis() {
+            let mut conn = redis_client.get_multiplexed_async_connection().await?;
+
+            // Lua script to atomically check the owner and delete
+            let script = r#"
+                local info = redis.call("HGET", KEYS[1], ARGV[1])
+                if not info then
+                    return 0
+                end
+                if info == ARGV[2] then
+                    redis.call("HDEL", KEYS[1], ARGV[1])
+                    return 1
+                end
+                local ok, decoded = pcall(cjson.decode, info)
+                if not ok or type(decoded) ~= "table" or decoded["log_id"] ~= ARGV[2] then
+                    return 0
+                end
+                redis.call("HDEL", KEYS[1], ARGV[1])
+                if type(decoded["worker_name"]) == "string" then
+                    redis.call("SREM", ARGV[3] .. decoded["worker_name"], ARGV[1])
+                end
+                return 1
+            "#;
+
+            let result: i32 = redis::Script::new(script)
+                .key("assigned-queue-items")
+                .arg(queue_id.to_string())
+                .arg(log_id)
+                .arg("worker-queue-items:")
+                .invoke_async(&mut conn)
+                .await?;
+
+            Ok(result == 1)
+        } else {
+            Ok(false)
+        }
     }
 
     /// Coordinate worker health status via Redis.
