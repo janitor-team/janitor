@@ -24,6 +24,7 @@ import asyncpg
 
 from ... import utcnow
 from ...queue import Queue, QueueItem
+from ..common import bad_row_count_as_400
 
 
 def get_processing(answer: dict[str, Any]) -> Iterator[dict[str, Any]]:
@@ -46,11 +47,12 @@ async def iter_queue_items_with_last_run(
         items = []
         qs = []
         vals = []
-        async for item in queue.iter_queue(limit=limit):
-            items.append(item)
-            vals.append(item.codebase)
-            vals.append(item.campaign)
-            qs.append(f"(codebase = ${len(vals) - 1} AND suite = ${len(vals)})")
+        async with bad_row_count_as_400():
+            async for item in queue.iter_queue(limit=limit):
+                items.append(item)
+                vals.append(item.codebase)
+                vals.append(item.campaign)
+                qs.append(f"(codebase = ${len(vals) - 1} AND suite = ${len(vals)})")
 
         runs = {}
         if qs:

@@ -206,3 +206,88 @@ async def test_merge_proposal_without_url_returns_400(
     resp = await client.get("/lintian-fixes/merge-proposal")
     assert resp.status == 400
     assert await resp.text() == "no url specified"
+
+
+LIMIT_ROUTES = [
+    "/cupboard/review",
+    "/cupboard/history",
+    "/cupboard/queue",
+    "/cupboard/publish/",
+    "/cupboard/api/needs-review",
+]
+
+NON_INTEGER = ["abc", ""]
+
+# A value the database layer rejects is pinned to the status only, since the body
+# is that layer's own wording and so depends on its version and locale.
+OUT_OF_RANGE = ["-1", "99999999999999999999999"]
+
+
+async def _client(aiohttp_client, database_location):
+    _private_app, app = await create_app(
+        config=create_config(database_location), redis=FakeRedis()
+    )
+    return await aiohttp_client(app)
+
+
+async def _answers(client, paths, param, values):
+    # Every path and value is asked, and the asserts compare the whole mapping, so
+    # one bad route cannot hide another behind it.
+    answers = {}
+    for path in paths:
+        for value in values:
+            resp = await client.get(f"{path}?{param}={value}")
+            answers[path, value] = (resp.status, await resp.text())
+    return answers
+
+
+async def test_limit_routes_accept_a_usable_limit(aiohttp_client, database_location):
+    client = await _client(aiohttp_client, database_location)
+    answers = await _answers(client, LIMIT_ROUTES, "limit", ["5"])
+    bad = {k: status for k, (status, _body) in answers.items() if status != 200}
+    assert not bad, bad
+
+
+async def test_limit_routes_reject_a_non_integer_limit(
+    aiohttp_client, database_location
+):
+    client = await _client(aiohttp_client, database_location)
+    answers = await _answers(client, LIMIT_ROUTES, "limit", NON_INTEGER)
+    wanted = (400, "limit must be an integer")
+    bad = {
+        k: (status, body[:80])
+        for k, (status, body) in answers.items()
+        if (status, body) != wanted
+    }
+    assert not bad, bad
+
+
+async def test_limit_routes_reject_a_limit_the_database_will_not_take(
+    aiohttp_client, database_location
+):
+    client = await _client(aiohttp_client, database_location)
+    answers = await _answers(client, LIMIT_ROUTES, "limit", OUT_OF_RANGE)
+    bad = {k: status for k, (status, _body) in answers.items() if status != 400}
+    assert not bad, bad
+
+
+async def test_history_accepts_a_usable_offset(aiohttp_client, database_location):
+    client = await _client(aiohttp_client, database_location)
+    resp = await client.get("/cupboard/history?offset=0")
+    assert resp.status == 200
+
+
+async def test_history_rejects_a_bad_offset(aiohttp_client, database_location):
+    client = await _client(aiohttp_client, database_location)
+    answers = await _answers(client, ["/cupboard/history"], "offset", NON_INTEGER)
+    wanted = (400, "offset must be an integer")
+    bad = {
+        k: (status, body[:80])
+        for k, (status, body) in answers.items()
+        if (status, body) != wanted
+    }
+    assert not bad, bad
+
+    answers = await _answers(client, ["/cupboard/history"], "offset", OUT_OF_RANGE)
+    bad = {k: status for k, (status, _body) in answers.items() if status != 400}
+    assert not bad, bad
