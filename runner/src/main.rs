@@ -11,6 +11,7 @@ struct Args {
     port: u16,
 
     #[clap(long, default_value = "9919")]
+    /// Public listen port for a reverse proxy; 0 disables the public API.
     public_port: u16,
 
     #[clap(long, default_value = "janitor.conf")]
@@ -128,35 +129,35 @@ async fn main() -> Result<(), i32> {
         let trace = || axum::middleware::from_fn(janitor_runner::tracing::http_tracing_middleware);
 
         let private_router = janitor_runner::web::app(state.clone()).layer(trace());
+        let private_addr = format!("{}:{}", listen_address, port);
+        let private_listener = tokio::net::TcpListener::bind(&private_addr).await?;
+        log::info!("Private (admin) listener on {}", private_addr);
+        let private_serve = async {
+            axum::serve(private_listener, private_router.into_make_service())
+                .await
+                .map_err(Box::<dyn std::error::Error + Send + Sync>::from)
+        };
+
+        // Like Python, --public-port 0 disables the public app.
+        if public_port == 0 {
+            return private_serve.await;
+        }
+
         let public_router = janitor_runner::web::public_app(state.clone())
             .with_state(state.clone())
             .layer(trace());
-
-        let private_addr = format!("{}:{}", listen_address, port);
         let public_addr = format!("{}:{}", listen_address, public_port);
-        log::info!("Private (admin) listener on {}", private_addr);
-        log::info!("Public (worker) listener on {}", public_addr);
-
-        let private_listener = tokio::net::TcpListener::bind(&private_addr).await?;
         let public_listener = tokio::net::TcpListener::bind(&public_addr).await?;
-
-        let private_serve = axum::serve(private_listener, private_router.into_make_service());
-        let public_serve = axum::serve(public_listener, public_router.into_make_service());
+        log::info!("Public (worker) listener on {}", public_addr);
+        let public_serve = async {
+            axum::serve(public_listener, public_router.into_make_service())
+                .await
+                .map_err(Box::<dyn std::error::Error + Send + Sync>::from)
+        };
 
         // Run both. If either errors we surface the first error and
         // both listeners shut down.
-        tokio::try_join!(
-            async {
-                private_serve
-                    .await
-                    .map_err(Box::<dyn std::error::Error + Send + Sync>::from)
-            },
-            async {
-                public_serve
-                    .await
-                    .map_err(Box::<dyn std::error::Error + Send + Sync>::from)
-            },
-        )?;
+        tokio::try_join!(private_serve, public_serve)?;
 
         Ok(())
     })
