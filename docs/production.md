@@ -125,3 +125,22 @@ $ psql janitor -c "INSERT INTO worker (name, password) VALUES ('myworker', crypt
 ```
 
 Replace `mypassword` with the password you want the worker to use.
+
+## Removing forks that are no longer needed
+
+Some forges limit how many repositories one account can own. The publisher
+forks a repository when it cannot push to it directly, and the fork stays
+behind once the merge proposal is merged or closed.
+`janitor-cleanup-repositories` removes the forks in the bot's own namespace
+that no open merge proposal of the bot uses any more. It is built from the
+top-level crate and uses the forge credentials breezy already has:
+
+```console
+$ cargo run --release --bin janitor-cleanup-repositories -- --dry-run
+```
+
+Start with `--dry-run`, which only lists what would be removed. A fork that
+holds a branch without an open merge proposal, for example one pushed but not
+yet proposed, counts as unused, so do not run it while the publisher is in the
+middle of a publish. If the proposals or forks of a forge cannot be listed,
+nothing is removed there. A forge with no credentials is skipped.
