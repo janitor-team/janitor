@@ -22,7 +22,6 @@ module = [
     # https://github.com/MagicStack/asyncpg/issues/387
     "asyncpg.*",
     "testing.*",
-    "boto3.*",
     "pytest_asyncio.*",
     "silver_platter.*",
 ]
@@ -69,7 +68,6 @@ dependencies = [
     "asyncpg",
     "breezy[git,launchpad,workspace]<4",
     #"gpg", # Using python3-gpg instead ~ https://github.com/jelmer/janitor/issues/931
-    "iso8601",
     "jinja2",
     "pygments",
     "python-mimeparse",
@@ -99,7 +97,6 @@ lint = [
 # mypy ($ make typing)
 typing = [
     "mypy",
-    "gcloud-aio-storage",
     "python-debian",
     "pytest",
     "google-cloud-logging",
@@ -139,12 +136,7 @@ debian = [
 
 # Google Cloud Platform
 gcp = [
-    "gcloud-aio-storage",
     "google-cloud-logging",
-]
-
-s3 = [
-    "boto3",
 ]
 
 [project.scripts]

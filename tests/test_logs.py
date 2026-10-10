@@ -21,7 +21,12 @@ from datetime import datetime
 
 import pytest
 
-from janitor.logs import FileSystemLogFileManager, GCSLogFileManager, S3LogFileManager
+from janitor.logs import (
+    FileSystemLogFileManager,
+    GCSLogFileManager,
+    S3LogFileManager,
+    get_log_manager,
+)
 
 
 def test_s3_log_file_manager():
@@ -53,3 +58,14 @@ async def test_file_log_file_manager():
             assert [x async for x in lm.iter_logs()] == [("mypkg", "run-id", [logname])]
             await lm.delete_log("mypkg", "run-id", logname)
             assert not await lm.has_log("mypkg", "run-id", logname)
+
+
+async def test_get_log_manager_filesystem():
+    with tempfile.TemporaryDirectory() as td:
+        lm = get_log_manager(td)
+        with tempfile.NamedTemporaryFile(suffix=".log") as f:
+            f.write(b"foo bar\n")
+            f.flush()
+            await lm.import_log("mypkg", "run-id", f.name, basename="build.log")
+        with await lm.get_log("mypkg", "run-id", "build.log") as logf:
+            assert logf.read() == b"foo bar\n"

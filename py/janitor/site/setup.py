@@ -60,13 +60,11 @@ def setup_postgres(app):
     app.on_startup.append(connect_postgres)
 
 
-def setup_logfile_manager(app, trace_configs=None):
+def setup_logfile_manager(app):
     from ..logs import get_log_manager
 
     async def startup_logfile_manager(app):
-        app["logfile_manager"] = get_log_manager(
-            app["config"].logs_location, trace_configs=trace_configs
-        )
+        app["logfile_manager"] = get_log_manager(app["config"].logs_location)
         await app["logfile_manager"].__aenter__()
 
     app.on_startup.append(startup_logfile_manager)

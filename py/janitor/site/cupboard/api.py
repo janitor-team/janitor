@@ -469,6 +469,6 @@ def create_app(*, config, publisher_url, runner_url, trace_configs=None, db=None
         setup_postgres(app)
     else:
         app["pool"] = db
-    setup_logfile_manager(app, trace_configs=trace_configs)
+    setup_logfile_manager(app)
     setup_aiojobs(app)
     return app
