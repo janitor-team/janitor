@@ -3,6 +3,12 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::{BorrowedFd, FromRawFd, OwnedFd};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Only one `CopyOutput` may hold the process-wide descriptors at a time.
+/// Two overlapping instances leave stdout pointing at the wrong place, and
+/// in tee mode the process then waits on a `tee` that cannot see end of file.
+static REDIRECT_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Safe wrapper for capturing stdout/stderr to a file
 ///
@@ -16,6 +22,7 @@ pub struct CopyOutput {
     tee: bool,
     process: Option<std::process::Child>,
     newfd: Option<File>,
+    holds_guard: bool,
 }
 
 impl CopyOutput {
@@ -56,12 +63,23 @@ impl CopyOutput {
                 )
             })?;
 
+        if REDIRECT_ACTIVE
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::ResourceBusy,
+                "stdout and stderr are already redirected",
+            ));
+        }
+
         let mut copy_output = Self {
             old_stdout: Some(old_stdout),
             old_stderr: Some(old_stderr),
             tee,
             process: None,
             newfd: None,
+            holds_guard: true,
         };
 
         // Set up redirection
@@ -192,7 +210,17 @@ impl CopyOutput {
             })?;
         }
 
+        self.release_guard();
+
         Ok(())
+    }
+
+    /// Give up the claim on the process-wide descriptors, once.
+    fn release_guard(&mut self) {
+        if self.holds_guard {
+            self.holds_guard = false;
+            REDIRECT_ACTIVE.store(false, Ordering::SeqCst);
+        }
     }
 }
 
@@ -207,6 +235,7 @@ impl Drop for CopyOutput {
             );
             // Continue with cleanup - don't panic in Drop
         }
+        self.release_guard();
     }
 }
 

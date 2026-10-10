@@ -1587,11 +1587,13 @@ check:
         }
     }
 
+    #[serial]
     #[test]
     fn test_run_worker_build_failure_git() {
         test_run_worker_build_failure(tempfile::tempdir().unwrap().path(), "git");
     }
 
+    #[serial]
     #[test]
     fn test_run_worker_build_failure_bzr() {
         test_run_worker_build_failure(tempfile::tempdir().unwrap().path(), "bzr");
