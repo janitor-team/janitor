@@ -26,6 +26,7 @@ use testcontainers_modules::{
     postgres::Postgres as PostgresImage,
     testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt},
 };
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::sync::OnceCell;
 use uuid::Uuid;
 
@@ -591,6 +592,59 @@ db_test! {
             .find_reference("refs/heads/main")
             .expect("refs/heads/main missing on server after push");
         assert!(head.target().is_some());
+
+        handle.abort();
+    }
+}
+
+db_test! {
+    async fn test_admin_truncated_request_body_is_not_reported_as_success(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase(test_db.pool(), "trunc").await;
+
+        let tmp = TempDir::new().unwrap();
+        git2::Repository::init_bare(tmp.path().join("trunc")).unwrap();
+
+        let state = build_state(&tmp, &test_db, AppRole::Admin).await;
+        let app = web::create_admin_app(state, 0);
+        let (addr, handle) = spawn(app).await;
+
+        // Raw socket, so the body can be shorter than `Content-Length`.
+        let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let head = format!(
+            "POST /trunc/git-receive-pack HTTP/1.1\r\n\
+             Host: {}\r\n\
+             Content-Type: application/x-git-receive-pack-request\r\n\
+             Accept: application/x-git-receive-pack-result\r\n\
+             Content-Length: 4096\r\n\
+             \r\n",
+            addr
+        );
+        sock.write_all(head.as_bytes()).await.unwrap();
+        // A pkt-line header promising 0x78 bytes, then nothing.
+        sock.write_all(b"0078").await.unwrap();
+        sock.flush().await.unwrap();
+        sock.shutdown().await.unwrap();
+
+        let mut raw = Vec::new();
+        tokio::time::timeout(Duration::from_secs(60), sock.read_to_end(&mut raw))
+            .await
+            .expect("server answered the truncated push")
+            .expect("read reply");
+        let reply = String::from_utf8_lossy(&raw);
+
+        assert!(
+            reply.starts_with("HTTP/1.1 400 "),
+            "truncated push must not be answered with a success: {}",
+            reply
+        );
+        assert!(
+            reply
+                .to_ascii_lowercase()
+                .contains("x-janitor-error: incomplete-request-body"),
+            "reply must name the cause: {}",
+            reply
+        );
 
         handle.abort();
     }
@@ -1466,6 +1520,61 @@ db_test! {
         // Regression for janitor.debian.net#112: link must be
         // /git/<repo>/ with the /git/ prefix and trailing slash.
         assert!(body.contains("href=\"/git/alpha/\""), "body missing canonical link:\n{}", body);
+
+        handle.abort();
+    }
+}
+
+db_test! {
+    async fn test_admin_truncation_after_the_flush_pkt_keeps_its_200(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase(test_db.pool(), "flushcut").await;
+
+        let tmp = TempDir::new().unwrap();
+        git2::Repository::init_bare(tmp.path().join("flushcut")).unwrap();
+
+        let state = build_state(&tmp, &test_db, AppRole::Admin).await;
+        let app = web::create_admin_app(state, 0);
+        let (addr, handle) = spawn(app).await;
+
+        let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let head = format!(
+            "POST /flushcut/git-receive-pack HTTP/1.1\r\n\
+             Host: {}\r\n\
+             Content-Type: application/x-git-receive-pack-request\r\n\
+             Accept: application/x-git-receive-pack-result\r\n\
+             Content-Length: 4096\r\n\
+             \r\n",
+            addr
+        );
+        sock.write_all(head.as_bytes()).await.unwrap();
+        // A whole command list and its flush-pkt, then no pack.
+        let cmd = format!("{} {} refs/heads/main\n", "0".repeat(40), "1".repeat(40));
+        sock.write_all(format!("{:04x}", cmd.len() + 4).as_bytes())
+            .await
+            .unwrap();
+        sock.write_all(cmd.as_bytes()).await.unwrap();
+        sock.write_all(b"0000").await.unwrap();
+        sock.flush().await.unwrap();
+        sock.shutdown().await.unwrap();
+
+        let mut raw = Vec::new();
+        tokio::time::timeout(Duration::from_secs(60), sock.read_to_end(&mut raw))
+            .await
+            .expect("server answered the truncated push")
+            .expect("read reply");
+        let reply = String::from_utf8_lossy(&raw);
+
+        assert!(
+            reply.starts_with("HTTP/1.1 200 "),
+            "git exited zero here, so the reply keeps its 200: {}",
+            reply
+        );
+        assert!(
+            !reply.to_ascii_lowercase().contains("x-janitor-error"),
+            "the gate must not fire where git exited zero: {}",
+            reply
+        );
 
         handle.abort();
     }

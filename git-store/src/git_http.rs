@@ -12,6 +12,8 @@ use futures_util::StreamExt;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt},
     process::Command,
@@ -624,6 +626,22 @@ impl BackendReaper {
     fn new(process: tokio::process::Child) -> Self {
         Self(Some(process))
     }
+
+    /// `None` unless the backend has exited.
+    fn exit_status(&mut self) -> Option<std::process::ExitStatus> {
+        self.0.as_mut().and_then(|p| p.try_wait().ok().flatten())
+    }
+}
+
+/// Whether an empty reply that still carries 200 means the request body
+/// never arrived in full.
+fn is_incomplete_request_body(
+    body_truncated: bool,
+    body_empty: bool,
+    backend_failed: bool,
+    status_code: StatusCode,
+) -> bool {
+    body_truncated && body_empty && backend_failed && status_code == StatusCode::OK
 }
 
 impl Drop for BackendReaper {
@@ -807,8 +825,10 @@ pub async fn git_backend(
 
     // Feed the request body to git's stdin, closing it on EOF. A failing
     // read and a failing write are handled separately.
+    let body_truncated = Arc::new(AtomicBool::new(false));
     if let Some(mut stdin) = process.stdin.take() {
         let mut body_stream = body.into_data_stream();
+        let body_truncated = Arc::clone(&body_truncated);
         tokio::spawn(async move {
             while let Some(chunk) = body_stream.next().await {
                 match chunk {
@@ -823,6 +843,7 @@ pub async fn git_backend(
                         }
                     }
                     Err(e) => {
+                        body_truncated.store(true, Ordering::SeqCst);
                         debug!("request body did not arrive in full: {}", e);
                         break;
                     }
@@ -845,7 +866,7 @@ pub async fn git_backend(
         .take()
         .ok_or_else(|| GitStoreError::Other(anyhow::anyhow!("no stdout on git process")))?;
 
-    let _reaper = BackendReaper::new(process);
+    let mut reaper = BackendReaper::new(process);
     let mut reader = tokio::io::BufReader::new(stdout);
 
     let mut response_headers = HeaderMap::new();
@@ -913,6 +934,16 @@ pub async fn git_backend(
         buf
     };
 
+    let backend_failed = reaper.exit_status().is_some_and(|s| !s.success());
+    if is_incomplete_request_body(
+        body_truncated.load(Ordering::SeqCst),
+        body_data.is_empty(),
+        backend_failed,
+        status_code,
+    ) {
+        return Err(GitStoreError::IncompleteRequestBody);
+    }
+
     let mut response = Response::builder().status(status_code);
     for (name, value) in response_headers.iter() {
         response = response.header(name, value);
@@ -924,6 +955,39 @@ pub async fn git_backend(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_incomplete_request_body_needs_a_non_zero_exit() {
+        assert!(!is_incomplete_request_body(
+            true,
+            true,
+            false,
+            StatusCode::OK
+        ));
+        assert!(is_incomplete_request_body(true, true, true, StatusCode::OK));
+    }
+
+    #[test]
+    fn test_is_incomplete_request_body_requires_every_condition() {
+        assert!(!is_incomplete_request_body(
+            false,
+            true,
+            true,
+            StatusCode::OK
+        ));
+        assert!(!is_incomplete_request_body(
+            true,
+            false,
+            true,
+            StatusCode::OK
+        ));
+        assert!(!is_incomplete_request_body(
+            true,
+            true,
+            true,
+            StatusCode::BAD_REQUEST
+        ));
+    }
 
     #[test]
     fn test_is_expected_stdin_close_accepts_the_close_kinds() {
