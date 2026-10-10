@@ -480,6 +480,10 @@ async fn get_policy(
 }
 
 async fn get_policies(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    policies_response(state.conn.clone())
+}
+
+fn policies_response(pool: PgPool) -> axum::response::Response {
     // Stream the response one named_publish_policy at a time instead
     // of buffering the whole table.
     //
@@ -503,14 +507,13 @@ async fn get_policies(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     use bytes::Bytes;
     use sqlx::Row;
     use std::convert::Infallible;
-    let pool = state.conn.clone();
     let stream = async_stream::try_stream! {
         let mut rows = sqlx::query(
             r#"
             SELECT npp.name, npp.rate_limit_bucket,
                    pp.role, pp.mode::text AS mode, pp.frequency_days
               FROM named_publish_policy npp
-              CROSS JOIN UNNEST(npp.per_branch_policy) AS pp
+              LEFT JOIN UNNEST(npp.per_branch_policy) AS pp ON TRUE
              ORDER BY npp.name
             "#,
         )
@@ -551,8 +554,8 @@ async fn get_policies(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             let row = row?;
             let name: String = row.try_get("name")?;
             let rate_limit_bucket: Option<String> = row.try_get("rate_limit_bucket")?;
-            let role: String = row.try_get("role")?;
-            let mode: String = row.try_get("mode")?;
+            let role: Option<String> = row.try_get("role")?;
+            let mode: Option<String> = row.try_get("mode")?;
             let frequency_days: Option<i32> = row.try_get("frequency_days")?;
 
             if current_name.as_deref() != Some(&name) {
@@ -568,7 +571,8 @@ async fn get_policies(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                     per_branch: HashMap::new(),
                 });
             }
-            if let Some(doc) = current_doc.as_mut() {
+            // A policy without per-branch entries comes back as one row of NULLs.
+            if let (Some(doc), Some(role), Some(mode)) = (current_doc.as_mut(), role, mode) {
                 doc.per_branch.insert(
                     role,
                     PerBranchPolicy {
@@ -2314,8 +2318,8 @@ async fn metrics_handler() -> impl IntoResponse {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_mp_status_transition, project_per_branch_policy, MpStatusTransition,
-        PerBranchPolicy, PolicyDocument,
+        classify_mp_status_transition, policies_response, project_per_branch_policy,
+        read_per_branch_policy, MpStatusTransition, PerBranchPolicy, PolicyDocument,
     };
     use std::collections::HashMap;
 
@@ -2506,5 +2510,51 @@ mod tests {
                 ("main".to_string(), "propose".to_string(), Some(7)),
             ]
         );
+    }
+
+    // --- policies without per-branch entries ---
+
+    janitor::test_with_database! {
+        async fn test_policies_response_keeps_policy_without_per_branch_entries(test_db: TestDatabase) {
+            janitor::schema::setup_test_database(test_db.pool()).await.unwrap();
+            sqlx::query(
+                "INSERT INTO named_publish_policy (name, per_branch_policy, rate_limit_bucket)
+                 VALUES
+                    ('null-policy', NULL, 'bucket-null'),
+                    ('empty-policy', ARRAY[]::branch_publish_policy[], 'bucket-empty'),
+                    (
+                        'full-policy',
+                        ARRAY[ROW('main', 'propose'::publish_mode, 7::int)::branch_publish_policy],
+                        'bucket-full'
+                    )",
+            )
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+
+            let response = policies_response(test_db.pool().clone());
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let policies: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+            assert_eq!(
+                policies,
+                serde_json::json!({
+                    "null-policy": {"rate_limit_bucket": "bucket-null", "per_branch": {}},
+                    "empty-policy": {"rate_limit_bucket": "bucket-empty", "per_branch": {}},
+                    "full-policy": {
+                        "rate_limit_bucket": "bucket-full",
+                        "per_branch": {"main": {"mode": "propose", "max_frequency_days": 7}},
+                    },
+                })
+            );
+
+            // `GET /policy/{name}` reads the same column and has to agree.
+            for name in ["null-policy", "empty-policy"] {
+                let per_branch = read_per_branch_policy(test_db.pool(), name).await.unwrap();
+                assert!(per_branch.is_empty());
+            }
+        }
     }
 }
