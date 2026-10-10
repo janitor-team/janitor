@@ -8,7 +8,10 @@
             <a href="/{{ campaign }}">{{ campaign_description }}</a>
         </h3>
         {% if user %}
-            Logged in as <a href="/m/{{ user['email'] }}">{{ user['name'] }}</a>
+            Logged in as {{ user['name'] }}
+            {% if is_admin %}(admin){% elif is_qa_reviewer %}(reviewer){% endif %}
+            <br />
+            <a href="/logout">Log out</a>
         {% else %}
             {% include "login.html" %}
         {% endif %}

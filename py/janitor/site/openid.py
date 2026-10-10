@@ -43,6 +43,25 @@ async def openid_middleware(request, handler):
     return resp
 
 
+# Reduce a redirect target to a path on this site, or None.
+def _sanitize_redirect(raw: str) -> Optional[str]:
+    if "\\" in raw:
+        return None
+    if not raw.startswith("/"):
+        try:
+            if not URL(raw).is_absolute():
+                return None
+        except (ValueError, UnicodeError):
+            return None
+    try:
+        rel = str(URL("http://x").join(URL(raw)).relative())
+    except (ValueError, UnicodeError):
+        return None
+    if not rel.startswith("/") or rel.startswith("//") or "\\" in rel:
+        return None
+    return rel
+
+
 async def handle_oauth_callback(request):
     code = request.query.get("code")
     state_code = request.query.get("state")
@@ -81,10 +100,12 @@ async def handle_oauth_callback(request):
         refresh_token = resp["refresh_token"]  # noqa: F841
         access_token = resp["access_token"]
 
-    try:
-        back_url = request.cookies["back_url"]
-    except KeyError:
-        back_url = "/"
+    back_url = "/"
+    raw_back_url = request.cookies.get("back_url")
+    if raw_back_url is not None:
+        target = _sanitize_redirect(raw_back_url)
+        if target is not None:
+            back_url = target
 
     async with request.app["http_client_session"].get(
         request.app["openid_config"]["userinfo_endpoint"],
@@ -92,6 +113,8 @@ async def handle_oauth_callback(request):
         raise_for_status=True,
     ) as resp:
         userinfo = await resp.json()
+    # Default missing groups claim to [] - not every provider sends one.
+    userinfo.setdefault("groups", [])
     session_id = str(uuid.uuid4())
     async with request.app.database.acquire() as conn:
         await conn.execute(
@@ -104,9 +127,10 @@ INSERT INTO site_session (id, userinfo) VALUES ($1, $2)
 
     # TODO(jelmer): Store access token / refresh token?
 
+    callback_path = request.app.router["oauth2-callback"].url_for()
     resp = web.HTTPFound(back_url)
 
-    resp.del_cookie("state")
+    resp.del_cookie("state", path=callback_path)
     resp.del_cookie("back_url")
     resp.set_cookie(
         "session_id", session_id, secure=True, httponly=True, samesite="Strict"
@@ -135,6 +159,21 @@ async def discover_openid_config(app, oauth2_provider_base_url):
         )
 
 
+async def handle_logout(request):
+    session_id = request.cookies.get("session_id")
+    back_url = "/"
+    if "url" in request.query:
+        target = _sanitize_redirect(request.query["url"])
+        if target is not None:
+            back_url = target
+    if session_id is not None:
+        async with request.app.database.acquire() as conn:
+            await conn.execute("DELETE FROM site_session WHERE id = $1", session_id)
+    resp = web.HTTPFound(back_url)
+    resp.del_cookie("session_id")
+    return resp
+
+
 async def handle_login(request):
     state = str(uuid.uuid4())
     callback_path = request.app.router["oauth2-callback"].url_for()
@@ -155,17 +194,17 @@ async def handle_login(request):
         "state", state, max_age=60, path=callback_path, httponly=True, secure=True
     )
     if "url" in request.query:
-        try:
-            response.set_cookie("back_url", str(URL(request.query["url"]).relative()))
-        except ValueError as e:
-            # 'url' is not a URL
-            raise web.HTTPBadRequest(text="invalid url") from e
+        target = _sanitize_redirect(request.query["url"])
+        if target is None:
+            raise web.HTTPBadRequest(text="invalid url")
+        response.set_cookie("back_url", target)
     return response
 
 
 def setup_openid(app, oauth2_provider_base_url: Optional[str]):
     app.middlewares.insert(0, openid_middleware)
     app.router.add_get("/login", handle_login, name="login")
+    app.router.add_get("/logout", handle_logout, name="logout")
     app.router.add_get("/oauth/callback", handle_oauth_callback, name="oauth2-callback")
     app["openid_config"] = None
     if oauth2_provider_base_url:
