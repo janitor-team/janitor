@@ -131,7 +131,6 @@ dev = [
 
 debian = [
     "brz-debian@git+https://github.com/breezy-team/breezy-debian",
-    "iniparse",
     "ognibuild[debian,dep_server]",
     "python-debian",
     "silver-platter[debian]",
@@ -159,10 +158,6 @@ addopts = """
 asyncio_default_fixture_loop_scope = "function"
 
 [tool.setuptools]
-script-files = [
-    "create-sbuild-chroot-schroot.py",
-    "create-sbuild-chroot-unshare.py",
-]
 include-package-data = false
 
 [tool.setuptools.packages.find]
