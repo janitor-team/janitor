@@ -199,14 +199,19 @@ impl LogFileManager for FileSystemLogFileManager {
     }
 
     async fn delete_log(&self, codebase: &str, run_id: &str, name: &str) -> Result<(), Error> {
+        let mut removed = false;
         for path in self.get_paths(codebase, run_id, name) {
             match async_fs::remove_file(&path).await {
-                Ok(()) => return Ok(()),
+                Ok(()) => removed = true,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
                 Err(e) => return Err(Error::from(e)),
             }
         }
-        Err(Error::NotFound)
+        if removed {
+            Ok(())
+        } else {
+            Err(Error::NotFound)
+        }
     }
 
     async fn health_check(&self) -> Result<(), Error> {
@@ -449,6 +454,26 @@ mod tests {
         let (_td, mgr) = setup();
         let logs: Vec<_> = mgr.iter_logs().await.collect();
         assert_eq!(logs.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_delete_log_removes_the_gz_beside_the_plain_name() {
+        let (_td, mgr) = setup();
+        let dir = _td.path().join("codebase").join("run-1");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("build.log"), b"plain").unwrap();
+        std::fs::write(dir.join("build.log.gz"), b"compressed").unwrap();
+
+        mgr.delete_log("codebase", "run-1", "build.log")
+            .await
+            .unwrap();
+
+        assert!(
+            !mgr.has_log("codebase", "run-1", "build.log").await.unwrap(),
+            "a log is still present after delete_log"
+        );
+        assert!(!dir.join("build.log").exists(), "plain name left behind");
+        assert!(!dir.join("build.log.gz").exists(), "gz left behind");
     }
 
     #[tokio::test]
