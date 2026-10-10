@@ -702,7 +702,7 @@ def create_app(
     app.cleanup_ctx.append(persistent_session)
     app["config"] = config
 
-    setup_logfile_manager(app, trace_configs=trace_configs)
+    setup_logfile_manager(app)
     app["external_url"] = external_url
     app["publisher_url"] = publisher_url
     app["vcs_managers"] = vcs_managers

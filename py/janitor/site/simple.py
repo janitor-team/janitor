@@ -672,7 +672,7 @@ async def create_app(
         # install aiohttp_debugtoolbar
         aiohttp_debugtoolbar.setup(app, hosts=debugtoolbar)
 
-    setup_logfile_manager(app, trace_configs=trace_configs)
+    setup_logfile_manager(app)
     return private_app, app
 
 

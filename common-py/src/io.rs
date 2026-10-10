@@ -38,6 +38,19 @@ impl Readable {
         let buf = read_bytes(&mut self.0, size).map_err(PyRuntimeError::new_err)?;
         Ok(PyBytes::new(py, &buf).into())
     }
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __exit__(
+        &mut self,
+        _exc_type: Py<PyAny>,
+        _exc_value: Py<PyAny>,
+        _traceback: Py<PyAny>,
+    ) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
