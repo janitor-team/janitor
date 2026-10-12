@@ -616,7 +616,7 @@ SELECT * FROM publishable WHERE ARRAY_LENGTH(unpublished_branches, 1) > 0;
 CREATE TABLE IF NOT EXISTS review (
  run_id text not null references run (id),
  comment text,
- reviewer text,
+ reviewer text not null,
  verdict verdict not null,
  reviewed_at timestamp not null default now()
 );
