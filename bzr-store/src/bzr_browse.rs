@@ -134,6 +134,9 @@ async fn dispatch(state: &AppState, codebase: &CodebaseName, mut req: Request) -
     parts.path_and_query = Some(new_path_and_query.parse().unwrap());
     *req.uri_mut() = Uri::from_parts(parts).unwrap();
 
+    // Drops all extensions: axum's path params type is private, so it can't be removed alone.
+    req.extensions_mut().clear();
+
     let response = match (*router).clone().oneshot(req).await {
         Ok(r) => r,
         Err(e) => match e {},
