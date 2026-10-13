@@ -909,6 +909,71 @@ mod tests {
         assert_eq!(map.get("run-b"), Some(&t(1500)));
     }
 
+    /// Health checks start once a run is a third of the run timeout old.
+    #[test]
+    fn test_health_check_due_after_a_third_of_the_run_timeout() {
+        let cfg = WatchdogConfig::from_run_timeout_minutes(60);
+        let due =
+            [0, 1199, 1200, 5000].map(|age| health_check_due(&cfg, t(10_000), t(10_000 + age)));
+        assert_eq!(due, [false, false, true, true]);
+    }
+
+    /// A freshly assigned run is not health checked, so its worker gets no request.
+    #[tokio::test]
+    async fn test_fresh_run_is_not_health_checked() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        let worker = axum::Router::new().fallback(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            async { (axum::http::StatusCode::NOT_FOUND, "no run in progress") }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, worker).await.unwrap() });
+
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgresql://localhost/unused")
+            .unwrap();
+        let store = crate::active_runs::ActiveRunStore::with_key(
+            redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            "unused".to_string(),
+        );
+        let mut watchdog = Watchdog::new(
+            Arc::new(RunnerDatabase::new(pool)),
+            store,
+            WatchdogConfig::from_run_timeout_minutes(60),
+        );
+        let now = Utc::now();
+        let run = ActiveRun {
+            worker_name: "worker-a".to_string(),
+            worker_link: None,
+            queue_id: 1,
+            log_id: rid("fresh-run"),
+            start_time: now - Duration::minutes(19),
+            finish_time: None,
+            estimated_duration: None,
+            campaign: janitor::Campaign::new("test").unwrap(),
+            change_set: None,
+            command: "true".to_string(),
+            backchannel: crate::Backchannel::Polling {
+                my_url: format!("http://{addr}/"),
+            },
+            vcs_info: crate::VcsInfo::default(),
+            codebase: janitor::CodebaseName::new("test-codebase").unwrap(),
+            instigated_context: None,
+            resume_from: None,
+        };
+
+        let result = watchdog
+            .check_single_run(&run, now)
+            .await
+            .map_err(|e| e.to_string());
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+        assert_eq!(result, Ok(()));
+    }
+
     /// `from_run_timeout_minutes` converts the runner-level minute field
     /// into the watchdog's second-granularity `default_timeout`. Pin
     /// the conversion so a future refactor can't silently swap
