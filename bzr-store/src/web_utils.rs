@@ -56,9 +56,13 @@ fn http_request_duration_seconds() -> &'static HistogramVec {
     })
 }
 
+/// Metrics path label for a response whose handler has no `MatchedPath`.
+#[derive(Clone, Copy, Debug)]
+pub struct MetricsPath(pub &'static str);
+
 /// axum middleware that records request-count and latency metrics. The
-/// path label uses `MatchedPath` when available so `/foo/{id}` buckets
-/// identically for every `id`.
+/// path label uses `MatchedPath` (or a `MetricsPath` on the response) when
+/// available so `/foo/{id}` buckets identically for every `id`.
 pub async fn record_http_metrics(req: Request, next: Next) -> Response {
     let method = req.method().as_str().to_string();
     let path = req
@@ -70,6 +74,10 @@ pub async fn record_http_metrics(req: Request, next: Next) -> Response {
     let started = Instant::now();
     let response = next.run(req).await;
     let elapsed = started.elapsed().as_secs_f64();
+    let path = response
+        .extensions()
+        .get::<MetricsPath>()
+        .map_or(path, |p| p.0.to_string());
 
     let status = response.status().as_u16().to_string();
     http_requests_total()
@@ -232,5 +240,34 @@ mod tests {
             .with_label_values(&["GET", "/x", "200"])
             .get();
         assert_eq!(after, before + 1);
+    }
+
+    #[tokio::test]
+    async fn record_http_metrics_uses_response_label() {
+        let label = || {
+            http_requests_total()
+                .with_label_values(&["GET", "/fallback/{x}/*", "404"])
+                .get()
+        };
+        let before = label();
+
+        let app = Router::new()
+            .fallback(|| async {
+                let mut resp = axum::http::StatusCode::NOT_FOUND.into_response();
+                resp.extensions_mut().insert(MetricsPath("/fallback/{x}/*"));
+                resp
+            })
+            .layer(axum::middleware::from_fn(record_http_metrics));
+
+        for uri in ["/a/1", "/b/2/3"] {
+            let resp = app
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 404);
+        }
+
+        assert_eq!(label(), before + 2);
     }
 }
