@@ -29,6 +29,9 @@ prometheus = "0.14"
 thiserror = "2.0"
 
 [dev-dependencies]
+# The `testing` feature lets the database tests load the schema.
+janitor = { path = "..", features = ["testing"] }
+serial_test = "3"
 tower = { workspace = true, features = ["util"] }
 
 [features]
