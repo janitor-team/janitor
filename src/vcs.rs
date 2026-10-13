@@ -873,7 +873,8 @@ impl VcsManager for LocalGitVcsManager {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        stdout
+        let lock = repo.lock_read().unwrap();
+        let ret = stdout
             .lines()
             .filter(|line| !line.is_empty())
             .map(|line| {
@@ -887,7 +888,9 @@ impl VcsManager for LocalGitVcsManager {
                     link: None,
                 }
             })
-            .collect()
+            .collect();
+        std::mem::drop(lock);
+        ret
     }
 }
 
@@ -1007,7 +1010,7 @@ impl VcsManager for LocalBzrVcsManager {
     ) -> Vec<RevisionInfo> {
         let repo = self.get_repository(codebase).unwrap().unwrap();
 
-        let lock = repo.lock_read();
+        let lock = repo.lock_read().unwrap();
         let mut ret = vec![];
 
         let graph = repo.get_graph();
