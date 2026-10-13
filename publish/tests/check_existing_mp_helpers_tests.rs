@@ -257,7 +257,7 @@ test_with_database! {
         assert_eq!(mp_run.role, "main");
         assert_eq!(mp_run.remote_branch_name, "refs/heads/main");
         assert_eq!(mp_run.command, "lintian-brush");
-        assert_eq!(mp_run.value, 10);
+        assert_eq!(mp_run.value, Some(10));
     }
 }
 
