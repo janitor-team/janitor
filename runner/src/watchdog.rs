@@ -246,6 +246,10 @@ impl Watchdog {
             return Ok(());
         }
 
+        if !health_check_due(&self.config, run.start_time, now) {
+            return Ok(());
+        }
+
         if let Some(reason) = self.check_worker_health(run, now).await? {
             log::warn!(
                 "Terminating run {} due to health check: {:?}",
@@ -760,6 +764,15 @@ pub struct RunHealthStatus {
 /// `Watchdog`.
 fn compute_run_deadline_secs(config: &WatchdogConfig, estimate_secs: u64) -> u64 {
     estimate_secs.max(config.default_timeout)
+}
+
+/// Whether a run is old enough (a third of the run timeout) for a worker health check.
+fn health_check_due(
+    config: &WatchdogConfig,
+    start_time: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> bool {
+    now - start_time >= Duration::seconds((config.default_timeout / 3) as i64)
 }
 
 /// Decide whether a run that is reporting `idle` has been idle for so
