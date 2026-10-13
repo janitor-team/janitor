@@ -16,7 +16,7 @@ use axum::{
 };
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use janitor_types::{Campaign, CodebaseName, Role};
+use janitor_types::CodebaseName;
 use serde::{Deserialize, Serialize};
 use tera::{Context, Tera};
 use tokio::fs;
@@ -31,8 +31,7 @@ use crate::database::DatabaseManager;
 use crate::error::{BzrError, Result};
 use crate::repository::{PyO3RepositoryManager, RepositoryManager, RepositoryPath, RevisionInfo};
 use crate::smart_protocol::{
-    smart_protocol_campaign_handler, smart_protocol_codebase_handler, smart_protocol_dispatch,
-    smart_protocol_role_handler,
+    smart_protocol_campaign_handler, smart_protocol_codebase_handler, smart_protocol_role_handler,
 };
 use crate::web_utils::{
     apply_standard_middleware, health_handler, metrics_handler, ready_handler, HealthChecker,
@@ -340,71 +339,30 @@ pub fn create_public_app(state: AppState, client_max_size: usize) -> Router {
     let router = Router::new()
         .route("/", get(home_handler))
         .route("/bzr/", get(public_repo_list_handler))
-        .route("/bzr/{codebase}", get(crate::bzr_browse::bzr_browse_root))
-        .route("/bzr/{codebase}/", get(crate::bzr_browse::bzr_browse_root))
-        // Unified wildcard: POST dispatches to the smart protocol,
-        // GET to the per-branch loggerhead router. Specific POST
-        // sub-routes (/bzr/{codebase}/.bzr/smart etc.) cannot coexist
-        // with the wildcard in axum 0.8 even when methods differ, so
-        // we re-parse the captured sub-path here.
-        .route(
-            "/bzr/{codebase}/{*sub_path}",
-            get(crate::bzr_browse::bzr_browse_handler).post(bzr_smart_sub_dispatcher),
-        )
+        .nest("/bzr", bzr_router())
         .with_state(state)
         .layer(body_limit_layer(client_max_size));
 
     apply_standard_middleware(router, &web_config(client_max_size))
 }
 
-/// `POST /bzr/{codebase}/{*sub_path}` — route smart protocol requests
-/// to the correct handler by inspecting the captured `sub_path`
-/// suffix. Handles the three URL shapes the Python app supported:
-/// `/.bzr/smart` (codebase), `/{campaign}/.bzr/smart`,
-/// `/{campaign}/{role}/.bzr/smart`.
-async fn bzr_smart_sub_dispatcher(
-    State(state): State<AppState>,
-    Path((codebase, sub_path)): Path<(CodebaseName, String)>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<Response> {
-    let parts: Vec<&str> = sub_path.trim_end_matches('/').splitn(4, '/').collect();
-    match parts.as_slice() {
-        [".bzr", "smart"] => {
-            smart_protocol_dispatch(state, codebase, None, None, headers, body).await
-        }
-        [campaign, ".bzr", "smart"] => {
-            smart_protocol_dispatch(
-                state,
-                codebase,
-                Some(parse_campaign(campaign)?),
-                None,
-                headers,
-                body,
-            )
-            .await
-        }
-        [campaign, role, ".bzr", "smart"] => {
-            smart_protocol_dispatch(
-                state,
-                codebase,
-                Some(parse_campaign(campaign)?),
-                Some(parse_role(role)?),
-                headers,
-                body,
-            )
-            .await
-        }
-        _ => Ok((StatusCode::NOT_FOUND, "Not found").into_response()),
-    }
-}
-
-fn parse_campaign(campaign: &str) -> Result<Campaign> {
-    Campaign::new(campaign).map_err(|e| BzrError::invalid_request(e.to_string()))
-}
-
-fn parse_role(role: &str) -> Result<Role> {
-    Role::new(role).map_err(|e| BzrError::invalid_request(e.to_string()))
+/// The public smart protocol POSTs. Everything else under `/bzr` goes to loggerhead.
+fn bzr_router() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/{codebase}/.bzr/smart",
+            post(smart_protocol_codebase_handler),
+        )
+        .route(
+            "/{codebase}/{campaign}/.bzr/smart",
+            post(smart_protocol_campaign_handler),
+        )
+        .route(
+            "/{codebase}/{campaign}/{role}/.bzr/smart",
+            post(smart_protocol_role_handler),
+        )
+        // A fallback sets no path parameters, so loggerhead's routes get only their own.
+        .fallback(crate::bzr_browse::bzr_browse_handler)
 }
 
 /// `GET /` on the public app — matches

@@ -262,19 +262,22 @@ fn test_loggerhead_changes_endpoint_reachable() {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap();
-        let resp = client
-            .get(format!("http://{}/bzr/foo/changes", addr))
-            .send()
-            .await
-            .unwrap();
-        // Expected 200 (rendered HTML) when loggerhead's static dir
-        // is wired; 503 otherwise. Anything else is a routing bug.
-        let status = resp.status().as_u16();
-        assert!(
-            status == 200 || status == 503,
-            "unexpected status {} for /bzr/foo/changes",
-            status
-        );
+        for page in [
+            "changes",
+            "changes/1",
+            "files/1",
+            "revision/1",
+            "view/1/README",
+            "annotate/1/README",
+            "download/1/README",
+        ] {
+            let resp = client
+                .get(format!("http://{}/bzr/foo/{}", addr, page))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), reqwest::StatusCode::OK, "/bzr/foo/{}", page);
+        }
 
         handle.abort();
     });
