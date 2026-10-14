@@ -3231,6 +3231,31 @@ pub async fn publish_and_store(
     }
 }
 
+/// Source revision, source branch URL, can_be_merged and target branch URL.
+type MpForgeInfo = (
+    Result<Option<RevisionId>, BrzError>,
+    Result<Option<url::Url>, BrzError>,
+    Result<bool, BrzError>,
+    Result<Option<url::Url>, BrzError>,
+);
+
+/// Ask the forge about `mp` one call at a time: the calls share one HTTP connection.
+async fn get_mp_forge_info(
+    mp: &breezyshim::forge::MergeProposal,
+) -> Result<MpForgeInfo, CheckMpError> {
+    let mp = mp.clone();
+    tokio::task::spawn_blocking(move || {
+        (
+            mp.get_source_revision(),
+            mp.get_source_branch_url(),
+            mp.can_be_merged(),
+            mp.get_target_branch_url(),
+        )
+    })
+    .await
+    .map_err(|_| CheckMpError::Brz("forge call task join error".to_string()))
+}
+
 /// Verify a previously-published merge proposal is still in good shape,
 /// updating our local state and republishing if a newer run has arrived.
 ///
@@ -3321,54 +3346,27 @@ async fn check_existing_mp(
     }
 
     // Forge calls: source revision, source branch URL, can_be_merged,
-    // target branch URL. Each runs on a blocking thread because
-    // breezyshim is synchronous. tokio::join! kicks all four off
-    // concurrently; the GIL still serialises the Python work, but each
-    // call releases it during the underlying network I/O.
+    // target branch URL. See get_mp_forge_info.
     //
     // Log-and-continue on failure: bailing out of the whole MP would
     // mean last_scanned never gets updated and the next scan retries
     // the same broken MP forever.
-    let (revision_res, source_branch_url_res, can_be_merged_res, target_branch_url_res) = tokio::join!(
-        tokio::task::spawn_blocking({
-            let mp = mp.clone();
-            move || mp.get_source_revision()
-        }),
-        tokio::task::spawn_blocking({
-            let mp = mp.clone();
-            move || mp.get_source_branch_url()
-        }),
-        tokio::task::spawn_blocking({
-            let mp = mp.clone();
-            move || mp.can_be_merged()
-        }),
-        tokio::task::spawn_blocking({
-            let mp = mp.clone();
-            move || mp.get_target_branch_url()
-        }),
-    );
+    let (revision_res, source_branch_url_res, can_be_merged_res, target_branch_url_res) =
+        get_mp_forge_info(mp).await?;
 
-    let mut revision: Option<RevisionId> = revision_res
-        .map_err(|_| CheckMpError::Brz("get_source_revision task join error".to_string()))?
-        .unwrap_or_else(|e| {
-            log::debug!("Failed to get source revision for {}: {}", mp_url, e);
-            None
-        });
-    let source_branch_url = source_branch_url_res
-        .map_err(|_| CheckMpError::Brz("get_source_branch_url task join error".to_string()))?
-        .unwrap_or_else(|e| {
-            log::debug!("Failed to get source branch URL for {}: {}", mp_url, e);
-            None
-        });
-    let can_be_merged = can_be_merged_res
-        .map_err(|_| CheckMpError::Brz("can_be_merged task join error".to_string()))?
-        .ok();
-    let target_branch_url = target_branch_url_res
-        .map_err(|_| CheckMpError::Brz("get_target_branch_url task join error".to_string()))?
-        .unwrap_or_else(|e| {
-            log::debug!("Failed to get target branch URL for {}: {}", mp_url, e);
-            None
-        });
+    let mut revision: Option<RevisionId> = revision_res.unwrap_or_else(|e| {
+        log::debug!("Failed to get source revision for {}: {}", mp_url, e);
+        None
+    });
+    let source_branch_url = source_branch_url_res.unwrap_or_else(|e| {
+        log::debug!("Failed to get source branch URL for {}: {}", mp_url, e);
+        None
+    });
+    let can_be_merged = can_be_merged_res.ok();
+    let target_branch_url = target_branch_url_res.unwrap_or_else(|e| {
+        log::debug!("Failed to get target branch URL for {}: {}", mp_url, e);
+        None
+    });
 
     // Resolve the source branch name. Python prefers the
     // opened branch's `.name` (set in the silver_platter fallback
