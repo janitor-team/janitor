@@ -44,8 +44,6 @@ RUN apt-get update --yes \
         python3-breezy \
         brz-debian \
         dpkg-dev \
-        git \
-        libjson-perl \
         lintian \
         sbuild \
         schroot \

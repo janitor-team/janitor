@@ -554,36 +554,44 @@ db_test! {
         let (addr, handle) = spawn(app).await;
 
         // Build a source repo with one commit in a scratch dir and
-        // push it. Using the `git` CLI keeps the test independent of
-        // libgit2's HTTP transport.
+        // push it.
         let src = TempDir::new().unwrap();
-        let src_path = src.path();
-        let run_git = |args: &[&str]| -> std::process::Output {
-            std::process::Command::new("git")
-                .args(args)
-                .current_dir(src_path)
-                .env("GIT_TERMINAL_PROMPT", "0")
-                .env("GIT_AUTHOR_NAME", "Test")
-                .env("GIT_AUTHOR_EMAIL", "test@example.com")
-                .env("GIT_COMMITTER_NAME", "Test")
-                .env("GIT_COMMITTER_EMAIL", "test@example.com")
-                .output()
-                .expect("failed to run git")
-        };
+        let src_repo = git2::Repository::init(src.path()).unwrap();
+        std::fs::write(src.path().join("hello.txt"), "hi\n").unwrap();
+        let mut index = src_repo.index().unwrap();
+        index.add_path(std::path::Path::new("hello.txt")).unwrap();
+        let tree = src_repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        src_repo
+            .commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
 
-        assert!(run_git(&["init", "-q", "-b", "main"]).status.success());
-        std::fs::write(src_path.join("hello.txt"), "hi\n").unwrap();
-        assert!(run_git(&["add", "hello.txt"]).status.success());
-        assert!(run_git(&["commit", "-q", "-m", "init"]).status.success());
-
+        // libgit2 blocks on the network, so keep it off the runtime
+        // threads serving the request.
         let remote_url = format!("http://{}/pushtest", addr);
-        let push = run_git(&["push", &remote_url, "main:refs/heads/main"]);
-        assert!(
-            push.status.success(),
-            "git push failed: stdout={} stderr={}",
-            String::from_utf8_lossy(&push.stdout),
-            String::from_utf8_lossy(&push.stderr)
-        );
+        let src_path = src.path().to_path_buf();
+        let rejections = tokio::task::spawn_blocking(move || {
+            let repo = git2::Repository::open(&src_path).unwrap();
+            let mut remote = repo.remote_anonymous(&remote_url).unwrap();
+            let mut rejections = Vec::new();
+            let mut callbacks = git2::RemoteCallbacks::new();
+            callbacks.push_update_reference(|refname, status| {
+                if let Some(status) = status {
+                    rejections.push(format!("{}: {}", refname, status));
+                }
+                Ok(())
+            });
+            let mut opts = git2::PushOptions::new();
+            opts.remote_callbacks(callbacks);
+            remote
+                .push(&["refs/heads/main:refs/heads/main"], Some(&mut opts))
+                .unwrap();
+            drop(opts);
+            rejections
+        })
+        .await
+        .unwrap();
+        assert_eq!(rejections, Vec::<String>::new());
 
         // Verify server-side: the pushed ref should now be present.
         let server_repo = git2::Repository::open_bare(&bare).unwrap();
@@ -815,9 +823,9 @@ db_test! {
 
 db_test! {
     async fn test_admin_diff_missing_commit_500(test_db: TestDatabase) {
-        // No precheck for revision presence anymore -- git itself
-        // errors out, which surfaces as 500 "git diff failed: ..."
-        // matching Python exactly.
+        // There is no precheck for revision presence; the diff itself
+        // fails, which surfaces as 500 "git diff failed: ..." matching
+        // Python.
         setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "codebase").await;
 
@@ -958,6 +966,199 @@ db_test! {
         assert_eq!(commits[0]["sha"], c2.to_string());
         assert_eq!(commits[0]["author"]["name"], "Alice");
         assert_eq!(commits[0]["author"]["email"], "alice@example.com");
+
+        handle.abort();
+    }
+}
+
+/// Commit a tree containing `files` on top of `parents` in `repo`.
+fn commit_files(
+    repo: &git2::Repository,
+    files: &[(&str, &str)],
+    message: &str,
+    parents: &[git2::Oid],
+) -> git2::Oid {
+    let sig = git2::Signature::now("Alice", "alice@example.com").unwrap();
+    let mut tb = repo.treebuilder(None).unwrap();
+    for (name, content) in files {
+        let blob = repo.blob(content.as_bytes()).unwrap();
+        tb.insert(name, blob, 0o100644).unwrap();
+    }
+    let tree = repo.find_tree(tb.write().unwrap()).unwrap();
+    let parents: Vec<git2::Commit> = parents
+        .iter()
+        .map(|oid| repo.find_commit(*oid).unwrap())
+        .collect();
+    let parents: Vec<&git2::Commit> = parents.iter().collect();
+    repo.commit(None, &sig, &sig, message, &tree, &parents)
+        .unwrap()
+}
+
+db_test! {
+    async fn test_admin_diff_matches_git_cli_output(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase(test_db.pool(), "codebase").await;
+
+        let tmp = TempDir::new().unwrap();
+        let repo = git2::Repository::init_bare(tmp.path().join("codebase")).unwrap();
+        let c1 = commit_files(
+            &repo,
+            &[
+                ("a.txt", "one\ntwo\nthree\n"),
+                ("b.txt", "line1\nline2\nline3\nline4\nline5\n"),
+                ("e.txt", "x"),
+            ],
+            "first",
+            &[],
+        );
+        let c2 = commit_files(
+            &repo,
+            &[
+                ("a.txt", "one\n2\nthree\n"),
+                ("c.txt", "line1\nline2\nline3\nline4\nline5\n"),
+                ("d.txt", "new\n"),
+                ("e.txt", "y"),
+            ],
+            "second",
+            &[c1],
+        );
+
+        let state = build_state(&tmp, &test_db, AppRole::Admin).await;
+        let app = web::create_admin_app(state, 0);
+        let (addr, handle) = spawn(app).await;
+
+        let resp = reqwest::get(format!(
+            "http://{}/codebase/diff?old={}&new={}",
+            addr, c1, c2
+        ))
+        .await
+        .unwrap();
+        assert_eq!(resp.status(), 200);
+        // Output of `git diff` for the same trees.
+        assert_eq!(
+            resp.text().await.unwrap(),
+            "diff --git a/a.txt b/a.txt
+index 4cb29ea..f04eb26 100644
+--- a/a.txt
++++ b/a.txt
+@@ -1,3 +1,3 @@
+ one
+-two
++2
+ three
+diff --git a/b.txt b/c.txt
+similarity index 100%
+rename from b.txt
+rename to c.txt
+diff --git a/d.txt b/d.txt
+new file mode 100644
+index 0000000..3e75765
+--- /dev/null
++++ b/d.txt
+@@ -0,0 +1 @@
++new
+diff --git a/e.txt b/e.txt
+index c1b0730..e25f181 100644
+--- a/e.txt
++++ b/e.txt
+@@ -1 +1 @@
+-x
+\\ No newline at end of file
++y
+\\ No newline at end of file
+"
+        );
+
+        let resp = reqwest::get(format!(
+            "http://{}/codebase/diff?old={}&new={}&path=d.txt",
+            addr, c1, c2
+        ))
+        .await
+        .unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(
+            resp.text().await.unwrap(),
+            "diff --git a/d.txt b/d.txt
+new file mode 100644
+index 0000000..3e75765
+--- /dev/null
++++ b/d.txt
+@@ -0,0 +1 @@
++new
+"
+        );
+
+        handle.abort();
+    }
+}
+
+db_test! {
+    async fn test_admin_log_and_revision_info_ordering(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase(test_db.pool(), "codebase").await;
+
+        let tmp = TempDir::new().unwrap();
+        let repo = git2::Repository::init_bare(tmp.path().join("codebase")).unwrap();
+        let c1 = commit_files(&repo, &[("a", "1\n")], "first", &[]);
+        let c2 = commit_files(&repo, &[("a", "2\n")], "second\n\nwith a body\n", &[c1]);
+        let c3 = commit_files(&repo, &[("a", "3\n")], "third", &[c2]);
+
+        let state = build_state(&tmp, &test_db, AppRole::Admin).await;
+        let app = web::create_admin_app(state, 0);
+        let (addr, handle) = spawn(app).await;
+
+        let resp = reqwest::get(format!("http://{}/codebase/log?new={}", addr, c3))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        let summary: Vec<(String, String)> = body["commits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| {
+                (
+                    c["sha"].as_str().unwrap().to_string(),
+                    c["message"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                (c1.to_string(), "first".to_string()),
+                (c2.to_string(), "second\n\nwith a body".to_string()),
+                (c3.to_string(), "third".to_string()),
+            ]
+        );
+
+        let resp = reqwest::get(format!(
+            "http://{}/codebase/revision-info?old={}&new={}",
+            addr, c1, c3
+        ))
+        .await
+        .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: Vec<serde_json::Value> = resp.json().await.unwrap();
+        let ids: Vec<&str> = body
+            .iter()
+            .map(|e| e["commit-id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec![c3.to_string(), c2.to_string()]);
+
+        let resp = reqwest::get(format!(
+            "http://{}/codebase/revision-info?old=0000000000000000000000000000000000000000&new={}",
+            addr, c2
+        ))
+        .await
+        .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: Vec<serde_json::Value> = resp.json().await.unwrap();
+        let ids: Vec<&str> = body
+            .iter()
+            .map(|e| e["commit-id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec![c2.to_string(), c1.to_string()]);
 
         handle.abort();
     }

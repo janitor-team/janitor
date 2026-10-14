@@ -49,13 +49,13 @@ pub enum GitStoreError {
     #[error("Operation timed out")]
     Timeout,
 
-    /// Diff subprocess exceeded the configured timeout. Distinct
+    /// Diff generation exceeded the configured timeout. Distinct
     /// message so callers see the same text Python emits.
     #[error("diff generation timed out")]
     DiffTimeout,
 
-    /// The `git diff` subprocess exited non-zero; stderr is included
-    /// so the failure message matches Python's exact string.
+    /// Generating the diff failed, e.g. because a revision is missing.
+    /// The prefix matches Python's message.
     #[error("git diff failed: {0}")]
     GitDiffFailed(String),
 
