@@ -137,6 +137,7 @@ async fn run_scan_loop(
             &state.vcs_managers,
             modify_mp_limit,
             state.unexpected_mp_limit,
+            &state.http_client,
         )
         .await;
 
