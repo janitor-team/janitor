@@ -1077,7 +1077,12 @@ pub async fn derived_branch_name(
         format!("{}/{}", campaign_branch, role)
     };
 
-    let cotenants = has_cotenants(conn, &run.codebase, &run.branch_url).await?;
+    let cotenants = has_cotenants(
+        conn,
+        &run.codebase,
+        run.branch_url.as_deref().unwrap_or_default(),
+    )
+    .await?;
 
     if cotenants == Some(true) {
         Ok(format!("{}/{}", base, run.codebase))
@@ -2565,18 +2570,19 @@ pub async fn publish_from_policy(
         log::warn!("no command set for {}", run.id);
         return Ok(None);
     }
-    if command != run.command {
+    let run_command = run.command.as_deref().unwrap_or_default();
+    if command != run_command {
         log::warn!(
             "Not publishing {}/{}: command has changed. Build used {:?}, now: {:?}. Rescheduling.",
             run.codebase,
             run.suite,
-            run.command,
+            run_command,
             command
         );
         crate::metrics::COMMAND_CHANGED_COUNT.inc();
         let reschedule_requester = format!(
             "publisher (changed policy: {:?} -> {:?})",
-            run.command, command
+            run_command, command
         );
         if let Err(e) = janitor::schedule::do_schedule(
             conn,
@@ -2626,7 +2632,7 @@ pub async fn publish_from_policy(
             return Ok(None);
         }
     };
-    let target_branch_url = role_branch_url(target_branch_url, Some(&remote_branch_name));
+    let target_branch_url = role_branch_url(target_branch_url, remote_branch_name.as_deref());
 
     // Bail if this run has already been published for this
     // (target_url, branch_name, revision) tuple.
@@ -2733,7 +2739,8 @@ pub async fn publish_from_policy(
 
     let derived_name = derived_branch_name(conn, campaign_config, run, role).await?;
 
-    let vcs_type_parsed = match <VcsType as std::str::FromStr>::from_str(&run.vcs_type) {
+    let vcs_type = run.vcs_type.as_deref().unwrap_or_default();
+    let vcs_type_parsed = match <VcsType as std::str::FromStr>::from_str(vcs_type) {
         Ok(v) => v,
         Err(e) => {
             log::warn!(
@@ -2767,7 +2774,7 @@ pub async fn publish_from_policy(
     log::info!(
         "Publishing {} / {:?} / {} (mode: {})",
         run.codebase,
-        run.command,
+        run_command,
         role,
         mode
     );
@@ -2776,7 +2783,7 @@ pub async fn publish_from_policy(
         .publish_one(
             &run.suite,
             &run.codebase,
-            &run.command,
+            run_command,
             &target_branch_url,
             mode,
             role,
@@ -3007,12 +3014,13 @@ pub async fn publish_and_store(
     let base_target_url: url::Url = run
         .target_branch_url
         .as_deref()
-        .unwrap_or(&run.branch_url)
+        .or(run.branch_url.as_deref())
+        .unwrap_or_default()
         .parse()
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
             format!("invalid target/branch URL for run {}: {}", run.id, e).into()
         })?;
-    let target_branch_url = role_branch_url(&base_target_url, Some(&remote_branch_name));
+    let target_branch_url = role_branch_url(&base_target_url, remote_branch_name.as_deref());
 
     // Python: `if allow_create_proposal is None: allow_create_proposal = run_sufficient_for_proposal(...)`.
     // In practice callers always pass a concrete bool, but preserve
@@ -3042,7 +3050,8 @@ pub async fn publish_and_store(
     let derived_name = derived_branch_name(conn, campaign_config, run, role).await?;
 
     // Resolve the right VcsManager for the run's vcs_type.
-    let vcs_type_parsed = match <VcsType as std::str::FromStr>::from_str(&run.vcs_type) {
+    let vcs_type = run.vcs_type.as_deref().unwrap_or_default();
+    let vcs_type_parsed = match <VcsType as std::str::FromStr>::from_str(vcs_type) {
         Ok(v) => v,
         Err(e) => {
             log::warn!(
@@ -3084,7 +3093,7 @@ pub async fn publish_and_store(
         .publish_one(
             &run.suite,
             &run.codebase,
-            &run.command,
+            run.command.as_deref().unwrap_or_default(),
             &target_branch_url,
             mode,
             role,
@@ -3907,7 +3916,9 @@ async fn check_existing_mp(
     // Resolve the result branch matching this proposal's role.
     let (last_run_remote_branch_name, last_run_base_revision, last_run_revision) =
         match last_run.get_result_branch(&mp_run.role) {
-            Some(t) => t,
+            Some((name, base_revision, revision)) => {
+                (name.unwrap_or_default(), base_revision, revision)
+            }
             None => {
                 log::warn!(
                     "{}: merge proposal run {} had role {} but it is gone now ({})",
@@ -4004,7 +4015,10 @@ async fn check_existing_mp(
     // points to a different branch, we can't republish the same
     // proposal against it, so skip.
     let mp_branch = mp_run.branch_url.parse::<url::Url>().ok();
-    let last_run_branch = last_run.branch_url.parse::<url::Url>().ok();
+    let last_run_branch = last_run
+        .branch_url
+        .as_deref()
+        .and_then(|u| u.parse::<url::Url>().ok());
     if !branches_match(
         mp_branch.as_ref(),
         last_run_branch.as_ref(),
@@ -4014,7 +4028,7 @@ async fn check_existing_mp(
             "{}: Remote branch URL appears to have moved: {:?} -> {:?}",
             mp_url,
             mp_run.branch_url,
-            last_run.branch_url,
+            last_run.branch_url.as_deref().unwrap_or_default(),
         );
         return Ok(false);
     }
@@ -4102,8 +4116,9 @@ async fn check_existing_mp(
             };
 
         // Resolve the right VcsManager for the new run's vcs_type.
+        let last_run_vcs_type = last_run.vcs_type.clone().unwrap_or_default();
         let vcs_type_for_publish =
-            match <VcsType as std::str::FromStr>::from_str(&last_run.vcs_type) {
+            match <VcsType as std::str::FromStr>::from_str(&last_run_vcs_type) {
                 Ok(v) => v,
                 Err(e) => {
                     log::warn!(
@@ -4155,7 +4170,7 @@ async fn check_existing_mp(
             .publish_one(
                 &last_run.suite,
                 &last_run.codebase,
-                &last_run.command,
+                last_run.command.as_deref().unwrap_or_default(),
                 &target_branch_url_for_publish,
                 Mode::Propose,
                 &mp_run.role,
@@ -5062,7 +5077,7 @@ async fn consider_publish_run(
     }
 
     // Missing branch_url: can't publish anywhere.
-    if run.branch_url.is_empty() {
+    if run.branch_url.as_deref().unwrap_or_default().is_empty() {
         log::warn!(
             "{}: considering publishing for branch without branch url",
             run.id
@@ -5088,8 +5103,10 @@ async fn consider_publish_run(
     // Resolve the target branch URL that publish_from_policy will
     // feed into role_branch_url for each role. Python uses
     // `run.target_branch_url or run.branch_url`.
-    let target_branch_url_str =
-        resolve_target_branch_url(run.target_branch_url.as_deref(), &run.branch_url);
+    let target_branch_url_str = resolve_target_branch_url(
+        run.target_branch_url.as_deref(),
+        run.branch_url.as_deref().unwrap_or_default(),
+    );
     let target_branch_url: url::Url = match target_branch_url_str.parse() {
         Ok(u) => u,
         Err(e) => {

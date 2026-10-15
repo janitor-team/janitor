@@ -82,8 +82,6 @@ async fn seed_run(
 ) {
     let finish_time = Utc::now() - Duration::minutes(finish_time_offset_minutes);
     let start_time = finish_time - Duration::minutes(1);
-    // `vcs_type` must be non-null: the Rust `Run` struct decodes it
-    // as `String`, not `Option<String>`.
     sqlx::query(
         r#"
         INSERT INTO run (
@@ -575,13 +573,13 @@ test_with_database! {
         assert_eq!(run.id, "run-1");
         assert_eq!(run.codebase, "cb-1");
         assert_eq!(run.suite, "lintian-fixes");
-        assert_eq!(run.command, "lintian-brush");
+        assert_eq!(run.command.as_deref(), Some("lintian-brush"));
         assert_eq!(run.result_code, "success");
         assert_eq!(run.value, Some(42));
         let branches = run.result_branches.expect("result_branches missing");
         assert_eq!(branches.len(), 1);
         assert_eq!(branches[0].0, "main");
-        assert_eq!(branches[0].1, "refs/heads/main");
+        assert_eq!(branches[0].1.as_deref(), Some("refs/heads/main"));
     }
 }
 

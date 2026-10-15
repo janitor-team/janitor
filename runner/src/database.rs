@@ -176,7 +176,7 @@ impl RunnerDatabase {
     pub fn run_to_janitor_result(&self, run: Run) -> JanitorResult {
         JanitorResult {
             log_id: run.id,
-            branch_url: run.branch_url,
+            branch_url: run.branch_url.unwrap_or_default(),
             subpath: None, // Not stored in run table currently
             code: run.result_code,
             transient: run.failure_transient,
@@ -200,7 +200,7 @@ impl RunnerDatabase {
             branches: run.result_branches.map(|branches| {
                 branches
                     .into_iter()
-                    .map(|(fn_name, name, br, r)| (Some(fn_name), Some(name), br, r))
+                    .map(|(fn_name, name, br, r)| (Some(fn_name), name, br, r))
                     .collect()
             }),
             failure_details: run.failure_details,
@@ -208,7 +208,7 @@ impl RunnerDatabase {
             resume: None, // Use run_to_janitor_result_async() to fetch resume info
             target: None, // Use run_to_janitor_result_async() to fetch target
             worker_name: run.worker_name,
-            vcs_type: Some(run.vcs_type),
+            vcs_type: run.vcs_type,
             target_branch_url: run.target_branch_url,
             context: run.context.and_then(|s| serde_json::from_str(&s).ok()),
             builder_result: None, // Use run_to_janitor_result_async() to fetch builder result
@@ -251,7 +251,7 @@ impl RunnerDatabase {
 
         Ok(JanitorResult {
             log_id: run.id,
-            branch_url: run.branch_url,
+            branch_url: run.branch_url.unwrap_or_default(),
             subpath: None, // Not stored in run table currently
             code: run.result_code,
             transient: run.failure_transient,
@@ -275,7 +275,7 @@ impl RunnerDatabase {
             branches: run.result_branches.map(|branches| {
                 branches
                     .into_iter()
-                    .map(|(fn_name, name, br, r)| (Some(fn_name), Some(name), br, r))
+                    .map(|(fn_name, name, br, r)| (Some(fn_name), name, br, r))
                     .collect()
             }),
             failure_details: run.failure_details,
@@ -283,7 +283,7 @@ impl RunnerDatabase {
             resume,
             target,
             worker_name: run.worker_name,
-            vcs_type: Some(run.vcs_type),
+            vcs_type: run.vcs_type,
             target_branch_url: run.target_branch_url,
             context: run.context.and_then(|s| serde_json::from_str(&s).ok()),
             builder_result,
