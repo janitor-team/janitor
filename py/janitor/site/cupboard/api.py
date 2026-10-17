@@ -289,6 +289,7 @@ SELECT
   suite AS campaign,
   id,
   command,
+  change_set,
   finish_time - start_time as duration,
   result_code,
   description,
