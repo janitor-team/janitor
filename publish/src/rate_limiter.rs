@@ -280,6 +280,13 @@ impl RateLimiter for SlowStartRateLimiter {
         RateLimitStatus::Allowed
     }
 
+    fn get_max_open(&self, bucket: &str) -> Option<usize> {
+        let limit = self.get_limit(bucket)?;
+        // A maximum of 0 means no maximum, as in `check_allowed`.
+        let max = self.max_mps_per_bucket.filter(|max| *max > 0);
+        Some(max.map_or(limit, |max| max.min(limit)))
+    }
+
     fn inc(&mut self, bucket: &str) {
         if let Some(open_mps_per_bucket) = self.open_mps_per_bucket.as_mut() {
             open_mps_per_bucket
