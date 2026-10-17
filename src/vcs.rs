@@ -814,7 +814,9 @@ impl VcsManager for LocalGitVcsManager {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        stdout
+        // The lookups below open pack files; only the unlock closes them.
+        let lock = repo.lock_read();
+        let ret = stdout
             .lines()
             .filter(|line| !line.is_empty())
             .map(|line| {
@@ -828,7 +830,9 @@ impl VcsManager for LocalGitVcsManager {
                     link: None,
                 }
             })
-            .collect()
+            .collect();
+        std::mem::drop(lock);
+        ret
     }
 }
 
@@ -999,6 +1003,86 @@ mod local_repository_url_tests {
         let bzr_url = bzr_manager.get_repository_url("mycodebase");
         assert!(bzr_url.as_str().starts_with("file://"));
         assert!(bzr_url.as_str().ends_with("/mycodebase"));
+    }
+}
+
+#[cfg(test)]
+mod local_git_descriptor_tests {
+    use super::*;
+    use pyo3::prelude::*;
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {:?} failed", args);
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
+
+    // Number of open pack and index files below `dir`.
+    fn open_packs(dir: &Path) -> usize {
+        std::fs::read_dir("/proc/self/fd")
+            .unwrap()
+            .filter_map(|entry| std::fs::read_link(entry.ok()?.path()).ok())
+            .filter(|target| target.starts_with(dir))
+            .filter(|target| {
+                matches!(
+                    target.extension().and_then(|e| e.to_str()),
+                    Some("pack" | "idx")
+                )
+            })
+            .count()
+    }
+
+    fn set_cycle_collector(enabled: bool) {
+        Python::attach(|py| {
+            let gc = py.import("gc").unwrap();
+            gc.call_method0(if enabled { "enable" } else { "disable" })
+                .unwrap();
+        });
+    }
+
+    #[tokio::test]
+    async fn get_revision_info_leaves_no_pack_open() {
+        if !Path::new("/proc/self/fd").exists() {
+            eprintln!("skipping: no /proc/self/fd");
+            return;
+        }
+        breezyshim::init();
+        let base = tempfile::tempdir().unwrap();
+        let base_path = base.path().canonicalize().unwrap();
+        let repo_path = base_path.join("mycodebase");
+        std::fs::create_dir(&repo_path).unwrap();
+        git(&repo_path, &["init", "-q"]);
+        let mut shas = vec![];
+        for message in ["one", "two"] {
+            git(
+                &repo_path,
+                &["commit", "-q", "--allow-empty", "-m", message],
+            );
+            shas.push(git(&repo_path, &["rev-parse", "HEAD"]));
+        }
+        git(&repo_path, &["repack", "-q", "-a", "-d"]);
+        let revid = |sha: &str| RevisionId::from(format!("git-v1:{}", sha).into_bytes());
+        let manager = LocalGitVcsManager::new(base_path.clone());
+
+        // Without the cycle collector only an explicit close frees the packs.
+        set_cycle_collector(false);
+        let mut found = 0;
+        for _ in 0..20 {
+            found += manager
+                .get_revision_info("mycodebase", &revid(&shas[0]), &revid(&shas[1]))
+                .await
+                .len();
+        }
+        let open = open_packs(&base_path);
+        set_cycle_collector(true);
+
+        assert_eq!(found, 20);
+        assert_eq!(open, 0);
     }
 }
 
