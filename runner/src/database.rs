@@ -298,9 +298,15 @@ impl RunnerDatabase {
             r#"
             SELECT id, command, description, result_code, main_branch_revision, revision,
                    context, result, suite::text AS suite, instigated_context, vcs_type::text AS vcs_type, branch_url,
-                   logfilenames, worker_name, result_branches, result_tags, target_branch_url,
+                   logfilenames, worker,
+                   array(SELECT row(role, remote_name, base_revision, revision)
+                         FROM new_result_branch WHERE run_id = run.id) AS result_branches,
+                   (SELECT array_agg(row(actual_name, revision))
+                    FROM unnest(run.result_tags)) AS result_tags,
+                   target_branch_url,
                    change_set, failure_details, failure_transient, failure_stage, codebase,
-                   start_time, finish_time, value
+                   (start_time AT TIME ZONE 'UTC') AS start_time,
+                   (finish_time AT TIME ZONE 'UTC') AS finish_time, value
             FROM run WHERE id = $1
             "#,
         )

@@ -526,6 +526,79 @@ async fn get_run_missing_returns_404() {
     );
 }
 
+/// `RunnerDatabase::get_run` loads a stored run with worker, branches and tags.
+#[tokio::test]
+async fn database_get_run_returns_stored_run() {
+    use sqlx::Executor;
+
+    let Some((_app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let pool = state.database.pool().clone();
+    pool.execute(sqlx::raw_sql(janitor::schema::DEBIAN_SCHEMA))
+        .await
+        .expect("load debian schema");
+    insert_codebase(&pool, "db-get-run-cb").await;
+    sqlx::query("INSERT INTO worker (name, password) VALUES ('db-get-run-w', 'pw')")
+        .execute(&pool)
+        .await
+        .expect("insert worker");
+    sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs-db-get', 'test-campaign')")
+        .execute(&pool)
+        .await
+        .expect("insert change_set");
+    sqlx::query(
+        "INSERT INTO run (
+             id, command, suite, codebase, result_code, vcs_type, branch_url,
+             start_time, finish_time, logfilenames, change_set, worker,
+             revision, result_tags
+         )
+         VALUES ('run-db-get-1', 'true', 'test-campaign', 'db-get-run-cb',
+                 'success', 'git', 'https://example.invalid/db-get-run-cb',
+                 '2026-10-14 10:00:00', '2026-10-14 10:05:00', '{}',
+                 'cs-db-get', 'db-get-run-w', 'rev-2',
+                 ARRAY[ROW('v1.0', 'rev-1')::result_tag])",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert run");
+    sqlx::query(
+        "INSERT INTO new_result_branch (run_id, role, remote_name, base_revision, revision)
+         VALUES ('run-db-get-1', 'main', 'origin', 'rev-1', 'rev-2')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert result branch");
+
+    let run = state
+        .database
+        .get_run("run-db-get-1")
+        .await
+        .expect("get_run should not fail")
+        .expect("run should exist");
+    assert_eq!(run.log_id, "run-db-get-1");
+    assert_eq!(run.code, "success");
+    assert_eq!(run.worker_name.as_deref(), Some("db-get-run-w"));
+    let branches = run.branches.expect("branches");
+    assert_eq!(branches.len(), 1);
+    assert_eq!(branches[0].0.as_deref(), Some("main"));
+    assert_eq!(branches[0].1.as_deref(), Some("origin"));
+    assert_eq!(run.tags.expect("tags").len(), 1);
+    assert_eq!(
+        run.finish_time - run.start_time,
+        chrono::Duration::minutes(5)
+    );
+
+    assert!(state
+        .database
+        .get_run("no-such-run")
+        .await
+        .expect("get_run should not fail")
+        .is_none());
+}
+
 /// `GET /status` returns the three fields the Python handler emits:
 /// `processing`, `avoid_hosts`, `rate_limit_hosts`. With an empty
 /// active-runs set and no env overrides, all three come back empty.
