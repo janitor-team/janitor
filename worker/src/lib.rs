@@ -39,6 +39,8 @@ pub mod debian;
 
 pub mod generic;
 
+pub mod sbuild_chroot;
+
 pub mod vcs;
 
 pub mod web;
