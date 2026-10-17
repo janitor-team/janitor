@@ -312,6 +312,9 @@ async def handle_review_post(request):
             request.app["vcs_managers"],
             campaigns=post.getall("suite", None),
             publishable_only=publishable_only,
+            required_only=(
+                post["required_only"] == "true" if "required_only" in post else None
+            ),
         )
         return web.Response(
             content_type="text/html",

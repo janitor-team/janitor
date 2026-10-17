@@ -166,6 +166,9 @@
                    value="Abstain"
                    accesskey="n"
                    onclick="submitReview(this, 'abstained')" />
+            <input type="hidden"
+                   name="required_only"
+                   value="{{ 'true' if required_only else 'false' }}" />
             <input type="checkbox"
                    value="true"
                    name="publishable_only"
