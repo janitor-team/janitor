@@ -367,6 +367,7 @@ async fn serve_packages(
     let binary_arch = params.get("binary_arch").ok_or(StatusCode::BAD_REQUEST)?;
     let arch = binary_arch
         .strip_prefix("binary-")
+        .filter(|arch| is_plain_name(arch))
         .ok_or(StatusCode::NOT_FOUND)?;
 
     debug!(
@@ -398,6 +399,7 @@ async fn serve_packages_gz(
     let binary_arch = params.get("binary_arch").ok_or(StatusCode::BAD_REQUEST)?;
     let arch = binary_arch
         .strip_prefix("binary-")
+        .filter(|arch| is_plain_name(arch))
         .ok_or(StatusCode::NOT_FOUND)?;
 
     serve_component_file(
@@ -424,6 +426,7 @@ async fn serve_packages_bz2(
     let binary_arch = params.get("binary_arch").ok_or(StatusCode::BAD_REQUEST)?;
     let arch = binary_arch
         .strip_prefix("binary-")
+        .filter(|arch| is_plain_name(arch))
         .ok_or(StatusCode::NOT_FOUND)?;
 
     serve_component_file(
@@ -494,6 +497,10 @@ async fn serve_by_hash(
     let algo = params.get("algo").ok_or(StatusCode::BAD_REQUEST)?;
     let hash = params.get("hash").ok_or(StatusCode::BAD_REQUEST)?;
 
+    if !is_plain_name(component) || !is_by_hash_name(algo, hash) {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
     let repo_config = state
         .config
         .repositories
@@ -504,6 +511,7 @@ async fn serve_by_hash(
         // Binary by-hash: /dists/suite/component/binary-arch/by-hash/algo/hash
         let arch = binary_arch
             .strip_prefix("binary-")
+            .filter(|arch| is_plain_name(arch))
             .ok_or(StatusCode::NOT_FOUND)?;
         repo_config
             .component_arch_path(component, arch)
@@ -537,12 +545,41 @@ async fn serve_by_hash(
     }
 }
 
+/// True when every component of `rel` is a plain path name.
+fn is_safe_pool_path(rel: &str) -> bool {
+    !rel.is_empty()
+        && std::path::Path::new(rel)
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+}
+
+/// True when `name` is exactly one plain path component.
+fn is_plain_name(name: &str) -> bool {
+    let mut components = std::path::Path::new(name).components();
+    matches!(
+        (components.next(), components.next()),
+        (Some(std::path::Component::Normal(c)), None) if c == name
+    )
+}
+
+/// True when `algo` is a by-hash directory name and `hash` is hex.
+fn is_by_hash_name(algo: &str, hash: &str) -> bool {
+    matches!(algo, "MD5Sum" | "SHA1" | "SHA256" | "SHA512")
+        && !hash.is_empty()
+        && hash.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// Serve pool files (package .deb files).
 async fn serve_pool_file(
     Path(path): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Response, StatusCode> {
     debug!("Serving pool file: {}", path);
+
+    // The capture is percent-decoded, so `..` can arrive here.
+    if !is_safe_pool_path(&path) {
+        return Err(StatusCode::NOT_FOUND);
+    }
 
     // Construct the full path to the pool file
     // Pool files are typically stored outside the dists directory
@@ -782,6 +819,11 @@ async fn serve_component_file(
         .get(suite)
         .ok_or(StatusCode::NOT_FOUND)?;
 
+    // The capture is percent-decoded, so `..` can arrive here.
+    if !is_plain_name(component) {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
     let full_path = repo_config.suite_path().join(component).join(file_path);
 
     // 404 on missing artefacts rather than synthesising an empty
@@ -967,12 +1009,15 @@ async fn serve_on_demand_component_file(
     if !binary_arch.starts_with("binary-") {
         return Err(StatusCode::NOT_FOUND);
     }
+    if !is_plain_name(&component) || !is_plain_name(&binary_arch) {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let content_type = packages_content_type(&file).ok_or(StatusCode::NOT_FOUND)?;
     let base: PathBuf = match prepare_on_demand(&state, &kind, &id).await? {
         Some(p) => p,
         None => return Err(StatusCode::NOT_FOUND),
     };
     let path = base.join(&component).join(&binary_arch).join(&file);
-    let content_type = packages_content_type(&file).ok_or(StatusCode::NOT_FOUND)?;
     read_and_respond(path, content_type).await
 }
 
@@ -982,12 +1027,15 @@ async fn serve_on_demand_source_file(
     Path((kind, id, component, file)): Path<(String, String, String, String)>,
     State(state): State<AppState>,
 ) -> Result<Response, StatusCode> {
+    if !is_plain_name(&component) {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let content_type = sources_content_type(&file).ok_or(StatusCode::NOT_FOUND)?;
     let base: PathBuf = match prepare_on_demand(&state, &kind, &id).await? {
         Some(p) => p,
         None => return Err(StatusCode::NOT_FOUND),
     };
     let path = base.join(&component).join("source").join(&file);
-    let content_type = sources_content_type(&file).ok_or(StatusCode::NOT_FOUND)?;
     read_and_respond(path, content_type).await
 }
 
@@ -1004,6 +1052,10 @@ async fn serve_on_demand_binary_by_hash(
     State(state): State<AppState>,
 ) -> Result<Response, StatusCode> {
     if !binary_arch.starts_with("binary-") {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    if !is_plain_name(&component) || !is_plain_name(&binary_arch) || !is_by_hash_name(&algo, &hash)
+    {
         return Err(StatusCode::NOT_FOUND);
     }
     let base: PathBuf = match prepare_on_demand(&state, &kind, &id).await? {
@@ -1024,6 +1076,9 @@ async fn serve_on_demand_source_by_hash(
     Path((kind, id, component, algo, hash)): Path<(String, String, String, String, String)>,
     State(state): State<AppState>,
 ) -> Result<Response, StatusCode> {
+    if !is_plain_name(&component) || !is_by_hash_name(&algo, &hash) {
+        return Err(StatusCode::NOT_FOUND);
+    }
     let base: PathBuf = match prepare_on_demand(&state, &kind, &id).await? {
         Some(p) => p,
         None => return Err(StatusCode::NOT_FOUND),
