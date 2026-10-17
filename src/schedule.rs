@@ -30,11 +30,11 @@ fn publish_mode_value(mode: &Mode) -> usize {
 pub struct ScheduleRequest {
     codebase: String,
     #[allow(dead_code)]
-    branch_url: String,
+    branch_url: Option<String>,
     campaign: String,
-    context: String,
-    value: i64,
-    success_chance: f64,
+    context: Option<String>,
+    value: Option<i64>,
+    success_chance: Option<f64>,
     command: String,
     change_set: Option<String>,
 }
@@ -54,7 +54,7 @@ SELECT
   codebase.branch_url AS branch_url,
   candidate.suite AS campaign,
   candidate.context AS context,
-  candidate.value AS value,
+  candidate.value::bigint AS value,
   candidate.success_chance AS success_chance,
   (
     SELECT array_agg(p.mode::text)
@@ -83,22 +83,28 @@ WHERE TRUE
 
     let rows = query.fetch_all(conn).await?;
 
-    Ok(rows.into_iter().map(|row| {
-        use sqlx::FromRow;
-        use sqlx::Row;
-        let mut req = ScheduleRequest::from_row(&row).unwrap();
+    let requests = rows
+        .into_iter()
+        .map(|row| {
+            use sqlx::FromRow;
+            use sqlx::Row;
+            let mut req = ScheduleRequest::from_row(&row)?;
 
-        let pm = row
-            .get::<Option<Vec<String>>, _>("publish_modes")
-            .unwrap_or_default();
+            let pm = row
+                .try_get::<Option<Vec<String>>, _>("publish_modes")?
+                .unwrap_or_default();
 
-        req.value += pm
-            .iter()
-            .map(|m| publish_mode_value(&m.parse().unwrap()))
-            .sum::<usize>() as i64;
+            let publish_value = pm
+                .iter()
+                .map(|m| publish_mode_value(&m.parse().unwrap()))
+                .sum::<usize>() as i64;
+            req.value = req.value.map(|v| v + publish_value);
 
-        req
-    }))
+            Ok(req)
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()?;
+
+    Ok(requests.into_iter())
 }
 
 async fn estimate_duration_campaign_codebase(
@@ -505,8 +511,8 @@ pub async fn bulk_add_to_queue(
     refresh: bool,
 ) -> Result<(), Error> {
     let bucket = bucket.unwrap_or("default");
-    let mut codebase_values = sqlx::query_as::<_, (String, f64)>(
-        "SELECT name, coalesce(value, 0) FROM codebase WHERE name IS NOT NULL",
+    let codebase_values = sqlx::query_as::<_, (String, f64)>(
+        "SELECT name, coalesce(value, 0)::float8 FROM codebase WHERE name IS NOT NULL",
     )
     .fetch_all(conn)
     .await?
@@ -520,13 +526,14 @@ pub async fn bulk_add_to_queue(
     } else {
         None
     };
-    if let Some(max_codebase_value) = max_codebase_value.filter(|&v| v > 0.0) {
+    let max_codebase_value = max_codebase_value.filter(|&v| v > 0.0);
+    if let Some(max_codebase_value) = max_codebase_value {
         log::info!("Maximum value: {}", max_codebase_value);
     }
     for req in todo {
         let normalized_codebase_value = if let Some(max_codebase_value) = max_codebase_value {
             std::cmp::min_by(
-                codebase_values.remove(&req.codebase).unwrap_or(0.0) / max_codebase_value,
+                codebase_values.get(&req.codebase).copied().unwrap_or(0.0) / max_codebase_value,
                 1.0,
                 |a, b| a.partial_cmp(b).unwrap(),
             )
@@ -538,12 +545,12 @@ pub async fn bulk_add_to_queue(
             &req.codebase,
             &req.campaign,
             Some(&req.command),
-            Some(req.value as f64),
-            Some(req.success_chance),
+            req.value.map(|v| v as f64),
+            req.success_chance,
             Some(normalized_codebase_value),
             requester,
             default_offset,
-            Some(&req.context),
+            req.context.as_deref(),
             req.change_set.as_deref(),
             dry_run,
             refresh,
@@ -691,6 +698,89 @@ mod tests {
         assert_eq!(publish_mode_value(&Mode::AttemptPush), 450);
         assert_eq!(publish_mode_value(&Mode::Bts), 100);
         assert_eq!(publish_mode_value(&Mode::PushDerived), 200);
+    }
+
+    #[tokio::test]
+    async fn test_bulk_add_to_queue() {
+        let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+            eprintln!("TEST_DATABASE_URL not set, skipping");
+            return;
+        };
+        let admin = PgPool::connect(&url).await.unwrap();
+        let name = format!("janitor_test_bulk_add_{}", std::process::id());
+        let create = format!("CREATE DATABASE {}", name);
+        sqlx::query(sqlx::AssertSqlSafe(create))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let options: sqlx::postgres::PgConnectOptions = url.parse().unwrap();
+        let pool = PgPool::connect_with(options.database(&name)).await.unwrap();
+        sqlx::raw_sql(crate::schema::CORE_SCHEMA)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO codebase (name, branch_url, url) VALUES
+                 ('pkg-a', 'https://example.com/a', 'https://example.com/a'),
+                 ('pkg-b', 'https://example.com/b', 'https://example.com/b');
+             INSERT INTO named_publish_policy (name, per_branch_policy)
+                 VALUES ('p', ARRAY[ROW('main', 'propose', NULL)::branch_publish_policy]);
+             INSERT INTO candidate (codebase, suite, command, publish_policy)
+                 VALUES ('pkg-a', 'lintian-fixes', 'cmd', 'p');
+             INSERT INTO candidate
+                 (codebase, suite, command, publish_policy, context, value, success_chance)
+                 VALUES ('pkg-b', 'lintian-fixes', 'cmd', 'p', 'ctx', 10, 0.5),
+                        ('pkg-b', 'fresh-releases', 'cmd', 'p', 'ctx', 10, 0.5);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Codebase values all NULL, all 0, then set.
+        let mut queues = vec![];
+        for values in [
+            "UPDATE codebase SET value = NULL",
+            "UPDATE codebase SET value = 0",
+            "UPDATE codebase SET value = CASE name WHEN 'pkg-a' THEN 10 ELSE 5 END",
+        ] {
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+                "DELETE FROM queue; {}",
+                values
+            )))
+            .execute(&pool)
+            .await
+            .unwrap();
+            let todo = iter_schedule_requests_from_candidates(&pool, None, None)
+                .await
+                .unwrap()
+                .collect::<Vec<_>>();
+            bulk_add_to_queue(&pool, &todo, false, 0.0, None, None, false)
+                .await
+                .unwrap();
+            let queue = sqlx::query_as::<_, (String, String, i64)>(
+                "SELECT codebase, suite, priority FROM queue ORDER BY codebase, suite",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            queues.push(queue);
+        }
+        pool.close().await;
+        let drop = format!("DROP DATABASE {}", name);
+        sqlx::query(sqlx::AssertSqlSafe(drop))
+            .execute(&admin)
+            .await
+            .unwrap();
+
+        for queue in &queues {
+            assert_eq!(queue.len(), 3);
+            // Both campaigns of pkg-b get the same priority.
+            assert_eq!(queue[1].1, "fresh-releases");
+            assert_eq!(queue[2].1, "lintian-fixes");
+            assert_eq!(queue[1].2, queue[2].2);
+        }
+        // pkg-b has half the value of pkg-a, so it is scheduled later.
+        assert!(queues[2][1].2 > queues[0][1].2);
     }
 
     #[test]
@@ -1001,6 +1091,66 @@ mod tests {
             Duration::seconds(28802) + Duration::microseconds(250000)
         );
         assert_eq!(total, 3);
+    }
+
+    #[tokio::test]
+    async fn test_iter_schedule_requests_from_candidates() {
+        let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+            eprintln!("TEST_DATABASE_URL not set, skipping");
+            return;
+        };
+        let admin = PgPool::connect(&url).await.unwrap();
+        let name = format!("janitor_test_schedule_requests_{}", std::process::id());
+        let create = format!("CREATE DATABASE {}", name);
+        sqlx::query(sqlx::AssertSqlSafe(create))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let options: sqlx::postgres::PgConnectOptions = url.parse().unwrap();
+        let pool = PgPool::connect_with(options.database(&name)).await.unwrap();
+        sqlx::raw_sql(crate::schema::CORE_SCHEMA)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO codebase (name) VALUES ('pkg-a');
+             INSERT INTO codebase (name, branch_url, url)
+                 VALUES ('pkg-b', 'https://example.com/b', 'https://example.com/b');
+             INSERT INTO named_publish_policy (name, per_branch_policy)
+                 VALUES ('p', ARRAY[ROW('main', 'propose', NULL)::branch_publish_policy]);
+             INSERT INTO candidate (codebase, suite, command, publish_policy)
+                 VALUES ('pkg-a', 'lintian-fixes', 'cmd', 'p');
+             INSERT INTO candidate
+                 (codebase, suite, command, publish_policy, context, value, success_chance)
+                 VALUES ('pkg-b', 'lintian-fixes', 'cmd', 'p', 'ctx', 10, 0.5);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result = iter_schedule_requests_from_candidates(&pool, None, None)
+            .await
+            .map(|requests| requests.collect::<Vec<_>>());
+        pool.close().await;
+        let drop = format!("DROP DATABASE {}", name);
+        sqlx::query(sqlx::AssertSqlSafe(drop))
+            .execute(&admin)
+            .await
+            .unwrap();
+
+        let mut requests = result.unwrap();
+        requests.sort_by(|x, y| x.codebase.cmp(&y.codebase));
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].codebase, "pkg-a");
+        assert_eq!(requests[0].branch_url, None);
+        assert_eq!(requests[0].context, None);
+        assert_eq!(requests[0].value, None);
+        assert_eq!(requests[0].success_chance, None);
+        assert_eq!(requests[1].codebase, "pkg-b");
+        assert_eq!(requests[1].context.as_deref(), Some("ctx"));
+        // 10 from the candidate plus 400 for the propose mode.
+        assert_eq!(requests[1].value, Some(410));
+        assert_eq!(requests[1].success_chance, Some(0.5));
     }
 
     #[test]
