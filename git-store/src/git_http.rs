@@ -48,6 +48,11 @@ pub async fn git_diff(
         }
     };
 
+    // The extractor percent-decodes, so `%2F` and `..` can arrive here.
+    if !crate::repository::RepositoryManager::is_valid_name(&codebase) {
+        return Err(GitStoreError::RepositoryNotFound(codebase));
+    }
+
     let repo_path = state.repo_manager.repo_path(&codebase);
 
     // Python order: missing repo dir before SHA validity.
@@ -236,6 +241,11 @@ pub async fn revision_info(
         }
     };
 
+    // The extractor percent-decodes, so `%2F` and `..` can arrive here.
+    if !crate::repository::RepositoryManager::is_valid_name(&codebase) {
+        return Err(GitStoreError::RepositoryNotFound(codebase));
+    }
+
     let repo_path = state.repo_manager.repo_path(&codebase);
     // Python order: check repo dir before SHA validity.
     if !repo_path.is_dir() {
@@ -348,6 +358,11 @@ pub async fn git_log(
         if !old.is_empty() {
             crate::repository::RepositoryManager::validate_sha(old)?;
         }
+    }
+
+    // The extractor percent-decodes, so `%2F` and `..` can arrive here.
+    if !crate::repository::RepositoryManager::is_valid_name(&codebase) {
+        return Err(GitStoreError::RepositoryNotFound(codebase));
     }
 
     let repo_path = state.repo_manager.repo_path(&codebase);

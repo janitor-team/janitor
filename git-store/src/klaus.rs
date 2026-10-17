@@ -54,6 +54,11 @@ pub async fn handle_klaus(
 ) -> Result<Response> {
     debug!("klaus request: {} {}", codebase, sub_path);
 
+    // The extractor percent-decodes, so `%2F` and `..` can arrive here.
+    if !crate::repository::RepositoryManager::is_valid_name(&codebase) {
+        return Err(GitStoreError::RepositoryNotFound(codebase));
+    }
+
     let repo_path = state.repo_manager.repo_path(&codebase);
 
     // Mirror py::_git_open_repo: if the local clone is missing, auto-

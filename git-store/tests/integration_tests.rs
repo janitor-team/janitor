@@ -1347,6 +1347,119 @@ db_test! {
     }
 }
 
+/// Bare repository with two commits; returns (first, second).
+fn init_outside_repo(path: &std::path::Path) -> (git2::Oid, git2::Oid) {
+    let repo = git2::Repository::init_bare(path).unwrap();
+    let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+    let empty = repo
+        .find_tree(repo.treebuilder(None).unwrap().write().unwrap())
+        .unwrap();
+    let c1 = repo
+        .commit(Some("refs/heads/main"), &sig, &sig, "first", &empty, &[])
+        .unwrap();
+    let mut tb = repo.treebuilder(None).unwrap();
+    tb.insert(
+        "file.txt",
+        repo.blob(b"outside the store\n").unwrap(),
+        0o100644,
+    )
+    .unwrap();
+    let tree = repo.find_tree(tb.write().unwrap()).unwrap();
+    let parent = repo.find_commit(c1).unwrap();
+    let c2 = repo
+        .commit(
+            Some("refs/heads/main"),
+            &sig,
+            &sig,
+            "second",
+            &tree,
+            &[&parent],
+        )
+        .unwrap();
+    (c1, c2)
+}
+
+/// The two encoded spellings that reach `outside` from a store in `store`.
+fn escaping_names(store: &std::path::Path, outside: &std::path::Path) -> Vec<String> {
+    let relative = format!(
+        "../{}/{}",
+        outside
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        outside.file_name().unwrap().to_str().unwrap()
+    );
+    assert!(store.join(&relative).is_dir());
+    vec![
+        outside.to_str().unwrap().replace('/', "%2F"),
+        relative.replace('/', "%2F"),
+    ]
+}
+
+db_test! {
+    async fn test_admin_codebase_name_cannot_leave_store(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+
+        let tmp = TempDir::new().unwrap();
+        let other = TempDir::new().unwrap();
+        let outside = other.path().join("outside");
+        let (c1, c2) = init_outside_repo(&outside);
+
+        let state = build_state(&tmp, &test_db, AppRole::Admin).await;
+        let app = web::create_admin_app(state, 0);
+        let (addr, handle) = spawn(app).await;
+
+        for name in escaping_names(tmp.path(), &outside) {
+            for query in [
+                format!("diff?old={}&new={}", c1, c2),
+                format!("log?new={}", c2),
+                format!("revision-info?old={}&new={}", c1, c2),
+            ] {
+                let url = format!("http://{}/{}/{}", addr, name, query);
+                let resp = reqwest::get(&url).await.unwrap();
+                assert_eq!(resp.status(), 404, "{}", url);
+            }
+        }
+
+        handle.abort();
+    }
+}
+
+db_test! {
+    async fn test_public_klaus_codebase_name_cannot_leave_store(test_db: TestDatabase) {
+        if !klaus_available() {
+            eprintln!("skipping: klaus not importable");
+            return;
+        }
+        setup_test_database(test_db.pool()).await.unwrap();
+
+        let tmp = TempDir::new().unwrap();
+        let other = TempDir::new().unwrap();
+        let outside = other.path().join("outside");
+        let (_c1, c2) = init_outside_repo(&outside);
+
+        let state = build_state(&tmp, &test_db, AppRole::Public).await;
+        let app = web::create_public_app(state, 0);
+        let (addr, handle) = spawn(app).await;
+
+        for name in escaping_names(tmp.path(), &outside) {
+            let url = format!("http://{}/git/{}/raw/{}/file.txt", addr, name, c2);
+            let resp = reqwest::Client::new()
+                .get(&url)
+                .header("User-Agent", "Mozilla/5.0 (test)")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 404, "{}", url);
+        }
+
+        handle.abort();
+    }
+}
+
 db_test! {
     async fn test_public_klaus_tree_and_commit_views(test_db: TestDatabase) {
         // Exercise more than the index page: /tree/<rev>/ (browse

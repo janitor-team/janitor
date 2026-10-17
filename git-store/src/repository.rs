@@ -16,6 +16,15 @@ impl RepositoryManager {
         Self { base_path }
     }
 
+    /// True if `codebase` is one plain path component.
+    pub fn is_valid_name(codebase: &str) -> bool {
+        let mut components = Path::new(codebase).components();
+        matches!(
+            (components.next(), components.next()),
+            (Some(std::path::Component::Normal(c)), None) if c == codebase
+        )
+    }
+
     /// Get the path for a repository
     pub fn repo_path(&self, codebase: &str) -> PathBuf {
         self.base_path.join(codebase)
@@ -129,6 +138,18 @@ mod tests {
         assert!(
             RepositoryManager::validate_sha("1234567890abcdef1234567890abcdef1234567g").is_err()
         );
+    }
+
+    #[test]
+    fn test_is_valid_name() {
+        for name in ["codebase", "a.b", "a,b", ".hidden", "..x"] {
+            assert!(RepositoryManager::is_valid_name(name), "{}", name);
+        }
+        for name in [
+            "", ".", "..", "/", "/etc", "a/b", "../a", "a/..", "a/", "./a",
+        ] {
+            assert!(!RepositoryManager::is_valid_name(name), "{}", name);
+        }
     }
 
     #[test]
