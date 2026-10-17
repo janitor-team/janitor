@@ -58,14 +58,10 @@ async fn killpg_reaches_grandchildren_in_the_same_group() {
         .await
         .expect("child reaped");
 
-    // Give the kernel a moment to deliver and the grandchild's
-    // parent (sh, now dead) to reparent it to PID 1, which then
-    // reaps it. `kill -0` reports ESRCH once gone.
-    for _ in 0..50 {
-        if unsafe { libc::kill(grandchild_pid, 0) } < 0 {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("grandchild {grandchild_pid} still alive after killpg");
+    // The grandchild holds the stderr pipe, so end of file means it has exited.
+    let rest = tokio::time::timeout(Duration::from_secs(5), lines.next_line())
+        .await
+        .unwrap_or_else(|_| panic!("grandchild {grandchild_pid} still alive after killpg"))
+        .expect("read stderr");
+    assert_eq!(rest, None, "unexpected output on stderr");
 }
