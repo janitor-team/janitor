@@ -2878,6 +2878,8 @@ struct ResumeOutcome {
     rate_limit: Option<(String, Option<f64>)>,
     /// `full_branch_url` of the main branch, if it could be opened.
     main_branch_url: Option<String>,
+    /// Resume branch (credentials removed) that workers cannot read, so the run has to fail.
+    unusable_resume_branch: Option<String>,
 }
 
 /// Resume information as returned in the assign response's `resume`
@@ -2895,6 +2897,22 @@ struct ResumeAssignment {
     branches: Vec<(String, Option<String>, Option<String>, Option<String>)>,
 }
 
+/// Whether a worker without credentials can read the resume branch at `url`.
+fn resume_branch_url_usable(url: &url::Url) -> bool {
+    !janitor::vcs::is_authenticated_url(url)
+}
+
+/// Result code of a run that fails because workers cannot read its resume branch.
+const RESUME_BRANCH_REQUIRES_AUTHENTICATION: &str = "resume-branch-requires-authentication";
+
+/// Description stored with a run that fails for that reason.
+fn unusable_resume_branch_description(resume_branch_url: &str) -> String {
+    format!(
+        "Resume branch {} needs credentials the worker does not have",
+        resume_branch_url
+    )
+}
+
 /// Resume-branch lookup. Opens the main branch, asks the forge (via
 /// silver_platter) for a previously proposed branch matching the
 /// campaign's branch name, and if found looks up a prior successful
@@ -2902,8 +2920,9 @@ struct ResumeAssignment {
 /// resume from (or `None` if no resume is available) plus an optional
 /// `(host, retry_after)` pair when the forge is rate-limiting us:
 /// the caller feeds that into `RunnerDatabase::rate_limit_host` so
-/// subsequent assignments skip the host. Non-rate-limit errors are
-/// swallowed since resume is best-effort.
+/// subsequent assignments skip the host. Also names a resume branch
+/// that workers cannot read, so the caller fails the run. Other errors
+/// are swallowed since resume is best-effort.
 async fn compute_resume_from(
     state: &Arc<AppState>,
     assignment: &crate::QueueAssignment,
@@ -2912,6 +2931,7 @@ async fn compute_resume_from(
         resume: None,
         rate_limit: None,
         main_branch_url: None,
+        unusable_resume_branch: None,
     };
     let Some(branch_url) = assignment.vcs_info.branch_url.as_deref() else {
         return empty();
@@ -2951,7 +2971,7 @@ async fn compute_resume_from(
     let open_url = url.clone();
     enum BlockingResult {
         /// (resume-branch revision, resume-branch URL as reported by the forge)
-        Found(String, String),
+        Found(String, url::Url),
         NotFound,
         RateLimited {
             host: String,
@@ -2996,7 +3016,7 @@ async fn compute_resume_from(
             crate::resume::ResumeLookup::Found(b) => {
                 use breezyshim::branch::Branch as _;
                 let rev = b.last_revision().to_string();
-                let url = b.get_user_url().to_string();
+                let url = b.get_user_url();
                 BlockingResult::Found(rev, url)
             }
             crate::resume::ResumeLookup::NotFound => BlockingResult::NotFound,
@@ -3033,6 +3053,7 @@ async fn compute_resume_from(
         resume: None,
         rate_limit: None,
         main_branch_url: main_branch_url.clone(),
+        unusable_resume_branch: None,
     };
     // If the forge rate-limited us, short-circuit: don't bother with
     // the VCS-manager fallback (same codebase, same rate limit) and
@@ -3043,6 +3064,7 @@ async fn compute_resume_from(
             resume: None,
             rate_limit: Some(rl),
             main_branch_url,
+            unusable_resume_branch: None,
         };
     }
 
@@ -3095,7 +3117,7 @@ async fn compute_resume_from(
         let Ok((rev, br_url)) = tokio::task::spawn_blocking(move || {
             use breezyshim::branch::Branch as _;
             let rev = branch.last_revision().to_string();
-            let url = branch.get_user_url().to_string();
+            let url = branch.get_user_url();
             (rev, url)
         })
         .await
@@ -3121,6 +3143,21 @@ async fn compute_resume_from(
         .check_resume_result(&assignment.queue_item.campaign, &resume_revision)
         .await
     {
+        Ok(Some(info)) if !resume_branch_url_usable(&resume_branch_url) => {
+            let shown_url = crate::resume::note_resume_branch_skipped(
+                &assignment.queue_item.codebase,
+                &assignment.queue_item.campaign,
+                &info.run_id,
+                &resume_branch_url,
+                crate::resume::SKIP_REQUIRES_AUTHENTICATION,
+            );
+            return ResumeOutcome {
+                resume: None,
+                rate_limit: None,
+                main_branch_url,
+                unusable_resume_branch: Some(shown_url),
+            };
+        }
         Ok(Some(info)) => {
             log::info!(
                 "Resuming {}/{} from run {}",
@@ -3131,7 +3168,7 @@ async fn compute_resume_from(
             Some(ResumeAssignment {
                 run_id: info.run_id,
                 result: info.result,
-                branch_url: resume_branch_url,
+                branch_url: resume_branch_url.to_string(),
                 branches: info.result_branches,
             })
         }
@@ -3145,6 +3182,7 @@ async fn compute_resume_from(
         resume,
         rate_limit: None,
         main_branch_url,
+        unusable_resume_branch: None,
     }
 }
 
@@ -3349,6 +3387,7 @@ async fn assign_work_internal(
             resume: None,
             rate_limit: None,
             main_branch_url: None,
+            unusable_resume_branch: None,
         }
     } else {
         compute_resume_from(&state, &assignment).await
@@ -3382,6 +3421,38 @@ async fn assign_work_internal(
                 "reason": "rate limited",
                 "host": host,
                 "retry_after": retry_after,
+            })),
+        )
+            .into_response();
+    }
+
+    if let Some(resume_branch_url) = resume_outcome.unusable_resume_branch {
+        let description = unusable_resume_branch_description(&resume_branch_url);
+        abort_assignment(
+            &state,
+            &assignment,
+            RESUME_BRANCH_REQUIRES_AUTHENTICATION,
+            &description,
+        )
+        .await;
+        // The run is over, so let go of the queue item claim.
+        if let Err(e) = state
+            .database
+            .unassign_queue_item(assignment.queue_item.id)
+            .await
+        {
+            log::warn!(
+                "Failed to unassign queue item {}: {}",
+                assignment.queue_item.id,
+                e
+            );
+        }
+
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "reason": "resume branch requires authentication",
+                "resume_branch_url": resume_branch_url,
             })),
         )
             .into_response();
@@ -3947,7 +4018,8 @@ pub fn app(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::{
-        assignment_validation_outcome, candidate_preflight, main_branch_name, AssignmentValidation,
+        assignment_validation_outcome, candidate_preflight, main_branch_name,
+        resume_branch_url_usable, unusable_resume_branch_description, AssignmentValidation,
         CandidatePreflight,
     };
     use crate::CampaignConfig;
@@ -4771,5 +4843,37 @@ distribution {
             main_branch_name(Some("https://example.com/foo?branch=")),
             "main"
         );
+    }
+
+    /// The failed run's description names the resume branch.
+    #[test]
+    fn test_unusable_resume_branch_result() {
+        assert_eq!(
+            unusable_resume_branch_description(
+                "git+ssh://github.com/janitor-bot/foo,branch=lintian-fixes"
+            ),
+            "Resume branch git+ssh://github.com/janitor-bot/foo,branch=lintian-fixes \
+             needs credentials the worker does not have"
+        );
+    }
+
+    /// Resume branches that need credentials are not handed to workers.
+    #[test]
+    fn test_resume_branch_url_usable() {
+        for url in [
+            "git+ssh://git@github.com/janitor-bot/foo.git,branch=lintian-fixes",
+            "git+ssh://git@salsa.debian.org/janitor-bot/foo.git",
+            "bzr+ssh://bazaar.launchpad.net/~janitor-bot/foo/lintian-fixes",
+        ] {
+            assert!(!resume_branch_url_usable(&url.parse().unwrap()), "{}", url);
+        }
+        for url in [
+            "https://github.com/janitor-bot/foo.git,branch=lintian-fixes",
+            "https://janitor.example.com/git/foo,branch=lintian-fixes%2Fmain",
+            "https://janitor.example.com/bzr/foo/lintian-fixes/main",
+            "git://example.com/foo.git",
+        ] {
+            assert!(resume_branch_url_usable(&url.parse().unwrap()), "{}", url);
+        }
     }
 }

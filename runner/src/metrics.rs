@@ -223,6 +223,13 @@ lazy_static! {
         "artifact_upload_failed_total",
         "Number of failed artifact uploads"
     ).unwrap();
+
+    /// Resume branches that were found but not used
+    pub static ref RESUME_BRANCHES_SKIPPED_TOTAL: IntCounterVec = register_int_counter_vec!(
+        "janitor_runner_resume_branches_skipped_total",
+        "Total number of resume branches found but not used, by reason",
+        &["reason"]
+    ).unwrap();
 }
 
 /// Metrics collection helper functions
@@ -281,6 +288,13 @@ impl MetricsCollector {
     /// Record watchdog termination
     pub fn record_watchdog_termination(reason: &str) {
         WATCHDOG_TERMINATED_RUNS_TOTAL
+            .with_label_values(&[reason])
+            .inc();
+    }
+
+    /// Record a resume branch that was found but not used
+    pub fn record_resume_branch_skipped(reason: &str) {
+        RESUME_BRANCHES_SKIPPED_TOTAL
             .with_label_values(&[reason])
             .inc();
     }
