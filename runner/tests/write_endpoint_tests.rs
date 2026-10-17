@@ -2441,3 +2441,83 @@ async fn finish_stores_artifacts_in_backup() {
     .unwrap();
     assert_eq!(contents, b"deb contents");
 }
+
+/// Like Python, an unexpected error importing a log fails the finish
+/// request and the run is not recorded.
+#[tokio::test]
+async fn finish_fails_when_log_import_fails() {
+    // A log directory that is a regular file, so importing logs fails.
+    let not_a_dir = tempfile::NamedTempFile::new().unwrap();
+    let log_manager =
+        Arc::new(janitor::logs::FileSystemLogFileManager::new(not_a_dir.path()).unwrap());
+    let builder = test_utils::TestConfigBuilder::new()
+        .with_campaign("test-campaign", "true")
+        .with_log_manager(log_manager);
+    let Some((app, state)) =
+        test_utils::create_test_app_with_state_with_config_if_available(builder)
+            .await
+            .expect("test app setup")
+    else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    insert_codebase(state.database.pool(), "log-fails-cb").await;
+    state
+        .auth_service
+        .create_worker("lf-worker", "pw", None)
+        .await
+        .expect("create worker");
+    state
+        .active_runs
+        .store(ActiveRun {
+            worker_name: "lf-worker".to_string(),
+            worker_link: None,
+            queue_id: 1,
+            log_id: "run-log-fails".to_string(),
+            start_time: Utc::now(),
+            finish_time: None,
+            estimated_duration: None,
+            campaign: "test-campaign".to_string(),
+            change_set: None,
+            command: "true".to_string(),
+            codebase: "log-fails-cb".to_string(),
+            backchannel: Backchannel::None {},
+            vcs_info: VcsInfo::default(),
+            instigated_context: None,
+            resume_from: None,
+        })
+        .await;
+
+    let boundary = "log-boundary";
+    let multipart_body = format!(
+        "--{boundary}\r\n\
+         Content-Disposition: form-data; name=\"metadata\"; filename=\"result.json\"\r\n\
+         Content-Type: application/json\r\n\r\n\
+         {{\"code\":\"success\",\"description\":\"done\"}}\r\n\
+         --{boundary}\r\n\
+         Content-Disposition: form-data; name=\"file\"; filename=\"worker.log\"\r\n\
+         Content-Type: text/plain\r\n\r\n\
+         log contents\r\n\
+         --{boundary}--\r\n"
+    );
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/active-runs/run-log-fails/finish")
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Body::from(multipart_body))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    let status = response.status();
+    let body = get_body(response).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body: {body}");
+
+    let runs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM run WHERE id = $1")
+        .bind("run-log-fails")
+        .fetch_one(state.database.pool())
+        .await
+        .unwrap();
+    assert_eq!(runs, 0);
+}
