@@ -677,6 +677,29 @@ impl LocalGitVcsManager {
     }
 }
 
+/// breezy's prober for local `vcs` branches. silver-platter's
+/// `select_probers` only offers the remote probers.
+fn local_prober(
+    url: &Url,
+    vcs: &str,
+    module: &str,
+    name: &str,
+) -> Result<Box<dyn breezyshim::controldir::PyProber>, BranchOpenError> {
+    use pyo3::prelude::*;
+    Python::attach(|py| -> PyResult<_> {
+        let prober = py.import(module)?.getattr(name)?;
+        Ok(
+            Box::new(breezyshim::controldir::GenericProber::new(prober.unbind()))
+                as Box<dyn breezyshim::controldir::PyProber>,
+        )
+    })
+    .map_err(|e| BranchOpenError::Unsupported {
+        url: url.clone(),
+        description: e.to_string(),
+        vcs: Some(vcs.to_string()),
+    })
+}
+
 #[async_trait]
 impl VcsManager for LocalGitVcsManager {
     fn get_branch(
@@ -685,19 +708,8 @@ impl VcsManager for LocalGitVcsManager {
         branch_name: &str,
     ) -> Result<Option<breezyshim::branch::GenericBranch>, BranchOpenError> {
         let url = self.get_branch_url(codebase, branch_name);
-        let probers = silver_platter::probers::select_probers(Some("git"));
-        match silver_platter::vcs::open_branch(
-            &url,
-            None,
-            Some(
-                probers
-                    .iter()
-                    .map(AsRef::as_ref)
-                    .collect::<Vec<_>>()
-                    .as_slice(),
-            ),
-            None,
-        ) {
+        let prober = local_prober(&url, "git", "breezy.git", "LocalGitProber")?;
+        match silver_platter::vcs::open_branch(&url, None, Some(&[prober.as_ref()]), None) {
             Ok(branch) => Ok(Some(branch)),
             Err(BranchOpenError::Unavailable { .. }) | Err(BranchOpenError::Missing { .. }) => {
                 Ok(None)
@@ -855,19 +867,8 @@ impl VcsManager for LocalBzrVcsManager {
         branch_name: &str,
     ) -> Result<Option<breezyshim::branch::GenericBranch>, BranchOpenError> {
         let url = self.get_branch_url(codebase, branch_name);
-        let probers = silver_platter::probers::select_probers(Some("bzr"));
-        match silver_platter::vcs::open_branch(
-            &url,
-            None,
-            Some(
-                probers
-                    .iter()
-                    .map(AsRef::as_ref)
-                    .collect::<Vec<_>>()
-                    .as_slice(),
-            ),
-            None,
-        ) {
+        let prober = local_prober(&url, "bzr", "breezy.bzr", "BzrProber")?;
+        match silver_platter::vcs::open_branch(&url, None, Some(&[prober.as_ref()]), None) {
             Ok(branch) => Ok(Some(branch)),
             Err(BranchOpenError::Unavailable { .. }) | Err(BranchOpenError::Missing { .. }) => {
                 Ok(None)
@@ -999,6 +1000,92 @@ mod local_repository_url_tests {
         let bzr_url = bzr_manager.get_repository_url("mycodebase");
         assert!(bzr_url.as_str().starts_with("file://"));
         assert!(bzr_url.as_str().ends_with("/mycodebase"));
+    }
+
+    fn run(dir: &Path, program: &str, args: &[&str]) -> String {
+        let output = std::process::Command::new(program)
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{:?}", output);
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    fn make_git_repo(repo: &Path) {
+        std::fs::create_dir(repo).unwrap();
+        run(repo, "git", &["init", "-q", "-b", "main"]);
+        run(
+            repo,
+            "git",
+            &["commit", "-q", "--allow-empty", "-m", "first"],
+        );
+        run(repo, "git", &["branch", "other"]);
+        run(
+            repo,
+            "git",
+            &["commit", "-q", "--allow-empty", "-m", "second"],
+        );
+    }
+
+    fn git_revid(repo: &Path, branch: &str) -> RevisionId {
+        let sha = run(repo, "git", &["rev-parse", branch]);
+        RevisionId::from(format!("git-v1:{}", sha.trim()).into_bytes())
+    }
+
+    #[test]
+    fn local_git_get_branch() {
+        let base = tempfile::tempdir().unwrap();
+        let repo = base.path().join("mycodebase");
+        make_git_repo(&repo);
+
+        let manager = LocalGitVcsManager::new(base.path().to_path_buf());
+        let branch = manager.get_branch("mycodebase", "main").unwrap().unwrap();
+        assert_eq!(branch.last_revision(), git_revid(&repo, "main"));
+        assert!(manager.get_branch("missing", "main").unwrap().is_none());
+    }
+
+    // TODO: enable once silver-platter's open_branch reads the ",branch="
+    // segment parameter rather than ",name=" (fixed in silver-platter git
+    // after 0.8.4).
+    #[test]
+    #[ignore = "silver-platter 0.8.4 ignores the branch segment parameter"]
+    fn local_git_get_non_default_branch() {
+        let base = tempfile::tempdir().unwrap();
+        let repo = base.path().join("mycodebase");
+        make_git_repo(&repo);
+
+        let manager = LocalGitVcsManager::new(base.path().to_path_buf());
+        let branch = manager.get_branch("mycodebase", "other").unwrap().unwrap();
+        assert_eq!(branch.last_revision(), git_revid(&repo, "other"));
+    }
+
+    #[test]
+    fn local_bzr_get_branch() {
+        let base = tempfile::tempdir().unwrap();
+        let tree_path = base.path().join("mycodebase").join("main");
+        std::fs::create_dir_all(&tree_path).unwrap();
+        use breezyshim::workingtree::WorkingTree;
+        let tree =
+            breezyshim::controldir::create_standalone_workingtree(&tree_path, "bzr").unwrap();
+        tree.build_commit()
+            .message("first")
+            .committer("Test <test@example.com>")
+            .allow_pointless(true)
+            .commit()
+            .unwrap();
+
+        let manager = LocalBzrVcsManager::new(base.path().to_path_buf());
+        let branch = manager.get_branch("mycodebase", "main").unwrap().unwrap();
+        assert_eq!(branch.last_revision_info().0, 1);
+        assert!(manager
+            .get_branch("mycodebase", "missing")
+            .unwrap()
+            .is_none());
     }
 }
 
