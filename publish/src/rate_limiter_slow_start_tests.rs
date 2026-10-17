@@ -99,3 +99,37 @@ fn counts_without_an_open_entry_mean_nothing_open() {
     });
     assert_eq!(refused_at(&limiter), None);
 }
+
+#[test]
+fn get_stats_is_none_before_a_refresh() {
+    assert!(SlowStartRateLimiter::new(Some(5)).get_stats().is_none());
+}
+
+#[test]
+fn get_stats_reports_open_counts_with_nothing_absorbed() {
+    let stats = limiter(Some(5), 3, 0, 0).get_stats().unwrap();
+    assert_eq!(stats.per_bucket.get(BUCKET), Some(&3));
+}
+
+#[test]
+fn get_stats_reports_open_counts_without_an_overall_maximum() {
+    let stats = limiter(None, 2, 4, 0).get_stats().unwrap();
+    assert_eq!(stats.per_bucket.get(BUCKET), Some(&2));
+}
+
+#[test]
+fn get_stats_reports_the_same_open_counts_as_the_fixed_limiter() {
+    let counts = maplit::hashmap! {
+        MergeProposalStatus::Open => maplit::hashmap! { BUCKET.to_string() => 7 },
+        MergeProposalStatus::Merged => maplit::hashmap! { BUCKET.to_string() => 1 },
+    };
+    let mut slow = SlowStartRateLimiter::new(Some(10));
+    slow.set_mps_per_bucket(&counts);
+    let mut fixed = FixedRateLimiter::new(10);
+    fixed.set_mps_per_bucket(&counts);
+    assert_eq!(
+        slow.get_stats().unwrap().per_bucket,
+        fixed.get_stats().unwrap().per_bucket
+    );
+    assert_eq!(slow.get_stats().unwrap().per_bucket.get(BUCKET), Some(&7));
+}

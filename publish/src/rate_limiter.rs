@@ -315,18 +315,7 @@ impl RateLimiter for SlowStartRateLimiter {
         self.open_mps_per_bucket
             .as_ref()
             .map(|open_mps_per_bucket| RateLimitStats {
-                per_bucket: open_mps_per_bucket
-                    .iter()
-                    .map(|(k, _v)| {
-                        (
-                            k.clone(),
-                            std::cmp::min(
-                                self.max_mps_per_bucket.unwrap(),
-                                self.get_limit(k).unwrap(),
-                            ),
-                        )
-                    })
-                    .collect(),
+                per_bucket: open_mps_per_bucket.clone(),
             })
     }
 }
