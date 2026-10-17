@@ -612,6 +612,11 @@ pub fn publish(
         }
     }
 
+    // publish_changes() write-locks the target, and breezy will not upgrade a
+    // read lock on a git branch.
+    std::mem::drop(target_lock);
+    std::mem::drop(source_lock);
+
     let labels = if forge
         .as_ref()
         .map(|x| x.supports_merge_proposal_labels())
@@ -726,20 +731,16 @@ pub fn publish(
             code: "empty-merge-proposal".to_string(),
             description: "No changes to propose; changes made independently upstream?".to_string(),
         }),
-        Ok(publish_result) => {
-            std::mem::drop(target_lock);
-            std::mem::drop(source_lock);
-            Ok((
-                PublishOneResult {
-                    mode,
-                    proposal: publish_result.proposal,
-                    is_new: publish_result.is_new,
-                    target_branch,
-                    forge: publish_result.forge,
-                },
-                derived_branch_name.to_string(),
-            ))
-        }
+        Ok(publish_result) => Ok((
+            PublishOneResult {
+                mode,
+                proposal: publish_result.proposal,
+                is_new: publish_result.is_new,
+                target_branch,
+                forge: publish_result.forge,
+            },
+            derived_branch_name.to_string(),
+        )),
         Err(e) => Err(PublishError::Failure {
             description: format!("Publish error: {}", e),
             code: "publish-error".to_string(),
