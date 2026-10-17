@@ -1189,29 +1189,30 @@ fn resolve_redirects(url: &url::Url) -> url::Url {
 /// * `possible_transports` - Optional list of transports to reuse
 ///
 /// # Returns
-/// `true` if the branches match, `false` otherwise
+/// `Ok(true)` if the branches match, `Ok(false)` if they differ or one is
+/// missing, and the error if a branch could not be opened for another reason
 pub fn branches_match(
     url_a: Option<&url::Url>,
     url_b: Option<&url::Url>,
     mut possible_transports: Option<&mut Vec<breezyshim::transport::Transport>>,
-) -> bool {
+) -> Result<bool, silver_platter::vcs::BranchOpenError> {
     use silver_platter::vcs::{open_branch, BranchOpenError};
     if url_a == url_b {
-        return true;
+        return Ok(true);
     }
     let (url_a, url_b) = match (url_a, url_b) {
         (Some(a), Some(b)) => (a, b),
-        _ => return false,
+        _ => return Ok(false),
     };
     let parsed_url_a = match url_a.to_string().trim_end_matches('/').parse() {
         Ok(url) => url,
-        Err(_) => return false,
+        Err(_) => return Ok(false),
     };
     let (base_url_a, _params_a) = breezyshim::urlutils::split_segment_parameters(&parsed_url_a);
 
     let parsed_url_b = match url_b.to_string().trim_end_matches('/').parse() {
         Ok(url) => url,
-        Err(_) => return false,
+        Err(_) => return Ok(false),
     };
     let (base_url_b, _params_b) = breezyshim::urlutils::split_segment_parameters(&parsed_url_b);
     // Support following redirects by normalizing URLs
@@ -1221,19 +1222,32 @@ pub fn branches_match(
     if normalized_url_a.to_string().trim_end_matches('/')
         != normalized_url_b.to_string().trim_end_matches('/')
     {
-        return false;
+        return Ok(false);
     }
     let branch_a = match open_branch(url_a, possible_transports.as_deref_mut(), None, None) {
         Ok(branch) => branch,
-        Err(BranchOpenError::Missing { .. }) => return false,
-        Err(e) => panic!("Unexpected error: {:?}", e),
+        Err(BranchOpenError::Missing { .. }) => return Ok(false),
+        Err(e) => return Err(e),
     };
     let branch_b = match open_branch(url_b, possible_transports, None, None) {
         Ok(branch) => branch,
-        Err(BranchOpenError::Missing { .. }) => return false,
-        Err(e) => panic!("Unexpected error: {:?}", e),
+        Err(BranchOpenError::Missing { .. }) => return Ok(false),
+        Err(e) => return Err(e),
     };
-    branch_a.name() == branch_b.name()
+    Ok(branch_a.name() == branch_b.name())
+}
+
+/// Map a branch open error to the rate-limit error that starts the forge
+/// back-off in `check_existing`; `None` for every other error.
+pub(crate) fn branch_open_rate_limit(
+    e: &silver_platter::vcs::BranchOpenError,
+) -> Option<CheckMpError> {
+    match e {
+        silver_platter::vcs::BranchOpenError::RateLimited {
+            url, retry_after, ..
+        } => Some(branch_rate_limited(url, *retry_after)),
+        _ => None,
+    }
 }
 
 /// Get the URL for a user who merged a branch.
@@ -2493,6 +2507,28 @@ impl From<sqlx::Error> for CheckMpError {
     fn from(e: sqlx::Error) -> Self {
         CheckMpError::Database(e)
     }
+}
+
+/// Longest Retry-After, in seconds, accepted from a forge.
+const MAX_BRANCH_RETRY_AFTER_SECS: f64 = 86400.0;
+
+/// The check error for a branch open that the forge rate-limited.
+pub(crate) fn branch_rate_limited(url: &url::Url, retry_after: Option<f64>) -> CheckMpError {
+    let retry_after = match retry_after {
+        None => None,
+        Some(secs) if (0.0..=MAX_BRANCH_RETRY_AFTER_SECS).contains(&secs) => {
+            Some(chrono::Duration::seconds(secs.ceil() as i64))
+        }
+        Some(secs) => {
+            log::error!(
+                "Forge sent an invalid Retry-After ({}) for {}; using the default",
+                secs,
+                url
+            );
+            None
+        }
+    };
+    CheckMpError::BranchRateLimited { retry_after }
 }
 
 impl std::fmt::Display for CheckMpError {
@@ -3969,11 +4005,27 @@ async fn check_existing_mp(
     // proposal against it, so skip.
     let mp_branch = mp_run.branch_url.parse::<url::Url>().ok();
     let last_run_branch = last_run.branch_url.parse::<url::Url>().ok();
-    if !branches_match(
+    let same_branch = match branches_match(
         mp_branch.as_ref(),
         last_run_branch.as_ref(),
         possible_transports.as_deref_mut(),
     ) {
+        Ok(same_branch) => same_branch,
+        Err(e) => {
+            if let Some(rate_limited) = branch_open_rate_limit(&e) {
+                return Err(rate_limited);
+            }
+            log::warn!(
+                "{}: unable to compare branches {:?} and {:?}, skipping: {}",
+                mp_url,
+                mp_run.branch_url,
+                last_run.branch_url,
+                e,
+            );
+            return Ok(false);
+        }
+    };
+    if !same_branch {
         log::warn!(
             "{}: Remote branch URL appears to have moved: {:?} -> {:?}",
             mp_url,

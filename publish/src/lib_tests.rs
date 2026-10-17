@@ -182,7 +182,96 @@ fn test_role_branch_url_with_special_characters() {
     assert!(result_str.contains("feature") && result_str.contains("branch-name"));
 }
 
-// Skip branches_match tests as they require opening actual branches with breezyshim
+// Port 1 refuses connections, so opening these fails at once.
+fn branch_url(rest: &str) -> url::Url {
+    url::Url::parse(&format!("http://127.0.0.1:1/repo{}", rest)).unwrap()
+}
+
+#[test]
+fn test_branches_match_same_url_needs_no_open() {
+    let a = branch_url(",branch=a");
+    assert!(matches!(branches_match(Some(&a), Some(&a), None), Ok(true)));
+    assert!(matches!(branches_match(None, None, None), Ok(true)));
+    assert!(matches!(branches_match(Some(&a), None, None), Ok(false)));
+}
+
+#[test]
+fn test_branches_match_different_repo_needs_no_open() {
+    let a = branch_url(",branch=a");
+    let b = branch_url("-other,branch=a");
+    assert!(matches!(
+        branches_match(Some(&a), Some(&b), None),
+        Ok(false)
+    ));
+}
+
+#[test]
+fn test_branches_match_open_failure_is_an_error_not_a_panic() {
+    let a = branch_url(",branch=a");
+    let b = branch_url(",branch=b");
+    let err = branches_match(Some(&a), Some(&b), None).unwrap_err();
+    assert!(
+        !matches!(err, silver_platter::vcs::BranchOpenError::Missing { .. }),
+        "{err:?}"
+    );
+    assert!(branch_open_rate_limit(&err).is_none());
+}
+
+#[test]
+fn test_branch_open_rate_limit_carries_retry_after() {
+    let err = silver_platter::vcs::BranchOpenError::RateLimited {
+        url: branch_url(""),
+        description: "429".to_string(),
+        retry_after: Some(90.5),
+    };
+    match branch_open_rate_limit(&err) {
+        Some(CheckMpError::BranchRateLimited { retry_after }) => {
+            assert_eq!(retry_after, Some(chrono::Duration::seconds(91)));
+        }
+        other => panic!("expected BranchRateLimited, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_branch_open_rate_limit_without_usable_retry_after() {
+    for retry_after in [
+        None,
+        Some(-1.0),
+        Some(f64::NAN),
+        Some(f64::INFINITY),
+        Some(86400.5),
+        Some(1e10),
+    ] {
+        let err = silver_platter::vcs::BranchOpenError::RateLimited {
+            url: branch_url(""),
+            description: "429".to_string(),
+            retry_after,
+        };
+        assert!(matches!(
+            branch_open_rate_limit(&err),
+            Some(CheckMpError::BranchRateLimited { retry_after: None })
+        ));
+    }
+}
+
+#[test]
+fn test_branch_open_rate_limit_ignores_other_errors() {
+    let url = branch_url("");
+    let description = "down".to_string();
+    for err in [
+        silver_platter::vcs::BranchOpenError::Unavailable {
+            url: url.clone(),
+            description: description.clone(),
+        },
+        silver_platter::vcs::BranchOpenError::TemporarilyUnavailable {
+            url: url.clone(),
+            description: description.clone(),
+        },
+        silver_platter::vcs::BranchOpenError::Other(description.clone()),
+    ] {
+        assert!(branch_open_rate_limit(&err).is_none(), "{err:?}");
+    }
+}
 
 // Skip get_merged_by_user_url tests as they require breezyshim forge operations
 
