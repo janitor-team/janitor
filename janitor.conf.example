@@ -80,6 +80,7 @@ campaign {
     # extra_build_distribution: "experimental"
     # extra_build_distribution: "unstable-backports"
     # Chroot for this campaign, overriding the distribution's chroot.
+    # "unshare:<suite>" uses the image made by "ogni cache-env <suite>" instead.
     # Optional.
     # chroot: "lintian-fixes-amd64-sbuild"
   }

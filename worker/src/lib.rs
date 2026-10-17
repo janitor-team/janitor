@@ -45,6 +45,45 @@ pub mod web;
 
 mod tee;
 
+/// Session backend for a `chroot` value: `unshare[:<suite>]`, else a schroot name.
+#[cfg(target_os = "linux")]
+fn session_kind(chroot: Option<&str>) -> Result<ognibuild::session::SessionKind, String> {
+    use ognibuild::session::SessionKind;
+    match chroot {
+        None => Ok(SessionKind::Plain),
+        Some(c) if c == "unshare" || c.starts_with("unshare:") => c.parse(),
+        Some(c) => Ok(SessionKind::Schroot(c.to_string())),
+    }
+}
+
+/// Open the session for a `chroot` value; the error describes what went wrong.
+#[cfg(target_os = "linux")]
+pub fn open_session(
+    chroot: Option<&str>,
+    session_prefix: Option<&str>,
+) -> Result<Box<dyn ognibuild::session::Session>, String> {
+    use ognibuild::session::{unshare, Error, SessionKind};
+    let kind = session_kind(chroot)?;
+    if let SessionKind::Unshare(suite) = &kind {
+        let image = unshare::cached_debian_tarball_path(suite).map_err(|e| e.to_string())?;
+        if !image.exists() {
+            return Err(format!(
+                "cached image {} is missing, create it with: ogni cache-env {}",
+                image.display(),
+                suite
+            ));
+        }
+    }
+    let session = kind.build(session_prefix).map_err(|e| match e {
+        Error::SetupFailure(msg, e) if e.is_empty() => msg,
+        Error::SetupFailure(_, e) => e,
+        e => e.to_string(),
+    })?;
+    // Keep network access, as in a schroot session.
+    session.set_isolate_network(false);
+    Ok(session)
+}
+
 #[derive(Clone, Default)]
 pub struct AppState {
     pub output_directory: Option<std::path::PathBuf>,
@@ -1280,6 +1319,70 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::str::FromStr;
     use test_log::test;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_session_kind() {
+        use ognibuild::session::SessionKind;
+        let schroot = |name: &str| Ok(SessionKind::Schroot(name.to_string()));
+        let unshare = |suite: &str| Ok(SessionKind::Unshare(suite.to_string()));
+        assert_eq!(session_kind(None), Ok(SessionKind::Plain));
+        assert_eq!(
+            session_kind(Some("unstable-amd64-sbuild")),
+            schroot("unstable-amd64-sbuild")
+        );
+        assert_eq!(session_kind(Some("chroot:x")), schroot("chroot:x"));
+        assert_eq!(session_kind(Some("session:x")), schroot("session:x"));
+        assert_eq!(
+            session_kind(Some("unshare-sbuild")),
+            schroot("unshare-sbuild")
+        );
+        assert_eq!(session_kind(Some("")), schroot(""));
+        assert_eq!(session_kind(Some("unshare")), unshare("sid"));
+        assert_eq!(session_kind(Some("unshare:sid")), unshare("sid"));
+        assert_eq!(session_kind(Some("unshare:trixie")), unshare("trixie"));
+        assert!(session_kind(Some("unshare:")).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_open_session_plain() {
+        let session = open_session(None, None).unwrap();
+        assert_eq!(session.location(), Path::new("/"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_open_session_missing_image() {
+        let err = open_session(Some("unshare:no-such-suite"), None)
+            .err()
+            .unwrap();
+        assert!(err.starts_with("cached image "), "{}", err);
+        assert!(
+            err.contains("/ognibuild/images/debian-no-such-suite-"),
+            "{}",
+            err
+        );
+        assert!(err.ends_with(": ogni cache-env no-such-suite"), "{}", err);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "needs user namespaces, network access and the cached sid image"]
+    fn test_open_session_unshare() {
+        use ognibuild::debian::apt::{AptManager, SatisfyEntry};
+        let session = open_session(Some("unshare:sid"), None).unwrap();
+        assert_ne!(session.location(), Path::new("/"));
+        assert!(!session.exists(Path::new("/usr/bin/hello")));
+        ognibuild::debian::apt::run_apt(session.as_ref(), vec!["update"], vec![]).unwrap();
+        let apt = AptManager::new(session.as_ref(), None);
+        apt.satisfy(vec![SatisfyEntry::Required("hello".to_string())])
+            .unwrap();
+        let out = session
+            .check_output(vec!["/usr/bin/hello"], None, None, None)
+            .unwrap();
+        assert_eq!(out, b"Hello, world!\n");
+    }
 
     /// Regression for worker credential leaks. The cache push and
     /// branch-open log lines used to print URLs with embedded

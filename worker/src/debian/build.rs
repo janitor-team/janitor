@@ -42,22 +42,15 @@ pub(crate) fn build(
     }
 
     #[cfg(target_os = "linux")]
-    let session: Box<dyn Session> = if let Some(chroot) = config.chroot.as_ref() {
-        Box::new(
-            ognibuild::session::schroot::SchrootSession::new(chroot, Some("janitor-worker"))
-                .map_err(|e| match e {
-                    ognibuild::session::Error::SetupFailure(_n, e) => BuildFailure {
-                        code: "session-setup-failure".to_string(),
-                        description: format!("Error setting up schroot session: {}", e),
-                        details: None,
-                        stage: vec![],
-                    },
-                    _e => unreachable!(),
-                })?,
-        ) as Box<dyn Session>
-    } else {
-        Box::new(ognibuild::session::plain::PlainSession::new()) as Box<dyn Session>
-    };
+    let session: Box<dyn Session> =
+        crate::open_session(config.chroot.as_deref(), Some("janitor-worker")).map_err(|e| {
+            BuildFailure {
+                code: "session-setup-failure".to_string(),
+                description: format!("Error setting up session: {}", e),
+                details: None,
+                stage: vec![],
+            }
+        })?;
 
     #[cfg(not(target_os = "linux"))]
     let session: Box<dyn Session> = if config.chroot.is_some() {
