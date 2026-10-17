@@ -1124,6 +1124,14 @@ async fn has_cotenants(
     })
 }
 
+/// Parse the branch URL a run recorded, if it recorded one at all.
+fn run_branch_url(mp_run: &crate::state::MergeProposalRun) -> Option<url::Url> {
+    mp_run
+        .branch_url
+        .as_deref()
+        .and_then(|url| url.parse::<url::Url>().ok())
+}
+
 /// Get the URL for a role branch.
 ///
 /// # Arguments
@@ -3644,11 +3652,11 @@ async fn check_existing_mp(
                     mp_run = Some(crate::state::MergeProposalRun {
                         id: String::new(),
                         campaign: campaign_name.to_string(),
-                        branch_url: synth_branch_url,
-                        command: String::new(),
+                        branch_url: Some(synth_branch_url),
+                        command: None,
                         value: 0,
                         role: role.to_string(),
-                        remote_branch_name: String::new(),
+                        remote_branch_name: None,
                         revision: synth_revision,
                         codebase: cb.to_string(),
                         change_set: String::new(),
@@ -3663,18 +3671,14 @@ async fn check_existing_mp(
 
     let mp_run = mp_run.expect("checked above that mp_run is Some");
 
-    // Resolve mp_remote_branch_name. Prefer the value the run recorded;
-    // if it's empty, fall back to opening the target branch and reading
-    // its `.name`.
-    let mut mp_remote_branch_name: Option<String> = if mp_run.remote_branch_name.is_empty() {
-        None
-    } else {
-        Some(mp_run.remote_branch_name.clone())
-    };
+    // Resolve mp_remote_branch_name. Prefer the value the run
+    // recorded. Without one, fall back to opening the target branch
+    // and reading its `.name`.
+    let mut mp_remote_branch_name: Option<String> = mp_run.remote_branch_name.clone();
     if mp_remote_branch_name.is_none() {
         let candidate_target = target_branch_url
             .clone()
-            .or_else(|| mp_run.branch_url.parse().ok());
+            .or_else(|| run_branch_url(&mp_run));
         if let Some(target_url) = candidate_target {
             match silver_platter::vcs::open_branch(
                 &target_url,
@@ -3734,7 +3738,7 @@ async fn check_existing_mp(
 
     let mut target_branch_url = target_branch_url
         .clone()
-        .or_else(|| mp_run.branch_url.parse().ok());
+        .or_else(|| run_branch_url(&mp_run));
 
     // Closed-as-applied: a follow-up run came in and produced
     // nothing, meaning the changes have already been merged in some
@@ -3886,21 +3890,26 @@ async fn check_existing_mp(
 
     // Role / remote-branch-name change. Match Python: enter whenever
     // the two names differ and last_run_remote_branch_name is present.
-    // Inside, when mp_run.remote_branch_name is empty we refuse to act
-    // (Python's `return False` branch) rather than falling through into
-    // downstream comparisons with a missing value.
-    if last_run_remote_branch_name.as_str() != mp_run.remote_branch_name
-        && !last_run_remote_branch_name.is_empty()
+    if !last_run_remote_branch_name.is_empty()
+        && mp_run.remote_branch_name.as_deref() != Some(last_run_remote_branch_name.as_str())
     {
+        // A run with no remote name cannot drive a rename, so refuse
+        // to act (Python's `return False` branch).
+        let Some(mp_remote_name) = mp_run.remote_branch_name.as_deref() else {
+            log::warn!(
+                "{}: Run {} recorded no remote branch name, latest run uses {}",
+                mp_url,
+                mp_run.id,
+                last_run_remote_branch_name
+            );
+            return Ok(false);
+        };
         log::warn!(
             "{}: Remote branch name has changed: {} -> {}",
             mp_url,
-            mp_run.remote_branch_name,
+            mp_remote_name,
             last_run_remote_branch_name
         );
-        if mp_run.remote_branch_name.is_empty() {
-            return Ok(false);
-        }
         let new_name = last_run_remote_branch_name.clone();
         let rename_result = tokio::task::spawn_blocking({
             let mp = mp.clone();
@@ -3921,9 +3930,8 @@ async fn check_existing_mp(
                 // value. Python does the equivalent
                 // `target_branch_url = role_branch_url(mp_run["branch_url"], mp_remote_branch_name)`
                 // right here.
-                if let Ok(base) = mp_run.branch_url.parse::<url::Url>() {
-                    target_branch_url =
-                        Some(role_branch_url(&base, Some(&mp_run.remote_branch_name)));
+                if let Some(base) = run_branch_url(&mp_run) {
+                    target_branch_url = Some(role_branch_url(&base, Some(mp_remote_name)));
                 }
             }
             Err(_) => {
@@ -3934,7 +3942,7 @@ async fn check_existing_mp(
                 if let (Some(rev), Some(target)) = (revision.as_ref(), target_branch_url.as_ref()) {
                     let comment = format!(
                         "This merge proposal will be closed, since the branch for the role '{}' has changed from {} to {}.",
-                        mp_run.role, mp_run.remote_branch_name, new_name
+                        mp_run.role, mp_remote_name, new_name
                     );
                     match abandon_or_close_mp_async(
                         &mut proposal_info_manager,
@@ -3967,7 +3975,7 @@ async fn check_existing_mp(
     // the latest run for the same codebase/campaign. When the new run
     // points to a different branch, we can't republish the same
     // proposal against it, so skip.
-    let mp_branch = mp_run.branch_url.parse::<url::Url>().ok();
+    let mp_branch = run_branch_url(&mp_run);
     let last_run_branch = last_run.branch_url.parse::<url::Url>().ok();
     if !branches_match(
         mp_branch.as_ref(),
