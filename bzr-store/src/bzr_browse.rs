@@ -133,6 +133,9 @@ async fn dispatch(state: &AppState, codebase: &str, mut req: Request) -> Result<
     parts.path_and_query = Some(new_path_and_query.parse().unwrap());
     *req.uri_mut() = Uri::from_parts(parts).unwrap();
 
+    // Drop the outer route's path parameters; loggerhead adds its own.
+    req.extensions_mut().clear();
+
     let response = match (*router).clone().oneshot(req).await {
         Ok(r) => r,
         Err(e) => match e {},

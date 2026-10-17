@@ -317,3 +317,78 @@ fn test_loggerhead_changes_endpoint_reachable() {
         handle.abort();
     });
 }
+
+// The outer route's path parameters must not reach loggerhead's routes.
+#[test]
+#[serial_test::serial]
+fn test_loggerhead_path_parameter_pages_render() {
+    if std::env::var("SKIP_DATABASE_TESTS").is_ok() {
+        eprintln!("SKIP_DATABASE_TESTS set, skipping");
+        return;
+    }
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let config = janitor::test_utils::TestDatabaseConfig {
+            run_migrations: true,
+            ..Default::default()
+        };
+        let test_db = match janitor::test_utils::TestDatabase::with_config(config).await {
+            Ok(db) => db,
+            Err(e) => {
+                eprintln!("skipping: {}", e);
+                return;
+            }
+        };
+
+        if !brz_available() {
+            eprintln!("skipping: brz not on PATH");
+            return;
+        }
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase(test_db.pool(), "foo").await;
+
+        let tmp = TempDir::new().unwrap();
+        // Any existing directory will do; without one every page is 503.
+        std::env::set_var("LOGGERHEAD_STATIC_DIR", tmp.path());
+        let branch_path = tmp.path().join("foo");
+        if !make_bzr_branch(&branch_path) {
+            eprintln!("skipping: could not create a bzr branch");
+            return;
+        }
+
+        let cfg = build_config(tmp.path(), test_db_url(&test_db));
+        let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
+            .await
+            .unwrap();
+        let (addr, handle) = spawn_public(public).await;
+
+        let client = reqwest::Client::new();
+        for page in [
+            "changes/1",
+            "files/1",
+            "revision/1",
+            "view/1/README",
+            "annotate/1/README",
+            "download/1/README",
+        ] {
+            let resp = client
+                .get(format!("http://{}/bzr/foo/{}", addr, page))
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            assert!(
+                status == 200,
+                "unexpected status {} for /bzr/foo/{}: {}",
+                status,
+                page,
+                resp.text().await.unwrap_or_default()
+            );
+        }
+
+        handle.abort();
+    });
+}
