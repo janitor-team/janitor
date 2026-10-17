@@ -16,6 +16,7 @@ li.lintian-fileitem {
     margin: 5px 0 5px 0;
 }
 
+#lintian-code-info,
 #lintian-code-informative {
     color: #111;
     background-color: #C7EA3C;

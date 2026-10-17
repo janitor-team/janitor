@@ -15,6 +15,7 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
+from bs4 import BeautifulSoup
 from jinja2 import Environment, select_autoescape
 
 from janitor.site import template_loader
@@ -115,3 +116,92 @@ def test_display_publish_blockers():
     </ul>
 """
     )
+
+
+# What the worker stores for a real lintian 2.141.0 run on a small package.
+LINTIAN_RESULT = {
+    "groups": [
+        {
+            "group_id": "tiny_1.0-1",
+            "input_files": [
+                {
+                    "hints": [
+                        {
+                            "experimental": False,
+                            "note": "",
+                            "tag": "description-starts-with-package-name",
+                            "visibility": "error",
+                        },
+                        {
+                            "experimental": False,
+                            "note": "usr/share/doc/tiny/changelog.Debian.gz (non-native package)",
+                            "tag": "no-changelog",
+                            "visibility": "error",
+                        },
+                        {
+                            "experimental": False,
+                            "note": "",
+                            "tag": "no-copyright-file",
+                            "visibility": "error",
+                        },
+                        {
+                            "experimental": False,
+                            "note": "",
+                            "pointer": {
+                                "item": {
+                                    "index": "tiny_1.0-1_all.deb (installed)",
+                                    "name": "usr/bin/tiny",
+                                },
+                                "line_position": 0,
+                            },
+                            "tag": "executable-not-elf-or-script",
+                            "visibility": "warning",
+                        },
+                        {
+                            "experimental": False,
+                            "note": "",
+                            "pointer": {
+                                "item": {
+                                    "index": "tiny_1.0-1_all.deb (installed)",
+                                    "name": "usr/bin/tiny",
+                                },
+                                "line_position": 0,
+                            },
+                            "tag": "no-manual-page",
+                            "visibility": "warning",
+                        },
+                    ],
+                    "path": "tiny_1.0-1_all.deb",
+                }
+            ],
+            "source_name": "tiny",
+            "source_version": "1.0-1",
+        }
+    ],
+    "lintian_version": "2.141.0",
+}
+
+
+def test_display_lintian_result():
+    template = env.get_template("lintian_util.html")
+    rendered = str(
+        template.module.display_lintian_result(LINTIAN_RESULT)  # type: ignore
+    )
+    soup = BeautifulSoup(rendered, "html.parser")
+    links = {a["href"]: a.get_text() for a in soup.find_all("a")}
+    assert links["tiny_1.0-1_all.deb"] == "tiny_1.0-1_all.deb"
+    for tag in [
+        "description-starts-with-package-name",
+        "no-changelog",
+        "no-copyright-file",
+        "executable-not-elf-or-script",
+        "no-manual-page",
+    ]:
+        assert links[f"https://lintian.debian.org/tags/{tag}"] == tag
+    errors = soup.find_all("span", id="lintian-code-error", class_="tinycode")
+    assert [span.get_text() for span in errors] == ["e"] * 3
+    warnings = soup.find_all("span", id="lintian-code-warning", class_="tinycode")
+    assert [span.get_text() for span in warnings] == ["w"] * 2
+    contexts = [span.get_text() for span in soup.find_all("span", class_="tinycontext")]
+    assert "usr/share/doc/tiny/changelog.Debian.gz (non-native package)" in contexts
+    assert str(template.module.lintian_severity_short("info")) == "i"  # type: ignore

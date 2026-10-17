@@ -1,16 +1,19 @@
 {%- macro lintian_severity_short(severity) -%}
     {%- if severity == 'error' -%}e
     {%- elif severity == 'warning' -%}w
-    {%- elif severity == 'informational' -%}i
+    {%- elif severity in ('info', 'informational') -%}i
     {%- elif severity == 'pedantic' -%}p
+    {%- elif severity == 'classification' -%}c
     {%- else -%}?
     {%- endif -%}
 {%- endmacro -%}
 {% macro display_lintian_hintitem(hint) %}
     <li class="lintian-hintitem">
-        <span class="tinycode" id="lintian-code-{{ hint.severity }}">{{ lintian_severity_short(hint.severity) }}</span>
-        <span class="tinyhint"><a href="https://lintian.debian.net/tags/{{ hint.name }}">{{ hint.name }}</a></span>
-        <span class="tinycontext">{{ hint.context }}</span>
+        {% set severity = hint.visibility or hint.severity %}
+        {% set tag = hint.tag or hint.name %}
+        <span class="tinycode" id="lintian-code-{{ severity }}">{{ lintian_severity_short(severity) }}</span>
+        <span class="tinyhint"><a href="https://lintian.debian.org/tags/{{ tag }}">{{ tag }}</a></span>
+        <span class="tinycontext">{{ hint.note or hint.context }}</span>
     </li>
 {% endmacro %}
 {% macro display_lintian_result(lintian_result) %}
@@ -21,10 +24,7 @@
                     <a href="{{ file.path.split('/')[-1] }}">{{ file.path.split('/')[-1] }}</a>
                 </li>
                 <ul class="lintian-hintlist">
-                    {% if not file.tags -%}
-                    {% else %}
-                        {% for hint in file.tags %}{{ display_lintian_hintitem(hint) }}{% endfor %}
-                    {% endif %}
+                    {% for hint in file.hints or file.tags or [] %}{{ display_lintian_hintitem(hint) }}{% endfor %}
                 </ul>
             {% endfor %}
         </ul>
