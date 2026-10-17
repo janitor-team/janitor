@@ -2981,14 +2981,12 @@ pub async fn publish_and_store(
     // target_branch_url is the run's target_branch_url (or branch_url
     // fallback) with the role's remote branch name appended as a
     // segment parameter.
-    let base_target_url: url::Url = run
-        .target_branch_url
-        .as_deref()
-        .unwrap_or(&run.branch_url)
-        .parse()
-        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-            format!("invalid target/branch URL for run {}: {}", run.id, e).into()
-        })?;
+    let base_target_url: url::Url =
+        resolve_target_branch_url(run.target_branch_url.as_deref(), &run.branch_url)
+            .parse()
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                format!("invalid target/branch URL for run {}: {}", run.id, e).into()
+            })?;
     let target_branch_url = role_branch_url(&base_target_url, Some(&remote_branch_name));
 
     // Python: `if allow_create_proposal is None: allow_create_proposal = run_sufficient_for_proposal(...)`.
@@ -4923,9 +4921,9 @@ pub(crate) fn classify_forge_rate_limit(
     }
 }
 
-/// Pick the URL `publish_from_policy` should publish to: the explicit
-/// `target_branch_url` wins, but a missing or empty value falls through
-/// to the run's `branch_url`.
+/// Pick the URL to publish a run to: the explicit `target_branch_url`
+/// wins, but a missing or empty value falls through to the run's
+/// `branch_url`.
 pub(crate) fn resolve_target_branch_url<'a>(
     target_branch_url: Option<&'a str>,
     branch_url: &'a str,
