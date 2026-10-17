@@ -17,10 +17,14 @@ jobs:
     # https://github.com/actions/runner-images
     runs-on: ubuntu-latest
     # Publish under vars.GHCR_OWNER when set (see issue #1329: janitor-team
-    # org lacks package-creation permission, so we override to "jelmer"),
-    # else fall back to the current repository owner (works for forks).
+    # org lacks package-creation permission, so we override to "jelmer").
+    # When it is not set (forks) the images are only built and tested, named
+    # after the current repository owner; nothing is pushed.
     env:
       GHCR_OWNER: ${{ vars.GHCR_OWNER || github.repository_owner }}
+      PUBLISH: >-
+        ${{ github.event_name != 'pull_request'
+        && vars.GHCR_OWNER != '' }}
 
     strategy:
       matrix:
@@ -70,8 +74,7 @@ jobs:
           echo "TAGS=${TAGS}" | tee -a $GITHUB_ENV
 
       - name: Login to GitHub Packages (ghcr.io)
-        if: |
-          github.event_name != 'pull_request'
+        if: env.PUBLISH == 'true'
         uses: redhat-actions/podman-login@v1
         with:
           registry: ghcr.io
@@ -81,13 +84,12 @@ jobs:
       - name: Assemble buildah cache args
         env:
           SUFFIX: ${{ matrix.dockerfile_suffix }}
-          EVENT: ${{ github.event_name }}
         run: |
           CACHE_REPO="${IMAGE_BASE}/${SUFFIX}-buildcache"
           {
             echo "BUILDAH_CACHE_ARGS<<EOF"
             echo "--cache-from=${CACHE_REPO}"
-            if [ "${EVENT}" != "pull_request" ]; then
+            if [ "${PUBLISH}" = "true" ]; then
               echo "--cache-to=${CACHE_REPO}"
             fi
             echo "EOF"
@@ -114,8 +116,7 @@ jobs:
           Push ${{ env.container }} image to
           https://github.com/${{ env.GHCR_OWNER }}?\
           tab=packages&repo_name=${{ github.event.repository.name }}
-        if: |
-          github.event_name != 'pull_request'
+        if: env.PUBLISH == 'true'
         uses: redhat-actions/push-to-registry@v2
         with:
           image: ${{ steps.build-image.outputs.image }}
