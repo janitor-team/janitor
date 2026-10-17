@@ -12,6 +12,8 @@ use futures_util::StreamExt;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt},
     process::Command,
@@ -587,6 +589,8 @@ fn strip_branch_segment(segment: &str) -> &str {
 
 const GIT_BACKEND_TERM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 const GIT_BACKEND_REAP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long a truncated, empty 200 waits for git's exit status.
+const GIT_BACKEND_EXIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Signal the whole process group. A missing group (ESRCH) is treated
 /// as success: it just means the backend already exited. Any other
@@ -621,6 +625,26 @@ impl BackendReaper {
     fn new(process: tokio::process::Child) -> Self {
         Self(Some(process))
     }
+
+    /// `None` unless the backend exits within `limit`.
+    async fn exit_status_within(
+        &mut self,
+        limit: std::time::Duration,
+    ) -> Option<std::process::ExitStatus> {
+        let process = self.0.as_mut()?;
+        tokio::time::timeout(limit, process.wait()).await.ok()?.ok()
+    }
+}
+
+/// Whether an empty reply that still carries 200 means the request body
+/// never arrived in full.
+fn is_incomplete_request_body(
+    body_truncated: bool,
+    body_empty: bool,
+    backend_failed: bool,
+    status_code: StatusCode,
+) -> bool {
+    body_truncated && body_empty && backend_failed && status_code == StatusCode::OK
 }
 
 impl Drop for BackendReaper {
@@ -808,8 +832,10 @@ pub async fn git_backend(
 
     // Feed the request body to git's stdin, closing it on EOF. A failing
     // read and a failing write are handled separately.
+    let body_truncated = Arc::new(AtomicBool::new(false));
     if let Some(mut stdin) = process.stdin.take() {
         let mut body_stream = body.into_data_stream();
+        let body_truncated = Arc::clone(&body_truncated);
         tokio::spawn(async move {
             while let Some(chunk) = body_stream.next().await {
                 match chunk {
@@ -824,6 +850,7 @@ pub async fn git_backend(
                         }
                     }
                     Err(e) => {
+                        body_truncated.store(true, Ordering::SeqCst);
                         debug!("request body did not arrive in full: {}", e);
                         break;
                     }
@@ -846,7 +873,7 @@ pub async fn git_backend(
         .take()
         .ok_or_else(|| GitStoreError::Other(anyhow::anyhow!("no stdout on git process")))?;
 
-    let _reaper = BackendReaper::new(process);
+    let mut reaper = BackendReaper::new(process);
     let mut reader = tokio::io::BufReader::new(stdout);
 
     let mut response_headers = HeaderMap::new();
@@ -914,6 +941,24 @@ pub async fn git_backend(
         buf
     };
 
+    // Only a truncated, empty 200 waits for git's exit status.
+    let body_truncated = body_truncated.load(Ordering::SeqCst);
+    let backend_failed = body_truncated
+        && body_data.is_empty()
+        && status_code == StatusCode::OK
+        && reaper
+            .exit_status_within(GIT_BACKEND_EXIT_TIMEOUT)
+            .await
+            .is_some_and(|s| !s.success());
+    if is_incomplete_request_body(
+        body_truncated,
+        body_data.is_empty(),
+        backend_failed,
+        status_code,
+    ) {
+        return Err(GitStoreError::IncompleteRequestBody);
+    }
+
     let mut response = Response::builder().status(status_code);
     for (name, value) in response_headers.iter() {
         response = response.header(name, value);
@@ -925,6 +970,39 @@ pub async fn git_backend(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_incomplete_request_body_needs_a_non_zero_exit() {
+        assert!(!is_incomplete_request_body(
+            true,
+            true,
+            false,
+            StatusCode::OK
+        ));
+        assert!(is_incomplete_request_body(true, true, true, StatusCode::OK));
+    }
+
+    #[test]
+    fn test_is_incomplete_request_body_requires_every_condition() {
+        assert!(!is_incomplete_request_body(
+            false,
+            true,
+            true,
+            StatusCode::OK
+        ));
+        assert!(!is_incomplete_request_body(
+            true,
+            false,
+            true,
+            StatusCode::OK
+        ));
+        assert!(!is_incomplete_request_body(
+            true,
+            true,
+            true,
+            StatusCode::BAD_REQUEST
+        ));
+    }
 
     #[test]
     fn test_is_expected_stdin_close_accepts_the_close_kinds() {

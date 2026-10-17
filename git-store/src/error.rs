@@ -59,6 +59,10 @@ pub enum GitStoreError {
     #[error("git diff failed: {0}")]
     GitDiffFailed(String),
 
+    /// Set when the read of the request body stream fails.
+    #[error("request body did not arrive in full")]
+    IncompleteRequestBody,
+
     #[error("Authentication failed")]
     AuthenticationFailed,
 
@@ -99,6 +103,7 @@ fn error_class(err: &GitStoreError) -> &'static str {
         GitStoreError::Timeout => "timeout",
         GitStoreError::DiffTimeout => "diff-timeout",
         GitStoreError::GitDiffFailed(_) => "git-diff-failed",
+        GitStoreError::IncompleteRequestBody => "incomplete-request-body",
         GitStoreError::AuthenticationFailed => "authentication-failed",
         GitStoreError::PermissionDenied => "permission-denied",
         GitStoreError::ConfigError(_) => "config-error",
@@ -137,6 +142,7 @@ impl axum::response::IntoResponse for GitStoreError {
             GitStoreError::GitDiffFailed(_) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
             }
+            GitStoreError::IncompleteRequestBody => (StatusCode::BAD_REQUEST, self.to_string()),
             GitStoreError::AuthenticationFailed => (StatusCode::UNAUTHORIZED, self.to_string()),
             GitStoreError::PermissionDenied => (StatusCode::FORBIDDEN, self.to_string()),
             GitStoreError::ConfigError(_) => (
@@ -227,6 +233,22 @@ mod tests {
                 .unwrap()
         });
         assert_eq!(&body[..], b"git diff failed: fatal: no such ref");
+    }
+
+    #[test]
+    fn incomplete_request_body_is_400_with_its_own_label() {
+        let resp = GitStoreError::IncompleteRequestBody.into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            resp.headers().get(ERROR_CLASS_HEADER).unwrap(),
+            "incomplete-request-body"
+        );
+        let body = tokio_test::block_on(async {
+            axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+        });
+        assert_eq!(&body[..], b"request body did not arrive in full");
     }
 
     #[test]
