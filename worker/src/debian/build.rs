@@ -91,7 +91,7 @@ pub(crate) fn build(
         }
 
         let result: Result<BuildOnceResult, IterateBuildError> =
-            if let Some(suffix) = config.build_suffix.as_ref() {
+            if let Some(suffix) = crate::debian::build_version_suffix(config) {
                 let packaging_context = ognibuild::debian::context::DebianPackagingContext::new(
                     Clone::clone(local_tree),
                     subpath,
@@ -109,7 +109,7 @@ pub(crate) fn build(
 
                 ognibuild::debian::fix_build::build_incrementally(
                     local_tree,
-                    Some(&format!("~{}", suffix)),
+                    Some(&suffix),
                     config.build_distribution.as_deref(),
                     output_directory,
                     command,

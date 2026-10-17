@@ -490,6 +490,15 @@ fn tree_set_changelog_version(
     Ok(())
 }
 
+/// The version suffix for a build; None when unset or empty (the runner sends "" for none).
+fn build_version_suffix(config: &DebianBuildConfig) -> Option<String> {
+    config
+        .build_suffix
+        .as_deref()
+        .filter(|suffix| !suffix.is_empty())
+        .map(|suffix| format!("~{}", suffix))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::Target;
@@ -497,6 +506,31 @@ mod tests {
     use super::*;
     use breezyshim::controldir::{create_standalone_workingtree, ControlDirFormat};
     use breezyshim::tree::MutableTree;
+
+    fn suffix_config(build_suffix: Option<&str>) -> DebianBuildConfig {
+        DebianBuildConfig {
+            build_suffix: build_suffix.map(|s| s.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_build_version_suffix() {
+        assert_eq!(
+            build_version_suffix(&suffix_config(Some("jan+unchanged"))),
+            Some("~jan+unchanged".to_string())
+        );
+    }
+
+    #[test]
+    fn test_build_version_suffix_empty() {
+        assert_eq!(build_version_suffix(&suffix_config(Some(""))), None);
+    }
+
+    #[test]
+    fn test_build_version_suffix_unset() {
+        assert_eq!(build_version_suffix(&suffix_config(None)), None);
+    }
 
     #[test]
     fn test_create() {
