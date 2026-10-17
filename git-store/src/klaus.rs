@@ -122,6 +122,9 @@ fn invoke_klaus(
             .bind(py)
             .call1((repo_path.to_string_lossy().as_ref(), py.None()))
             .map_err(py_err)?;
+        // FancyRepo has no close of its own, so the pack files for this
+        // request stay open on the dulwich repository it wraps.
+        let _close_repo = CloseOnDrop::resolve(&repo, &["dulwich_repo", "close"]);
 
         // Build a WSGI environ dict.
         let io = py
@@ -245,6 +248,7 @@ fn invoke_klaus(
             .bind(py)
             .call1((environ, start_response))
             .map_err(py_err)?;
+        let _close_body = CloseOnDrop::resolve(&iterable, &["close"]);
 
         let mut body_out: Vec<u8> = Vec::new();
         for chunk in iterable.try_iter().map_err(py_err)? {
@@ -291,6 +295,36 @@ fn invoke_klaus(
 
         Ok((status, response_headers, body_out))
     })
+}
+
+/// Calls a Python `close` method when dropped, so klaus gives back the
+/// pack file descriptors it opened for the request.
+struct CloseOnDrop<'py>(Bound<'py, PyAny>);
+
+impl<'py> CloseOnDrop<'py> {
+    /// Resolves `path` on `obj`. A missing attribute is logged rather
+    /// than passed over, because nothing then releases the descriptors.
+    fn resolve(obj: &Bound<'py, PyAny>, path: &[&str]) -> Option<Self> {
+        let mut found = obj.clone();
+        for name in path {
+            found = match found.getattr(*name) {
+                Ok(next) => next,
+                Err(e) => {
+                    warn!("klaus has no {} to close: {}", name, e);
+                    return None;
+                }
+            };
+        }
+        Some(Self(found))
+    }
+}
+
+impl Drop for CloseOnDrop<'_> {
+    fn drop(&mut self) {
+        if let Err(e) = self.0.call0() {
+            warn!("klaus close failed: {}", e);
+        }
+    }
 }
 
 /// Locate klaus's bundled `static/` directory so axum can serve it
