@@ -30,6 +30,7 @@ from yarl import URL
 from janitor import CAMPAIGN_REGEX, utcnow
 
 from .. import check_admin, worker_link_is_global
+from ..common import parse_int_query_param
 from ..setup import setup_logfile_manager, setup_postgres
 
 BUILD_LOG_FILENAME = "build.log"
@@ -180,11 +181,7 @@ async def handle_needs_review(request):
         required_only = request.query["required_only"] == "true"
     else:
         required_only = None
-    limit = request.query.get("limit", "200")
-    if limit:
-        limit = int(limit)
-    else:
-        limit = None
+    limit = parse_int_query_param(request, "limit", 200)
     ret = []
     async with request.app["pool"].acquire() as conn:
         with span.new_child("sql:needs-review"):
