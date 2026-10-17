@@ -2,7 +2,7 @@
 //!
 //! Talks to a running janitor site instance over its public HTTP API.
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use reqwest::{Client, RequestBuilder, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -53,6 +53,21 @@ enum Command {
     Run {
         #[command(subcommand)]
         cmd: RunCmd,
+    },
+    /// Change merge proposal status.
+    MergeProposal {
+        #[command(subcommand)]
+        cmd: MergeProposalCmd,
+    },
+    /// Reprocess stored build logs.
+    ReprocessLogs {
+        #[command(subcommand)]
+        cmd: ReprocessLogsCmd,
+    },
+    /// Trigger publisher passes.
+    Publish {
+        #[command(subcommand)]
+        cmd: PublishCmd,
     },
 }
 
@@ -133,6 +148,77 @@ enum RunCmd {
     },
     /// List active runs.
     List,
+}
+
+#[derive(Subcommand)]
+enum MergeProposalCmd {
+    /// Set a merge proposal's status.
+    SetStatus {
+        /// Merge proposal URL.
+        url: String,
+        /// New status.
+        status: ProposalStatus,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum ProposalStatus {
+    Closed,
+    Abandoned,
+    Applied,
+    Rejected,
+}
+
+impl ProposalStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            ProposalStatus::Closed => "closed",
+            ProposalStatus::Abandoned => "abandoned",
+            ProposalStatus::Applied => "applied",
+            ProposalStatus::Rejected => "rejected",
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum ReprocessLogsCmd {
+    /// Reprocess logs for a single run.
+    Run {
+        /// Run ID.
+        run_id: String,
+        /// Don't store the result, just report what would change.
+        #[arg(long)]
+        dry_run: bool,
+        /// Reschedule the run if the result changes.
+        #[arg(long)]
+        reschedule: bool,
+    },
+    /// Reprocess logs for multiple runs.
+    Bulk(ReprocessLogsBulkArgs),
+}
+
+#[derive(Args)]
+struct ReprocessLogsBulkArgs {
+    /// Restrict to these run IDs. If unset, every run with a reprocessable
+    /// failure code is selected.
+    #[arg(long = "run-id")]
+    run_id: Vec<String>,
+
+    /// Don't store results, just report what would change.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Reschedule runs whose result changes.
+    #[arg(long)]
+    reschedule: bool,
+}
+
+#[derive(Subcommand)]
+enum PublishCmd {
+    /// Trigger an autopublish pass.
+    Autopublish,
+    /// Rescan merge proposal statuses.
+    Scan,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -364,6 +450,127 @@ async fn cmd_run_list(client: &ApiClient) -> Result<(), String> {
     Ok(())
 }
 
+async fn cmd_merge_proposal_set_status(
+    client: &ApiClient,
+    url: &str,
+    status: ProposalStatus,
+) -> Result<(), String> {
+    let mut form: HashMap<&str, &str> = HashMap::new();
+    form.insert("url", url);
+    form.insert("status", status.as_str());
+    let resp = client
+        .request(reqwest::Method::POST, "api/merge-proposal")?
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    expect_success(resp).await?;
+    println!("Set {} to {}", url, status.as_str());
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct ReprocessLogsResult {
+    changed: bool,
+    result_code: String,
+    description: Option<String>,
+}
+
+async fn cmd_reprocess_logs_run(
+    client: &ApiClient,
+    run_id: &str,
+    dry_run: bool,
+    reschedule: bool,
+) -> Result<(), String> {
+    let path = format!("cupboard/api/run/{}/reprocess-logs", run_id);
+    let mut form: Vec<(&str, &str)> = Vec::new();
+    if dry_run {
+        form.push(("dry_run", "1"));
+    }
+    if reschedule {
+        form.push(("reschedule", "1"));
+    }
+    let resp = client
+        .request(reqwest::Method::POST, &path)?
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let resp = expect_success(resp).await?;
+    let result: ReprocessLogsResult = resp.json().await.map_err(|e| e.to_string())?;
+    if result.changed {
+        println!(
+            "Run {}: result code changed to {}",
+            run_id, result.result_code
+        );
+    } else {
+        println!(
+            "Run {}: unchanged (result code {})",
+            run_id, result.result_code
+        );
+    }
+    if let Some(description) = &result.description {
+        println!("Description: {}", description);
+    }
+    Ok(())
+}
+
+async fn cmd_reprocess_logs_bulk(
+    client: &ApiClient,
+    args: &ReprocessLogsBulkArgs,
+) -> Result<(), String> {
+    let mut form: Vec<(&str, String)> = Vec::new();
+    for run_id in &args.run_id {
+        form.push(("run_id", run_id.clone()));
+    }
+    if args.dry_run {
+        form.push(("dry_run", "1".to_string()));
+    }
+    if args.reschedule {
+        form.push(("reschedule", "1".to_string()));
+    }
+    let resp = client
+        .request(reqwest::Method::POST, "cupboard/api/reprocess-logs")?
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let resp = expect_success(resp).await?;
+    let queued: Vec<Value> = resp.json().await.map_err(|e| e.to_string())?;
+    println!("Queued {} run(s) for log reprocessing.", queued.len());
+    for entry in queued {
+        let codebase = entry.get("codebase").and_then(Value::as_str).unwrap_or("?");
+        let campaign = entry.get("campaign").and_then(Value::as_str).unwrap_or("?");
+        let log_id = entry.get("log_id").and_then(Value::as_str).unwrap_or("?");
+        println!("  {} / {} ({})", codebase, campaign, log_id);
+    }
+    Ok(())
+}
+
+async fn cmd_publish_autopublish(client: &ApiClient) -> Result<(), String> {
+    let resp = client
+        .request(reqwest::Method::POST, "cupboard/api/publish/autopublish")?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let resp = expect_success(resp).await?;
+    let body = resp.text().await.unwrap_or_default();
+    println!("{}", body.trim());
+    Ok(())
+}
+
+async fn cmd_publish_scan(client: &ApiClient) -> Result<(), String> {
+    let resp = client
+        .request(reqwest::Method::POST, "cupboard/api/publish/scan")?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let resp = expect_success(resp).await?;
+    let body = resp.text().await.unwrap_or_default();
+    println!("{}", body.trim());
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -390,6 +597,23 @@ async fn main() -> ExitCode {
         Command::Run { cmd } => match cmd {
             RunCmd::Kill { run_id } => cmd_run_kill(&client, &run_id).await,
             RunCmd::List => cmd_run_list(&client).await,
+        },
+        Command::MergeProposal { cmd } => match cmd {
+            MergeProposalCmd::SetStatus { url, status } => {
+                cmd_merge_proposal_set_status(&client, &url, status).await
+            }
+        },
+        Command::ReprocessLogs { cmd } => match cmd {
+            ReprocessLogsCmd::Run {
+                run_id,
+                dry_run,
+                reschedule,
+            } => cmd_reprocess_logs_run(&client, &run_id, dry_run, reschedule).await,
+            ReprocessLogsCmd::Bulk(args) => cmd_reprocess_logs_bulk(&client, &args).await,
+        },
+        Command::Publish { cmd } => match cmd {
+            PublishCmd::Autopublish => cmd_publish_autopublish(&client).await,
+            PublishCmd::Scan => cmd_publish_scan(&client).await,
         },
     };
 
@@ -463,6 +687,63 @@ mod tests {
                 assert!(args.run_id.is_none());
                 assert!(args.result_code.is_none());
             }
+            _ => panic!("wrong subcommand"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_merge_proposal_set_status() {
+        let cli = Cli::try_parse_from([
+            "janitor-admin",
+            "merge-proposal",
+            "set-status",
+            "https://github.com/example/example/pull/1",
+            "abandoned",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::MergeProposal {
+                cmd: MergeProposalCmd::SetStatus { url, status },
+            } => {
+                assert_eq!(url, "https://github.com/example/example/pull/1");
+                assert_eq!(status.as_str(), "abandoned");
+            }
+            _ => panic!("wrong subcommand"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_reprocess_logs_bulk_with_repeated_run_id() {
+        let cli = Cli::try_parse_from([
+            "janitor-admin",
+            "reprocess-logs",
+            "bulk",
+            "--run-id",
+            "1",
+            "--run-id",
+            "2",
+            "--reschedule",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::ReprocessLogs {
+                cmd: ReprocessLogsCmd::Bulk(args),
+            } => {
+                assert_eq!(args.run_id, vec!["1".to_string(), "2".to_string()]);
+                assert!(args.reschedule);
+                assert!(!args.dry_run);
+            }
+            _ => panic!("wrong subcommand"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_publish_scan() {
+        let cli = Cli::try_parse_from(["janitor-admin", "publish", "scan"]).unwrap();
+        match cli.command {
+            Command::Publish {
+                cmd: PublishCmd::Scan,
+            } => {}
             _ => panic!("wrong subcommand"),
         }
     }
