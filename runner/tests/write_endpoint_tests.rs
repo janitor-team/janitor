@@ -891,6 +891,146 @@ async fn post_candidates_records_unknown_codebase_via_fk_violation() {
     );
 }
 
+/// `POST /candidates` with `body`, returning the status and response body.
+async fn post_candidates(app: axum::Router, body: Value) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/candidates")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    let status = response.status();
+    (status, get_body(response).await)
+}
+
+/// `(id, campaign, state)` of the `change_set` rows whose id starts with `prefix`.
+async fn change_set_rows(pool: &sqlx::PgPool, prefix: &str) -> Vec<(String, String, String)> {
+    sqlx::query_as(
+        "SELECT id, campaign::text, state::text FROM change_set
+         WHERE starts_with(id, $1) ORDER BY id",
+    )
+    .bind(prefix)
+    .fetch_all(pool)
+    .await
+    .expect("change_set lookup")
+}
+
+/// `(codebase, change_set)` of the candidates (`queued`: of the queue
+/// items) for codebases starting with `prefix`.
+async fn change_sets_of(
+    pool: &sqlx::PgPool,
+    queued: bool,
+    prefix: &str,
+) -> Vec<(String, Option<String>)> {
+    sqlx::query_as(if queued {
+        "SELECT codebase, change_set FROM queue
+         WHERE starts_with(codebase, $1) ORDER BY codebase, change_set"
+    } else {
+        "SELECT codebase, change_set FROM candidate
+         WHERE starts_with(codebase, $1) ORDER BY codebase, change_set"
+    })
+    .bind(prefix)
+    .fetch_all(pool)
+    .await
+    .expect("lookup by codebase")
+}
+
+/// `POST /candidates` with a new `change_set` creates the `change_set`
+/// row; a second upload of the same candidate changes nothing.
+#[tokio::test]
+async fn post_candidates_creates_missing_change_set() {
+    let Some((app, state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let pool = state.database.pool().clone();
+    insert_codebase(&pool, "csnew-cb").await;
+
+    let upload = json!([{
+        "codebase": "csnew-cb",
+        "campaign": "test-campaign",
+        "change_set": "csnew-1",
+    }]);
+    for round in ["first", "second"] {
+        let (status, body) = post_candidates(app.clone(), upload.clone()).await;
+        eprintln!("{round} upload: status={status} body={body}");
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        let success = body["success"].as_array().expect("success array");
+        assert_eq!(success.len(), 1, "body: {body}");
+        assert_eq!(success[0]["change_set"], "csnew-1");
+
+        let expected = vec![("csnew-cb".to_string(), Some("csnew-1".to_string()))];
+        assert_eq!(
+            change_set_rows(&pool, "csnew-").await,
+            vec![(
+                "csnew-1".to_string(),
+                "test-campaign".to_string(),
+                "created".to_string()
+            )]
+        );
+        assert_eq!(change_sets_of(&pool, false, "csnew-").await, expected);
+        assert_eq!(change_sets_of(&pool, true, "csnew-").await, expected);
+    }
+}
+
+/// One upload may mix candidates with and without a change set; a
+/// rejected candidate leaves no `change_set` row behind, a change set
+/// keeps the campaign of its first candidate, and `""` names none.
+#[tokio::test]
+async fn post_candidates_mixed_change_sets() {
+    let builder = test_utils::TestConfigBuilder::new()
+        .with_campaign("test-campaign", "true")
+        .with_campaign("other-campaign", "true");
+    let Some((app, state)) =
+        test_utils::create_test_app_with_state_with_config_if_available(builder)
+            .await
+            .expect("test app setup should either succeed or return None cleanly")
+    else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let pool = state.database.pool().clone();
+    for codebase in ["csmix-a", "csmix-b", "csmix-c", "csmix-d"] {
+        insert_codebase(&pool, codebase).await;
+    }
+
+    let (status, body) = post_candidates(
+        app,
+        json!([
+            {"codebase": "csmix-a", "campaign": "test-campaign", "change_set": "csmix-1"},
+            {"codebase": "csmix-b", "campaign": "test-campaign"},
+            {"codebase": "csmix-c", "campaign": "other-campaign", "change_set": "csmix-1"},
+            {"codebase": "csmix-d", "campaign": "test-campaign", "change_set": ""},
+            {"codebase": "csmix-gone", "campaign": "test-campaign", "change_set": "csmix-2"},
+        ]),
+    )
+    .await;
+    eprintln!("mixed upload: status={status} body={body}");
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["success"].as_array().map(Vec::len), Some(4));
+    assert_eq!(body["unknown_codebases"], json!(["csmix-gone"]));
+    let rows = change_set_rows(&pool, "").await;
+    assert!(rows.iter().all(|r| !r.0.is_empty()), "rows: {rows:?}");
+
+    assert_eq!(
+        change_set_rows(&pool, "csmix-").await,
+        vec![(
+            "csmix-1".to_string(),
+            "test-campaign".to_string(),
+            "created".to_string()
+        )]
+    );
+    let expected = vec![
+        ("csmix-a".to_string(), Some("csmix-1".to_string())),
+        ("csmix-b".to_string(), None),
+        ("csmix-c".to_string(), Some("csmix-1".to_string())),
+        ("csmix-d".to_string(), None),
+    ];
+    assert_eq!(change_sets_of(&pool, false, "csmix-").await, expected);
+    assert_eq!(change_sets_of(&pool, true, "csmix-").await, expected);
+}
+
 /// `GET /health` returns the full JSON health report with the four
 /// component checks (database, vcs, logs, artifacts) and an overall
 /// `status`. Rust-side probe -- Python's /health returns plain "ok".

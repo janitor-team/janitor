@@ -1096,6 +1096,7 @@ async fn upload_candidates(
         let change_set = candidate
             .get("change_set")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
             .map(str::to_string);
         let context = candidate
             .get("context")
@@ -1114,6 +1115,23 @@ async fn upload_candidates(
                     .into_response();
             }
         };
+
+        // A change set named here may be new; the first campaign is kept.
+        if let Some(change_set) = change_set.as_deref() {
+            if let Err(e) = state
+                .database
+                .store_change_set(&mut tx, change_set, &campaign)
+                .await
+            {
+                log::error!("Failed to store change set {}: {}", change_set, e);
+                let _ = tx.rollback().await;
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "Database error"})),
+                )
+                    .into_response();
+            }
+        }
 
         let insert_result = sqlx::query_scalar::<_, i32>(
             r#"
