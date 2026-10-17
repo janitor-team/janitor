@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Read};
 use std::os::unix::fs::MetadataExt;
@@ -107,6 +108,21 @@ impl LogFileManager for FileSystemLogFileManager {
             })
             .await
             .map_err(|e| Error::Other(e.to_string()))??;
+        }
+
+        // The source can be the plain file for this log, left by an upload.
+        if let (Ok(orig), Ok(dest)) = (
+            async_fs::canonicalize(orig_path).await,
+            async_fs::canonicalize(&dest_path).await,
+        ) {
+            if orig.parent() == dest.parent()
+                && orig.file_name() == Some(OsStr::new(basename))
+                && !basename.ends_with(".gz")
+            {
+                if let Err(e) = async_fs::remove_file(&orig).await {
+                    tracing::warn!("Failed to remove {:?} after import: {}", orig, e);
+                }
+            }
         }
 
         Ok(())
@@ -449,6 +465,121 @@ mod tests {
         let (_td, mgr) = setup();
         let logs: Vec<_> = mgr.iter_logs().await.collect();
         assert_eq!(logs.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_import_log_replaces_a_source_inside_the_store() {
+        let (_td, mgr) = setup();
+        let dir = _td.path().join("codebase").join("run-1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("build.log");
+        std::fs::write(&source, "build output\n").unwrap();
+
+        mgr.import_log(
+            "codebase",
+            "run-1",
+            source.to_str().unwrap(),
+            None,
+            Some("build.log"),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !source.exists(),
+            "plain log kept beside the compressed copy"
+        );
+        assert!(dir.join("build.log.gz").exists(), "compressed copy missing");
+
+        let mut reader = mgr.get_log("codebase", "run-1", "build.log").await.unwrap();
+        let mut content = String::new();
+        reader.read_to_string(&mut content).unwrap();
+        assert_eq!(content, "build output\n");
+    }
+
+    #[tokio::test]
+    async fn test_import_log_keeps_a_source_outside_the_store() {
+        let (_td, mgr) = setup();
+        let source_dir = TempDir::new().unwrap();
+        let source_path = source_dir.path().join("build.log");
+        std::fs::write(&source_path, "build output\n").unwrap();
+
+        mgr.import_log(
+            "codebase",
+            "run-1",
+            source_path.to_str().unwrap(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(source_path.exists(), "source outside the store was removed");
+    }
+
+    #[tokio::test]
+    async fn test_import_log_without_a_basename_replaces_an_in_store_source() {
+        let (_td, mgr) = setup();
+        let dir = _td.path().join("codebase").join("run-1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("build.log");
+        std::fs::write(&source, "build output\n").unwrap();
+
+        mgr.import_log("codebase", "run-1", source.to_str().unwrap(), None, None)
+            .await
+            .unwrap();
+
+        assert!(
+            !source.exists(),
+            "plain log kept beside the compressed copy"
+        );
+        assert!(dir.join("build.log.gz").exists(), "compressed copy missing");
+    }
+
+    #[tokio::test]
+    async fn test_import_log_keeps_another_log_in_the_store() {
+        let (_td, mgr) = setup();
+        let dir = _td.path().join("codebase").join("run-1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let other = dir.join("other.log");
+        std::fs::write(&other, "other output\n").unwrap();
+
+        mgr.import_log(
+            "codebase",
+            "run-1",
+            other.to_str().unwrap(),
+            None,
+            Some("build.log"),
+        )
+        .await
+        .unwrap();
+
+        assert!(other.exists(), "a different log was removed");
+        assert!(dir.join("build.log.gz").exists(), "compressed copy missing");
+    }
+
+    #[tokio::test]
+    async fn test_import_log_keeps_an_already_compressed_source() {
+        let (_td, mgr) = setup();
+        let dir = _td.path().join("codebase").join("run-1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("build.log.gz");
+        std::fs::write(&source, "build output\n").unwrap();
+
+        mgr.import_log(
+            "codebase",
+            "run-1",
+            source.to_str().unwrap(),
+            None,
+            Some("build.log.gz"),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            source.exists(),
+            "readable log removed for an already compressed name"
+        );
     }
 
     #[tokio::test]
