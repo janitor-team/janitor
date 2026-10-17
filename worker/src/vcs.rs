@@ -32,25 +32,103 @@ pub fn push_branch(
                 .unwrap()
         },
     );
-    let target = match breezyshim::controldir::open(&url, possible_transports.as_mut()) {
-        Ok(cd) => cd,
-        Err(BrzError::NotBranchError(..)) => {
-            breezyshim::controldir::create(&url, &vcs_type, possible_transports.as_mut())?
+    // A boxed selector is used up by one push; share it so that each try gets its own.
+    let tag_selector = tag_selector.map(std::rc::Rc::from);
+    retry_push(|| {
+        let target = match breezyshim::controldir::open(&url, possible_transports.as_mut()) {
+            Ok(cd) => cd,
+            Err(BrzError::NotBranchError(..)) => {
+                breezyshim::controldir::create(&url, &vcs_type, possible_transports.as_mut())?
+            }
+            Err(e) => {
+                return Err(e);
+            }
+        };
+
+        let tag_selector = tag_selector
+            .clone()
+            .map(|f: std::rc::Rc<dyn Fn(String) -> bool>| {
+                Box::new(move |tag| f(tag)) as Box<dyn Fn(String) -> bool>
+            });
+        target.push_branch(
+            source_branch,
+            branch_name.as_deref(),
+            stop_revision.as_ref(),
+            Some(overwrite),
+            tag_selector,
+        )?;
+
+        Ok(())
+    })
+}
+
+/// Tries for one push, as in the Python worker (`max_tries=10`).
+const PUSH_MAX_TRIES: u32 = 10;
+
+/// What Breezy says when the connection to the store is lost.
+const CONNECTION_LOST_MESSAGES: &[&str] = &[
+    "while sending ",
+    "Connection lost while sending request",
+    "Connection closed early",
+];
+
+/// Why a failed push is worth another try: the connection was lost or the store was briefly away.
+fn connection_lost(e: &BrzError) -> Option<&'static str> {
+    match e {
+        BrzError::InvalidHttpResponse(..) => Some("invalid HTTP response"),
+        BrzError::IncompleteRead(..) => Some("incomplete read"),
+        BrzError::ConnectionError(..) => Some("connection error"),
+        BrzError::UnexpectedHttpStatus {
+            code: 502..=504, ..
+        } => Some("gateway error"),
+        // Breezy's ConnectionError and ConnectionReset can arrive as a plain TransportError.
+        BrzError::TransportError(msg)
+            if CONNECTION_LOST_MESSAGES.iter().any(|m| msg.contains(m)) =>
+        {
+            Some("connection lost")
         }
-        Err(e) => {
-            return Err(e);
-        }
+        _ => None,
+    }
+}
+
+/// Run a push, and run it again with a growing wait while the connection keeps being lost.
+fn retry_push<T>(op: impl FnMut() -> Result<T, BrzError>) -> Result<T, BrzError> {
+    retry_push_with(op, std::thread::sleep)
+}
+
+fn retry_push_with<T>(
+    mut op: impl FnMut() -> Result<T, BrzError>,
+    mut sleep: impl FnMut(std::time::Duration),
+) -> Result<T, BrzError> {
+    use backoff::backoff::Backoff;
+    // Waits of 0.5 s, 1 s, 2 s, ... each with jitter.
+    let mut waits = backoff::ExponentialBackoff {
+        multiplier: 2.0,
+        max_interval: std::time::Duration::from_secs(128),
+        max_elapsed_time: None,
+        ..Default::default()
     };
-
-    target.push_branch(
-        source_branch,
-        branch_name.as_deref(),
-        stop_revision.as_ref(),
-        Some(overwrite),
-        tag_selector,
-    )?;
-
-    Ok(())
+    let mut tries = 1;
+    loop {
+        let e = match op() {
+            Ok(ret) => return Ok(ret),
+            Err(e) => e,
+        };
+        let Some(why) = connection_lost(&e).filter(|_| tries < PUSH_MAX_TRIES) else {
+            return Err(e);
+        };
+        let wait = waits.next_backoff().unwrap_or(waits.max_interval);
+        tries += 1;
+        // The error text can hold the URL with the password, so only its kind is logged.
+        log::warn!(
+            "Push failed ({}); try {} of {} in {:?}",
+            why,
+            tries,
+            PUSH_MAX_TRIES,
+            wait
+        );
+        sleep(wait);
+    }
 }
 
 /// Import branches into a new location.
@@ -213,15 +291,17 @@ impl Vcs for BzrVcs {
         tags: Vec<(String, Option<RevisionId>)>,
         update_current: bool,
     ) -> Result<(), BrzError> {
-        import_branches_bzr(
-            repo_url,
-            local_branch,
-            campaign,
-            log_id,
-            branches,
-            tags,
-            update_current,
-        )
+        retry_push(|| {
+            import_branches_bzr(
+                repo_url,
+                local_branch,
+                campaign,
+                log_id,
+                branches,
+                tags.clone(),
+                update_current,
+            )
+        })
     }
 }
 
@@ -333,15 +413,17 @@ impl Vcs for GitVcs {
         tags: Vec<(String, Option<RevisionId>)>,
         update_current: bool,
     ) -> Result<(), BrzError> {
-        import_branches_git(
-            repo_url,
-            local_branch,
-            campaign,
-            log_id,
-            branches,
-            tags,
-            update_current,
-        )
+        retry_push(|| {
+            import_branches_git(
+                repo_url,
+                local_branch,
+                campaign,
+                log_id,
+                branches,
+                tags.clone(),
+                update_current,
+            )
+        })
     }
 }
 
@@ -497,5 +579,108 @@ mod tests {
             }
         );
         std::mem::drop(td);
+    }
+
+    fn lost_connection() -> BrzError {
+        BrzError::TransportError("while sending POST /codebase/git-receive-pack:".to_string())
+    }
+
+    fn http_status(code: u16) -> BrzError {
+        BrzError::UnexpectedHttpStatus {
+            url: Url::parse("http://example.com/codebase").unwrap(),
+            code,
+            extra: None,
+            headers: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn test_retry_push_repeats_a_lost_connection() {
+        let mut calls = 0;
+        let mut waits = vec![];
+        let ret = retry_push_with(
+            || {
+                calls += 1;
+                if calls < 4 {
+                    Err(lost_connection())
+                } else {
+                    Ok(calls)
+                }
+            },
+            |wait| waits.push(wait),
+        );
+        assert_eq!(ret.unwrap(), 4);
+        assert_eq!(waits.len(), 3);
+        assert!(waits[2] > waits[0], "waits do not grow: {:?}", waits);
+    }
+
+    #[test]
+    fn test_retry_push_gives_up_after_max_tries() {
+        let mut calls = 0;
+        let mut waits = 0;
+        let ret: Result<(), BrzError> = retry_push_with(
+            || {
+                calls += 1;
+                Err(lost_connection())
+            },
+            |_| waits += 1,
+        );
+        assert!(matches!(ret, Err(BrzError::TransportError(..))));
+        assert_eq!(calls, PUSH_MAX_TRIES);
+        assert_eq!(waits, PUSH_MAX_TRIES - 1);
+    }
+
+    #[test]
+    fn test_retry_push_does_not_repeat_other_errors() {
+        for e in [
+            BrzError::TransportError("No space left on device".to_string()),
+            BrzError::RemoteGitError("pre-receive hook declined".to_string()),
+            BrzError::DivergedBranches,
+            http_status(403),
+        ] {
+            let mut calls = 0;
+            let mut e = Some(e);
+            let ret: Result<(), BrzError> = retry_push_with(
+                || {
+                    calls += 1;
+                    Err(e.take().unwrap())
+                },
+                |_| panic!("waited after an error that is not a lost connection"),
+            );
+            assert!(ret.is_err());
+            assert_eq!(calls, 1);
+        }
+    }
+
+    #[test]
+    fn test_connection_lost() {
+        for e in [
+            lost_connection(),
+            BrzError::TransportError("Connection lost while sending request.".to_string()),
+            BrzError::TransportError("Connection closed early".to_string()),
+            BrzError::ConnectionError("[Errno 32] Broken pipe".to_string()),
+            BrzError::IncompleteRead(vec![], Some(10)),
+            BrzError::InvalidHttpResponse(
+                "http://example.com/codebase".to_string(),
+                "Bad status line received".to_string(),
+                None,
+                HashMap::new(),
+            ),
+            http_status(502),
+            http_status(503),
+            http_status(504),
+        ] {
+            assert!(connection_lost(&e).is_some(), "not retried: {:?}", e);
+        }
+        for e in [
+            BrzError::TransportError("No space left on device".to_string()),
+            BrzError::TransportError("Too many open files".to_string()),
+            BrzError::RemoteGitError("missing necessary objects".to_string()),
+            http_status(401),
+            http_status(404),
+            http_status(500),
+        ] {
+            assert!(connection_lost(&e).is_none(), "retried: {:?}", e);
+        }
     }
 }
