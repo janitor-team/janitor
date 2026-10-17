@@ -671,12 +671,12 @@ dependencies = [
 
 [[package]]
 name = "bazaar"
-version = "3.5.2"
+version = "3.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f46f45d6a637de82475671c03ccac50c9ef193634fabd7d6f5a7ba88d6947004"
+checksum = "10eccca0b6c81a8506bda361301df326a4148e14bb4f682896c358a839578ced"
 dependencies = [
  "adler2",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bendy",
  "byteorder",
  "chrono",
@@ -1616,9 +1616,9 @@ dependencies = [
 
 [[package]]
 name = "deb822-lossless"
-version = "0.5.18"
+version = "0.5.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31505d7661ac33d7848f1fb6ba82bd269b853d01fb44a1bfd9451ffad10c0005"
+checksum = "45bfeac719b1f3441c6f8c29652c60376e11eabbdbd99c53b3f14e0e8585d053"
 dependencies = [
  "pyo3",
  "regex",
@@ -1667,9 +1667,9 @@ dependencies = [
 
 [[package]]
 name = "debian-changelog"
-version = "0.2.24"
+version = "0.2.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "411b1a773b33e7758466597dc6b64d78fc86022a72e9320472d9f15b1877e8ee"
+checksum = "8cc73a6facfa21b5d404dbeae3e86aa3083a395404ced317af26aca69bc12250"
 dependencies = [
  "chrono",
  "debversion",
@@ -1682,9 +1682,9 @@ dependencies = [
 
 [[package]]
 name = "debian-control"
-version = "0.3.13"
+version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ec825d3da4fc04cac8dfaf42b2a22085d004f2c8c7501bd9a05620d430523f8"
+checksum = "2aad04b9806f983ce4218285471e906d88570fc2fa94665fede3bc4542f56c85"
 dependencies = [
  "chrono",
  "deb822-fast",
@@ -1698,9 +1698,9 @@ dependencies = [
 
 [[package]]
 name = "debian-copyright"
-version = "0.1.55"
+version = "0.1.56"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "585dfc4e691aa45bc6cdaf26f9a93cf92e1cab7636163c0184328eb6b32bd283"
+checksum = "6c23a05c74a7fdf029d399c55b6c82d84caa7080e14affeddbdf1ada4a15f5d6"
 dependencies = [
  "deb822-fast",
  "deb822-lossless",
@@ -5076,9 +5076,9 @@ dependencies = [
 
 [[package]]
 name = "patchkit"
-version = "0.3.8"
+version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd3f7c4735d9b0a4490baa8f3e6f89d70bc471836c1f9d3faa87cdef88ac86c9"
+checksum = "2808aa96d6e24f20f9ce36d5bf62abc59a0cc27a5d7ab4818611f298685fe04f"
 dependencies = [
  "chrono",
  "lazy-regex",
@@ -5094,10 +5094,6 @@ name = "patiencediff"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1203e98a093ed5712d443d24cc752267c6ba23162321aeaf4837c425d3a9a597"
-dependencies = [
- "clap",
- "patchkit",
-]
 
 [[package]]
 name = "pep440_rs"
