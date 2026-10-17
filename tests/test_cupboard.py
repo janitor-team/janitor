@@ -15,6 +15,7 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
+import re
 from datetime import timedelta
 
 import aiohttp_jinja2
@@ -177,6 +178,45 @@ def test_start():
 def test_reprocess_logs():
     env = Environment(loader=template_loader)
     env.get_template("cupboard/reprocess-logs.html")
+
+
+def _render_review_refill_url(**context):
+    env = Environment(loader=template_loader)
+    env.globals.update(TEMPLATE_ENV)
+    template = env.get_template("cupboard/review.html")
+    html = template.render(
+        codebase="foo",
+        run_id="run-1",
+        evaluate="",
+        evaluate_url="/cupboard/review/RUN_ID/evaluate",
+        todo=[],
+        **context,
+    )
+    m = re.search(r"url: '([^']*needs-review[^']*)'", html)
+    assert m is not None
+    return m.group(1)
+
+
+def test_review_refill_url():
+    assert (
+        _render_review_refill_url(
+            campaign="lintian-fixes",
+            publishable_only=True,
+            required_only=False,
+            user={"email": "joe@example.com"},
+        )
+        == "/cupboard/api/lintian-fixes/needs-review?required_only=false"
+        "&reviewer=joe@example.com&publishable_only=true"
+    )
+
+
+def test_review_refill_url_anonymous():
+    assert (
+        _render_review_refill_url(
+            campaign=None, publishable_only=False, required_only=True, user=None
+        )
+        == "/cupboard/api/needs-review?required_only=true&publishable_only=false"
+    )
 
 
 def test_never_processed():

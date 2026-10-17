@@ -85,7 +85,7 @@
             function refreshData(cb) {
                 console.log("Updating backlog of todo items");
                 $.ajax({
-			url: '/cupboard/api/{% if campaign %}{{ campaign }}/{% endif %}needs-review?required_only={{ 'true' if required_only else 'false' }}&{% if user %}&reviewer={{ user['email'] }}{% endif %}&publishable_only={{ 'true ' if publishable_only else 'false ' }}',
+			url: '/cupboard/api/{% if campaign %}{{ campaign }}/{% endif %}needs-review?required_only={{ 'true' if required_only else 'false' }}{% if user %}&reviewer={{ user['email'] }}{% endif %}&publishable_only={{ 'true' if publishable_only else 'false' }}',
                     dataType: 'json',
                     success: function(data) {
                         data.forEach(function(entry) {
