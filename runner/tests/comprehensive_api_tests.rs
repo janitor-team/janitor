@@ -195,6 +195,51 @@ async fn test_schedule_control_compatibility() {
     assert_eq!(get_json(response).await, json!({"reason": "Run not found"}));
 }
 
+/// `POST /schedule-control` with the `run_id` of a run that has no
+/// `main_branch_revision` returns 400 and queues nothing.
+#[tokio::test]
+async fn test_schedule_control_run_without_main_branch_revision() {
+    require_test_app!(app, state);
+    let pool = state.database.pool().clone();
+    insert_codebase(&pool, "control-norev-cb").await;
+    sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs-norev', 'test-campaign')")
+        .execute(&pool)
+        .await
+        .expect("insert change_set");
+    sqlx::query(
+        "INSERT INTO run (
+             id, suite, codebase, result_code,
+             start_time, finish_time, logfilenames, change_set
+         )
+         VALUES ('run-norev', 'test-campaign', 'control-norev-cb', 'success',
+                 NOW() - INTERVAL '1 minute', NOW(), '{}', 'cs-norev')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert run");
+
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/schedule-control")
+        .header("Content-Type", "application/json")
+        .body(Body::from(json!({"run_id": "run-norev"}).to_string()))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        get_json(response).await,
+        json!({"reason": "Run has no main branch revision"})
+    );
+
+    let queued: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM queue WHERE codebase = 'control-norev-cb'")
+            .fetch_one(&pool)
+            .await
+            .expect("count queue rows");
+    assert_eq!(queued, 0);
+}
+
 /// The metrics the Python runner exported keep their names.
 #[tokio::test]
 async fn test_metrics_endpoint_compatibility() {
