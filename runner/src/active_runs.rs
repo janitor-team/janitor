@@ -18,11 +18,14 @@
 //! converge to the same end state.
 
 use crate::ActiveRun;
+use chrono::{DateTime, NaiveDateTime, Utc};
 use redis::AsyncCommands;
 use std::collections::HashMap;
 
-/// The default Redis hash key under which active runs are stored.
-const DEFAULT_KEY: &str = "runner:active-runs";
+/// The default Redis hash key under which active runs are stored. This
+/// is the key the Python runner uses, so the two can take over from each
+/// other without losing in-flight runs.
+const DEFAULT_KEY: &str = "active-runs";
 
 /// Shared Redis-backed store of currently-active runs, keyed by `log_id`.
 #[derive(Clone)]
@@ -33,7 +36,7 @@ pub struct ActiveRunStore {
 
 impl ActiveRunStore {
     /// Construct a store backed by the given Redis client, using the
-    /// default `runner:active-runs` hash key.
+    /// default `active-runs` hash key.
     pub fn new(redis: redis::Client) -> Self {
         Self::with_key(redis, DEFAULT_KEY.to_string())
     }
@@ -60,7 +63,7 @@ impl ActiveRunStore {
     /// Redis failure (the queue-item assignment in `assign_queue_item`
     /// follows the same log-and-continue pattern).
     pub async fn store(&self, active_run: ActiveRun) {
-        let json = match serde_json::to_string(&active_run) {
+        let json = match serde_json::to_string(&active_run.to_json()) {
             Ok(s) => s,
             Err(e) => {
                 log::error!(
@@ -95,7 +98,7 @@ impl ActiveRunStore {
             }
         };
         let json = json?;
-        match serde_json::from_str(&json) {
+        match parse_active_run(&json) {
             Ok(r) => Some(r),
             Err(e) => {
                 log::warn!("active_runs.get: bad row for {}: {}", run_id, e);
@@ -119,15 +122,13 @@ impl ActiveRunStore {
         };
         let mut runs: Vec<ActiveRun> = map
             .into_iter()
-            .filter_map(
-                |(log_id, json)| match serde_json::from_str::<ActiveRun>(&json) {
-                    Ok(r) => Some(r),
-                    Err(e) => {
-                        log::warn!("active_runs.list: bad row for {}: {}", log_id, e);
-                        None
-                    }
-                },
-            )
+            .filter_map(|(log_id, json)| match parse_active_run(&json) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    log::warn!("active_runs.list: bad row for {}: {}", log_id, e);
+                    None
+                }
+            })
             .collect();
         runs.sort_by_key(|r| r.start_time);
         runs
@@ -208,6 +209,31 @@ impl ActiveRunStore {
             }
         }
         stale
+    }
+}
+
+fn parse_active_run(json: &str) -> Result<ActiveRun, Box<dyn std::error::Error + Send + Sync>> {
+    ActiveRun::from_json(&serde_json::from_str(json)?)
+}
+
+/// Format a timestamp the way the Python runner's naive
+/// `utcnow().isoformat()` does, so both runners can read each other's
+/// state.
+pub fn format_python_datetime(when: DateTime<Utc>) -> String {
+    let naive = when.naive_utc();
+    if naive.and_utc().timestamp_subsec_micros() == 0 {
+        naive.format("%Y-%m-%dT%H:%M:%S").to_string()
+    } else {
+        naive.format("%Y-%m-%dT%H:%M:%S%.6f").to_string()
+    }
+}
+
+/// Parse a timestamp written by [`format_python_datetime`] or by the
+/// Python runner. Naive timestamps are taken to be in UTC.
+pub fn parse_python_datetime(s: &str) -> Result<DateTime<Utc>, chrono::ParseError> {
+    match NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f") {
+        Ok(naive) => Ok(naive.and_utc()),
+        Err(_) => Ok(DateTime::parse_from_rfc3339(s)?.with_timezone(&Utc)),
     }
 }
 
@@ -365,6 +391,76 @@ mod tests {
         assert_eq!(drained[0].log_id, "old");
         assert!(store.get("fresh").await.is_some());
         assert!(store.get("old").await.is_none());
+        cleanup(&store).await;
+    }
+
+    #[test]
+    fn default_key_matches_python() {
+        let store = ActiveRunStore::new(redis::Client::open("redis://127.0.0.1/").unwrap());
+        assert_eq!(store.key, "active-runs");
+    }
+
+    /// A run registered by the Python runner can be read back, and runs
+    /// we store use the same encoding.
+    #[tokio::test]
+    async fn python_encoding() {
+        let Some(store) = try_test_store().await else {
+            eprintln!("skipping: Redis unavailable");
+            return;
+        };
+        let python_json = serde_json::json!({
+            "queue_id": 42,
+            "id": "run-py",
+            "codebase": "cb",
+            "change_set": null,
+            "campaign": "lintian-fixes",
+            "command": "lintian-brush",
+            "estimated_duration": 12.5,
+            "current_duration": 3.2,
+            "start_time": "2026-10-06T12:34:56.123456",
+            "worker": "w1",
+            "worker_link": null,
+            "vcs": {"vcs_type": "git", "branch_url": "https://example.invalid/cb"},
+            "backchannel": {"my_url": "http://w1:8080/"},
+            "instigated_context": null,
+            "resume_from": null,
+        });
+        let mut conn = store.conn().await.unwrap();
+        let _: () = conn
+            .hset(&store.key, "run-py", python_json.to_string())
+            .await
+            .unwrap();
+
+        let run = store.get("run-py").await.unwrap();
+        assert_eq!(run.queue_id, 42);
+        assert_eq!(run.worker_name, "w1");
+        assert_eq!(
+            run.start_time,
+            DateTime::parse_from_rfc3339("2026-10-06T12:34:56.123456Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
+        assert_eq!(
+            run.estimated_duration,
+            Some(std::time::Duration::from_millis(12500))
+        );
+        assert_eq!(
+            run.vcs_info.branch_url.as_deref(),
+            Some("https://example.invalid/cb")
+        );
+        assert!(matches!(
+            run.backchannel,
+            crate::Backchannel::Polling { ref my_url } if my_url == "http://w1:8080/"
+        ));
+
+        store.store(run).await;
+        let stored: String = conn.hget(&store.key, "run-py").await.unwrap();
+        let mut stored: serde_json::Value = serde_json::from_str(&stored).unwrap();
+        let mut expected = python_json.clone();
+        stored.as_object_mut().unwrap().remove("current_duration");
+        expected.as_object_mut().unwrap().remove("current_duration");
+        expected["vcs"]["subpath"] = serde_json::Value::Null;
+        assert_eq!(stored, expected);
         cleanup(&store).await;
     }
 
