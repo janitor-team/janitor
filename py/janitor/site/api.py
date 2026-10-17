@@ -439,6 +439,8 @@ async def handle_run_post(request):
         review_comment = post.get("review-comment")
         if verdict:
             verdict = verdict.lower()
+            if verdict not in ("approved", "rejected", "abstained", "reschedule"):
+                raise web.HTTPBadRequest(text=f"unknown verdict: {verdict}")
             with span.new_child("sql:update-run"):
                 try:
                     user = request["user"]["email"]
