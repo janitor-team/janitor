@@ -395,7 +395,10 @@ pub async fn upload_results(
         let finish_url = base_url
             .join(&format!("active-runs/{}/finish", run_id))
             .map_err(|e| UploadFailure(format!("Error building finish URL: {}", e)))?;
-        log::info!("Uploading results to {}", &finish_url);
+        log::info!(
+            "Uploading results to {}",
+            crate::sanitise_url_for_log(&finish_url)
+        );
         let builder = client.post(finish_url).timeout(std::time::Duration::from_secs(60));
         let builder = credentials.set_credentials(builder);
         log::debug!("Uploading results: {}", serde_json::to_string(metadata).unwrap());
