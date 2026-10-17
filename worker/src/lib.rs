@@ -907,20 +907,12 @@ pub fn run_worker(
                 Some(Box::new(tag_selector)),
                 possible_transports,
             ) {
-                Err(
-                    e @ BrzError::InvalidHttpResponse(..)
-                    | e @ BrzError::IncompleteRead(..)
-                    | e @ BrzError::UnexpectedHttpStatus { .. }
-                    | e @ BrzError::TransportError(..)
-                    | e @ BrzError::TransportNotPossible(..)
-                    | e @ BrzError::RemoteGitError(..),
-                ) => {
-                    log::warn!("unable to push to cache URL {}: {}", cached_branch_url, e);
-                }
                 Err(e) => {
-                    panic!(
-                        "Unexpected error pushing to cache URL {}: {}",
-                        cached_branch_url, e
+                    // A failed cache push must not fail the run.
+                    log::warn!(
+                        "unable to push to cache URL {}: {}",
+                        sanitise_url_for_log(cached_branch_url),
+                        e
                     );
                 }
                 Ok(_) => {
