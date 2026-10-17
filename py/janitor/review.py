@@ -17,9 +17,12 @@
 
 from typing import Optional
 
+from aiohttp_openmetrics import Counter
 from yarl import URL
 
 from .schedule import do_schedule
+
+review_count = Counter("review", "Reviews stored, by verdict", labelnames=("verdict",))
 
 
 async def store_review(
@@ -65,3 +68,4 @@ async def store_review(
             reviewer,
             verdict,
         )
+    review_count.labels(verdict=verdict).inc()

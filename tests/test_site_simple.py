@@ -17,17 +17,24 @@
 
 import asyncio
 import json
+import re
 import tempfile
+from datetime import timedelta
 from pathlib import Path
 
 import aiohttp
 import asyncpg
+import pytest
 import pytest_asyncio
 import testing.postgresql
 from fakeredis.aioredis import FakeRedis
 
+from janitor import utcnow
 from janitor.config import read_string as read_config_string
+from janitor.review import store_review
 from janitor.site.simple import create_app
+
+from .test_cupboard import _insert_codebase, _insert_run
 
 _SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schema"
 
@@ -233,3 +240,80 @@ async def test_merge_proposal_without_url_returns_400(
     resp = await client.get("/lintian-fixes/merge-proposal")
     assert resp.status == 400
     assert await resp.text() == "no url specified"
+
+
+def _review_samples(text):
+    return {
+        m.group(1): float(m.group(2))
+        for m in re.finditer(r'^review_total\{verdict="(\w+)"\} (\S+)$', text, re.M)
+    }
+
+
+async def _scrape(client):
+    resp = await client.get("/metrics")
+    assert resp.status == 200
+    return await resp.text()
+
+
+async def _store(conn, run_id, verdict, reviewer):
+    await store_review(
+        conn,
+        None,
+        None,
+        run_id,
+        verdict=verdict,
+        comment=None,
+        reviewer=reviewer,
+        is_qa_reviewer=False,
+    )
+
+
+async def _metrics_client(aiohttp_client):
+    private_app, _app = await create_app(config=create_config(), redis=FakeRedis())
+    return await aiohttp_client(private_app)
+
+
+async def test_metrics_count_reviews_by_verdict(aiohttp_client, db):
+    client = await _metrics_client(aiohttp_client)
+    async with db.acquire() as conn:
+        await _insert_codebase(conn, "foo")
+        now = utcnow()
+        await _insert_run(
+            conn,
+            run_id="run1",
+            codebase="foo",
+            start_time=now - timedelta(minutes=30),
+            finish_time=now,
+        )
+        before = _review_samples(await _scrape(client))
+        await _store(conn, "run1", "approved", "a@example.com")
+        await _store(conn, "run1", "approved", "b@example.com")
+        await _store(conn, "run1", "rejected", "c@example.com")
+
+    text = await _scrape(client)
+    after = _review_samples(text)
+    assert after["approved"] - before.get("approved", 0) == 2
+    assert after["rejected"] - before.get("rejected", 0) == 1
+    assert after.get("abstained", 0) == before.get("abstained", 0)
+    assert "example.com" not in text
+
+
+async def test_failed_review_is_not_counted(aiohttp_client, db):
+    client = await _metrics_client(aiohttp_client)
+    async with db.acquire() as conn:
+        await _insert_codebase(conn, "foo")
+        now = utcnow()
+        await _insert_run(
+            conn,
+            run_id="run1",
+            codebase="foo",
+            start_time=now - timedelta(minutes=30),
+            finish_time=now,
+        )
+        await _store(conn, "run1", "approved", "a@example.com")
+        with pytest.raises(asyncpg.InvalidTextRepresentationError):
+            await _store(conn, "nosuchrun", "bogus", "a@example.com")
+
+    samples = _review_samples(await _scrape(client))
+    assert samples["approved"] >= 1
+    assert "bogus" not in samples
