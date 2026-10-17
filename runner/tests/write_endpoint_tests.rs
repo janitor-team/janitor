@@ -177,6 +177,52 @@ async fn post_schedule_with_missing_run_returns_404() {
     assert_eq!(body["reason"], "Run not found");
 }
 
+async fn post_schedule_control(app: axum::Router, body: Value) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/schedule-control")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    let status = response.status();
+    (status, get_body(response).await)
+}
+
+/// Python treats an `estimated_duration` of 0 as unset, so the
+/// duration is estimated instead.
+#[tokio::test]
+async fn post_schedule_control_zero_estimated_duration_is_unset() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let pool = state.database.pool().clone();
+    insert_codebase(&pool, "control-cb").await;
+
+    let (status, body) = post_schedule_control(
+        app,
+        json!({
+            "codebase": "control-cb",
+            "main_branch_revision": "rev-1",
+            "requester": "test",
+            "estimated_duration": 0,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["estimated_duration_seconds"], json!(15.0));
+
+    let estimated: f64 = sqlx::query_scalar(
+        "SELECT EXTRACT(EPOCH FROM estimated_duration)::float8 FROM queue WHERE id = $1",
+    )
+    .bind(body["queue_id"].as_i64().unwrap() as i32)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(estimated, 15.0);
+}
+
 /// `POST /schedule` without any of `run_id`, `campaign`, `codebase`
 /// returns 400 with `{reason: "missing campaign"}` -- the handler
 /// gates on `campaign` first when no `run_id` is provided.
