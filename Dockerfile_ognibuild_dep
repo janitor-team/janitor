@@ -62,14 +62,15 @@ RUN apt-get update --yes \
         iproute2 \
  && apt-get upgrade --yes \
  && apt-get satisfy --yes --no-install-recommends \
-        libpython3-dev \
         python3-breezy \
+ && apt-get satisfy --yes --no-install-recommends \
+        "libpython$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')" \
  && apt-get clean \
  && rm -rf /usr/share/aclocal
 
 COPY --from=m4 /usr/share/aclocal /usr/share/aclocal
 
-COPY --from=build /code/target/release/ /usr/local/bin/
+COPY --from=build /code/target/release/dep-server /usr/local/bin/dep-server
 
 EXPOSE 9934
 
