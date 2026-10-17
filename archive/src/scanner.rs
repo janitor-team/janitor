@@ -140,57 +140,63 @@ impl PackageScanner {
     }
 
     /// Extract per-`.deb` file listings for a build, keyed by
-    /// binary package name. Used by the Contents-<arch> generator
-    /// (see [`crate::contents`]). Downloads the build's artifacts
-    /// into a fresh tempdir, iterates every `.deb` whose filename
-    /// matches the requested architecture (or `all`, which is
-    /// installable on any arch), and returns
-    /// `(package_name, file_paths)` per .deb.
+    /// binary package name, for the Contents-<arch> generator (see
+    /// [`crate::contents`]). Covers every `.deb` whose architecture
+    /// is `arch` or `all`.
     ///
-    /// The package name is parsed from the `.deb` filename
-    /// (`<name>_<version>_<arch>.deb`) -- this matches how
-    /// dpkg-scanpackages reports it and lets us stay in-process
-    /// without re-parsing package control. Callers that need the
-    /// full Package metadata should combine this with
-    /// [`Self::scan_packages_for_build`].
+    /// With a cache directory, listings are cached per (arch, run);
+    /// they are also filled in by [`Self::scan_packages_for_build`]
+    /// from the same download, so each run's artifacts are fetched
+    /// once rather than on every publish.
     pub async fn scan_deb_contents_for_build(
         &self,
         build_info: &BuildInfo,
         arch: &str,
     ) -> ArchiveResult<Vec<(String, Vec<String>)>> {
-        let artifact_dir = self.download_build_artifacts(&build_info.run_id).await?;
-        let mut out = Vec::new();
-        let mut read = tokio::fs::read_dir(artifact_dir.path())
-            .await
-            .map_err(ArchiveError::Io)?;
-        while let Some(entry) = read.next_entry().await.map_err(ArchiveError::Io)? {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if !name.ends_with(".deb") {
-                continue;
-            }
-            let Some(pkg_name) = deb_package_name(&name) else {
-                warn!("Skipping unrecognized .deb filename: {}", name);
-                continue;
-            };
-            let Some(pkg_arch) = deb_architecture(&name) else {
-                warn!("Skipping .deb without parseable arch: {}", name);
-                continue;
-            };
-            // Contents-<arch> lists arch-specific *and* `all`
-            // packages -- the latter install on every arch, so they
-            // must appear in every arch's Contents. Matches
-            // dpkg-scanpackages -a<arch> behavior.
-            if pkg_arch != arch && pkg_arch != "all" {
-                continue;
-            }
-            match crate::deb::list_deb_files(&entry.path()) {
-                Ok(files) => out.push((pkg_name, files)),
-                Err(e) => {
-                    warn!("list_deb_files({}) failed: {}", entry.path().display(), e);
-                }
+        let run_id = &build_info.run_id;
+        if let Some(cache_path) = self.contents_cache_path(run_id, arch) {
+            if let Ok(bytes) = tokio::fs::read(&cache_path).await {
+                debug!(
+                    "loaded contents cache for run={} arch={} from {:?}",
+                    run_id, arch, cache_path
+                );
+                return serde_json::from_slice(&bytes).map_err(|e| {
+                    ArchiveError::PackageScanning(format!(
+                        "invalid contents cache {:?}: {}",
+                        cache_path, e
+                    ))
+                });
             }
         }
-        Ok(out)
+        let artifact_dir = self.download_build_artifacts(run_id).await?;
+        let contents = list_contents(artifact_dir.path(), arch).await?;
+        self.write_contents_cache(run_id, arch, &contents).await;
+        Ok(contents)
+    }
+
+    fn contents_cache_path(&self, run_id: &str, arch: &str) -> Option<PathBuf> {
+        let cache = self.cache_directory.as_ref()?;
+        Some(cache.join(format!("contents-{}", arch)).join(run_id))
+    }
+
+    async fn write_contents_cache(
+        &self,
+        run_id: &str,
+        arch: &str,
+        contents: &[(String, Vec<String>)],
+    ) {
+        let Some(cache_path) = self.contents_cache_path(run_id, arch) else {
+            return;
+        };
+        let bytes = serde_json::to_vec(contents).expect("contents listing is plain data");
+        if let Some(parent) = cache_path.parent() {
+            if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                warn!("cache parent create failed for {:?}: {}", parent, e);
+            }
+        }
+        if let Err(e) = tokio::fs::write(&cache_path, &bytes).await {
+            warn!("cache write failed for {:?}: {}", cache_path, e);
+        }
     }
 
     /// Retrieve raw `dpkg-scanpackages` bytes for a run, using the
@@ -212,6 +218,14 @@ impl PackageScanner {
         }
         let artifact_dir = self.download_build_artifacts(run_id).await?;
         let raw = run_dpkg_scanpackages(artifact_dir.path(), arch).await?;
+        // Record the Contents listing from the same download, so the
+        // Contents generator doesn't have to fetch the artifacts again.
+        if let Some(arch) = arch {
+            if self.contents_cache_path(run_id, arch).is_some() {
+                let contents = list_contents(artifact_dir.path(), arch).await?;
+                self.write_contents_cache(run_id, arch, &contents).await;
+            }
+        }
         if let Some(cache_path) = self.packages_cache_path(run_id, arch) {
             if let Some(parent) = cache_path.parent() {
                 if let Err(e) = tokio::fs::create_dir_all(parent).await {
@@ -357,6 +371,32 @@ pub(crate) fn pool_directory(suite_name: &str, codebase: &str, run_id: &str) -> 
 /// name portion is everything before the first underscore. Returns
 /// None if the filename doesn't match that pattern (e.g. old-style
 /// or unusual names) -- callers should skip such files rather than
+/// File listings of the `.deb`s in `dir` whose architecture is `arch`
+/// or `all`, as `(package_name, files)`. `all` packages install on
+/// every architecture, so they belong in every Contents-<arch>.
+async fn list_contents(dir: &Path, arch: &str) -> ArchiveResult<Vec<(String, Vec<String>)>> {
+    let mut out = Vec::new();
+    let mut read = tokio::fs::read_dir(dir).await.map_err(ArchiveError::Io)?;
+    while let Some(entry) = read.next_entry().await.map_err(ArchiveError::Io)? {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(".deb") {
+            continue;
+        }
+        let (Some(pkg_name), Some(pkg_arch)) = (deb_package_name(&name), deb_architecture(&name))
+        else {
+            return Err(ArchiveError::PackageScanning(format!(
+                "unrecognized .deb filename: {}",
+                name
+            )));
+        };
+        if pkg_arch != arch && pkg_arch != "all" {
+            continue;
+        }
+        out.push((pkg_name, crate::deb::list_deb_files(&entry.path())?));
+    }
+    Ok(out)
+}
+
 /// misclassify them.
 pub(crate) fn deb_package_name(filename: &str) -> Option<String> {
     let stem = filename.strip_suffix(".deb")?;
@@ -716,6 +756,106 @@ mod tests {
     /// module tests but exposed here so scanner-level tests can
     /// exercise the full artifact-download -> contents-extraction
     /// path.
+    fn gzipped_tar(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        use std::io::Write;
+        let mut tar_bytes: Vec<u8> = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_bytes);
+            for (name, data) in entries {
+                let mut header = tar::Header::new_gnu();
+                header.set_entry_type(tar::EntryType::Regular);
+                header.set_path(name).unwrap();
+                header.set_size(data.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                builder.append(&header, *data).unwrap();
+            }
+            builder.finish().unwrap();
+        }
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&tar_bytes).unwrap();
+        gz.finish().unwrap()
+    }
+
+    /// A `.deb` with a real control file, so dpkg-scanpackages accepts it.
+    fn write_deb(path: &std::path::Path, package: &str, arch: &str, files: &[&str]) {
+        let control = format!(
+            "Package: {}\nVersion: 1.0\nArchitecture: {}\nMaintainer: Test <test@example.com>\nDescription: test\n",
+            package, arch
+        );
+        let control_tar = gzipped_tar(&[("./control", control.as_bytes())]);
+        let data_entries: Vec<(&str, &[u8])> = files.iter().map(|f| (*f, &b""[..])).collect();
+        let data_tar = gzipped_tar(&data_entries);
+        let mut ar_builder = ar::Builder::new(std::fs::File::create(path).unwrap());
+        for (name, data) in [
+            ("debian-binary", &b"2.0\n"[..]),
+            ("control.tar.gz", control_tar.as_slice()),
+            ("data.tar.gz", data_tar.as_slice()),
+        ] {
+            ar_builder
+                .append(
+                    &ar::Header::new(name.as_bytes().to_vec(), data.len() as u64),
+                    data,
+                )
+                .unwrap();
+        }
+    }
+
+    /// Scanning Packages with a cache directory records the Contents
+    /// listing from the same download, so Contents generation never
+    /// fetches the artifacts again.
+    #[tokio::test]
+    async fn packages_scan_fills_contents_cache() {
+        use super::BuildInfo;
+        use futures::StreamExt;
+        let store = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let run_dir = store.path().join("run-1");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        write_deb(
+            &run_dir.join("hello_1.0_amd64.deb"),
+            "hello",
+            "amd64",
+            &["./usr/bin/hello"],
+        );
+
+        let scanner = super::PackageScanner::with_cache(
+            &store.path().display().to_string(),
+            Some(cache.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+        let build = BuildInfo {
+            id: "run-1/hello".to_string(),
+            run_id: "run-1".to_string(),
+            codebase: "hello".to_string(),
+            source_package: "hello".to_string(),
+            suite: "unstable".to_string(),
+            architecture: "amd64".to_string(),
+            component: "main".to_string(),
+            binary_files: vec![],
+            source_files: vec![],
+        };
+        let packages: Vec<_> = scanner
+            .scan_packages_for_build(&build, Some("amd64"))
+            .await
+            .collect()
+            .await;
+        for package in packages {
+            package.unwrap();
+        }
+
+        // Without the cache this would fail with ArtifactsMissing.
+        std::fs::remove_dir_all(&run_dir).unwrap();
+        assert_eq!(
+            scanner
+                .scan_deb_contents_for_build(&build, "amd64")
+                .await
+                .unwrap(),
+            vec![("hello".to_string(), vec!["usr/bin/hello".to_string()])]
+        );
+    }
+
     fn write_mini_deb(path: &std::path::Path, files: &[&str]) {
         use std::io::Write;
         let mut tar_bytes: Vec<u8> = Vec::new();
