@@ -1321,6 +1321,16 @@ async fn end_to_end_assignment_lifecycle() {
 /// assignment body. Used by the tests below that assert on the wire
 /// shape of the assign response without caring about the finish half.
 async fn assign_one(app: axum::Router, state: &Arc<AppState>, codebase: &str) -> Value {
+    schedule_candidate(&app, state, codebase, "test-campaign").await;
+    request_assignment(app).await
+}
+
+async fn schedule_candidate(
+    app: &axum::Router,
+    state: &Arc<AppState>,
+    codebase: &str,
+    campaign: &str,
+) {
     let pool = state.database.pool().clone();
     insert_codebase(&pool, codebase).await;
     state
@@ -1329,7 +1339,7 @@ async fn assign_one(app: axum::Router, state: &Arc<AppState>, codebase: &str) ->
         .await
         .expect("create worker");
 
-    let candidate_body = json!([{ "codebase": codebase, "campaign": "test-campaign" }]);
+    let candidate_body = json!([{ "codebase": codebase, "campaign": campaign }]);
     let req = Request::builder()
         .method(Method::POST)
         .uri("/candidates")
@@ -1338,7 +1348,9 @@ async fn assign_one(app: axum::Router, state: &Arc<AppState>, codebase: &str) ->
         .unwrap();
     let response = app.clone().oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+}
 
+async fn request_assignment(app: axum::Router) -> Value {
     let assign_body = json!({"worker": "envelope-worker"});
     let req = Request::builder()
         .method(Method::POST)
@@ -1347,18 +1359,16 @@ async fn assign_one(app: axum::Router, state: &Arc<AppState>, codebase: &str) ->
         .body(Body::from(assign_body.to_string()))
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::CREATED);
+    let status = response.status();
     let location = response
         .headers()
         .get("location")
-        .expect("201 must carry a Location header")
-        .to_str()
-        .unwrap()
-        .to_string();
+        .map(|l| l.to_str().unwrap().to_string());
     let body = get_body(response).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
     assert_eq!(
-        location,
-        format!("/active-runs/{}", body["id"].as_str().unwrap())
+        location.as_deref(),
+        Some(format!("/active-runs/{}", body["id"].as_str().unwrap()).as_str())
     );
     body
 }
@@ -1472,12 +1482,13 @@ async fn assign_response_envelope_has_all_documented_fields() {
 /// `skip-setup-validation` comes from the campaign.
 #[tokio::test]
 async fn assign_sends_campaign_skip_setup_validation() {
-    let campaign = janitor::config::Campaign {
+    let mut campaign = janitor::config::Campaign {
         name: Some("test-campaign".to_string()),
         command: Some("true".to_string()),
         skip_setup_validation: Some(true),
         ..Default::default()
     };
+    campaign.set_generic_build(Default::default());
     let builder = test_utils::TestConfigBuilder::new().with_campaign_config(campaign);
     let Some((app, state)) =
         test_utils::create_test_app_with_state_with_config_if_available(builder)
@@ -1528,6 +1539,114 @@ async fn assign_sends_opened_branch_url() {
         assignment["branch"]["url"],
         json!(url.as_str().trim_end_matches('/'))
     );
+}
+
+/// A Debian campaign's `build.config` must match Python's
+/// `DebianBuilder.config()` and deserialise into the worker's
+/// `DebianBuildConfig`; `build.environment` is the builder's build env.
+#[tokio::test]
+async fn assign_debian_build_config_matches_python() {
+    let distribution = janitor::config::Distribution {
+        name: Some("unstable".to_string()),
+        archive_mirror_uri: Some("http://deb.debian.org/debian".to_string()),
+        component: vec!["main".to_string()],
+        chroot: Some("unstable-amd64-sbuild".to_string()),
+        lintian_profile: Some("debian".to_string()),
+        lintian_suppress_tag: vec!["bad-distribution-in-changes-file".to_string()],
+        build_command: Some("sbuild -A -s -v".to_string()),
+        vendor: Some("debian".to_string()),
+        ..Default::default()
+    };
+    let builder = test_utils::TestConfigBuilder::new().with_debian_campaign(
+        "debian-campaign",
+        "true",
+        distribution,
+    );
+    let Some((app, state)) =
+        test_utils::create_test_app_with_state_with_config_if_available(builder)
+            .await
+            .expect("test app setup should either succeed or return None cleanly")
+    else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let pool = state.database.pool().clone();
+    // The test database lacks the debversion extension that
+    // schema/debian/debian.sql needs, so use a text version column.
+    sqlx::query(
+        "CREATE TABLE debian_build (
+             run_id text not null references run (id),
+             version text not null,
+             distribution text not null,
+             source text not null
+         )",
+    )
+    .execute(&pool)
+    .await
+    .expect("create debian_build");
+    schedule_candidate(&app, &state, "assign-debian-cb", "debian-campaign").await;
+    sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs-debian', 'debian-campaign')")
+        .execute(&pool)
+        .await
+        .expect("insert change_set");
+    sqlx::query(
+        "INSERT INTO run (id, suite, codebase, result_code, start_time, finish_time,
+                          logfilenames, change_set)
+         VALUES ('run-debian-1', 'debian-campaign', 'assign-debian-cb', 'success',
+                 NOW() - INTERVAL '1 minute', NOW(), '{}', 'cs-debian')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert run");
+    sqlx::query(
+        "INSERT INTO debian_build (run_id, version, distribution, source)
+         VALUES ('run-debian-1', '1.0-1', 'debian-campaign', 'assign-debian-cb')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert debian_build");
+
+    let assignment = request_assignment(app).await;
+
+    assert_eq!(assignment["build"]["target"], json!("debian"));
+    assert_eq!(
+        assignment["build"]["config"],
+        json!({
+            "lintian": {
+                "profile": "debian",
+                "suppress-tags": ["bad-distribution-in-changes-file"],
+            },
+            "build-extra-repositories": [],
+            "build-distribution": "debian-campaign",
+            "build-suffix": "",
+            "build-command": "sbuild -A -s -v",
+            "last-build-version": "1.0-1",
+            "chroot": "unstable-amd64-sbuild",
+            "base-apt-repository": "http://deb.debian.org/debian unstable main",
+            "base-apt-repository-signed-by": null,
+            "dep_server_url": null,
+        })
+    );
+    let config: janitor::api::worker::DebianBuildConfig =
+        serde_json::from_value(assignment["build"]["config"].clone())
+            .expect("build.config must deserialise into DebianBuildConfig");
+    assert_eq!(config.lintian.profile.as_deref(), Some("debian"));
+    assert_eq!(config.last_build_version, Some("1.0-1".parse().unwrap()));
+
+    let build_env = json!({
+        "DISTRIBUTION": "unstable",
+        "DEB_VENDOR": "debian",
+        "CHROOT": "unstable-amd64-sbuild",
+        "APT_REPOSITORY": "http://deb.debian.org/debian unstable main",
+    });
+    assert_eq!(assignment["build"]["environment"], build_env);
+
+    let mut env = build_env.as_object().unwrap().clone();
+    for (k, v) in janitor_runner::committer_env(Some("Test Runner <test@example.com>")) {
+        env.insert(k, json!(v));
+    }
+    assert_eq!(assignment["env"], Value::Object(env));
 }
 
 /// `GET /active-runs/+peek` returns 201 + the peek envelope when a

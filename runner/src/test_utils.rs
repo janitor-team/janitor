@@ -276,6 +276,7 @@ pub struct TestConfigBuilder {
     campaigns: Vec<janitor::config::Campaign>,
     artifact_manager: Option<Arc<dyn janitor::artifacts::ArtifactManager>>,
     backup_artifact_manager: Option<Arc<dyn janitor::artifacts::ArtifactManager>>,
+    distributions: Vec<janitor::config::Distribution>,
 }
 
 impl TestConfigBuilder {
@@ -291,6 +292,7 @@ impl TestConfigBuilder {
         let mut campaign = janitor::config::Campaign::default();
         campaign.name = Some(name.to_string());
         campaign.command = Some(command.to_string());
+        campaign.set_generic_build(Default::default());
         self.campaigns.push(campaign);
         self
     }
@@ -319,6 +321,28 @@ impl TestConfigBuilder {
         self
     }
 
+    /// Register a campaign that builds Debian packages for
+    /// `distribution`, along with that distribution.
+    pub fn with_debian_campaign(
+        mut self,
+        name: &str,
+        command: &str,
+        distribution: janitor::config::Distribution,
+    ) -> Self {
+        let mut campaign = janitor::config::Campaign {
+            name: Some(name.to_string()),
+            command: Some(command.to_string()),
+            ..Default::default()
+        };
+        campaign.set_debian_build(janitor::config::DebianBuild {
+            base_distribution: distribution.name.clone(),
+            ..Default::default()
+        });
+        self.campaigns.push(campaign);
+        self.distributions.push(distribution);
+        self
+    }
+
     /// Build a janitor `Config` for tests.
     pub fn build_janitor_config(self) -> janitor::config::Config {
         let mut config = janitor::config::Config::new();
@@ -340,6 +364,7 @@ impl TestConfigBuilder {
         );
         config.committer = Some("Test Runner <test@example.com>".to_string());
         config.campaign = self.campaigns;
+        config.distribution = self.distributions;
         config
     }
 }
