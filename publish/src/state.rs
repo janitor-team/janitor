@@ -624,7 +624,7 @@ WITH per_run_mps AS (
     AND merge_proposal.status NOT IN ('open', 'abandoned')
     GROUP BY run.id, merge_proposal.url
 )
-SELECT mp_url, mp_status FROM per_run_mps
+SELECT mp_url, mp_status::text FROM per_run_mps
 WHERE run_id = (
     SELECT run_id FROM per_run_mps ORDER BY finish_time DESC LIMIT 1)
 "#,
