@@ -56,3 +56,4 @@ janitor = { path = "..", features = ["testing"] }
 janitor-runner = { path = "../runner" }
 serial_test = "3"
 tower = { version = "0.5", features = ["util"] }
+tempfile = { workspace = true }

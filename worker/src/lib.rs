@@ -296,6 +296,8 @@ pub fn run_worker(
     let cached_branch = if let Some(cached_branch_url) = cached_branch_url {
         let probers =
             silver_platter::probers::select_probers(vcs_type.map(|v| v.to_string()).as_deref());
+        // open_branch reads ,branch= itself but does not unescape it.
+        let cached_branch_name = janitor::vcs::segment_branch_name(cached_branch_url);
         match silver_platter::vcs::open_branch(
             cached_branch_url,
             possible_transports.as_mut(),
@@ -306,7 +308,7 @@ pub fn run_worker(
                     .collect::<Vec<_>>()
                     .as_slice(),
             ),
-            None,
+            cached_branch_name.as_deref(),
         ) {
             Ok(b) => {
                 let display = silver_platter::vcs::full_branch_url(&b);
@@ -356,6 +358,9 @@ pub fn run_worker(
         );
         let probers =
             silver_platter::probers::select_probers(vcs_type.map(|v| v.to_string()).as_deref());
+        // Same read as the cache branch. silver-platter's full_branch_url does
+        // not escape the name yet, so this is a no-op until it does.
+        let resume_branch_name = janitor::vcs::segment_branch_name(resume_branch_url);
         match silver_platter::vcs::open_branch(
             resume_branch_url,
             possible_transports.as_mut(),
@@ -366,7 +371,7 @@ pub fn run_worker(
                     .collect::<Vec<_>>()
                     .as_slice(),
             ),
-            None,
+            resume_branch_name.as_deref(),
         ) {
             Err(silver_platter::vcs::BranchOpenError::TemporarilyUnavailable {
                 url,

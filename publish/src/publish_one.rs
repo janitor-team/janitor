@@ -48,11 +48,14 @@ pub fn publish_one(
     };
     drop_env(&mut args);
 
+    // open_branch reads ,branch= itself but does not unescape it.
+    let source_branch_name = janitor::vcs::segment_branch_name(&request.source_branch_url);
+
     let mut source_branch = match open_branch(
         &request.source_branch_url,
         possible_transports.as_mut(),
         None,
-        None,
+        source_branch_name.as_deref(),
     ) {
         Ok(branch) => branch,
         Err(BranchOpenError::RateLimited { description, .. }) => {
