@@ -438,6 +438,42 @@ mod tests {
     }
 
     #[test]
+    fn test_remote_git_vcs_manager_branch_url_escapes_name() {
+        let mgr = RemoteGitVcsManager::new(Url::parse("https://vcs.example.com/git/").unwrap());
+        let url = mgr.get_branch_url("mycodebase", "lintian-fixes/main");
+        assert_eq!(
+            url.as_str(),
+            "https://vcs.example.com/git/mycodebase,branch=lintian-fixes%2Fmain"
+        );
+    }
+
+    #[test]
+    fn test_local_git_vcs_manager_branch_url_with_slash() {
+        breezyshim::init();
+        let td = tempfile::tempdir().unwrap();
+        let repo_path = td.path().join("mycodebase");
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo_path)
+                .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {:?} failed", args);
+        };
+        std::fs::create_dir(&repo_path).unwrap();
+        git(&["init", "-q"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "initial"]);
+        git(&["branch", "lintian-fixes/main"]);
+
+        let mgr = LocalGitVcsManager::new(td.path().to_path_buf());
+        let url = mgr.get_branch_url("mycodebase", "lintian-fixes/main");
+        let branch = breezyshim::branch::open_as_generic(&url).unwrap();
+        assert_eq!(branch.name().as_deref(), Some("lintian-fixes/main"));
+    }
+
+    #[test]
     fn test_remote_bzr_vcs_manager_repository_url() {
         let mgr = RemoteBzrVcsManager::new(Url::parse("https://vcs.example.com/bzr/").unwrap());
         assert_eq!(
@@ -445,6 +481,16 @@ mod tests {
             "https://vcs.example.com/bzr/mycodebase"
         );
     }
+}
+
+/// Add a `,branch=` segment parameter for a colocated git branch. The
+/// name is escaped like breezy does, since it may contain slashes.
+fn join_branch_parameter(url: &Url, branch_name: &str) -> Url {
+    let params = HashMap::from([(
+        "branch".to_string(),
+        breezyshim::urlutils::escape_utf8(branch_name, Some("")),
+    )]);
+    breezyshim::urlutils::join_segment_parameters(url, params)
 }
 
 #[derive(Debug)]
@@ -713,9 +759,7 @@ impl VcsManager for LocalGitVcsManager {
             "Failed to join codebase '{}' to base URL",
             codebase
         ));
-        let mut params = std::collections::HashMap::new();
-        params.insert("branch".to_string(), branch_name.to_string());
-        breezyshim::urlutils::join_segment_parameters(&url, params)
+        join_branch_parameter(&url, branch_name)
     }
 
     fn get_repository(&self, codebase: &str) -> Result<Option<GenericRepository>, BrzError> {
@@ -1097,11 +1141,7 @@ impl VcsManager for RemoteGitVcsManager {
 
     fn get_branch_url(&self, codebase: &str, branch_name: &str) -> Url {
         let url = self.base_url.join(codebase).unwrap();
-        let params = std::collections::HashMap::from_iter(vec![(
-            "branch".to_string(),
-            branch_name.to_string(),
-        )]);
-        breezyshim::urlutils::join_segment_parameters(&url, params)
+        join_branch_parameter(&url, branch_name)
     }
 
     fn get_branch(
