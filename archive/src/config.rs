@@ -95,15 +95,12 @@ pub(crate) fn apt_repository_config_from_proto(
     origin: &str,
 ) -> AptRepositoryConfig {
     let name = proto.name().to_string();
+    let description = proto.description().to_string();
     AptRepositoryConfig {
         name: name.clone(),
-        description: if proto.description().is_empty() {
-            format!("{} APT repository", name)
-        } else {
-            proto.description().to_string()
-        },
+        label: description.clone(),
+        description,
         origin: origin.to_string(),
-        label: name.clone(),
         suite: name.clone(),
         codename: name.clone(),
         architectures: architectures.to_vec(),
@@ -241,7 +238,7 @@ mod tests {
     /// Loading apt_repository blocks from the protobuf janitor.conf:
     /// each block becomes an AptRepositoryConfig with name/suite/
     /// codename set to `proto.name`, base_path=archive_path/name,
-    /// and the description carried through. Missing description falls back to a default.
+    /// and the description used as label.
     #[test]
     fn test_apt_repository_config_from_proto_basic() {
         let mut proto = janitor::config::AptRepository::new();
@@ -259,6 +256,7 @@ mod tests {
         assert_eq!(cfg.suite, "lintian-fixes");
         assert_eq!(cfg.codename, "lintian-fixes");
         assert_eq!(cfg.description, "Builds of lintian fixes");
+        assert_eq!(cfg.label, "Builds of lintian fixes");
         assert_eq!(cfg.origin, "janitor.debian.net");
         assert_eq!(cfg.base_path, archive_path.join("lintian-fixes"));
         assert_eq!(cfg.architectures, vec!["amd64", "source"]);
@@ -266,13 +264,12 @@ mod tests {
         assert!(cfg.by_hash);
     }
 
-    /// Description left empty in the textproto: synthesise one
-    /// from the suite name so the Release file isn't broken.
+    /// Description left empty in the textproto: the Release Label is
+    /// left empty too.
     #[test]
-    fn test_apt_repository_config_from_proto_default_description() {
+    fn test_apt_repository_config_from_proto_empty_description() {
         let mut proto = janitor::config::AptRepository::new();
         proto.set_name("unchanged".to_string());
-        // No set_description.
         let cfg = apt_repository_config_from_proto(
             &proto,
             Path::new("/x"),
@@ -280,7 +277,8 @@ mod tests {
             &["main".to_string()],
             "Janitor",
         );
-        assert_eq!(cfg.description, "unchanged APT repository");
+        assert_eq!(cfg.description, "");
+        assert_eq!(cfg.label, "");
     }
 
     #[test]
