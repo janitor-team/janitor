@@ -18,6 +18,7 @@
 from datetime import timedelta
 
 import aiohttp_jinja2
+import aiozipkin
 import pytest
 from aiohttp import web
 from jinja2 import Environment
@@ -479,3 +480,64 @@ async def test_publish_history_limit_zero_lists_nothing(con):
     assert len(await iter_publish_history(con)) == 2
     assert len(await iter_publish_history(con, limit=1)) == 1
     assert await iter_publish_history(con, limit=0) == []
+
+
+REVIEWER = {"email": "reviewer@example.com", "name": "Reviewer", "groups": []}
+
+
+async def create_review_client(aiohttp_client, db, runner_posts):
+    runner_app = web.Application()
+
+    async def _handle_run(request):
+        runner_posts.append((request.match_info["run_id"], await request.json()))
+        return web.json_response({})
+
+    runner_app.router.add_post("/runs/{run_id}", _handle_run)
+    runner_client = await aiohttp_client(runner_app)
+
+    app = create_app(
+        config=read_config_string("oauth2_provider {}\n"),
+        publisher_url=None,
+        runner_url=str(runner_client.make_url("/")),
+        differ_url=None,
+        db=db,
+    )
+    app["external_url"] = URL("http://example.com/")
+    aiohttp_jinja2.get_env(app).globals.update(TEMPLATE_ENV)
+    app.middlewares.insert(0, _user_middleware(REVIEWER))
+    endpoint = aiozipkin.create_endpoint("janitor.site", ipv4="127.0.0.1", port=80)
+    aiozipkin.setup(app, await aiozipkin.create_custom(endpoint))
+    return await aiohttp_client(app)
+
+
+async def test_review_post_reschedule(aiohttp_client, db):
+    runner_posts: list[tuple[str, dict]] = []
+    client = await create_review_client(aiohttp_client, db, runner_posts)
+    async with db.acquire() as conn:
+        await _insert_codebase(conn, "foo")
+        await conn.execute(
+            "INSERT INTO candidate (suite, command, codebase) "
+            "VALUES ('mycampaign', 'true', 'foo')"
+        )
+        now = utcnow()
+        await _insert_run(
+            conn,
+            run_id="somerun",
+            codebase="foo",
+            start_time=now - timedelta(minutes=30),
+            finish_time=now,
+        )
+
+    resp = await client.post(
+        "/cupboard/review", data={"run_id": "somerun", "verdict": "Reschedule"}
+    )
+    assert resp.status == 200
+
+    async with db.acquire() as conn:
+        reviews = await conn.fetch("SELECT run_id, reviewer, verdict FROM review")
+        queue = await conn.fetch("SELECT codebase, suite, refresh FROM queue")
+    assert [tuple(r) for r in reviews] == [
+        ("somerun", "reviewer@example.com", "rejected")
+    ]
+    assert [tuple(q) for q in queue] == [("foo", "mycampaign", True)]
+    assert runner_posts == [("somerun", {"publish_status": "rejected"})]

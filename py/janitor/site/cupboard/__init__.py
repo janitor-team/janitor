@@ -286,7 +286,7 @@ async def handle_review_post(request):
             verdict = {
                 "approve": "approved",
                 "reject": "rejected",
-                "reschedule": "rescheduled",
+                "reschedule": "reschedule",
                 "abstain": "abstained",
             }[post["verdict"].lower()]
             review_comment = post.get("review_comment")
