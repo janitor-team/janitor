@@ -131,10 +131,8 @@ impl RedisManager {
                     return Ok(());
                 }
             }
-            _ => {}
+            _ => drop(state),
         }
-
-        // State is automatically dropped here
 
         // Try to connect
         self.connect().await
@@ -351,5 +349,28 @@ mod tests {
         let parse_error =
             redis::RedisError::from((redis::ErrorKind::UnexpectedReturnType, "Invalid type"));
         assert!(!RedisManager::is_connection_error(&parse_error));
+    }
+
+    #[tokio::test]
+    async fn test_get_connection_manager_does_not_hang() {
+        // Nothing listens on this port; only the start of connect() matters here.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let manager =
+            RedisManager::new(RedisConfig::new(format!("redis://127.0.0.1:{}/", port))).unwrap();
+        let task = tokio::spawn({
+            let manager = manager.clone();
+            async move { manager.get_connection_manager().await.is_err() }
+        });
+        let reached = tokio::time::timeout(Duration::from_secs(5), async {
+            while manager.connection_state().await == ConnectionState::Disconnected {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        task.abort();
+        assert!(reached.is_ok(), "get_connection_manager hung");
     }
 }
