@@ -2,8 +2,6 @@ use crate::publish::Mode;
 use crate::queue::Queue;
 use breezyshim::RevisionId;
 use chrono::Duration;
-use debian_control::lossless::relations::{Relation, Relations};
-use debian_control::relations::VersionConstraint;
 use sqlx::postgres::types::PgInterval;
 use sqlx::PgPool;
 use std::collections::HashMap;
@@ -194,7 +192,6 @@ async fn estimate_success_probability_and_duration(
         result_code: String,
         instigated_context: Option<String>,
         context: Option<String>,
-        failure_details: Option<serde_json::Value>,
         duration: PgInterval,
         start_time: chrono::NaiveDateTime,
     }
@@ -212,7 +209,7 @@ async fn estimate_success_probability_and_duration(
     let query = sqlx::query_as::<_, Run>(
         r#"
 SELECT
-  result_code, instigated_context, context, failure_details,
+  result_code, instigated_context, context,
   finish_time - start_time AS duration,
   start_time
 FROM run
@@ -236,42 +233,9 @@ ORDER BY start_time DESC
         if run.result_code == "success" {
             success += 1;
         }
-        let mut same_context = context != Some("")
+        let same_context = context != Some("")
             && context.is_some()
             && [run.instigated_context.as_deref(), run.context.as_deref()].contains(&context);
-        if run.result_code == "install-deps-unsatisfied-dependencies"
-            && run
-                .failure_details
-                .as_ref()
-                .is_some_and(|d| d.get("relations").is_some())
-        {
-            // Parse `Relations` and eagerly materialise the group
-            // structure into owned `Relation` values, then drop
-            // `Relations` before hitting any `.await`. `Relations`
-            // holds Python handles (through debian-control's rowan
-            // tree) and is `!Send`; keeping it in scope across an
-            // await would make this whole future non-`Send`, which
-            // in turn prevents `tokio::spawn`ing callers.
-            let groups: Vec<Vec<RelationRef>> = {
-                let relations: Relations = run.failure_details.as_ref().unwrap()["relations"]
-                    .as_str()
-                    .unwrap()
-                    .parse()
-                    .unwrap();
-                relations
-                    .entries()
-                    .map(|dep| {
-                        dep.relations()
-                            .map(|r| RelationRef::from_relation(&r))
-                            .collect()
-                    })
-                    .collect()
-            };
-            if deps_satisfied(conn, campaign, groups).await? {
-                success += 1;
-                same_context = false;
-            }
-        }
         if same_context {
             same_context_multiplier = 0.1;
         }
@@ -553,75 +517,6 @@ pub async fn bulk_add_to_queue(
     }
 
     Ok(())
-}
-
-/// Send-safe extract of a debian-control `Relation`: package name
-/// plus an optional (constraint, version) pair. `Relation` itself
-/// isn't `Send` (it wraps a `!Send` rowan syntax tree), so callers
-/// that need to hold dependency data across an `.await` must convert
-/// to this shape first.
-#[derive(Debug, Clone)]
-struct RelationRef {
-    name: String,
-    constraint: Option<(VersionConstraint, debversion::Version)>,
-}
-
-impl RelationRef {
-    fn from_relation(rel: &Relation) -> Self {
-        Self {
-            name: rel.try_name().expect("relation has no name"),
-            constraint: rel.version(),
-        }
-    }
-}
-
-async fn dep_available(conn: &PgPool, rel: &RelationRef) -> Result<bool, sqlx::Error> {
-    let mut query = sqlx::QueryBuilder::new(
-        r###"
-SELECT
-  1
-FROM
-  all_debian_versions
-WHERE
-  source = "###,
-    );
-    query.push_bind(rel.name.clone());
-
-    if let Some((constraint, version)) = rel.constraint.as_ref() {
-        query.push(" AND version ");
-        query.push(match constraint {
-            VersionConstraint::Equal => "=",
-            VersionConstraint::GreaterThan => ">",
-            VersionConstraint::GreaterThanEqual => ">=",
-            VersionConstraint::LessThan => "<",
-            VersionConstraint::LessThanEqual => "<=",
-        });
-        query.push_bind(version.clone());
-    }
-
-    let query = query.build_query_scalar::<bool>();
-
-    Ok(query.fetch_optional(conn).await?.is_some())
-}
-
-async fn deps_satisfied(
-    conn: &PgPool,
-    _campaign: &str,
-    dependencies: Vec<Vec<RelationRef>>,
-) -> Result<bool, sqlx::Error> {
-    for group in dependencies {
-        let mut found = false;
-        for subdep in group {
-            if dep_available(conn, &subdep).await? {
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            return Ok(false);
-        }
-    }
-    Ok(true)
 }
 
 pub async fn do_schedule_control(

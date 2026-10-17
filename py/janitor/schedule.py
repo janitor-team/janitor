@@ -25,7 +25,6 @@ from datetime import timedelta
 from typing import Optional
 
 import asyncpg
-from debian.changelog import Version
 
 from . import set_user_agent, utcnow
 from .config import read_config
@@ -164,7 +163,7 @@ async def estimate_success_probability_and_duration(
     for run in await conn.fetch(
         """
 SELECT
-  result_code, instigated_context, context, failure_details,
+  result_code, instigated_context, context,
   finish_time - start_time AS duration,
   start_time
 FROM run
@@ -191,16 +190,6 @@ ORDER BY start_time DESC
         same_context = False
         if context and context in (run["instigated_context"], run["context"]):
             same_context = True
-        if (
-            run["result_code"] == "install-deps-unsatisfied-dependencies"
-            and run["failure_details"]
-            and run["failure_details"].get("relations")
-        ):
-            if await deps_satisfied(
-                conn, campaign, run["failure_details"]["relations"]
-            ):
-                success += 1
-                same_context = False
         if same_context:
             same_context_multiplier = 0.1
 
@@ -430,43 +419,6 @@ async def bulk_add_to_queue(
             dry_run=dry_run,
             bucket=bucket,
         )
-
-
-async def dep_available(
-    conn: asyncpg.Connection,
-    name: str,
-    archqual: Optional[str] = None,
-    arch: Optional[str] = None,
-    distribution: Optional[str] = None,
-    version: Optional[tuple[str, Version]] = None,
-    restrictions=None,
-) -> bool:
-    query = """\
-SELECT
-  1
-FROM
-  all_debian_versions
-WHERE
-  source = $1 AND %(version_match)s
-"""
-    args = [name]
-    if version:
-        version_match = f"version {version[0]} $2"
-        args.append(str(version[1]))
-    else:
-        version_match = "True"
-
-    return bool(await conn.fetchval(query % {"version_match": version_match}, *args))
-
-
-async def deps_satisfied(conn: asyncpg.Connection, campaign: str, dependencies) -> bool:
-    for dep in dependencies:
-        for subdep in dep:
-            if await dep_available(conn, **subdep):
-                break
-        else:
-            return False
-    return True
 
 
 async def main_async():
