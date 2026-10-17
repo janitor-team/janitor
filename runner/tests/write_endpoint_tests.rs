@@ -597,6 +597,97 @@ async fn get_queue_returns_scheduled_entries() {
     assert!(entry["queue_id"].is_i64(), "queue_id must be a number");
 }
 
+/// `GET /queue` answers 400 for a limit the database rejects.
+#[tokio::test]
+async fn get_queue_negative_limit_returns_400() {
+    let Some((app, _state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/queue?limit=-1")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = get_body(response).await;
+    let reason = body["reason"].as_str().expect("reason should be a string");
+    assert!(
+        reason.contains("LIMIT must not be negative"),
+        "unexpected reason: {reason}"
+    );
+}
+
+/// `GET /queue` rejects a limit that is not an i64 in the query extractor.
+#[tokio::test]
+async fn get_queue_non_integer_limit_returns_400() {
+    let Some((app, _state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    for uri in ["/queue?limit=abc", "/queue?limit=99999999999999999999"] {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+    }
+}
+
+/// `GET /queue` returns at most `limit` entries, and all without one.
+#[tokio::test]
+async fn get_queue_honours_limit() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let pool = state.database.pool().clone();
+    insert_codebase(&pool, "queue-limit-cb").await;
+    for campaign in ["limit-campaign-a", "limit-campaign-b"] {
+        sqlx::query(
+            "INSERT INTO queue (codebase, suite, command, context)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind("queue-limit-cb")
+        .bind(campaign)
+        .bind("true")
+        .bind("some-context")
+        .execute(&pool)
+        .await
+        .expect("insert queue row");
+    }
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/queue?limit=1")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    assert_eq!(body.as_array().expect("body should be an array").len(), 1);
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/queue")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    assert!(body.as_array().expect("body should be an array").len() >= 2);
+}
+
 /// `POST /kill/{id}` on a run whose backchannel does not support
 /// killing returns 501. Jenkins backchannel always returns
 /// `PingError::NotSupported`.
