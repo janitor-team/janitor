@@ -1,0 +1,66 @@
+---
+name: Docs
+
+"on":
+  push:
+    paths:
+      - "docs/**"
+      - "devnotes/**"
+      - "py/janitor/site/templates/footer.html"
+      - "Makefile"
+      - ".github/workflows/docs.yaml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "devnotes/**"
+      - "py/janitor/site/templates/footer.html"
+      - "Makefile"
+      - ".github/workflows/docs.yaml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build the site (Sphinx)
+        run: |
+          set -x
+          pip3 install --break-system-packages --upgrade \
+            myst-parser sphinx
+          make docs
+
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: build/docs
+
+  deploy:
+    name: Deploy to GitHub Pages
+    # Runs only where the DOCS_DEPLOY variable is "true" (Pages must be on).
+    if: |
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      vars.DOCS_DEPLOY == 'true'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy the site
+        id: deployment
+        uses: actions/deploy-pages@v5

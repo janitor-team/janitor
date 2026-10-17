@@ -1,0 +1,11 @@
+{#- Alabaster's footer, with a space after the copyright sign and the license. -#}
+{% extends "!layout.html" %}
+{%- block footer %}
+    <div class="footer">
+      &#169; {{ copyright }}. {{ license }}
+      {%- if show_source and has_source and sourcename %}
+      | <a href="{{ pathto('_sources/' + sourcename, resource=True)|e }}"
+          rel="nofollow">{{ _('Page source') }}</a>
+      {%- endif %}
+    </div>
+{%- endblock %}

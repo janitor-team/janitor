@@ -67,7 +67,7 @@ campaign {
   name: "lintian-fixes"
   # This codemod is not in the published worker image. Install it in a
   # worker image of your own, see "Custom worker tooling" in
-  # docs/Dockerfiles_.md.
+  # docs/containers.md.
   command: "lintian-brush"
   branch_name: "lintian-fixes"
   debian_build {
@@ -120,9 +120,9 @@ campaign {
 campaign {
   name: "fresh-releases"
   branch_name: "new-upstream"
-  # This codemod is not in the published worker image. Install it in a
-  # worker image of your own, see "Custom worker tooling" in
-  # docs/Dockerfiles_.md.
+  # This codemod comes with brz-debian in the published worker image, but
+  # it fails there until brz-debian no longer needs the lintian_brush
+  # module (https://github.com/breezy-team/breezy-debian/pull/46).
   command: "deb-new-upstream"
   debian_build {
     build_distribution: "fresh-releases"

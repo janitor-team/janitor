@@ -1,0 +1,39 @@
+/* Mark the current page in the sidebar. */
+div.sphinxsidebar li.current > a {
+    font-weight: bold;
+    border-bottom: none;
+}
+
+/* Make the toctree captions read as headings. */
+div.sphinxsidebar p.caption, div.toctree-wrapper p.caption {
+    font-weight: bold;
+}
+
+@media screen and (min-width: 1001px) {
+    div.sphinxsidebar p.caption {
+        color: #444;
+    }
+}
+
+/* Do not split words across lines. */
+div.body p, div.body li, div.body dd {
+    -webkit-hyphens: manual;
+    hyphens: manual;
+}
+
+/* The one-column layout, below page_width in conf.py. */
+@media screen and (max-width: 1000px) {
+    div.body ul {
+        margin-left: 1.5em;
+    }
+
+    div.footer {
+        display: block;
+        width: auto;
+    }
+
+    /* Code in the dark sidebar takes the link colour. */
+    div.sphinxsidebar a code {
+        color: inherit;
+    }
+}

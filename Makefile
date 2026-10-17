@@ -82,6 +82,11 @@ check-html-format:
 djlint:
 	djlint py/janitor/site/templates
 
+.PHONY: docs
+
+docs:
+	$(PYTHON) -m sphinx -W --keep-going -b html docs build/docs
+
 typing:
 	$(PYTHON) -m mypy py/janitor tests
 
