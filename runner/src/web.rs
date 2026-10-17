@@ -771,13 +771,55 @@ async fn update_codebases(
     Json(codebases): Json<Vec<serde_json::Value>>,
 ) -> impl IntoResponse {
     match state.database.upload_codebases(&codebases).await {
-        Ok(()) => (StatusCode::OK, Json(json!({}))),
+        Ok(changed) => {
+            for codebase in &changed {
+                schedule_codebase_candidates(state.database.pool(), codebase).await;
+            }
+            (StatusCode::OK, Json(json!({})))
+        }
         Err(e) => {
             log::error!("Failed to upload codebases: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": "Database error"})),
             )
+        }
+    }
+}
+
+/// Queue all candidates of a codebase. Failures are only logged: the
+/// upload itself is already stored.
+async fn schedule_codebase_candidates(pool: &sqlx::PgPool, codebase: &str) {
+    let candidates = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT suite::text, change_set FROM candidate WHERE codebase = $1",
+    )
+    .bind(codebase)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_else(|e| {
+        log::error!("Failed to list candidates of {}: {}", codebase, e);
+        Vec::new()
+    });
+    for (campaign, change_set) in candidates {
+        if let Err(e) = janitor::schedule::do_schedule_regular(
+            pool,
+            codebase,
+            &campaign,
+            None,
+            None,
+            None,
+            None,
+            Some("codebase update"),
+            0.0,
+            None,
+            change_set.as_deref(),
+            false,
+            false,
+            None,
+        )
+        .await
+        {
+            log::error!("Failed to schedule {}/{}: {}", codebase, campaign, e);
         }
     }
 }

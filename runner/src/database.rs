@@ -1561,12 +1561,14 @@ INSERT INTO run (
         Ok(codebases)
     }
 
-    /// Upload/update codebases in the database.
+    /// Upload/update codebases in the database. Returns the names of
+    /// existing codebases whose branch URL or subpath changed.
     pub async fn upload_codebases(
         &self,
         codebases: &[serde_json::Value],
-    ) -> Result<(), sqlx::Error> {
+    ) -> Result<Vec<String>, sqlx::Error> {
         let mut tx = self.pool().begin().await?;
+        let mut changed = Vec::new();
 
         for codebase in codebases {
             // Parse URL parameters if branch_url is provided
@@ -1591,8 +1593,9 @@ INSERT INTO run (
                     (None, None, None)
                 };
 
-            sqlx::query(
+            let row: (Option<String>, Option<bool>) = sqlx::query_as(
                 r#"
+                WITH old AS (SELECT branch_url, subpath FROM codebase WHERE name = $1)
                 INSERT INTO codebase
                 (name, branch_url, url, branch, subpath, vcs_type, vcs_last_revision, value, web_url)
                 VALUES ($1, $2, $3, $4, $5, $6::text::vcs_type, $7, $8, $9)
@@ -1605,6 +1608,8 @@ INSERT INTO run (
                     url = EXCLUDED.url,
                     branch = EXCLUDED.branch,
                     web_url = EXCLUDED.web_url
+                RETURNING name, (SELECT old.branch_url IS DISTINCT FROM codebase.branch_url
+                    OR coalesce(old.subpath, '') <> coalesce(codebase.subpath, '') FROM old)
                 "#
             )
             .bind(codebase.get("name").and_then(|v| v.as_str()))
@@ -1618,12 +1623,17 @@ INSERT INTO run (
             .bind(codebase.get("vcs_last_revision").and_then(|v| v.as_str()))
             .bind(codebase.get("value").and_then(|v| v.as_i64()))
             .bind(codebase.get("web_url").and_then(|v| v.as_str()))
-            .execute(&mut *tx)
+            .fetch_one(&mut *tx)
             .await?;
+            if let (Some(name), Some(true)) = row {
+                if !changed.contains(&name) {
+                    changed.push(name);
+                }
+            }
         }
 
         tx.commit().await?;
-        Ok(())
+        Ok(changed)
     }
 
     /// Get all candidates from the database.
