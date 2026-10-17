@@ -599,6 +599,12 @@ INSERT INTO run (
                 .await?;
         }
 
+        // The run trigger refreshes the state before last_run is updated.
+        sqlx::query("SELECT refresh_change_set_state($1)")
+            .bind(result.change_set.as_deref())
+            .execute(&mut *tx)
+            .await?;
+
         sqlx::query("DELETE FROM queue WHERE id = $1")
             .bind(queue_id)
             .execute(&mut *tx)

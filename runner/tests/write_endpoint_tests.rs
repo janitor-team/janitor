@@ -2303,6 +2303,7 @@ async fn finish_with_artifact(
     run_id: &str,
     codebase: &str,
     worker: &str,
+    change_set: Option<&str>,
 ) -> (StatusCode, Value) {
     let pool = state.database.pool().clone();
     insert_codebase(&pool, codebase).await;
@@ -2322,7 +2323,7 @@ async fn finish_with_artifact(
             finish_time: None,
             estimated_duration: None,
             campaign: "test-campaign".to_string(),
-            change_set: None,
+            change_set: change_set.map(str::to_string),
             command: "true".to_string(),
             codebase: codebase.to_string(),
             backchannel: Backchannel::None {},
@@ -2387,6 +2388,7 @@ async fn finish_marks_artifact_upload_failed() {
         "run-upload-fails",
         "upload-fails-cb",
         "uf-worker",
+        None,
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body: {body}");
@@ -2399,6 +2401,57 @@ async fn finish_marks_artifact_upload_failed() {
         .await
         .expect("run row must exist after finish");
     assert_eq!(result_code, "artifact-upload-failed");
+}
+
+/// A change set named by its candidates is `ready` once they all succeeded.
+#[tokio::test]
+async fn finish_moves_candidate_change_set_to_ready() {
+    let Some((app, state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let pool = state.database.pool().clone();
+    insert_codebase(&pool, "cs-ready-cb").await;
+    sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs-ready', 'test-campaign')")
+        .execute(&pool)
+        .await
+        .expect("insert change_set");
+    sqlx::query(
+        "INSERT INTO candidate (codebase, suite, command, change_set)
+         VALUES ('cs-ready-cb', 'test-campaign', 'true', 'cs-ready')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert candidate");
+
+    let (status, body) = finish_with_artifact(
+        app,
+        &state,
+        "run-cs-ready",
+        "cs-ready-cb",
+        "cs-ready-worker",
+        Some("cs-ready"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+
+    let (run_change_set, todo): (String, i64) = sqlx::query_as(
+        "SELECT (SELECT change_set FROM run WHERE id = 'run-cs-ready'),
+                (SELECT count(*) FROM change_set_todo WHERE change_set = 'cs-ready')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("run row must exist after finish");
+    assert_eq!(run_change_set, "cs-ready");
+    assert_eq!(todo, 0, "no candidate of the change set is left to run");
+
+    let cs_state: String =
+        sqlx::query_scalar("SELECT state::text FROM change_set WHERE id = 'cs-ready'")
+            .fetch_one(&pool)
+            .await
+            .expect("change_set row");
+    eprintln!("change set cs-ready: todo={todo} state={cs_state}");
+    assert_eq!(cs_state, "ready");
 }
 
 /// When the main artifact manager fails, artifacts go to the backup
@@ -2421,8 +2474,15 @@ async fn finish_stores_artifacts_in_backup() {
         return;
     };
 
-    let (status, body) =
-        finish_with_artifact(app, &state, "run-backup", "backup-cb", "backup-worker").await;
+    let (status, body) = finish_with_artifact(
+        app,
+        &state,
+        "run-backup",
+        "backup-cb",
+        "backup-worker",
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body: {body}");
     assert_eq!(body["artifacts"], json!(["foo.deb"]));
     assert_eq!(body["result"]["code"], "success");
