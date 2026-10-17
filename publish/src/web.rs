@@ -2060,14 +2060,15 @@ WHERE run.id = $1
 
     #[derive(sqlx::FromRow)]
     struct ReviewRow {
-        reviewer: String,
+        reviewer: Option<String>,
         reviewed_at: chrono::DateTime<chrono::Utc>,
         comment: Option<String>,
         verdict: String,
     }
 
     let reviews = match sqlx::query_as::<_, ReviewRow>(
-        "SELECT reviewer, reviewed_at, comment, verdict::text FROM review WHERE run_id = $1",
+        "SELECT reviewer, (reviewed_at AT TIME ZONE 'UTC') AS reviewed_at, comment, \
+         verdict::text FROM review WHERE run_id = $1",
     )
     .bind(&id)
     .fetch_all(&state.conn)
@@ -2152,7 +2153,8 @@ WHERE run.id = $1
                 .into_iter()
                 .map(|row| {
                     (
-                        row.reviewer,
+                        // Python used the reviewer as the key, and a missing one came out as "null".
+                        row.reviewer.unwrap_or_else(|| "null".to_string()),
                         ReviewSummary {
                             timestamp: row.reviewed_at,
                             comment: row.comment,
