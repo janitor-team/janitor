@@ -1315,11 +1315,11 @@ pub async fn refresh_bucket_mp_counts(state: Arc<AppState>) -> Result<(), sqlx::
     let mut per_bucket: HashMap<janitor::publish::MergeProposalStatus, HashMap<String, usize>> =
         HashMap::new();
 
-    let rows = sqlx::query_as::<_, (String, String, i64)>(
+    let rows = sqlx::query_as::<_, (Option<String>, Option<String>, i64)>(
         r#"
         SELECT
         rate_limit_bucket AS rate_limit_bucket,
-        status AS status,
+        status::text AS status,
         count(*) as c
         FROM merge_proposal
         GROUP BY 1, 2
@@ -1328,14 +1328,18 @@ pub async fn refresh_bucket_mp_counts(state: Arc<AppState>) -> Result<(), sqlx::
     .fetch_all(&state.conn)
     .await?;
 
-    for row in rows {
-        if let Ok(status) = row.1.parse() {
-            per_bucket
-                .entry(status)
-                .or_default()
-                .insert(row.0, row.2 as usize);
+    for (bucket, status, count) in rows {
+        // A row without a status has nothing to count.
+        let Some(status) = status else {
+            continue;
+        };
+        if let Ok(status) = status.parse() {
+            let counts = per_bucket.entry(status).or_default();
+            if let Some(bucket) = bucket {
+                counts.insert(bucket, count as usize);
+            }
         } else {
-            log::warn!("Invalid merge proposal status in database: {}", row.1);
+            log::warn!("Invalid merge proposal status in database: {}", status);
         }
     }
     if let Ok(mut limiter) = state.bucket_rate_limiter.lock() {
