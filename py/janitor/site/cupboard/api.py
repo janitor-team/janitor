@@ -190,7 +190,11 @@ async def handle_needs_review(request):
         with span.new_child("sql:needs-review"):
             for run_id, codebase, campaign in await iter_needs_review(
                 conn,
-                campaigns=([requested_campaign] if requested_campaign else None),
+                campaigns=(
+                    [requested_campaign]
+                    if requested_campaign
+                    else request.query.getall("suite", None)
+                ),
                 required_only=required_only,
                 publishable_only=publishable_only,
                 reviewer=reviewer,
