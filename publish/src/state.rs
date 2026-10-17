@@ -537,7 +537,10 @@ SELECT
     worker,
     array(SELECT row(role, remote_name, base_revision,
      revision) FROM new_result_branch WHERE run_id = id) AS result_branches,
-    result_tags, target_branch_url, change_set AS change_set,
+    -- sqlx cannot decode `result_tag[]` as tuples; build a RECORD[] instead.
+    (SELECT array_agg(row(actual_name, revision))
+     FROM unnest(last_effective_runs.result_tags)) AS result_tags,
+    target_branch_url, change_set AS change_set,
     failure_transient, failure_stage, failure_details, codebase
 FROM
     last_effective_runs
@@ -578,7 +581,10 @@ SELECT
     worker,
     array(SELECT row(role, remote_name, base_revision,
      revision) FROM new_result_branch WHERE run_id = id) AS result_branches,
-    result_tags, target_branch_url, change_set AS change_set,
+    -- sqlx cannot decode `result_tag[]` as tuples; build a RECORD[] instead.
+    (SELECT array_agg(row(actual_name, revision))
+     FROM unnest(run.result_tags)) AS result_tags,
+    target_branch_url, change_set AS change_set,
     failure_transient, failure_stage, failure_details, codebase
 FROM
     run
@@ -688,7 +694,9 @@ pub async fn iter_publish_ready(
             worker, \
             array(SELECT row(role, remote_name, base_revision, revision) \
                   FROM new_result_branch WHERE run_id = id) AS result_branches, \
-            result_tags, target_branch_url, \
+            (SELECT array_agg(row(actual_name, revision)) \
+             FROM unnest(publish_ready.result_tags)) AS result_tags, \
+            target_branch_url, \
             change_set, failure_transient, failure_stage, \
             NULL::json AS failure_details, \
             codebase, \
