@@ -123,6 +123,36 @@ pub fn get_build_arch() -> Result<String, DpkgArchitectureError> {
     Ok(String::from_utf8(output.stdout).unwrap().trim().to_owned())
 }
 
+/// Split an ognibuild session error into a result code, a message and optional
+/// details.
+pub fn session_error_parts(
+    e: ognibuild::session::Error,
+) -> (&'static str, String, Option<serde_json::Value>) {
+    match e {
+        ognibuild::session::Error::SetupFailure(msg, long_description) => {
+            let details = Some(long_description.as_str())
+                .filter(|d| !d.trim().is_empty())
+                .map(|d| serde_json::json!({"output": d}));
+            let msg = match (msg.trim(), long_description.trim()) {
+                ("", "") => "No usable output from the session backend".to_string(),
+                ("", long) => long.to_string(),
+                _ => msg.trim().to_string(),
+            };
+            ("session-setup-failure", msg, details)
+        }
+        ognibuild::session::Error::IoError(e) => ("session-io-error", e.to_string(), None),
+        ognibuild::session::Error::CalledProcessError(e) => {
+            ("session-process-error", e.to_string(), None)
+        }
+        ognibuild::session::Error::ImageError(e) => ("session-image-error", e.to_string(), None),
+        ognibuild::session::Error::MissingBinary { command, source } => (
+            "session-binary-not-found",
+            format!("Missing {} binary: {}", command, source),
+            None,
+        ),
+    }
+}
+
 pub fn convert_codemod_script_failed(i: i32, command: &str) -> WorkerFailure {
     match i {
         127 => WorkerFailure {
@@ -1280,6 +1310,104 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::str::FromStr;
     use test_log::test;
+
+    mod session_error_parts {
+        use crate::session_error_parts;
+
+        #[test]
+        fn setup_failure_splits_message_from_output() {
+            let (code, msg, details) =
+                session_error_parts(ognibuild::session::Error::SetupFailure(
+                    "No output from schroot\n".to_string(),
+                    "line one\nline two".to_string(),
+                ));
+            assert_eq!(code, "session-setup-failure");
+            assert_eq!(msg, "No output from schroot");
+            assert_eq!(
+                details,
+                Some(serde_json::json!({"output": "line one\nline two"}))
+            );
+        }
+
+        #[test]
+        fn an_empty_output_leaves_no_details() {
+            let (code, msg, details) =
+                session_error_parts(ognibuild::session::Error::SetupFailure(
+                    "No output from schroot".to_string(),
+                    String::new(),
+                ));
+            assert_eq!(code, "session-setup-failure");
+            assert_eq!(msg, "No output from schroot");
+            assert_eq!(details, None);
+        }
+
+        #[test]
+        fn a_blank_message_falls_back_rather_than_printing_nothing() {
+            for long in ["\n", " ", ""] {
+                let (code, msg, details) = session_error_parts(
+                    ognibuild::session::Error::SetupFailure(String::new(), long.to_string()),
+                );
+                assert_eq!(code, "session-setup-failure");
+                assert!(!msg.trim().is_empty(), "blank message for {:?}", long);
+                assert_eq!(details, None, "unexpected details for {:?}", long);
+            }
+
+            let (_code, msg, details) =
+                session_error_parts(ognibuild::session::Error::SetupFailure(
+                    "   ".to_string(),
+                    "  E: nope  ".to_string(),
+                ));
+            assert_eq!(msg, "E: nope");
+            assert_eq!(details, Some(serde_json::json!({"output": "  E: nope  "})));
+        }
+
+        #[test]
+        fn io_errors_get_their_own_code() {
+            let (code, msg, details) = session_error_parts(ognibuild::session::Error::IoError(
+                std::io::Error::other("boom"),
+            ));
+            assert_eq!(code, "session-io-error");
+            assert_eq!(msg, "boom");
+            assert_eq!(details, None);
+        }
+
+        #[test]
+        fn image_errors_get_their_own_code() {
+            let (code, msg, details) = session_error_parts(ognibuild::session::Error::ImageError(
+                ognibuild::session::ImageError::UnsupportedArchitecture {
+                    arch: "s390x".to_string(),
+                },
+            ));
+            assert_eq!(code, "session-image-error");
+            assert!(msg.contains("s390x"), "unexpected message: {:?}", msg);
+            assert_eq!(details, None);
+        }
+
+        #[test]
+        fn process_errors_get_their_own_code() {
+            use std::os::unix::process::ExitStatusExt;
+            let status = std::process::ExitStatus::from_raw(1 << 8);
+            let (code, msg, details) =
+                session_error_parts(ognibuild::session::Error::CalledProcessError(status));
+            assert_eq!(code, "session-process-error");
+            assert_eq!(msg, status.to_string());
+            assert_eq!(details, None);
+        }
+
+        #[test]
+        fn a_missing_binary_gets_its_own_code() {
+            let source = std::io::Error::from(std::io::ErrorKind::NotFound);
+            let expected = format!("Missing schroot binary: {}", source);
+            let (code, msg, details) =
+                session_error_parts(ognibuild::session::Error::MissingBinary {
+                    command: "schroot".to_string(),
+                    source,
+                });
+            assert_eq!(code, "session-binary-not-found");
+            assert_eq!(msg, expected);
+            assert_eq!(details, None);
+        }
+    }
 
     /// Regression for worker credential leaks. The cache push and
     /// branch-open log lines used to print URLs with embedded

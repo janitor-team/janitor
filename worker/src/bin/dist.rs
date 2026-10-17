@@ -56,6 +56,11 @@ fn report_failure(kind: &str, description: &str) -> ! {
     std::process::exit(1);
 }
 
+fn report_session_failure(e: ognibuild::session::Error) -> ! {
+    let (code, description, _details) = janitor_worker::session_error_parts(e);
+    report_failure(code, &description);
+}
+
 fn main() -> Result<(), i32> {
     let args = Args::parse();
 
@@ -68,7 +73,10 @@ fn main() -> Result<(), i32> {
 
     #[cfg(target_os = "linux")]
     let mut session: Box<dyn Session> = if let Some(schroot) = args.schroot {
-        Box::new(ognibuild::session::schroot::SchrootSession::new(&schroot, None).unwrap())
+        match ognibuild::session::schroot::SchrootSession::new(&schroot, None) {
+            Ok(session) => Box::new(session),
+            Err(e) => report_session_failure(e),
+        }
     } else {
         Box::new(ognibuild::session::plain::PlainSession::new())
     };
@@ -78,20 +86,28 @@ fn main() -> Result<(), i32> {
 
     #[cfg(feature = "debian")]
     if args.apt_update {
-        ognibuild::debian::apt::run_apt(session.as_ref(), vec!["update"], vec![]).unwrap();
+        match ognibuild::debian::apt::run_apt(session.as_ref(), vec!["update"], vec![]) {
+            Ok(()) => {}
+            Err(ognibuild::debian::apt::Error::Session(e)) => report_session_failure(e),
+            Err(e) => panic!("{:?}", e),
+        }
     }
     #[cfg(feature = "debian")]
     if args.apt_dist_upgrade {
-        ognibuild::debian::apt::run_apt(session.as_ref(), vec!["dist-upgrade"], vec![]).unwrap();
+        match ognibuild::debian::apt::run_apt(session.as_ref(), vec!["dist-upgrade"], vec![]) {
+            Ok(()) => {}
+            Err(ognibuild::debian::apt::Error::Session(e)) => report_session_failure(e),
+            Err(e) => panic!("{:?}", e),
+        }
     }
 
     let project = match breezyshim::workingtree::open(&args.directory) {
         Ok(tree) => session
             .project_from_vcs(&tree, Some(true), Some(&subdir))
-            .unwrap(),
+            .unwrap_or_else(|e| report_session_failure(e)),
         Err(BrzError::NotBranchError(..)) => session
             .project_from_directory(&args.directory, Some(&subdir))
-            .unwrap(),
+            .unwrap_or_else(|e| report_session_failure(e)),
         Err(e) => {
             report_failure("vcs-error", &format!("Error opening working tree: {}", e));
         }
@@ -153,26 +169,9 @@ fn main() -> Result<(), i32> {
                 }
                 (None, None)
             }
-            Err(ognibuild::debian::apt::Error::Session(
-                ognibuild::session::Error::SetupFailure(e, _),
-            )) => {
-                report_failure("session-setup-failure", &e.to_string());
-            }
-            Err(ognibuild::debian::apt::Error::Session(ognibuild::session::Error::IoError(e))) => {
-                report_failure("session-io-error", &e.to_string());
-            }
-            Err(ognibuild::debian::apt::Error::Session(
-                ognibuild::session::Error::CalledProcessError(e),
-            )) => {
-                report_failure("session-process-error", &e.to_string());
-            }
+            Err(ognibuild::debian::apt::Error::Session(e)) => report_session_failure(e),
             Err(ognibuild::debian::apt::Error::FileSearch(e)) => {
                 report_failure("file-search-error", &format!("{:?}", e));
-            }
-            Err(ognibuild::debian::apt::Error::Session(ognibuild::session::Error::ImageError(
-                e,
-            ))) => {
-                report_failure("session-image-error", &e.to_string());
             }
         }
     } else {

@@ -8,6 +8,17 @@ use ognibuild::debian::context::Phase;
 use ognibuild::debian::fix_build::IterateBuildError;
 use ognibuild::session::Session;
 
+#[cfg(target_os = "linux")]
+fn session_failure(e: ognibuild::session::Error) -> BuildFailure {
+    let (code, msg, details) = crate::session_error_parts(e);
+    BuildFailure {
+        code: code.to_string(),
+        description: format!("Error setting up schroot session: {}", msg),
+        details,
+        stage: vec![],
+    }
+}
+
 #[derive(Debug)]
 pub struct BuildFailure {
     pub code: String,
@@ -45,15 +56,7 @@ pub(crate) fn build(
     let session: Box<dyn Session> = if let Some(chroot) = config.chroot.as_ref() {
         Box::new(
             ognibuild::session::schroot::SchrootSession::new(chroot, Some("janitor-worker"))
-                .map_err(|e| match e {
-                    ognibuild::session::Error::SetupFailure(_n, e) => BuildFailure {
-                        code: "session-setup-failure".to_string(),
-                        description: format!("Error setting up schroot session: {}", e),
-                        details: None,
-                        stage: vec![],
-                    },
-                    _e => unreachable!(),
-                })?,
+                .map_err(session_failure)?,
         ) as Box<dyn Session>
     } else {
         Box::new(ognibuild::session::plain::PlainSession::new()) as Box<dyn Session>
@@ -273,4 +276,41 @@ pub(crate) fn build(
 #[derive(serde::Serialize)]
 pub struct DebianBuildResult {
     lintian: crate::debian::lintian::LintianResult,
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod session_failure_tests {
+    use super::session_failure;
+
+    #[test]
+    fn setup_failure_keeps_the_message_and_the_output() {
+        let f = session_failure(ognibuild::session::Error::SetupFailure(
+            "No output from schroot".to_string(),
+            "line one\nline two".to_string(),
+        ));
+        assert_eq!(f.code, "session-setup-failure");
+        assert_eq!(
+            f.description,
+            "Error setting up schroot session: No output from schroot"
+        );
+        assert_eq!(
+            f.details,
+            Some(serde_json::json!({"output": "line one\nline two"}))
+        );
+        assert!(f.stage.is_empty(), "unexpected stage: {:?}", f.stage);
+    }
+
+    #[test]
+    fn other_variants_keep_their_own_code() {
+        let f = session_failure(ognibuild::session::Error::IoError(std::io::Error::other(
+            "boom",
+        )));
+        assert_eq!(f.code, "session-io-error");
+        assert!(
+            f.description.contains("boom"),
+            "unexpected description: {}",
+            f.description
+        );
+        assert!(f.stage.is_empty(), "unexpected stage: {:?}", f.stage);
+    }
 }
