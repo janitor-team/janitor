@@ -280,7 +280,8 @@ async def handle_review_post(request):
     check_logged_in(request)
 
     post = await request.post()
-    publishable_only = post.get("publishable_only", "true") == "true"
+    # An unchecked checkbox is not part of the form data.
+    publishable_only = post.get("publishable_only", "false") == "true"
     async with request.app["pool"].acquire() as conn:
         if "verdict" in post:
             verdict = {

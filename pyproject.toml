@@ -96,6 +96,7 @@ lint = [
 
 # mypy ($ make typing)
 typing = [
+    "beautifulsoup4",
     "mypy",
     "python-debian",
     "pytest",
@@ -105,6 +106,7 @@ typing = [
 
 # unittest ($ make test)
 test = [
+    "beautifulsoup4",
     "fakeredis",
     "pytest",
     "pytest-aiohttp",
