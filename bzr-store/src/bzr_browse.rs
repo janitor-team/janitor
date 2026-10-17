@@ -15,6 +15,7 @@ use axum::body::Body;
 use axum::extract::{Path, Request, State};
 use axum::http::{StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
+use janitor::codebase::CodebaseName;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tower::ServiceExt;
@@ -77,7 +78,7 @@ impl BrowseRouters {
 /// `/bzr/{codebase}` prefix.
 pub async fn bzr_browse_handler(
     State(state): State<AppState>,
-    Path((codebase, _sub_path)): Path<(String, String)>,
+    Path((codebase, _sub_path)): Path<(CodebaseName, String)>,
     req: Request,
 ) -> Result<Response> {
     dispatch(&state, &codebase, req).await
@@ -88,13 +89,13 @@ pub async fn bzr_browse_handler(
 /// 0.8's `{*path}` wildcard requires at least one segment.
 pub async fn bzr_browse_root(
     State(state): State<AppState>,
-    Path(codebase): Path<String>,
+    Path(codebase): Path<CodebaseName>,
     req: Request,
 ) -> Result<Response> {
     dispatch(&state, &codebase, req).await
 }
 
-async fn dispatch(state: &AppState, codebase: &str, mut req: Request) -> Result<Response> {
+async fn dispatch(state: &AppState, codebase: &CodebaseName, mut req: Request) -> Result<Response> {
     let repo_path = state.config.repository_path.join(codebase);
     if !repo_path.exists() {
         return Ok((
@@ -117,7 +118,7 @@ async fn dispatch(state: &AppState, codebase: &str, mut req: Request) -> Result<
 
     let router = state
         .browse_routers
-        .get_or_build(codebase, &repo_path, &static_dir);
+        .get_or_build(codebase.as_str(), &repo_path, &static_dir);
 
     // Strip `/bzr/<codebase>` from the request URI so loggerhead's
     // routes (mounted at `/`, `/changes`, `/atom`, etc) match.
