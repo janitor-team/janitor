@@ -19,6 +19,7 @@ import asyncio
 import json
 import tempfile
 from pathlib import Path
+from xml.etree import ElementTree
 
 import aiohttp
 import asyncpg
@@ -57,6 +58,40 @@ artifact_location: "{tempfile.mkdtemp()}"
 
 async def test_create_app():
     await create_app(config=create_config(), redis=FakeRedis())
+
+
+async def test_logo_is_served(aiohttp_client, database_location):
+    _private_app, app = await create_app(
+        config=create_config(database_location), redis=FakeRedis()
+    )
+    client = await aiohttp_client(app)
+    resp = await client.get("/_static/janitor.svg")
+    assert resp.status == 200
+    assert resp.content_type == "image/svg+xml"
+    root = ElementTree.fromstring(await resp.read())
+    svg = "{http://www.w3.org/2000/svg}"
+    assert root.tag == svg + "svg"
+    assert root.get("viewBox") == "0 0 64 64"
+    assert root.findtext(svg + "title") == "Janitor"
+    tags = {el.tag for el in root.iter()}
+    assert all(tag.startswith(svg) for tag in tags)
+    assert not tags & {svg + "script", svg + "image", svg + "use", svg + "style"}
+    assert not any("href" in name for el in root.iter() for name in el.attrib)
+
+
+async def test_logo_in_pages(aiohttp_client, database_location):
+    _private_app, app = await create_app(
+        config=create_config(database_location), redis=FakeRedis()
+    )
+    client = await aiohttp_client(app)
+    icon = '<link rel="icon" type="image/svg+xml" href="/_static/janitor.svg" />'
+    img = '<img src="/_static/janitor.svg" alt="" width="32" height="32" />'
+    for path in ["/lintian-fixes/", "/cupboard/"]:
+        resp = await client.get(path)
+        assert resp.status == 200
+        text = await resp.text()
+        assert icon in text[: text.index("</head>")]
+        assert text.count(img) == 1
 
 
 async def test_codebase_query_redirect(aiohttp_client, database_location):
