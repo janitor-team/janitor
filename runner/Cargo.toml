@@ -43,6 +43,7 @@ google-cloud-storage = { workspace = true, optional = true }
 google-cloud-auth = { workspace = true, optional = true }
 thiserror = "2.0"
 tempfile = { workspace = true }
+futures = "0.3"
 testcontainers = { version = "0.27", optional = true }
 testcontainers-modules = { version = "0.15", features = ["redis"], optional = true }
 
@@ -54,7 +55,6 @@ tower = { version = "0.5", features = ["util"] }
 hyper = { version = "1.0", features = ["full"] }
 tower-service = "0.3"
 serial_test = "3.1.1"
-futures = "0.3"
 
 [features]
 default = ["debian", "cli"]

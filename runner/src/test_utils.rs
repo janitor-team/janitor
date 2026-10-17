@@ -473,6 +473,43 @@ pub async fn create_test_app_state_with_config(
         public_vcs_managers: Arc::new(public_vcs_managers),
         public_dep_server_url: None,
         avoid_hosts: Vec::new(),
+        run_timeout_minutes: 60,
+    }))
+}
+
+/// Copy of `state` whose database publishes to, and records queue
+/// assignments in, the test Redis. Other tests share that Redis, so
+/// callers must keep their queue ids from colliding.
+pub fn with_database_redis(
+    state: &AppState,
+) -> Result<Arc<AppState>, Box<dyn std::error::Error + Send + Sync>> {
+    let redis_url =
+        std::env::var("TEST_REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+    let redis_client = redis::Client::open(redis_url)?;
+    Ok(Arc::new(AppState {
+        database: Arc::new(RunnerDatabase::new_with_redis(
+            state.database.pool().clone(),
+            redis_client,
+        )),
+        active_runs: state.active_runs.clone(),
+        vcs_manager: state.vcs_manager.clone(),
+        log_manager: state.log_manager.clone(),
+        artifact_manager: state.artifact_manager.clone(),
+        backup_log_manager: state.backup_log_manager.clone(),
+        backup_artifact_manager: state.backup_artifact_manager.clone(),
+        error_tracker: state.error_tracker.clone(),
+        metrics: state.metrics.clone(),
+        config: state.config.clone(),
+        upload_processor: state.upload_processor.clone(),
+        auth_service: state.auth_service.clone(),
+        security_service: state.security_service.clone(),
+        resume_service: state.resume_service.clone(),
+        health_checker: state.health_checker.clone(),
+        public_apt_archive_location: state.public_apt_archive_location.clone(),
+        public_vcs_managers: state.public_vcs_managers.clone(),
+        public_dep_server_url: state.public_dep_server_url.clone(),
+        avoid_hosts: state.avoid_hosts.clone(),
+        run_timeout_minutes: state.run_timeout_minutes,
     }))
 }
 

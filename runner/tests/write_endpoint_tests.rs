@@ -1030,32 +1030,6 @@ async fn get_public_queue_stats_returns_expected_fields() {
     }
 }
 
-/// `GET /watchdog/health` (public router) returns 200 + a
-/// `health_statuses` array. With no active runs, the array is empty.
-#[tokio::test]
-async fn get_public_watchdog_health_returns_empty_when_idle() {
-    let Some((app, _state)) = test_utils::create_public_test_app_with_state_if_available()
-        .await
-        .expect("public app setup should either succeed or return None cleanly")
-    else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
-
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/watchdog/health")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    assert_eq!(body["status"], "ok");
-    assert_eq!(body["active_runs"], 0);
-    assert_eq!(body["health_statuses"], json!([]));
-}
-
 /// A worker-authenticated route on the public router returns 401
 /// when the client sends no `Authorization` header. Verifies the
 /// `authenticate_worker` middleware refuses to fall through.
@@ -2440,4 +2414,207 @@ async fn finish_stores_artifacts_in_backup() {
     )
     .unwrap();
     assert_eq!(contents, b"deb contents");
+}
+
+/// `GET /status` reports each run's keepalive like Python's
+/// `status_json`.
+#[tokio::test]
+async fn get_status_includes_keepalives() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let run = ActiveRun {
+        worker_name: "status-worker".to_string(),
+        worker_link: None,
+        queue_id: 1,
+        log_id: "status-run".to_string(),
+        start_time: Utc::now(),
+        finish_time: None,
+        estimated_duration: None,
+        campaign: "test-campaign".to_string(),
+        change_set: None,
+        command: "true".to_string(),
+        backchannel: Backchannel::default(),
+        vcs_info: Default::default(),
+        codebase: "status-cb".to_string(),
+        instigated_context: None,
+        resume_from: None,
+    };
+    state.active_runs.store(run).await;
+    let last_keepalive = chrono::DateTime::parse_from_rfc3339("2026-01-02T03:04:05.678Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    state
+        .active_runs
+        .record_keepalive("status-run", last_keepalive)
+        .await
+        .unwrap();
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/status")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    let processing = body["processing"].as_array().unwrap();
+    assert_eq!(processing.len(), 1);
+    assert_eq!(processing[0]["id"], "status-run");
+    assert_eq!(processing[0]["last-keepalive"], "2026-01-02T03:04:05");
+    assert_eq!(processing[0]["mia"], true);
+    let age = processing[0]["keepalive_age"].as_f64().unwrap();
+    let expected = (Utc::now() - last_keepalive).as_seconds_f64();
+    assert!((expected - age).abs() < 60.0, "{} vs {}", age, expected);
+}
+
+/// A queue item for an unknown campaign is aborted the way Python's
+/// `next_item` does: as a run by the requesting worker, with no
+/// transient flag.
+#[tokio::test]
+async fn assign_aborts_unknown_campaign_as_requesting_worker() {
+    let Some((app, state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let pool = state.database.pool().clone();
+    insert_codebase(&pool, "unknown-campaign-cb").await;
+    state
+        .auth_service
+        .create_worker("abort-worker", "abort-pw", None)
+        .await
+        .expect("create worker");
+    sqlx::query("INSERT INTO queue (codebase, suite, command) VALUES ($1, $2, 'true')")
+        .bind("unknown-campaign-cb")
+        .bind("no-such-campaign")
+        .execute(&pool)
+        .await
+        .expect("insert queue row");
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/active-runs")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"worker": "abort-worker"}).to_string()))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    type RunRow = (String, Option<String>, Option<String>, Option<bool>);
+    let rows: Vec<RunRow> = sqlx::query_as(
+        "SELECT result_code, description, worker, failure_transient FROM run
+         WHERE codebase = 'unknown-campaign-cb'",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        vec![(
+            "unknown-campaign".to_string(),
+            Some("Campaign no-such-campaign unknown".to_string()),
+            Some("abort-worker".to_string()),
+            None
+        )]
+    );
+    assert!(state.active_runs.list().await.is_empty());
+}
+
+/// Wait for the next message on `channel` that satisfies `pred`.
+async fn next_message(
+    messages: &mut (impl futures::Stream<Item = redis::Msg> + Unpin),
+    channel: &str,
+    pred: impl Fn(&Value) -> bool,
+) -> Value {
+    use futures::StreamExt;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let msg = messages.next().await.expect("pubsub stream ended");
+            if msg.get_channel_name() != channel {
+                continue;
+            }
+            let payload: String = msg.get_payload().unwrap();
+            let js: Value = serde_json::from_str(&payload).unwrap();
+            if pred(&js) {
+                return js;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("no matching message on {}", channel))
+}
+
+fn processing_ids(status: &Value) -> Vec<String> {
+    status["processing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// Assigning a run publishes the queue status, and aborting it from
+/// the watchdog publishes the result and the queue status again, as
+/// Python's `register_run` and `finish_run` do.
+#[tokio::test]
+async fn assign_and_watchdog_abort_publish_events() {
+    let Some((_app, base_state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let state = test_utils::with_database_redis(&base_state).unwrap();
+    let app = janitor_runner::web::app(state.clone());
+    let pool = state.database.pool().clone();
+    // The assigned-queue-items hash is shared with other tests.
+    let first_queue_id = 1_000_000 + (rand_u32() % 1_000_000_000) as i64;
+    sqlx::query("SELECT setval('queue_id_seq', $1)")
+        .bind(first_queue_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let redis_url = std::env::var("TEST_REDIS_URL").unwrap();
+    let mut pubsub = redis::Client::open(redis_url)
+        .unwrap()
+        .get_async_pubsub()
+        .await
+        .unwrap();
+    pubsub.subscribe(&["queue", "result"]).await.unwrap();
+    let mut messages = pubsub.on_message();
+
+    let assignment = assign_one(app, &state, "publish-cb").await;
+    let run_id = assignment["id"].as_str().unwrap().to_string();
+    let status = next_message(&mut messages, "queue", |js| {
+        processing_ids(js).contains(&run_id)
+    })
+    .await;
+    assert!(status["avoid_hosts"].is_array());
+    assert!(status["rate_limit_hosts"].is_object());
+
+    state
+        .active_runs
+        .record_keepalive(&run_id, Utc::now() - chrono::Duration::minutes(61))
+        .await
+        .unwrap();
+    janitor_runner::watchdog::Watchdog::new(state.clone())
+        .check_active_runs()
+        .await
+        .unwrap();
+
+    let result = next_message(&mut messages, "result", |js| {
+        js["log_id"] == run_id.as_str()
+    })
+    .await;
+    assert_eq!(result["code"], "worker-timeout");
+    assert_eq!(result["transient"], true);
+    next_message(&mut messages, "queue", |js| {
+        !processing_ids(js).contains(&run_id)
+    })
+    .await;
+    assert!(state.active_runs.get(&run_id).await.is_none());
+}
+
+fn rand_u32() -> u32 {
+    uuid::Uuid::new_v4().as_u128() as u32
 }

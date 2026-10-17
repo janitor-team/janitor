@@ -356,6 +356,7 @@ impl ApplicationBuilder {
             public_vcs_managers: Arc::new(public_vcs_managers),
             public_dep_server_url: self.public_dep_server_url,
             avoid_hosts: self.avoid_hosts,
+            run_timeout_minutes: self.run_timeout_minutes,
         });
 
         log::info!("Janitor Runner application initialized successfully");
@@ -363,7 +364,6 @@ impl ApplicationBuilder {
         Ok(Application {
             state: app_state,
             _tracer_guard: tracer_guard,
-            run_timeout_minutes: self.run_timeout_minutes,
         })
     }
 }
@@ -410,8 +410,6 @@ pub struct Application {
     pub state: Arc<AppState>,
     /// Keeps span export to zipkin_address running.
     _tracer_guard: Option<janitor::otlp::TracerGuard>,
-    /// Watchdog run timeout in minutes.
-    run_timeout_minutes: u64,
 }
 
 impl Application {
@@ -446,17 +444,8 @@ impl Application {
         // Spawn the watchdog loop before the HTTP server so stalled or
         // hung runs get aborted even during startup races. The task is
         // abandoned on process exit.
-        let watchdog_state = self.state.clone();
-        let watchdog_config =
-            crate::watchdog::WatchdogConfig::from_run_timeout_minutes(self.run_timeout_minutes);
-        tokio::spawn(async move {
-            let mut watchdog = crate::watchdog::Watchdog::new(
-                watchdog_state.database.clone(),
-                watchdog_state.active_runs.clone(),
-                watchdog_config,
-            );
-            watchdog.start().await;
-        });
+        let watchdog = crate::watchdog::Watchdog::new(self.state.clone());
+        tokio::spawn(async move { watchdog.start().await });
 
         // Like Python, upload whatever ended up in the backup artifact
         // directory during a previous run once at startup.
