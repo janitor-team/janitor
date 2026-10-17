@@ -12,11 +12,12 @@ use breezyshim::forge::{determine_title, Forge, MergeProposal};
 use breezyshim::repository::Repository;
 use breezyshim::transport::Transport;
 use breezyshim::RevisionId;
-use minijinja::Environment;
+use minijinja::{AutoEscape, Environment, Value};
 use silver_platter::publish::{publish_changes, DescriptionFormat, Error as SvpPublishError};
 use silver_platter::utils::merge_conflicts;
 use silver_platter::vcs::{full_branch_url, open_branch, BranchOpenError};
 use std::collections::HashMap;
+use std::path::Path;
 
 fn drop_env(args: &mut Vec<String>) {
     while !args.is_empty() && args[0].contains('=') {
@@ -454,6 +455,158 @@ pub fn publish_one(
     Ok(result)
 }
 
+fn debdiff_is_empty(debdiff: &str) -> Result<bool, minijinja::Error> {
+    Ok(janitor::debdiff::debdiff_is_empty(debdiff))
+}
+
+fn markdownify_debdiff(debdiff: &str) -> Result<String, minijinja::Error> {
+    Ok(janitor::debdiff::markdownify_debdiff(debdiff))
+}
+
+fn parseaddr(addr: &str) -> Result<Value, minijinja::Error> {
+    let (name, email) = debian_changelog::parseaddr(addr);
+
+    Ok(if let Some(name) = name {
+        minijinja::Value::from_iter(vec![Value::from(name), Value::from(email)])
+    } else {
+        minijinja::Value::from_iter(vec![Value::from(()), Value::from(email)])
+    })
+}
+
+/// Create the template environment used to render merge proposal texts.
+pub fn load_template_env(path: &Path) -> Environment<'_> {
+    let mut environment = Environment::new();
+    environment.set_loader(minijinja::path_loader(path));
+    environment.set_trim_blocks(true);
+    environment.set_lstrip_blocks(true);
+    environment.set_auto_escape_callback(|name| {
+        if name.ends_with(".md") || name.ends_with(".txt") {
+            AutoEscape::None
+        } else {
+            AutoEscape::Html
+        }
+    });
+
+    environment.add_function("debdiff_is_empty", debdiff_is_empty);
+    environment.add_function("markdownify_debdiff", markdownify_debdiff);
+    environment.add_function("parseaddr", parseaddr);
+    environment
+}
+
+/// Error rendering a merge proposal description.
+#[derive(Debug)]
+pub enum RenderDescriptionError {
+    /// The campaign template could not be loaded.
+    Template {
+        /// Name of the template.
+        name: String,
+        /// Underlying template error.
+        error: minijinja::Error,
+    },
+    /// The campaign template failed to render.
+    Render(minijinja::Error),
+}
+
+impl std::fmt::Display for RenderDescriptionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RenderDescriptionError::Template { name, error } => {
+                write!(f, "Template {} not found: {}", name, error)
+            }
+            RenderDescriptionError::Render(error) => {
+                write!(f, "Template rendering failed: {}", error)
+            }
+        }
+    }
+}
+
+impl std::error::Error for RenderDescriptionError {}
+
+/// Render the merge proposal description for a run from the campaign template.
+#[allow(clippy::too_many_arguments)]
+pub fn render_proposal_description(
+    template_env: &Environment,
+    campaign: &str,
+    log_id: &str,
+    role: &str,
+    codemod_result: &serde_json::Value,
+    extra_context: Option<&serde_json::Value>,
+    debdiff: Option<&[u8]>,
+    description_format: DescriptionFormat,
+) -> Result<String, RenderDescriptionError> {
+    let mut vs = serde_json::json!({
+        "log_id":  log_id,
+        "campaign": campaign,
+        "role": role,
+    });
+    if let Some(extra_context) = extra_context {
+        if let (Some(vs_obj), Some(extra_obj)) = (vs.as_object_mut(), extra_context.as_object()) {
+            vs_obj.extend(extra_obj.clone());
+        } else {
+            log::warn!("Failed to merge extra_context: not an object");
+        }
+    }
+    if let (Some(vs_obj), Some(codemod_obj)) = (vs.as_object_mut(), codemod_result.as_object()) {
+        vs_obj.extend(codemod_obj.clone());
+    } else {
+        log::warn!("Failed to merge codemod_result: not an object");
+    }
+    vs["codemod"] = codemod_result.clone();
+    if let Some(debdiff) = debdiff {
+        match std::str::from_utf8(debdiff) {
+            Ok(debdiff_str) => {
+                vs["debdiff"] = debdiff_str.into();
+            }
+            Err(e) => {
+                log::warn!("Debdiff contains invalid UTF-8: {}", e);
+                vs["debdiff"] = format!("(Binary diff - {} bytes)", debdiff.len()).into();
+            }
+        }
+    }
+    let template_name = if description_format == DescriptionFormat::Markdown {
+        format!("{}.md", campaign)
+    } else {
+        format!("{}.txt", campaign)
+    };
+    let template = template_env.get_template(&template_name).map_err(|error| {
+        RenderDescriptionError::Template {
+            name: template_name.clone(),
+            error,
+        }
+    })?;
+    template.render(vs).map_err(RenderDescriptionError::Render)
+}
+
+// Render the description, falling back to a simple default on failure.
+#[allow(clippy::too_many_arguments)]
+fn proposal_description_or_default(
+    template_env: &Environment,
+    campaign: &str,
+    log_id: &str,
+    role: &str,
+    codemod_result: &serde_json::Value,
+    extra_context: Option<&serde_json::Value>,
+    debdiff: Option<&[u8]>,
+    description_format: DescriptionFormat,
+) -> String {
+    match render_proposal_description(
+        template_env,
+        campaign,
+        log_id,
+        role,
+        codemod_result,
+        extra_context,
+        debdiff,
+        description_format,
+    ) {
+        Ok(rendered) => rendered,
+        Err(e) => {
+            log::warn!("{}, using default", e);
+            format!("Changes for {} ({})", campaign, log_id)
+        }
+    }
+}
+
 /// Publish changes from a source branch to a target branch for the
 /// given mode (propose, push, etc.), generating descriptions and commit
 /// messages from the campaign templates.
@@ -484,57 +637,16 @@ pub fn publish(
     let get_proposal_description = |description_format: DescriptionFormat,
                                     _existing_proposal: Option<&MergeProposal>|
      -> String {
-        let mut vs = serde_json::json!({
-            "log_id":  log_id,
-            "campaign": campaign,
-            "role": role,
-        });
-        if let Some(extra_context) = extra_context.as_ref() {
-            if let (Some(vs_obj), Some(extra_obj)) = (vs.as_object_mut(), extra_context.as_object())
-            {
-                vs_obj.extend(extra_obj.clone());
-            } else {
-                log::warn!("Failed to merge extra_context: not an object");
-            }
-        }
-        if let (Some(vs_obj), Some(codemod_obj)) = (vs.as_object_mut(), codemod_result.as_object())
-        {
-            vs_obj.extend(codemod_obj.clone());
-        } else {
-            log::warn!("Failed to merge codemod_result: not an object");
-        }
-        vs["codemod"] = codemod_result.clone();
-        if let Some(debdiff) = debdiff.as_ref() {
-            match std::str::from_utf8(debdiff) {
-                Ok(debdiff_str) => {
-                    vs["debdiff"] = debdiff_str.into();
-                }
-                Err(e) => {
-                    log::warn!("Debdiff contains invalid UTF-8: {}", e);
-                    vs["debdiff"] = format!("(Binary diff - {} bytes)", debdiff.len()).into();
-                }
-            }
-        }
-        let template_name = if description_format == DescriptionFormat::Markdown {
-            format!("{}.md", campaign)
-        } else {
-            format!("{}.txt", campaign)
-        };
-        let template = match template_env.get_template(&template_name) {
-            Ok(template) => template,
-            Err(e) => {
-                log::warn!("Template {} not found: {}, using default", template_name, e);
-                // Return a simple default description
-                return format!("Changes for {} ({})", campaign, log_id);
-            }
-        };
-        match template.render(vs) {
-            Ok(rendered) => rendered,
-            Err(e) => {
-                log::warn!("Template rendering failed: {}, using default", e);
-                format!("Changes for {} ({})", campaign, log_id)
-            }
-        }
+        proposal_description_or_default(
+            &template_env,
+            campaign,
+            log_id,
+            role,
+            codemod_result,
+            extra_context.as_ref(),
+            debdiff.as_deref(),
+            description_format,
+        )
     };
 
     let get_proposal_commit_message =
