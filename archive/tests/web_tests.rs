@@ -45,6 +45,31 @@ async fn build_app(pool: sqlx::PgPool) -> (axum::Router, TempDir) {
     (service.router(), tmp)
 }
 
+/// An archive configuration read from a config that sets no `origin`.
+fn config_without_origin(archive_path: &Path) -> ArchiveConfig {
+    let cfg = janitor::config::read_string(
+        r#"
+distribution {
+  name: "unstable"
+  component: "main"
+}
+apt_repository {
+  name: "lintian-fixes"
+  base: "unstable"
+}
+"#,
+    )
+    .unwrap();
+    ArchiveConfig::from_janitor_config(cfg, archive_path, None).unwrap()
+}
+
+fn origin_lines(release: &str) -> Vec<&str> {
+    release
+        .lines()
+        .filter(|line| line.starts_with("Origin:"))
+        .collect()
+}
+
 async fn get(app: &axum::Router, uri: &str) -> (StatusCode, Vec<u8>) {
     let req = Request::builder()
         .method("GET")
@@ -134,6 +159,55 @@ test_with_database! {
             )
             .await,
             (StatusCode::OK, std::fs::read(by_hash.path()).unwrap())
+        );
+    }
+}
+
+test_with_database! {
+    async fn suite_release_has_default_origin(test_db: TestDatabase) {
+        setup_database(test_db.pool()).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let config = config_without_origin(tmp.path());
+        let location = tmp.path().join("artifacts").display().to_string();
+        let generator = RepositoryGenerator::new(
+            Arc::new(PackageScanner::new(&location).await.unwrap()),
+            Arc::new(ArchiveDatabase::new(test_db.pool().clone())),
+            RepositoryGenerationConfig::default(),
+        );
+
+        let repo = config.get_repository("lintian-fixes").unwrap();
+        generator.generate_repository(repo).await.unwrap();
+
+        let release = std::fs::read_to_string(repo.base_path.join("Release")).unwrap();
+        assert_eq!(origin_lines(&release), vec!["Origin: Janitor"]);
+    }
+}
+
+test_with_database! {
+    async fn on_demand_release_has_default_origin(test_db: TestDatabase) {
+        setup_database(test_db.pool()).await;
+        insert_run(test_db.pool(), "run-1").await;
+        let tmp = tempfile::tempdir().unwrap();
+        let location = tmp.path().join("artifacts").display().to_string();
+        let generator = RepositoryGenerator::new(
+            Arc::new(PackageScanner::new(&location).await.unwrap()),
+            Arc::new(ArchiveDatabase::new(test_db.pool().clone())),
+            RepositoryGenerationConfig::default(),
+        );
+        let service = ArchiveWebService::new(
+            config_without_origin(tmp.path()),
+            generator,
+            PackageScanner::new(&location).await.unwrap(),
+            ArchiveDatabase::new(test_db.pool().clone()),
+        )
+        .await
+        .unwrap();
+
+        let (status, body) = get(&service.router(), "/dists/run/run-1/Release").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            origin_lines(std::str::from_utf8(&body).unwrap()),
+            vec!["Origin: Janitor"]
         );
     }
 }

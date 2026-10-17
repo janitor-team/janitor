@@ -102,7 +102,11 @@ pub(crate) fn apt_repository_config_from_proto(
         } else {
             proto.description().to_string()
         },
-        origin: origin.to_string(),
+        origin: if origin.is_empty() {
+            "Janitor".to_string()
+        } else {
+            origin.to_string()
+        },
         label: name.clone(),
         suite: name.clone(),
         codename: name.clone(),
@@ -327,6 +331,29 @@ apt_repository {
         assert_eq!(repo.components, vec!["main", "contrib"]);
         assert_eq!(repo.architectures, vec!["amd64"]);
         assert!(repo.by_hash);
+    }
+
+    /// No `origin` in the config: Release files still need one.
+    #[test]
+    fn test_from_janitor_config_default_origin() {
+        let cfg = janitor::config::read_string(
+            r#"
+distribution {
+  name: "unstable"
+  component: "main"
+}
+apt_repository {
+  name: "lintian-fixes"
+  base: "unstable"
+}
+"#,
+        )
+        .unwrap();
+        let config =
+            ArchiveConfig::from_janitor_config(cfg, Path::new("/srv/dists"), None).unwrap();
+
+        let repo = config.get_repository("lintian-fixes").unwrap();
+        assert_eq!(repo.origin, "Janitor");
     }
 
     #[test]
