@@ -1,7 +1,9 @@
 DOCKER_TAG ?= latest
 PYTHON ?= python3
 SHA = $(shell git rev-parse HEAD)
-DOCKERFILES = $(shell ls Dockerfile_* | sed 's/Dockerfile_//' )
+IMAGE_BASE ?= ghcr.io/jelmer/janitor
+DOCKERFILES = $(shell ls Dockerfile_* | sed 's/Dockerfile_//' | grep -v '^rust_builder$$' )
+RUST_IMAGES = archive auto_upload bzr_store differ git_store publish runner
 DOCKER_TARGETS := $(patsubst %,docker-%,$(DOCKERFILES))
 BUILD_TARGETS := $(patsubst %,build-%,$(DOCKERFILES))
 PUSH_TARGETS := $(patsubst %,push-%,$(DOCKERFILES))
@@ -95,13 +97,27 @@ docker-%:
 	$(MAKE) push-$*
 
 build-%:
-	buildah build --no-cache -t ghcr.io/jelmer/janitor/$*:$(DOCKER_TAG) -t ghcr.io/jelmer/janitor/$*:$(SHA) -f Dockerfile_$* .
+	buildah build --no-cache -t $(IMAGE_BASE)/$*:$(DOCKER_TAG) -t $(IMAGE_BASE)/$*:$(SHA) -f Dockerfile_$* .
+
+# The Rust service images take their binaries from this image.
+rust-builder:
+	buildah build --layers -t localhost/janitor/rust_builder:latest -f Dockerfile_rust_builder .
+
+$(patsubst %,build-%,$(RUST_IMAGES)): rust-builder
+
+smoke-%: build-%
+	podman run --rm $(IMAGE_BASE)/$*:$(DOCKER_TAG) --help
+
+smoke-rust: $(patsubst %,smoke-%,$(RUST_IMAGES))
+
+rust-images:
+	@echo $(RUST_IMAGES)
 
 push-%:
-	buildah push ghcr.io/jelmer/janitor/$*:$(DOCKER_TAG)
-	buildah push ghcr.io/jelmer/janitor/$*:$(SHA)
+	buildah push $(IMAGE_BASE)/$*:$(DOCKER_TAG)
+	buildah push $(IMAGE_BASE)/$*:$(SHA)
 
-.PHONY: docker-all build-all push-all
+.PHONY: docker-all build-all push-all rust-builder smoke-rust rust-images
 
 docker-all: $(DOCKER_TARGETS)
 
