@@ -4,8 +4,7 @@ use crate::{BuilderResult, WorkerResult};
 use axum::extract::Multipart;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 
 /// File uploaded by a worker.
@@ -40,8 +39,6 @@ pub struct UploadedWorkerResult {
 
 /// Processor for multipart uploads from workers.
 pub struct UploadProcessor {
-    /// Base directory for storing uploaded files.
-    storage_dir: PathBuf,
     /// Maximum file size allowed (in bytes).
     max_file_size: u64,
     /// Maximum total upload size (in bytes).
@@ -50,26 +47,23 @@ pub struct UploadProcessor {
 
 impl UploadProcessor {
     /// Create a new upload processor.
-    pub fn new(storage_dir: PathBuf, max_file_size: u64, max_total_size: u64) -> Self {
+    pub fn new(max_file_size: u64, max_total_size: u64) -> Self {
         Self {
-            storage_dir,
             max_file_size,
             max_total_size,
         }
     }
 
-    /// Process a multipart upload from a worker.
+    /// Process a multipart upload from a worker, storing the files in
+    /// `storage_dir`.
     ///
-    /// `codebase` is the codebase name for this run; logs are stored
-    /// under `{storage_dir}/{codebase}/{run_id}/{filename}` so the
-    /// site's `FileSystemLogFileManager` (which expects the
-    /// `{root}/{codebase}/{run_id}/{name}` layout) can read them
-    /// straight off a shared volume -- no separate proxy needed.
-    /// Other categories (artifacts/build/metadata) keep the
-    /// `{storage_dir}/{run_id}/{category}/{filename}` layout.
+    /// Logs are stored under `{storage_dir}/{codebase}/{run_id}/{filename}`;
+    /// other categories (artifacts/build/metadata) under
+    /// `{storage_dir}/{run_id}/{category}/{filename}`.
     pub async fn process_upload(
         &self,
         mut multipart: Multipart,
+        storage_dir: &Path,
         run_id: &str,
         codebase: &str,
     ) -> Result<UploadedWorkerResult, UploadError> {
@@ -80,14 +74,11 @@ impl UploadProcessor {
         let mut metadata_files = Vec::new();
         let mut total_size = 0u64;
 
-        // Per-category directory layout. Logs follow the FS log
-        // manager layout so `LOG_URL=file://{storage_dir}` on the
-        // site pod can find them.
-        let run_dir = self.storage_dir.join(run_id);
+        let run_dir = storage_dir.join(run_id);
         tokio::fs::create_dir_all(&run_dir)
             .await
             .map_err(|e| UploadError::Storage(format!("Failed to create directory: {}", e)))?;
-        let logs_dir = self.storage_dir.join(codebase).join(run_id);
+        let logs_dir = storage_dir.join(codebase).join(run_id);
         tokio::fs::create_dir_all(&logs_dir)
             .await
             .map_err(|e| UploadError::Storage(format!("Failed to create logs directory: {}", e)))?;
@@ -425,139 +416,6 @@ impl UploadProcessor {
             binary_packages,
         }))
     }
-
-    /// Get storage statistics.
-    pub async fn get_storage_stats(&self) -> Result<StorageStats, UploadError> {
-        let mut total_files = 0;
-        let mut total_size = 0;
-        let mut categories = HashMap::new();
-
-        if self.storage_dir.exists() {
-            let mut entries = tokio::fs::read_dir(&self.storage_dir).await.map_err(|e| {
-                UploadError::Storage(format!("Failed to read storage directory: {}", e))
-            })?;
-
-            while let Some(entry) = entries.next_entry().await.map_err(|e| {
-                UploadError::Storage(format!("Failed to read directory entry: {}", e))
-            })? {
-                if entry
-                    .file_type()
-                    .await
-                    .map_err(|e| UploadError::Storage(e.to_string()))?
-                    .is_dir()
-                {
-                    // This is a run directory
-                    let run_stats = self.get_run_storage_stats(&entry.path()).await?;
-                    total_files += run_stats.total_files;
-                    total_size += run_stats.total_size;
-
-                    for (category, count) in run_stats.files_by_category {
-                        *categories.entry(category).or_insert(0) += count;
-                    }
-                }
-            }
-        }
-
-        Ok(StorageStats {
-            total_files,
-            total_size,
-            files_by_category: categories,
-        })
-    }
-
-    /// Get storage statistics for a specific run.
-    async fn get_run_storage_stats(
-        &self,
-        run_dir: &PathBuf,
-    ) -> Result<RunStorageStats, UploadError> {
-        let mut total_files = 0;
-        let mut total_size = 0;
-        let mut files_by_category = HashMap::new();
-
-        let mut entries = tokio::fs::read_dir(run_dir)
-            .await
-            .map_err(|e| UploadError::Storage(format!("Failed to read run directory: {}", e)))?;
-
-        while let Some(entry) = entries
-            .next_entry()
-            .await
-            .map_err(|e| UploadError::Storage(format!("Failed to read directory entry: {}", e)))?
-        {
-            if entry
-                .file_type()
-                .await
-                .map_err(|e| UploadError::Storage(e.to_string()))?
-                .is_dir()
-            {
-                let category = entry.file_name().to_string_lossy().to_string();
-                let category_stats = self.get_category_storage_stats(&entry.path()).await?;
-
-                total_files += category_stats.0;
-                total_size += category_stats.1;
-                files_by_category.insert(category, category_stats.0);
-            }
-        }
-
-        Ok(RunStorageStats {
-            total_files,
-            total_size,
-            files_by_category,
-        })
-    }
-
-    /// Get storage statistics for a category directory.
-    async fn get_category_storage_stats(
-        &self,
-        category_dir: &PathBuf,
-    ) -> Result<(u64, u64), UploadError> {
-        let mut file_count = 0;
-        let mut total_size = 0;
-
-        let mut entries = tokio::fs::read_dir(category_dir).await.map_err(|e| {
-            UploadError::Storage(format!("Failed to read category directory: {}", e))
-        })?;
-
-        while let Some(entry) = entries
-            .next_entry()
-            .await
-            .map_err(|e| UploadError::Storage(format!("Failed to read directory entry: {}", e)))?
-        {
-            if entry
-                .file_type()
-                .await
-                .map_err(|e| UploadError::Storage(e.to_string()))?
-                .is_file()
-            {
-                let metadata = entry.metadata().await.map_err(|e| {
-                    UploadError::Storage(format!("Failed to read file metadata: {}", e))
-                })?;
-
-                file_count += 1;
-                total_size += metadata.len();
-            }
-        }
-
-        Ok((file_count, total_size))
-    }
-}
-
-/// Storage statistics.
-#[derive(Debug, Serialize)]
-pub struct StorageStats {
-    /// Total number of files.
-    pub total_files: u64,
-    /// Total size in bytes.
-    pub total_size: u64,
-    /// Files by category.
-    pub files_by_category: HashMap<String, u64>,
-}
-
-/// Storage statistics for a specific run.
-#[derive(Debug)]
-struct RunStorageStats {
-    total_files: u64,
-    total_size: u64,
-    files_by_category: HashMap<String, u64>,
 }
 
 /// Errors that can occur during upload processing.

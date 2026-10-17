@@ -2441,3 +2441,53 @@ async fn finish_stores_artifacts_in_backup() {
     .unwrap();
     assert_eq!(contents, b"deb contents");
 }
+
+/// The configured committer ends up in the worker environment.
+#[tokio::test]
+async fn assign_env_includes_committer() {
+    let Some((app, state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let assignment = assign_one(app, &state, "committer-cb").await;
+    let env = &assignment["env"];
+    assert_eq!(env["COMMITTER"], "Test Runner <test@example.com>");
+    assert_eq!(env["BRZ_EMAIL"], "Test Runner <test@example.com>");
+    assert_eq!(env["DEBEMAIL"], "test@example.com");
+}
+
+/// Like Python, no committer variables are set when `committer` is
+/// not configured.
+#[tokio::test]
+async fn assign_env_without_committer() {
+    let builder = test_utils::TestConfigBuilder::new()
+        .with_campaign("test-campaign", "true")
+        .without_committer();
+    let Some((app, state)) =
+        test_utils::create_test_app_with_state_with_config_if_available(builder)
+            .await
+            .expect("test app setup")
+    else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let assignment = assign_one(app, &state, "no-committer-cb").await;
+    let env = assignment["env"]
+        .as_object()
+        .expect("env must be an object");
+    for key in [
+        "COMMITTER",
+        "BRZ_EMAIL",
+        "DEBFULLNAME",
+        "DEBEMAIL",
+        "EMAIL",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+    ] {
+        assert!(!env.contains_key(key), "unexpected {key} in env: {env:?}");
+    }
+}
