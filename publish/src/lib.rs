@@ -945,7 +945,9 @@ impl PublishWorker {
                 .await
             {
                 Ok(rl) => {
-                    let (returncode, response) = match run_worker_process(args, request).await {
+                    let result = run_worker_process(args, request).await;
+                    lock_manager.unlock(&rl).await;
+                    match result {
                         Ok((returncode, response)) => (returncode, response),
                         Err(e) => {
                             return Err(PublishError::Failure {
@@ -953,9 +955,7 @@ impl PublishWorker {
                                 description: e.to_string(),
                             });
                         }
-                    };
-                    lock_manager.unlock(&rl).await;
-                    (returncode, response)
+                    }
                 }
                 Err(_) => {
                     return Err(PublishError::BranchBusy(target_branch_url.clone()));
