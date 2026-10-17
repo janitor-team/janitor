@@ -43,6 +43,9 @@ loggerhead = "3"
 # works. Pinned to the same version loggerhead=3 uses.
 breezyshim = { workspace = true }
 
+# Raw PyO3: breezyshim's factory cannot pass root_client_path=None.
+pyo3 = { workspace = true }
+
 # URL-encoded form bodies for POST /{codebase}/remotes/{remote}
 serde_urlencoded = "0.7"
 
