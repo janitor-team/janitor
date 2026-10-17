@@ -13,6 +13,9 @@
         <p>
             For what's coming up, see the <a href="queue">queue</a>.
         </p>
+        {% if not history %}
+            <p>No runs yet. If this stays empty, the pipeline may never have been given any candidates to work on - see <a href="https://github.com/janitor-team/janitor/blob/main/docs/flow.md#injecting-codebases-and-candidates-directly">Injecting codebases and candidates directly</a>.</p>
+        {% else %}
         <p>Last {{ count }} runs:</p>
         <table class="docutils" border="1">
             <colgroup>
@@ -63,5 +66,6 @@
                 {% endfor %}
             </tbody>
         </table>
+        {% endif %}
     </div>
 {% endblock body %}

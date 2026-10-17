@@ -26,7 +26,7 @@
         </form>
         {% set ns = namespace(last_date=None, run_date=None) %}
         {% if not runs %}
-            <p>No changes have been merged or pushed yet.</p>
+            <p>No changes have been merged or pushed yet. If this stays empty, check whether any candidates have been registered for this campaign - see <a href="https://github.com/janitor-team/janitor/blob/main/docs/flow.md#injecting-codebases-and-candidates-directly">Injecting codebases and candidates directly</a>.</p>
         {% else %}
         <ul>
             {% for run in runs %}
