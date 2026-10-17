@@ -276,7 +276,7 @@ impl PollingBackchannel {
             .join("log-id")
             .expect("static relative \"log-id\" always joins onto a valid base URL");
         log::info!("Fetching log ID from URL {}", url);
-        let resp = session.get(url).send().await?;
+        let resp = session.get(url).send().await?.error_for_status()?;
         resp.text().await
     }
 
@@ -305,12 +305,29 @@ impl Backchannel for PollingBackchannel {
 
         log::info!("Killing worker at URL {}", url);
 
-        session
+        let response = session
             .post(url)
             .send()
             .await
             .map_err(Error::IntermediaryFailure)?;
-        Ok(())
+
+        let status = response.status();
+        if status.is_success() {
+            Ok(())
+        } else if status == reqwest::StatusCode::NOT_IMPLEMENTED {
+            Err(Error::FatalFailure(format!(
+                "kill not supported by worker at {}",
+                self.my_url
+            )))
+        } else if status == reqwest::StatusCode::GONE {
+            // The worker has no run in progress.
+            Err(Error::NotFound)
+        } else {
+            Err(Error::WorkerUnreachable(format!(
+                "kill request failed with status: {}",
+                status
+            )))
+        }
     }
 
     async fn terminate(&self, log_id: &str) -> Result<(), Error> {
@@ -395,6 +412,10 @@ impl Backchannel for PollingBackchannel {
 
         let log_id = match self.get_log_id(session).await {
             Ok(log_id) => log_id,
+            Err(e) if e.status() == Some(reqwest::StatusCode::NOT_FOUND) => {
+                return Err(Error::NotFound)
+            }
+            Err(e) if e.is_status() => return Err(Error::WorkerUnreachable(e.to_string())),
             Err(e) => {
                 // Connection errors should be IntermediaryFailure, other errors are timeouts
                 if e.is_connect() || e.is_timeout() || e.is_request() {
@@ -481,6 +502,14 @@ impl Backchannel for PollingBackchannel {
                     uptime: None,
                 })
             }
+            // A 404 means the worker is up but has no run in progress.
+            Err(e) if e.status() == Some(reqwest::StatusCode::NOT_FOUND) => Ok(HealthStatus {
+                alive: false,
+                current_run_id: None,
+                status: "not-found".to_string(),
+                last_ping: Some(Utc::now()),
+                uptime: None,
+            }),
             Err(_) => Ok(HealthStatus {
                 alive: false,
                 current_run_id: None,

@@ -1,11 +1,22 @@
 //! Tests for the backchannel implementations that verify actual
 //! behavior (not just "unreachable server returns Err").
 
+use axum::http::StatusCode;
+use axum::routing::{get, post};
 use chrono::Utc;
 use janitor_runner::backchannel::{
-    Backchannel, HealthStatus, JenkinsBackchannel, PollingBackchannel,
+    Backchannel, Error, HealthStatus, JenkinsBackchannel, PollingBackchannel,
 };
 use url::Url;
+
+/// Serve `app` on a free local port and return a polling backchannel
+/// pointed at it. Routes the app lacks answer 404, like a real worker.
+async fn polling_backchannel_for(app: axum::Router) -> PollingBackchannel {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    PollingBackchannel::new(Url::parse(&format!("http://{addr}/")).unwrap())
+}
 
 /// Jenkins only exposes a single log file (`worker.log`) via the
 /// progressiveText endpoint. `list_log_files` should reflect that
@@ -59,4 +70,127 @@ async fn polling_backchannel_ping_times_out_promptly() {
         "ping took {}s, expected timeout under 90s",
         elapsed.as_secs()
     );
+}
+
+/// An idle worker answers `/log-id` with 404 and a text body. That
+/// body is not a run id: the health status must say the run is gone.
+#[tokio::test]
+async fn polling_health_status_idle_worker_is_not_found() {
+    let app = axum::Router::new().route(
+        "/log-id",
+        get(|| async { (StatusCode::NOT_FOUND, "no run in progress") }),
+    );
+    let backchannel = polling_backchannel_for(app).await;
+
+    let health = backchannel.get_health_status("run-1").await.unwrap();
+    assert_eq!(health.status, "not-found");
+    assert_eq!(health.current_run_id, None);
+    assert!(!health.alive);
+
+    let result = backchannel.ping("run-1").await;
+    assert!(matches!(result, Err(Error::NotFound)), "got {result:?}");
+}
+
+/// Any other error status from `/log-id` is not a run id either.
+#[tokio::test]
+async fn polling_health_status_server_error_is_unreachable() {
+    let app = axum::Router::new().route(
+        "/log-id",
+        get(|| async { (StatusCode::INTERNAL_SERVER_ERROR, "oops") }),
+    );
+    let backchannel = polling_backchannel_for(app).await;
+
+    let health = backchannel.get_health_status("run-1").await.unwrap();
+    assert_eq!(health.status, "unreachable");
+    assert_eq!(health.current_run_id, None);
+
+    let result = backchannel.ping("run-1").await;
+    assert!(
+        matches!(result, Err(Error::WorkerUnreachable(_))),
+        "got {result:?}"
+    );
+}
+
+/// A 200 from `/log-id` is still read as the worker's current run id.
+#[tokio::test]
+async fn polling_health_status_reads_log_id_on_success() {
+    let app = axum::Router::new().route("/log-id", get(|| async { "run-1" }));
+    let backchannel = polling_backchannel_for(app).await;
+
+    let health = backchannel.get_health_status("run-1").await.unwrap();
+    assert_eq!(health.status, "running");
+    assert_eq!(health.current_run_id.as_deref(), Some("run-1"));
+    assert!(health.alive);
+    backchannel.ping("run-1").await.unwrap();
+
+    let health = backchannel.get_health_status("run-2").await.unwrap();
+    assert_eq!(health.status, "different-run");
+    assert_eq!(health.current_run_id.as_deref(), Some("run-1"));
+    let result = backchannel.ping("run-2").await;
+    assert!(
+        matches!(result, Err(Error::FatalFailure(_))),
+        "got {result:?}"
+    );
+}
+
+/// A busy worker answers `/kill` with 501 and keeps building, so
+/// `kill` and the `terminate` fallback onto it must report an error.
+#[tokio::test]
+async fn polling_kill_not_supported_is_error() {
+    let app = axum::Router::new().route(
+        "/kill",
+        post(|| async { (StatusCode::NOT_IMPLEMENTED, "kill is not yet supported") }),
+    );
+    let backchannel = polling_backchannel_for(app).await;
+
+    let result = backchannel.kill().await;
+    assert!(
+        matches!(result, Err(Error::FatalFailure(_))),
+        "got {result:?}"
+    );
+
+    let result = backchannel.terminate("run-1").await;
+    assert!(
+        matches!(result, Err(Error::FatalFailure(_))),
+        "got {result:?}"
+    );
+}
+
+/// A worker without a run answers `/kill` with 410.
+#[tokio::test]
+async fn polling_kill_without_run_is_not_found() {
+    let app = axum::Router::new().route(
+        "/kill",
+        post(|| async { (StatusCode::GONE, "no run in progress") }),
+    );
+    let backchannel = polling_backchannel_for(app).await;
+
+    let result = backchannel.kill().await;
+    assert!(matches!(result, Err(Error::NotFound)), "got {result:?}");
+}
+
+/// Any other error status from `/kill` is an error too.
+#[tokio::test]
+async fn polling_kill_server_error_is_unreachable() {
+    let app = axum::Router::new().route(
+        "/kill",
+        post(|| async { (StatusCode::INTERNAL_SERVER_ERROR, "oops") }),
+    );
+    let backchannel = polling_backchannel_for(app).await;
+
+    let result = backchannel.kill().await;
+    assert!(
+        matches!(result, Err(Error::WorkerUnreachable(_))),
+        "got {result:?}"
+    );
+}
+
+/// A 2xx answer from `/kill` is still a success.
+#[tokio::test]
+async fn polling_kill_success_is_ok() {
+    let app = axum::Router::new().route("/kill", post(|| async { "killed" }));
+    let backchannel = polling_backchannel_for(app).await;
+
+    backchannel.kill().await.unwrap();
+    backchannel.terminate("run-1").await.unwrap();
 }
