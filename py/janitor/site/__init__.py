@@ -15,6 +15,7 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
+import re
 from typing import Optional
 
 from aiohttp import ClientConnectorError, web
@@ -138,12 +139,35 @@ def format_timestamp(ts):
 template_loader = PackageLoader("janitor.site")
 
 
+# A tag, or an http(s) URL in escaped text; the repeat is bounded to cap memory.
+_TAG_OR_URL_RE = re.compile(
+    r"<[^<>]*>|\bhttps?://"
+    r"(?:[^\s\x00-\x1f\x7f\"'`<>&]|&amp;){,2000}[^\s\x00-\x1f\x7f\"'`<>&.,:;!?)\]]"
+)
+
+
+def linkify_html(html: str) -> str:
+    """Turn the http(s) URLs in pygments' HTML output into links.
+
+    Only safe for markup where every "<" starts a tag, no tag has a ">"
+    inside an attribute value, and every "&" in text is an entity.
+    """
+
+    def link(m: re.Match[str]) -> str:
+        url = m.group(0)
+        if url.startswith("<"):
+            return url
+        return f'<a href="{url}" rel="nofollow noopener">{url}</a>'
+
+    return _TAG_OR_URL_RE.sub(link, html)
+
+
 def highlight_diff(diff):
     from pygments import highlight
     from pygments.formatters import HtmlFormatter
     from pygments.lexers.diff import DiffLexer
 
-    return highlight(diff, DiffLexer(stripnl=False), HtmlFormatter())
+    return linkify_html(highlight(diff, DiffLexer(stripnl=False), HtmlFormatter()))
 
 
 def classify_result_code(result_code, transient: Optional[bool]):
