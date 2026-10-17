@@ -1553,7 +1553,7 @@ INSERT INTO run (
                 "vcs_type": row.get::<Option<String>, _>("vcs_type"),
                 "web_url": row.get::<Option<String>, _>("web_url"),
                 "vcs_last_revision": row.get::<Option<String>, _>("vcs_last_revision"),
-                "value": row.get::<Option<i64>, _>("value")
+                "value": row.get::<Option<i32>, _>("value")
             });
             codebases.push(codebase);
         }
@@ -1637,14 +1637,14 @@ INSERT INTO run (
         let mut candidates = Vec::new();
         for row in rows {
             let candidate = serde_json::json!({
-                "id": row.get::<i64, _>("id"),
+                "id": row.get::<i32, _>("id"),
                 "codebase": row.get::<String, _>("codebase"),
                 "campaign": row.get::<String, _>("suite"), // Note: "suite" maps to "campaign" in API
                 "command": row.get::<Option<String>, _>("command"),
                 "publish-policy": row.get::<Option<String>, _>("publish_policy"),
                 "change_set": row.get::<Option<String>, _>("change_set"),
-                "context": row.get::<Option<serde_json::Value>, _>("context"),
-                "value": row.get::<Option<i64>, _>("value"),
+                "context": row.get::<Option<String>, _>("context"),
+                "value": row.get::<Option<i32>, _>("value"),
                 "success_chance": row.get::<Option<f64>, _>("success_chance")
             });
             candidates.push(candidate);

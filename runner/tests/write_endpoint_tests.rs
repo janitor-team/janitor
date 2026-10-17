@@ -779,6 +779,96 @@ async fn post_candidates_success_path_writes_queue_row() {
     assert_eq!(suite, "test-campaign");
 }
 
+/// `GET /candidates` lists an uploaded candidate with its integer
+/// `id` and `value` and its text `context`.
+#[tokio::test]
+async fn get_candidates_lists_uploaded_candidate() {
+    let Some((app, state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let pool = state.database.pool().clone();
+    insert_codebase(&pool, "cand-list-cb").await;
+
+    let body = json!([{
+        "codebase": "cand-list-cb",
+        "campaign": "test-campaign",
+        "value": 10,
+        "context": "some-context",
+        "success_chance": 0.5,
+    }]);
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/candidates")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/candidates")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    let candidates = body.as_array().expect("answer must be an array");
+    assert_eq!(candidates.len(), 1, "expected one candidate: {body}");
+    let candidate = &candidates[0];
+    assert!(candidate["id"].is_i64(), "id must be a number: {candidate}");
+    assert_eq!(candidate["codebase"], "cand-list-cb");
+    assert_eq!(candidate["campaign"], "test-campaign");
+    assert_eq!(candidate["command"], "true");
+    assert_eq!(candidate["value"], 10);
+    assert_eq!(candidate["context"], "some-context");
+    assert_eq!(candidate["success_chance"], 0.5);
+    assert_eq!(candidate["publish-policy"], Value::Null);
+    assert_eq!(candidate["change_set"], Value::Null);
+}
+
+/// `GET /codebases` lists a codebase that has a `value`.
+#[tokio::test]
+async fn get_codebases_lists_codebase_with_value() {
+    let Some((app, _state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let body = json!([{
+        "name": "cb-with-value",
+        "branch_url": "https://example.invalid/cb-with-value",
+        "vcs_type": "git",
+        "value": 30,
+    }]);
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/codebases")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/codebases")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    let codebases = body.as_array().expect("answer must be an array");
+    let codebase = codebases
+        .iter()
+        .find(|c| c["name"] == "cb-with-value")
+        .unwrap_or_else(|| panic!("codebase missing: {body}"));
+    assert_eq!(codebase["value"], 30);
+    assert_eq!(codebase["vcs_type"], "git");
+}
+
 /// `POST /candidates` with `value: 0` records the candidate in
 /// `invalid_value` and does not queue it.
 #[tokio::test]
