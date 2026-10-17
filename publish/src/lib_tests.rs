@@ -184,6 +184,37 @@ fn test_role_branch_url_with_special_characters() {
 
 // Skip branches_match tests as they require opening actual branches with breezyshim
 
+/// Serve /old (a redirect to /new), /new and /other on a local port.
+async fn serve_redirect() -> String {
+    use axum::{response::Redirect, routing::get, Router};
+    let app = Router::new()
+        .route("/old", get(|| async { Redirect::permanent("/new") }))
+        .route("/new", get(|| async { "" }))
+        .route("/other", get(|| async { "" }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    base
+}
+
+#[tokio::test]
+async fn test_resolve_redirects_follows_http_redirect() {
+    let base = serve_redirect().await;
+    let old = url::Url::parse(&format!("{}/old", base)).unwrap();
+    assert_eq!(
+        resolve_redirects(&old).await.as_str(),
+        format!("{}/new", base)
+    );
+}
+
+#[tokio::test]
+async fn test_branches_match_different_http_branches() {
+    let base = serve_redirect().await;
+    let old = url::Url::parse(&format!("{}/old", base)).unwrap();
+    let other = url::Url::parse(&format!("{}/other", base)).unwrap();
+    assert!(!branches_match(Some(&old), Some(&other), None).await);
+}
+
 // Skip get_merged_by_user_url tests as they require breezyshim forge operations
 
 #[test]

@@ -1158,19 +1158,19 @@ pub fn role_branch_url(url: &url::Url, remote_branch_name: Option<&str>) -> url:
 ///
 /// # Returns
 /// The canonical URL after following redirects, or the original URL if resolution fails
-fn resolve_redirects(url: &url::Url) -> url::Url {
+async fn resolve_redirects(url: &url::Url) -> url::Url {
     // Only attempt redirect resolution for HTTP/HTTPS URLs
     if !url.scheme().starts_with("http") {
         return url.clone();
     }
 
-    // Use a blocking HTTP client to follow redirects
-    if let Ok(client) = reqwest::blocking::Client::builder()
+    // Use an HTTP client to follow redirects
+    if let Ok(client) = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::limited(5))
         .timeout(std::time::Duration::from_secs(10))
         .build()
     {
-        if let Ok(response) = client.head(url.as_str()).send() {
+        if let Ok(response) = client.head(url.as_str()).send().await {
             if let Ok(final_url) = url::Url::parse(response.url().as_str()) {
                 return final_url;
             }
@@ -1190,7 +1190,7 @@ fn resolve_redirects(url: &url::Url) -> url::Url {
 ///
 /// # Returns
 /// `true` if the branches match, `false` otherwise
-pub fn branches_match(
+pub async fn branches_match(
     url_a: Option<&url::Url>,
     url_b: Option<&url::Url>,
     mut possible_transports: Option<&mut Vec<breezyshim::transport::Transport>>,
@@ -1215,8 +1215,8 @@ pub fn branches_match(
     };
     let (base_url_b, _params_b) = breezyshim::urlutils::split_segment_parameters(&parsed_url_b);
     // Support following redirects by normalizing URLs
-    let normalized_url_a = resolve_redirects(&base_url_a);
-    let normalized_url_b = resolve_redirects(&base_url_b);
+    let normalized_url_a = resolve_redirects(&base_url_a).await;
+    let normalized_url_b = resolve_redirects(&base_url_b).await;
 
     if normalized_url_a.to_string().trim_end_matches('/')
         != normalized_url_b.to_string().trim_end_matches('/')
@@ -3973,7 +3973,9 @@ async fn check_existing_mp(
         mp_branch.as_ref(),
         last_run_branch.as_ref(),
         possible_transports.as_deref_mut(),
-    ) {
+    )
+    .await
+    {
         log::warn!(
             "{}: Remote branch URL appears to have moved: {:?} -> {:?}",
             mp_url,
