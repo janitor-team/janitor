@@ -3469,6 +3469,7 @@ dependencies = [
  "google-cloud-auth",
  "google-cloud-gax",
  "google-cloud-storage",
+ "janitor",
  "lazy-regex",
  "log",
  "opentelemetry 0.33.0",
