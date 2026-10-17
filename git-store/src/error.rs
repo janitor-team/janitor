@@ -26,10 +26,10 @@ pub enum GitStoreError {
     #[error("no such codebase: {0}")]
     RepositoryNotFound(String),
 
-    /// The URL subpath isn't one of the git-http verbs we accept
-    /// (dumb-HTTP metadata, info/refs, git-upload-pack,
-    /// git-receive-pack). Rust-only guard; Python doesn't register
-    /// unmatched paths at all so there's no body to mirror.
+    /// The request isn't one of the smart-protocol requests we accept
+    /// (info/refs with a service, git-upload-pack, git-receive-pack).
+    /// Rust-only guard; Python doesn't register unmatched paths at
+    /// all so there's no body to mirror.
     #[error("no such git path: /{0}")]
     GitPathNotFound(String),
 

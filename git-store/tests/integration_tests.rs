@@ -539,6 +539,256 @@ db_test! {
     }
 }
 
+/// Bare repository `name` under `dir` with one commit on `main`,
+/// packed as well as loose, with the dumb-protocol info files written.
+fn init_bare_for_dumb_paths(dir: &std::path::Path, name: &str) -> git2::Oid {
+    let repo = git2::Repository::init_bare(dir.join(name)).unwrap();
+    repo.set_head("refs/heads/main").unwrap();
+    let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+    let tree_id = repo.treebuilder(None).unwrap().write().unwrap();
+    let tree = repo.find_tree(tree_id).unwrap();
+    let commit = repo
+        .commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+        .unwrap();
+    for args in [&["repack", "-a", "-q"][..], &["update-server-info"][..]] {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir.join(name))
+            .output()
+            .expect("failed to run git");
+        assert!(out.status.success(), "git {:?} failed", args);
+    }
+    commit
+}
+
+/// `git clone` of `url` into `dest`, with extra environment.
+fn git_clone(url: &str, dest: &std::path::Path, env: &[(&str, &str)]) -> std::process::Output {
+    std::process::Command::new("git")
+        .args(["clone", "-q", url])
+        .arg(dest)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .envs(env.iter().copied())
+        .output()
+        .expect("failed to run git")
+}
+
+db_test! {
+    async fn test_public_dumb_paths_refused_for_any_user_agent(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase(test_db.pool(), "dumb").await;
+        let tmp = TempDir::new().unwrap();
+        let commit = init_bare_for_dumb_paths(tmp.path(), "dumb").to_string();
+        let repo_dir = tmp.path().join("dumb");
+
+        let pack = std::fs::read_dir(repo_dir.join("objects/pack"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .find(|n| n.ends_with(".pack"))
+            .expect("no pack file");
+        let paths = vec![
+            "HEAD".to_string(),
+            "info/refs".to_string(),
+            "objects/info/packs".to_string(),
+            "objects/info/alternates".to_string(),
+            "objects/info/http-alternates".to_string(),
+            format!("objects/{}/{}", &commit[..2], &commit[2..]),
+            format!("objects/pack/{}", pack),
+            format!("objects/pack/{}", pack.replace(".pack", ".idx")),
+        ];
+
+        let state = build_state(&tmp, &test_db, AppRole::Public).await;
+        let app = web::create_public_app(state, 0);
+        let (addr, handle) = spawn(app).await;
+        let client = reqwest::Client::new();
+
+        let mut answered = Vec::new();
+        for agent in ["git/2.47.3", "Breezy/3.3.12", "JGit/6.0", "Mozilla/5.0 (test)"] {
+            for path in &paths {
+                let resp = client
+                    .get(format!("http://{}/git/dumb/{}", addr, path))
+                    .header("User-Agent", agent)
+                    .send()
+                    .await
+                    .unwrap();
+                let status = resp.status().as_u16();
+                let content_type = resp
+                    .headers()
+                    .get("Content-Type")
+                    .map(|v| v.to_str().unwrap().to_string())
+                    .unwrap_or_default();
+                let body = resp.bytes().await.unwrap();
+                let file = std::fs::read(repo_dir.join(path)).ok();
+                let served = file.as_deref() == Some(&body[..])
+                    || content_type.starts_with("application/x-git");
+                // Other agents get klaus's pages for these paths.
+                let git_agent = agent.starts_with("git/") || agent.starts_with("Breezy/");
+                if served || ((git_agent || path == "info/refs") && status != 404) {
+                    answered.push(format!("{} {} -> {} {}", agent, path, status, content_type));
+                }
+            }
+        }
+
+        // A query that git and we could read differently.
+        let admin_state = build_state(&tmp, &test_db, AppRole::Admin).await;
+        let (admin_addr, admin_handle) = spawn(web::create_admin_app(admin_state, 0)).await;
+        let refs_file = std::fs::read(repo_dir.join("info/refs")).unwrap();
+        for (port, base) in [
+            ("public", format!("http://{}/git/dumb", addr)),
+            ("admin", format!("http://{}/dumb", admin_addr)),
+        ] {
+            for service in ["git-upload-pack", "git-receive-pack"] {
+                let query = format!("info/refs?x&service={}", service);
+                let resp = client
+                    .get(format!("{}/{}", base, query))
+                    .header("User-Agent", "git/2.47.3")
+                    .send()
+                    .await
+                    .unwrap();
+                let status = resp.status().as_u16();
+                let content_type = resp
+                    .headers()
+                    .get("Content-Type")
+                    .map(|v| v.to_str().unwrap().to_string())
+                    .unwrap_or_default();
+                let body = resp.bytes().await.unwrap();
+                if body[..] == refs_file[..] || content_type.starts_with("text/plain") {
+                    answered.push(format!("{} {} -> {} {}", port, query, status, content_type));
+                }
+            }
+        }
+        admin_handle.abort();
+
+        assert!(
+            answered.is_empty(),
+            "dumb paths answered:\n{}",
+            answered.join("\n")
+        );
+
+        let smart = client
+            .get(format!("http://{}/git/dumb/info/refs?service=git-upload-pack", addr))
+            .header("User-Agent", "git/2.47.3")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(smart.status(), 200);
+        assert_eq!(
+            smart.headers().get("Content-Type").unwrap(),
+            "application/x-git-upload-pack-advertisement"
+        );
+
+        if klaus_available() {
+            let page = client
+                .get(format!("http://{}/git/dumb/", addr))
+                .header("User-Agent", "Mozilla/5.0 (test)")
+                .header("Accept", "text/html")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(page.status(), 200);
+            assert!(page.text().await.unwrap().contains("dumb"));
+        }
+
+        handle.abort();
+    }
+}
+
+db_test! {
+    async fn test_dumb_clone_refused_smart_clone_works(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase(test_db.pool(), "dumbclone").await;
+        let tmp = TempDir::new().unwrap();
+        let commit = init_bare_for_dumb_paths(tmp.path(), "dumbclone").to_string();
+
+        let mut dumb_clones = Vec::new();
+        for role in [AppRole::Public, AppRole::Admin] {
+            let state = build_state(&tmp, &test_db, role).await;
+            let (app, prefix) = match role {
+                AppRole::Public => (web::create_public_app(state, 0), "/git"),
+                AppRole::Admin => (web::create_admin_app(state, 0), ""),
+            };
+            let (addr, handle) = spawn(app).await;
+            let url = format!("http://{}{}/dumbclone", addr, prefix);
+            let dest = TempDir::new().unwrap();
+
+            let dumb = git_clone(&url, &dest.path().join("dumb"), &[("GIT_SMART_HTTP", "0")]);
+            let stderr = String::from_utf8_lossy(&dumb.stderr);
+            if dumb.status.success() || !stderr.contains("not found") {
+                dumb_clones.push(format!("{:?}: {} {}", role, dumb.status, stderr));
+            }
+
+            let smart = git_clone(&url, &dest.path().join("smart"), &[]);
+            assert!(
+                smart.status.success(),
+                "{:?}: smart clone failed: {}",
+                role,
+                String::from_utf8_lossy(&smart.stderr)
+            );
+            let cloned = git2::Repository::open(dest.path().join("smart")).unwrap();
+            assert_eq!(cloned.head().unwrap().target().unwrap().to_string(), commit);
+
+            handle.abort();
+        }
+        assert!(
+            dumb_clones.is_empty(),
+            "dumb clones:\n{}",
+            dumb_clones.join("\n")
+        );
+    }
+}
+
+db_test! {
+    async fn test_public_worker_push_and_fetch(test_db: TestDatabase) {
+        // A worker pushes and fetches over the smart protocol only.
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase(test_db.pool(), "workerpush").await;
+        seed_worker(test_db.pool(), "alice", "s3cret").await;
+        let tmp = TempDir::new().unwrap();
+        init_bare_for_dumb_paths(tmp.path(), "workerpush");
+
+        let state = build_state(&tmp, &test_db, AppRole::Public).await;
+        let app = web::create_public_app(state, 0);
+        let (addr, handle) = spawn(app).await;
+        let url = format!("http://alice:s3cret@{}/git/workerpush", addr);
+
+        let work = TempDir::new().unwrap();
+        let clone = work.path().join("clone");
+        let out = git_clone(&url, &clone, &[]);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let run_git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&clone)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .output()
+                .expect("failed to run git");
+            assert!(
+                out.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run_git(&["commit", "-q", "--allow-empty", "-m", "second"]);
+        run_git(&["push", "-q", "origin", "HEAD:refs/heads/work"]);
+        run_git(&["fetch", "-q", "origin"]);
+
+        let server = git2::Repository::open_bare(tmp.path().join("workerpush")).unwrap();
+        let pushed = server.find_reference("refs/heads/work").unwrap().target();
+        let local = git2::Repository::open(&clone).unwrap();
+        assert_eq!(pushed, local.head().unwrap().target());
+        assert_eq!(
+            pushed,
+            local.find_reference("refs/remotes/origin/work").unwrap().target()
+        );
+
+        handle.abort();
+    }
+}
+
 // Drive `git push` through the smart-HTTP backend end-to-end. Guards
 // against pack-framing regressions in `git_backend`'s CGI bridge
 // (stdin streaming, stdout header parsing, body buffering).

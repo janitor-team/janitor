@@ -100,12 +100,10 @@ pub fn create_admin_app(state: AppState, client_max_size: usize) -> Router {
         .route("/{codebase}/log", get(git_log))
         .route("/{codebase}/remotes/{name}", post(set_remote))
         // Smart-protocol: GET for the handshake, POST for the pack
-        // transfer. Dumb-HTTP metadata lives under {*path} with a
-        // whitelist enforced in `git_backend`.
+        // transfer. Other paths get a 404 from `git_backend`.
         .route("/{codebase}/git-upload-pack", post(git_backend))
         .route("/{codebase}/git-receive-pack", post(git_backend))
         .route("/{codebase}/info/refs", get(git_backend))
-        .route("/{codebase}/HEAD", get(git_backend))
         .route("/{codebase}/{*path}", get(git_backend))
         .with_state(state)
         .merge(health)

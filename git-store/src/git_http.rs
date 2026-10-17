@@ -515,62 +515,13 @@ fn is_hop_by_hop(name: &str) -> bool {
     )
 }
 
-/// Mirror the regex set in `dulwich.web.HTTPGitApplication.services`
-/// so we don't shell out to `git http-backend` for arbitrary URLs.
-/// `method` is the request method and `subpath` is the path after the
-/// `/{codebase}/` prefix (without a leading slash).
-fn is_git_http_subpath(method: &axum::http::Method, subpath: &str) -> bool {
-    use axum::http::Method;
+/// Only smart-protocol requests; dumb ones would serve repository files.
+fn is_smart_http_request(method: &axum::http::Method, subpath: &str, has_service: bool) -> bool {
     match (method.as_str(), subpath) {
         ("POST", "git-upload-pack") | ("POST", "git-receive-pack") => true,
-        (m, s) if m == Method::GET.as_str() => {
-            matches!(
-                s,
-                "HEAD"
-                    | "info/refs"
-                    | "objects/info/alternates"
-                    | "objects/info/http-alternates"
-                    | "objects/info/packs"
-            ) || is_loose_object_path(s)
-                || is_pack_path(s)
-        }
+        ("GET", "info/refs") => has_service,
         _ => false,
     }
-}
-
-/// `objects/<2hex>/<38hex>` -- a loose git object. Pure hex check.
-fn is_loose_object_path(s: &str) -> bool {
-    let Some(rest) = s.strip_prefix("objects/") else {
-        return false;
-    };
-    let Some((prefix, suffix)) = rest.split_once('/') else {
-        return false;
-    };
-    prefix.len() == 2
-        && suffix.len() == 38
-        && prefix.chars().all(|c| c.is_ascii_hexdigit())
-        && suffix.chars().all(|c| c.is_ascii_hexdigit())
-}
-
-/// `objects/pack/pack-<40|64 hex>.pack` or `.idx`.
-fn is_pack_path(s: &str) -> bool {
-    let Some(name) = s.strip_prefix("objects/pack/") else {
-        return false;
-    };
-    let (stem, ext) = match name.rsplit_once('.') {
-        Some(parts) => parts,
-        None => return false,
-    };
-    if ext != "pack" && ext != "idx" {
-        return false;
-    }
-    // `pack-<hex>` is the convention; the leading `pack-` prefix is
-    // not strictly required by dulwich's regex (`\w+-`) but every
-    // real-world file matches it.
-    let Some(hex) = stem.rsplit_once('-').map(|(_, h)| h) else {
-        return false;
-    };
-    (hex.len() == 40 || hex.len() == 64) && hex.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Strip breezy's `,branch=<role>` segment parameter (both the
@@ -709,10 +660,13 @@ pub async fn git_backend(
         String::new()
     };
 
-    // Only accept paths that `dulwich.web.HTTPGitApplication.services`
-    // declares. Catches typos / probes before shelling out to
-    // git-http-backend. Mirrors Python's regex-mounted routes.
-    if !is_git_http_subpath(&method, &subpath) {
+    let query_string = uri.query().unwrap_or("");
+    let query_params: HashMap<String, String> =
+        serde_urlencoded::from_str(query_string).unwrap_or_default();
+    let service = query_params.get("service");
+
+    // Refuse everything but the smart protocol before shelling out.
+    if !is_smart_http_request(&method, &subpath, service.is_some()) {
         return Err(GitStoreError::GitPathNotFound(subpath));
     }
 
@@ -739,14 +693,6 @@ pub async fn git_backend(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    let query_string = uri.query().unwrap_or("");
-
-    // Parse query for service parameter
-    let query_params: HashMap<String, String> =
-        serde_urlencoded::from_str(query_string).unwrap_or_default();
-
-    let service = query_params.get("service");
-
     // Validate Git command with enhanced security checks
     validate_git_command(service, &subpath, &auth_context)?;
 
@@ -755,6 +701,7 @@ pub async fn git_backend(
     if auth_context.allow_writes {
         cmd.args(["-c", "http.receivepack=1"]);
     }
+    cmd.args(["-c", "http.getanyfile=false"]);
     cmd.arg("http-backend");
 
     // Setup environment variables for Git HTTP backend
@@ -762,7 +709,11 @@ pub async fn git_backend(
     env_vars.insert("GIT_HTTP_EXPORT_ALL".to_string(), "true".to_string());
     env_vars.insert("REQUEST_METHOD".to_string(), method_str.to_string());
     env_vars.insert("CONTENT_TYPE".to_string(), content_type.to_string());
-    env_vars.insert("QUERY_STRING".to_string(), query_string.to_string());
+    // Pass on only the checked service, so git reads the query as we did.
+    let git_query = service
+        .map(|s| format!("service={}", s))
+        .unwrap_or_default();
+    env_vars.insert("QUERY_STRING".to_string(), git_query);
 
     // Set the repository path
     let full_path = repo_path.join(subpath.trim_start_matches('/'));
@@ -1043,48 +994,34 @@ mod tests {
     }
 
     #[test]
-    fn test_is_git_http_subpath_whitelist() {
+    fn test_is_smart_http_request() {
         use axum::http::Method;
         let get = Method::GET;
         let post = Method::POST;
         // Smart protocol
-        assert!(is_git_http_subpath(&post, "git-upload-pack"));
-        assert!(is_git_http_subpath(&post, "git-receive-pack"));
-        assert!(!is_git_http_subpath(&get, "git-upload-pack"));
-        // Refs discovery / HEAD
-        assert!(is_git_http_subpath(&get, "info/refs"));
-        assert!(is_git_http_subpath(&get, "HEAD"));
-        // Dumb-HTTP metadata
-        assert!(is_git_http_subpath(&get, "objects/info/alternates"));
-        assert!(is_git_http_subpath(&get, "objects/info/http-alternates"));
-        assert!(is_git_http_subpath(&get, "objects/info/packs"));
-        // Loose object: 2 hex + '/' + 38 hex (SHA-1 object).
-        assert!(is_git_http_subpath(
-            &get,
-            "objects/ab/23456789abcdef0123456789abcdef01234567"
-        ));
-        assert!(!is_git_http_subpath(
-            &get,
-            "objects/zz/23456789abcdef0123456789abcdef01234567"
-        ));
-        assert!(!is_git_http_subpath(&get, "objects/ab/short"));
-        // Pack files
-        assert!(is_git_http_subpath(
-            &get,
-            "objects/pack/pack-0123456789abcdef0123456789abcdef01234567.pack"
-        ));
-        assert!(is_git_http_subpath(
-            &get,
-            "objects/pack/pack-0123456789abcdef0123456789abcdef01234567.idx"
-        ));
-        assert!(!is_git_http_subpath(
-            &get,
-            "objects/pack/pack-notvalid.pack"
-        ));
-        // Rejections
-        assert!(!is_git_http_subpath(&get, "config"));
-        assert!(!is_git_http_subpath(&get, "../etc/passwd"));
-        assert!(!is_git_http_subpath(&get, ""));
+        assert!(is_smart_http_request(&post, "git-upload-pack", false));
+        assert!(is_smart_http_request(&post, "git-receive-pack", false));
+        assert!(is_smart_http_request(&get, "info/refs", true));
+        assert!(!is_smart_http_request(&get, "git-upload-pack", false));
+        assert!(!is_smart_http_request(&post, "info/refs", true));
+        // Dumb protocol
+        assert!(!is_smart_http_request(&get, "info/refs", false));
+        for path in [
+            "HEAD",
+            "objects/info/alternates",
+            "objects/info/http-alternates",
+            "objects/info/packs",
+            "objects/ab/23456789abcdef0123456789abcdef01234567",
+            "objects/pack/pack-0123456789abcdef0123456789abcdef01234567.pack",
+            "objects/pack/pack-0123456789abcdef0123456789abcdef01234567.idx",
+        ] {
+            assert!(!is_smart_http_request(&get, path, false), "{}", path);
+            assert!(!is_smart_http_request(&get, path, true), "{}", path);
+        }
+        // Other paths
+        assert!(!is_smart_http_request(&get, "config", false));
+        assert!(!is_smart_http_request(&get, "../etc/passwd", false));
+        assert!(!is_smart_http_request(&get, "", false));
     }
 
     #[test]
