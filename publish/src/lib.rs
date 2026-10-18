@@ -1993,15 +1993,6 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_target_branch_url_falls_back_when_empty() {
-        // Empty string is treated like missing.
-        assert_eq!(
-            resolve_target_branch_url(Some(""), "https://run/r"),
-            "https://run/r"
-        );
-    }
-
-    #[test]
     fn test_should_skip_main_after_aux_failure_no_aux() {
         let modes: HashMap<String, Option<String>> = HashMap::new();
         assert!(!should_skip_main_after_aux_failure("main", &modes));
@@ -4927,16 +4918,12 @@ pub(crate) fn classify_forge_rate_limit(
     }
 }
 
-/// Pick the URL `publish_from_policy` should publish to: the explicit
-/// `target_branch_url` wins, but a missing or empty value falls through
-/// to the run's `branch_url`.
+/// Pick the URL to publish a run to: its `target_branch_url`, else its `branch_url`.
 pub(crate) fn resolve_target_branch_url<'a>(
     target_branch_url: Option<&'a str>,
     branch_url: &'a str,
 ) -> &'a str {
-    target_branch_url
-        .filter(|s| !s.is_empty())
-        .unwrap_or(branch_url)
+    target_branch_url.unwrap_or(branch_url)
 }
 
 /// Should the per-branch loop skip the `main` role because an earlier
