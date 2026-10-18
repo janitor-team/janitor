@@ -38,7 +38,8 @@ candidate for each codebase in a campaign with a fixed value and success_chance.
 ## Scheduling
 
 When candidates are uploaded, the runner adds them to the queue straight
-away. Their place in the queue depends on:
+away. When an upload gives a codebase a new URL, the runner queues its
+candidates again. Their place in the queue depends on:
 
 - the value of the candidate
 - the value of the codebase
