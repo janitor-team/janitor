@@ -558,36 +558,30 @@ async fn prepare_on_demand(
     // Prefer the repository config whose `suite` matches the
     // caller's `kind` (campaign name); honour the per-repository
     // components/architectures on AptRepositoryConfig when it does.
-    // Fall back to the first repository entry (origin only) plus
-    // `main` + default_architectures when we can't match.
+    // Fall back to `main` + default_architectures when we can't match.
     let matching_repo = state.config.repositories.values().find(|r| r.suite == kind);
-    let (components, arches, origin) = if let Some(repo) = matching_repo {
-        (
-            repo.components.clone(),
-            repo.architectures.clone(),
-            repo.origin.clone(),
-        )
+    let (components, arches) = if let Some(repo) = matching_repo {
+        (repo.components.clone(), repo.architectures.clone())
     } else {
         let fallback_arches = if state.config.default_architectures.is_empty() {
             vec!["amd64".to_string()]
         } else {
             state.config.default_architectures.clone()
         };
-        let fallback_origin = state
-            .config
-            .repositories
-            .values()
-            .next()
-            .map(|r| r.origin.clone())
-            .unwrap_or_else(|| "janitor".to_string());
-        (vec!["main".to_string()], fallback_arches, fallback_origin)
+        (vec!["main".to_string()], fallback_arches)
     };
+    let origin = state
+        .config
+        .runtime_config
+        .as_deref()
+        .map(|cfg| cfg.origin())
+        .unwrap_or_default();
 
     match crate::on_demand::refresh_on_demand_dists(
         &dists_dir,
         state.database.as_ref(),
         state.scanner.clone(),
-        &origin,
+        origin,
         &components,
         &arches,
         &target,
