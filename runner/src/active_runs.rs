@@ -362,6 +362,43 @@ mod tests {
         cleanup(&store).await;
     }
 
+    /// `remove` releases the run's own queue item claim and leaves another run's claim alone.
+    #[tokio::test]
+    async fn remove_releases_only_its_own_claim() {
+        let Some(store) = try_test_store().await else {
+            eprintln!("skipping: Redis unavailable");
+            return;
+        };
+        let mut conn = store.conn().await.unwrap();
+        let other_claim = r#"{"worker_name":"w","log_id":"claim-other","assigned_at":""}"#;
+        let mine = r#"{"worker_name":"w","log_id":"claim-run-1","assigned_at":""}"#;
+        let _: () = conn
+            .hset_multiple(
+                "assigned-queue-items",
+                &[("7700001", mine), ("7700002", other_claim)],
+            )
+            .await
+            .unwrap();
+        for (log_id, queue_id) in [("claim-run-1", 7700001), ("claim-run-2", 7700002)] {
+            let mut run = make_run(log_id, "w");
+            run.queue_id = queue_id;
+            store.store(run).await;
+        }
+
+        assert!(store.remove(&rid("claim-run-1")).await);
+        assert!(store.remove(&rid("claim-run-2")).await);
+
+        let claims: Vec<Option<String>> = redis::cmd("HMGET")
+            .arg("assigned-queue-items")
+            .arg(&["7700001", "7700002"])
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(claims, vec![None, Some(other_claim.to_string())]);
+        let _: u32 = conn.hdel("assigned-queue-items", "7700002").await.unwrap();
+        cleanup(&store).await;
+    }
+
     /// Exercises the cross-restart story end-to-end: a `store` followed
     /// by *fresh* `ActiveRunStore` instances pointing at the same key
     /// should see the data -- there is no local cache the second store
