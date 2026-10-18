@@ -261,45 +261,20 @@ impl RedisSubscriber {
             return Ok(());
         }
 
-        // Look up the codebase's branch_url - used as the
-        // target_branch_url that publish_from_policy feeds into
-        // role_branch_url. If the codebase row is gone, log and bail
-        // instead of crashing.
-        let branch_url: Option<String> =
-            sqlx::query_scalar("SELECT branch_url FROM codebase WHERE name = $1")
-                .bind(&message.codebase)
-                .fetch_optional(&state.conn)
-                .await?;
-        let branch_url = match branch_url {
-            Some(u) => u,
-            None => {
-                log::warn!(
-                    "Codebase {} not in database when handling publish-status for run {}",
-                    message.codebase,
-                    message.run_id
-                );
-                return Ok(());
-            }
-        };
-        let target_branch_url: url::Url = match branch_url.parse() {
-            Ok(u) => u,
-            Err(e) => {
-                log::warn!(
-                    "Codebase {}: invalid branch_url {:?}: {}",
-                    message.codebase,
-                    branch_url,
-                    e
-                );
-                return Ok(());
-            }
-        };
-
         // Fetch the full run + result branches so publish_from_policy
         // can resolve role -> (remote_name, base_revision, revision).
         let run = match crate::state::get_run(&state.conn, &message.run_id).await? {
             Some(r) => r,
             None => {
                 log::warn!("Run {} not found for publish-status", message.run_id);
+                return Ok(());
+            }
+        };
+
+        let target_branch_url = match approved_run_target(&run) {
+            Ok(u) => u,
+            Err(e) => {
+                log::warn!("{}: invalid target branch URL: {}", run.id, e);
                 return Ok(());
             }
         };
@@ -380,6 +355,11 @@ impl RedisSubscriber {
     }
 }
 
+/// The URL an approved run is published to, chosen as in the publish loop.
+fn approved_run_target(run: &janitor::state::Run) -> Result<url::Url, url::ParseError> {
+    crate::resolve_target_branch_url(run.target_branch_url.as_deref(), &run.branch_url).parse()
+}
+
 /// Health check functionality for Redis connections.
 pub struct RedisHealthChecker {
     /// Redis manager.
@@ -440,4 +420,5 @@ mod tests {
         assert_eq!(message.codebase, "cb-1");
         assert_eq!(message.campaign, "lintian-fixes");
     }
+
 }
