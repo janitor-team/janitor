@@ -892,7 +892,7 @@ fn is_linkable_url(url: &url::Url) -> bool {
     request_body = Vec<crate::database::CodebaseUpload>,
     responses(
         (status = 200, description = "Codebases were stored", body = EmptyResponse),
-        (status = 400, description = "A `web_url` the site cannot link to", body = ReasonResponse),
+        (status = 400, description = "A `web_url` the site cannot link to, or a codebase with no name and no URL", body = ReasonResponse),
         (status = 500, description = "Database error", body = ErrorResponse),
     )
 )]
@@ -909,6 +909,20 @@ async fn update_codebases(
             StatusCode::BAD_REQUEST,
             format!("web_url {} cannot be linked to", web_url),
         );
+    }
+
+    // The schema needs a name or a branch_url, so this cannot be stored.
+    if codebases
+        .iter()
+        .any(|c| c.name.is_none() && c.branch_url.is_none() && c.url.is_none())
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ReasonResponse::new(
+                "Codebase with no branch_url or url must have a name",
+            )),
+        )
+            .into_response();
     }
 
     match state.database.upload_codebases(&codebases).await {
