@@ -8,19 +8,20 @@ services, each of which provides some basic features:
 
  * a rest service
  * /metrics target for use with prometheus
- * /ready and /healthy targets for use with kubernetes or other
+ * /health and /ready targets for use with kubernetes or other
    health-checking services
 
 Access to the rest services is unauthenticated and is meant to be restricted
 to the other services and administrators.
  
-Some services also provide a separate rest service on a different,
+Some services also provide a separate rest service on a different port,
 for exposure to the internet. In particular:
 
- * janitor.runner: /runner target
- * janitor.git_store: /git
- * janitor.bzr_store: /bzr
- * janitor.debian.archive: /dists
+ * janitor-runner: the worker API (at /runner behind a proxy)
+ * janitor-git-store: /git
+ * janitor-bzr-store: /bzr
+
+janitor-archive serves /dists on its only port.
 
 ## The runner
 
@@ -48,7 +49,7 @@ Scheduling runs for candidates happens regularly, and takes into account
 several factors:
 
  * the score for the codebase
-   (so e.g. more popular projects can be prioiritized)
+   (so e.g. more popular projects can be prioritized)
  * the score for the candidate
    (so e.g. more impacting candidates are processed more frequently)
  * previous track record for the run
@@ -114,7 +115,7 @@ It prioritizes publishing of runs with a high value, as reported by the
 worker.
 
 Each cycle, it publishes by pushing changes directly to the target and
-creating new merge proposals. It tries hard not too produce too many changes
+creating new merge proposals. It tries hard not to produce too many changes
 at once or overwhelm:
 
  * Honor 429s (and their Retry-After header) that forges sent
@@ -144,7 +145,7 @@ debdiff.
 
 The worker is where the bulk of the work happens, but it's fairly simple overall.
 
-It runs an endless loop and repeatedly:
+With `--loop`, it repeats these steps:
 
  * fetches an assignment from the runner
  * downloads the specified repository
