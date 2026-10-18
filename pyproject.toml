@@ -15,6 +15,7 @@ module = [
     # No type hints yet
     "gpg.*",
     "aiohttp_apispec.*",
+    "webargs.*",
     "mimeparse.*",
     "google.cloud.logging.*",
     "aiohttp_debugtoolbar.*",
@@ -75,6 +76,7 @@ dependencies = [
     "setuptools-rust",
     "silver-platter",
     "uvloop",
+    "webargs",
     "yarl",
 ]
 dynamic = ["version"]

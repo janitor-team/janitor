@@ -482,6 +482,12 @@ async def test_review_without_oauth2_provider_is_not_qa_review(aiohttp_client, d
     resp = await client.post("/run/r1", data={"verdict": "approved"})
     assert resp.status == 200
     assert await resp.json() == {"verdict": "approved", "review-comment": None}
+    for verdict in ("unreviewed", "bogus"):
+        resp = await client.post("/run/r1", data={"verdict": verdict})
+        assert resp.status == 422
+        assert await resp.json() == {
+            "verdict": ["Must be one of: approved, rejected, abstained, reschedule."]
+        }
     async with db.acquire() as conn:
         rows = await conn.fetch("SELECT run_id, reviewer, verdict FROM review")
     assert [tuple(row) for row in rows] == [("r1", "alice@example.com", "approved")]

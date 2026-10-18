@@ -28,6 +28,8 @@ import asyncpg
 from aiohttp import ClientSession, web
 from aiohttp.web_middlewares import normalize_path_middleware
 from jinja2 import select_autoescape
+from marshmallow import Schema, fields, validate
+from webargs.aiohttpparser import use_kwargs
 from yarl import URL
 
 from janitor import CODEBASE_REGEX
@@ -292,20 +294,29 @@ async def handle_publish_history(request):
     )
 
 
+REVIEW_FORM_VERDICTS = {
+    "Approve": "approved",
+    "Reject": "rejected",
+    "Reschedule": "reschedule",
+    "Abstain": "abstained",
+}
+
+
+class ReviewFormSchema(Schema):
+    verdict = fields.Str(validate=validate.OneOf(REVIEW_FORM_VERDICTS))
+    review_comment = fields.Str()
+
+
 def parse_review_form(post: Mapping[str, str]) -> tuple[str, Optional[str]]:
     """Return the verdict and comment from a submitted review form."""
-    verdict = {
-        "approve": "approved",
-        "reject": "rejected",
-        "reschedule": "reschedule",
-        "abstain": "abstained",
-    }[post["verdict"].lower()]
+    verdict = REVIEW_FORM_VERDICTS[post["verdict"]]
     # Browsers always submit the textarea, empty or not.
     return verdict, post.get("review_comment") or None
 
 
 @routes.post("/cupboard/review", name="cupboard-review-post")
-async def handle_review_post(request):
+@use_kwargs(ReviewFormSchema(), locations=("form",))
+async def handle_review_post(request, **form):
     from ...review import store_review
     from .review import generate_review
 
@@ -316,8 +327,8 @@ async def handle_review_post(request):
     # An unchecked checkbox is not part of the form data.
     publishable_only = post.get("publishable_only", "false") == "true"
     async with request.app["pool"].acquire() as conn:
-        if "verdict" in post:
-            verdict, review_comment = parse_review_form(post)
+        if "verdict" in form:
+            verdict, review_comment = parse_review_form(form)
             try:
                 user = request["user"]["email"]
             except KeyError:
