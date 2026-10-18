@@ -181,3 +181,24 @@ fn init_tracing(debug: bool, gcp_logging: bool) {
         builder.init();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_resolve_bind_host_name() {
+        let addrs = resolve_bind("localhost", 9929).await.unwrap();
+        let seen: Vec<_> = addrs
+            .iter()
+            .map(|addr| (addr.ip().is_loopback(), addr.port()))
+            .collect();
+        assert_eq!(seen, vec![(true, 9929); addrs.len()]);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_bind_ipv6_address() {
+        let addrs = resolve_bind("::1", 9929).await.unwrap();
+        assert_eq!(addrs, vec!["[::1]:9929".parse::<SocketAddr>().unwrap()]);
+    }
+}
