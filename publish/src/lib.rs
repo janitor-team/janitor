@@ -684,6 +684,8 @@ pub struct PublishOneError {
 pub struct PublishWorker {
     /// Optional path to the template environment.
     pub template_env_path: Option<PathBuf>,
+    /// Command run for each publish; `janitor-publish-one` from `PATH` by default.
+    pub publish_one_command: Vec<String>,
     /// Optional external URL for the publish operation.
     pub external_url: Option<url::Url>,
     /// URL of the differ service.
@@ -830,6 +832,7 @@ impl PublishWorker {
     ) -> Self {
         Self {
             template_env_path,
+            publish_one_command: vec!["janitor-publish-one".to_string()],
             external_url,
             differ_url,
             redis,
@@ -907,7 +910,7 @@ impl PublishWorker {
             auto_merge,
         };
 
-        let mut args = vec!["janitor-publish-one".to_string()];
+        let mut args = self.publish_one_command.clone();
 
         if let Some(template_env_path) = self.template_env_path.as_ref() {
             args.push(format!(
