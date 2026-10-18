@@ -15,11 +15,16 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
+from datetime import timedelta
+
 import aiozipkin
 from aiohttp import web
 
+from janitor import utcnow
 from janitor.config import read_string as read_config_string
 from janitor.site.api import create_app
+
+from .conftest import _insert_codebase, _insert_run
 
 
 def _user_middleware(user):
@@ -206,3 +211,39 @@ async def test_reschedule_returns_runner_result(aiohttp_client, db):
     body = await resp.json()
     assert body["codebase"] == "foo"
     assert body["campaign"] == "mycampaign"
+
+
+async def test_admin_action_without_oauth2_provider_is_unauthorized(aiohttp_client, db):
+    client = await create_client(
+        aiohttp_client, db, user={"email": "alice@example.com", "groups": []}
+    )
+
+    resp = await client.post(
+        "/merge-proposal",
+        data={"url": "https://example.com/merge/1", "status": "closed"},
+    )
+    assert resp.status == 401
+
+
+async def test_review_without_oauth2_provider_is_not_qa_review(aiohttp_client, db):
+    async with db.acquire() as conn:
+        await _insert_codebase(conn, "foo")
+        now = utcnow()
+        await _insert_run(
+            conn,
+            run_id="r1",
+            codebase="foo",
+            start_time=now - timedelta(hours=1),
+            finish_time=now,
+        )
+    # runner_url is None: a QA review would fail to tell the runner.
+    client = await create_client(
+        aiohttp_client, db, user={"email": "alice@example.com", "groups": []}
+    )
+
+    resp = await client.post("/run/r1", data={"verdict": "approved"})
+    assert resp.status == 200
+    assert await resp.json() == {"verdict": "approved", "review-comment": None}
+    async with db.acquire() as conn:
+        rows = await conn.fetch("SELECT run_id, reviewer, verdict FROM review")
+    assert [tuple(row) for row in rows] == [("r1", "alice@example.com", "approved")]
