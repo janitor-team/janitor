@@ -122,6 +122,130 @@ async fn delete_candidate_missing_returns_404() {
     assert_eq!(body["reason"], "No such candidate");
 }
 
+/// Insert a candidate with command `true`.
+async fn insert_candidate(pool: &sqlx::PgPool, codebase: &str, suite: &str) {
+    sqlx::query("INSERT INTO candidate (codebase, suite, command) VALUES ($1, $2, 'true')")
+        .bind(codebase)
+        .bind(suite)
+        .execute(pool)
+        .await
+        .expect("candidate insert");
+}
+
+/// The queue as `(suite, bucket, requester)` rows.
+async fn queue_rows(pool: &sqlx::PgPool) -> Vec<(String, String, Option<String>)> {
+    sqlx::query_as("SELECT suite::text, bucket::text, requester FROM queue ORDER BY suite")
+        .fetch_all(pool)
+        .await
+        .expect("queue lookup")
+}
+
+/// An upload of codebase `cb` from `branch_url`.
+fn upload_cb(branch_url: &str) -> CodebaseUpload {
+    CodebaseUpload {
+        name: Some(CodebaseName::new("cb").unwrap()),
+        branch_url: some(branch_url),
+        ..Default::default()
+    }
+}
+
+/// The queue row a codebase update adds for `suite`.
+fn queued(suite: &str) -> (String, String, Option<String>) {
+    (
+        suite.to_string(),
+        "default".to_string(),
+        Some("codebase update".to_string()),
+    )
+}
+
+#[tokio::test]
+async fn changed_branch_url_schedules_all_candidates() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let pool = state.database.pool().clone();
+    assert_eq!(
+        post_codebases(&app, &[upload_cb("https://example.invalid/old")]).await,
+        (StatusCode::OK, json!({}))
+    );
+    insert_candidate(&pool, "cb", "one").await;
+    insert_candidate(&pool, "cb", "two").await;
+
+    assert_eq!(
+        post_codebases(&app, &[upload_cb("https://example.invalid/new")]).await,
+        (StatusCode::OK, json!({}))
+    );
+    assert_eq!(queue_rows(&pool).await, [queued("one"), queued("two")]);
+
+    // A second change updates the queued items, it does not add more.
+    assert_eq!(
+        post_codebases(&app, &[upload_cb("https://example.invalid/newer")]).await,
+        (StatusCode::OK, json!({}))
+    );
+    assert_eq!(queue_rows(&pool).await, [queued("one"), queued("two")]);
+}
+
+#[tokio::test]
+async fn changed_subpath_schedules_candidates() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let pool = state.database.pool().clone();
+    let url = "https://example.invalid/cb";
+    assert_eq!(
+        post_codebases(&app, &[upload_cb(url)]).await,
+        (StatusCode::OK, json!({}))
+    );
+    insert_candidate(&pool, "cb", "one").await;
+
+    assert_eq!(
+        post_codebases(
+            &app,
+            &[CodebaseUpload {
+                subpath: some("sub"),
+                ..upload_cb(url)
+            }]
+        )
+        .await,
+        (StatusCode::OK, json!({}))
+    );
+    assert_eq!(queue_rows(&pool).await, [queued("one")]);
+}
+
+#[tokio::test]
+async fn unchanged_or_new_codebase_schedules_nothing() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let pool = state.database.pool().clone();
+    let url = "https://example.invalid/cb";
+    // New codebase.
+    assert_eq!(
+        post_codebases(&app, &[upload_cb(url)]).await,
+        (StatusCode::OK, json!({}))
+    );
+    assert_eq!(queue_rows(&pool).await, []);
+
+    // Same branch URL and subpath; other fields do not count.
+    insert_candidate(&pool, "cb", "one").await;
+    assert_eq!(
+        post_codebases(
+            &app,
+            &[CodebaseUpload {
+                subpath: some(""),
+                value: Some(5),
+                ..upload_cb(url)
+            }]
+        )
+        .await,
+        (StatusCode::OK, json!({}))
+    );
+    assert_eq!(queue_rows(&pool).await, []);
+}
+
 /// `POST /codebases` upserts the given codebases and a subsequent
 /// `GET /codebases` returns them. Verifies both the write and the
 /// visible side-effect through the database.
