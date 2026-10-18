@@ -174,11 +174,15 @@ fn some(s: &str) -> Option<String> {
     Some(s.to_string())
 }
 
+fn some_url(s: &str) -> Option<url::Url> {
+    Some(url::Url::parse(s).unwrap())
+}
+
 /// An upload of codebase `cb` with every field but `url` set.
 fn full_upload() -> CodebaseUpload {
     CodebaseUpload {
         name: Some(CodebaseName::new("cb").unwrap()),
-        branch_url: some("https://example.invalid/cb"),
+        branch_url: some_url("https://example.invalid/cb"),
         branch: some("dev"),
         subpath: some("sub"),
         vcs_type: some("git"),
@@ -223,7 +227,7 @@ async fn post_codebases_replaces_fields_of_existing_codebase() {
     };
     let second = CodebaseUpload {
         name: Some(CodebaseName::new("cb").unwrap()),
-        url: some("https://example.invalid/new"),
+        url: some_url("https://example.invalid/new"),
         vcs_type: some("bzr"),
         ..Default::default()
     };
@@ -286,6 +290,64 @@ async fn post_codebases_with_a_bad_entry_stores_none() {
         )
     );
     assert_eq!(state.database.get_codebases().await.unwrap(), vec![]);
+}
+
+/// A `branch_url` or `url` that is not a URL, also `""`, is refused and nothing is stored.
+#[tokio::test]
+async fn post_codebases_rejects_an_invalid_vcs_url() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    for entry in [
+        json!({"name": "cb", "branch_url": "/srv/git/cb", "vcs_type": "git"}),
+        json!({"name": "cb", "branch_url": "", "vcs_type": "git"}),
+        json!({"name": "cb", "url": "/srv/git/cb", "vcs_type": "git"}),
+        json!({"name": "cb", "url": "", "vcs_type": "git"}),
+    ] {
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/codebases")
+            .header("content-type", "application/json")
+            .body(Body::from(json!([entry]).to_string()))
+            .unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{entry}"
+        );
+    }
+    let names: Vec<String> = sqlx::query_scalar("SELECT name FROM codebase")
+        .fetch_all(state.database.pool())
+        .await
+        .expect("query codebases");
+    assert_eq!(names, Vec::<String>::new());
+}
+
+/// The schema needs a name or a `branch_url`, so an entry with neither is refused.
+#[tokio::test]
+async fn post_codebases_rejects_an_entry_with_no_name_and_no_url() {
+    let Some((app, _state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    assert_eq!(
+        post_codebases(
+            &app,
+            &[CodebaseUpload {
+                vcs_type: some("git"),
+                ..Default::default()
+            }]
+        )
+        .await,
+        (
+            StatusCode::BAD_REQUEST,
+            json!({"reason": "Codebase with no branch_url or url must have a name"})
+        )
+    );
 }
 
 /// `POST /schedule` with a nonexistent `run_id` returns 404 with the
