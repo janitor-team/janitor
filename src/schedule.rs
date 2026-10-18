@@ -1016,6 +1016,50 @@ mod tests {
 
     #[cfg(feature = "testing")]
     #[tokio::test]
+    async fn test_bulk_add_to_queue() {
+        let Some(db) = setup_run_database(&CodebaseName::new("cb").unwrap()).await else {
+            return;
+        };
+        let pool = db.pool();
+        sqlx::raw_sql(
+            "INSERT INTO codebase (name) VALUES ('other');
+             INSERT INTO named_publish_policy (name, per_branch_policy) VALUES
+             ('default', ARRAY[ROW('main', 'propose', NULL)::branch_publish_policy]);
+             INSERT INTO candidate (suite, command, codebase, value, context, success_chance,
+                                    publish_policy)
+             VALUES ('lintian-fixes', 'lintian-brush', 'cb', 5, 'ctx', 0.5, 'default')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        let todo: Vec<ScheduleRequest> = iter_schedule_requests_from_candidates(pool, None, None)
+            .await
+            .unwrap()
+            .collect();
+
+        let mut queues = vec![];
+        // No codebase has a value yet, then cb has half the maximum.
+        for values in [
+            "DELETE FROM queue; UPDATE codebase SET value = NULL",
+            "DELETE FROM queue; UPDATE codebase SET value = CASE name WHEN 'cb' THEN 5 ELSE 10 END",
+        ] {
+            sqlx::raw_sql(values).execute(pool).await.unwrap();
+            bulk_add_to_queue(pool, &todo, false, 0.0, None, None, false)
+                .await
+                .unwrap();
+            let queue: Vec<(String, String, i64)> =
+                sqlx::query_as("SELECT codebase, suite, priority FROM queue")
+                    .fetch_all(pool)
+                    .await
+                    .unwrap();
+            queues.push(queue);
+        }
+        let row = |priority| vec![("cb".to_string(), "lintian-fixes".to_string(), priority)];
+        assert_eq!(queues, vec![row(69), row(138)]);
+    }
+
+    #[cfg(feature = "testing")]
+    #[tokio::test]
     async fn test_estimate_success_probability_and_duration() {
         let Some(db) = setup_run_database(&CodebaseName::new("cb").unwrap()).await else {
             return;
