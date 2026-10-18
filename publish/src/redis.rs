@@ -389,6 +389,7 @@ impl RedisHealthChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use janitor::{schema::setup_test_database, test_with_database};
 
     #[test]
     fn test_publish_event_channel() {
@@ -421,4 +422,36 @@ mod tests {
         assert_eq!(message.campaign, "lintian-fixes");
     }
 
+    test_with_database! {
+        async fn test_approved_run_target_ignores_codebase_branch_url(test_db: TestDatabase) {
+            let pool = test_db.pool();
+            setup_test_database(pool).await.unwrap();
+            for query in [
+                "INSERT INTO codebase (name, branch_url, url, vcs_type)
+                 VALUES ('cb-1', 'https://example.invalid/moved', 'https://example.invalid/moved', 'git')",
+                "INSERT INTO change_set (id, campaign) VALUES ('cs-1', 'lintian-fixes')",
+                "INSERT INTO run (
+                    id, codebase, suite, command, start_time, finish_time, result_code,
+                    branch_url, target_branch_url, change_set, logfilenames, vcs_type
+                 ) VALUES
+                    ('run-target', 'cb-1', 'lintian-fixes', 'noop', NOW(), NOW(), 'success',
+                     'https://example.invalid/cb-1', 'https://example.invalid/target', 'cs-1',
+                     '{}', 'git'),
+                    ('run-plain', 'cb-1', 'lintian-fixes', 'noop', NOW(), NOW(), 'success',
+                     'https://example.invalid/cb-1', NULL, 'cs-1', '{}', 'git')",
+            ] {
+                sqlx::query(query).execute(pool).await.unwrap();
+            }
+
+            let mut targets = Vec::new();
+            for run_id in ["run-target", "run-plain"] {
+                let run = crate::state::get_run(pool, run_id).await.unwrap().unwrap();
+                targets.push(approved_run_target(&run).unwrap().to_string());
+            }
+            assert_eq!(
+                targets,
+                vec!["https://example.invalid/target", "https://example.invalid/cb-1"]
+            );
+        }
+    }
 }
