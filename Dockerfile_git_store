@@ -45,7 +45,8 @@ RUN apt-get update --yes \
         libssl3 \
         python3-breezy \
         python3-klaus \
- && apt-get clean
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /code/target/release/janitor-git-store /usr/local/bin/janitor-git-store
 

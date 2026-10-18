@@ -47,7 +47,8 @@ RUN apt-get update --yes \
         libssl3 \
         openssh-client \
         python3-breezy \
- && apt-get clean
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /code/target/release/janitor-auto-upload /usr/local/bin/janitor-auto-upload
 
