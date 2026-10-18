@@ -42,12 +42,14 @@ enum Command {
     },
     /// Reschedule runs.
     Reschedule(RescheduleArgs),
+    /// Reprocess the logs of finished runs.
+    ReprocessLogs(ReprocessLogsArgs),
     /// Inspect the queue.
     Queue {
         #[command(subcommand)]
         cmd: QueueCmd,
     },
-    /// Operate on active runs.
+    /// Operate on runs.
     Run {
         #[command(subcommand)]
         cmd: RunCmd,
@@ -119,6 +121,33 @@ struct RescheduleArgs {
     include_transient: bool,
 }
 
+#[derive(Args)]
+struct ReprocessLogsArgs {
+    /// Run ID to reprocess, may be repeated. Without it, the filters below select runs.
+    #[arg(long = "run-id")]
+    run_ids: Vec<RunId>,
+
+    /// Restrict to this campaign.
+    #[arg(long)]
+    campaign: Option<Campaign>,
+
+    /// Only runs whose description matches this regex.
+    #[arg(long)]
+    description_re: Option<String>,
+
+    /// Only runs older than N days.
+    #[arg(long)]
+    min_age: Option<u32>,
+
+    /// Show what would change without storing it.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Reschedule runs whose result code changes.
+    #[arg(long)]
+    reschedule: bool,
+}
+
 #[derive(Subcommand)]
 enum QueueCmd {
     /// Show items in the queue.
@@ -138,6 +167,17 @@ enum RunCmd {
     },
     /// List active runs.
     List,
+    /// Reprocess the build log of a run.
+    ReprocessLogs {
+        /// Run ID.
+        run_id: RunId,
+        /// Show what would change without storing it.
+        #[arg(long)]
+        dry_run: bool,
+        /// Reschedule the run if its result code changes.
+        #[arg(long)]
+        reschedule: bool,
+    },
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -328,6 +368,44 @@ async fn cmd_reschedule(client: &ApiClient, args: &RescheduleArgs) -> Result<(),
     Ok(())
 }
 
+async fn cmd_reprocess_logs(client: &ApiClient, args: &ReprocessLogsArgs) -> Result<(), String> {
+    let mut form: Vec<(&str, String)> = Vec::new();
+    for run_id in &args.run_ids {
+        form.push(("run_id", run_id.to_string()));
+    }
+    if let Some(campaign) = &args.campaign {
+        form.push(("campaign", campaign.to_string()));
+    }
+    if let Some(desc) = &args.description_re {
+        form.push(("description_re", desc.clone()));
+    }
+    if let Some(min_age) = args.min_age {
+        form.push(("min_age", min_age.to_string()));
+    }
+    if args.dry_run {
+        form.push(("dry_run", "1".to_string()));
+    }
+    if args.reschedule {
+        form.push(("reschedule", "1".to_string()));
+    }
+    let resp = client
+        .request(reqwest::Method::POST, "cupboard/api/reprocess-logs")?
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let resp = expect_success(resp).await?;
+    let runs: Vec<Value> = resp.json().await.map_err(|e| e.to_string())?;
+    println!("Reprocessing the logs of {} run(s).", runs.len());
+    for entry in runs {
+        let codebase = entry.get("codebase").and_then(Value::as_str).unwrap_or("?");
+        let campaign = entry.get("campaign").and_then(Value::as_str).unwrap_or("?");
+        let log_id = entry.get("log_id").and_then(Value::as_str).unwrap_or("?");
+        println!("  {} / {} ({})", codebase, campaign, log_id);
+    }
+    Ok(())
+}
+
 async fn cmd_queue_list(client: &ApiClient, limit: u32) -> Result<(), String> {
     let resp = client
         .request(reqwest::Method::GET, "api/queue")?
@@ -360,6 +438,32 @@ async fn cmd_run_kill(client: &ApiClient, run_id: &RunId) -> Result<(), String> 
 async fn cmd_run_list(client: &ApiClient) -> Result<(), String> {
     let resp = client
         .request(reqwest::Method::GET, "api/active-runs")?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let resp = expect_success(resp).await?;
+    let body: Value = resp.json().await.map_err(|e| e.to_string())?;
+    println!("{}", serde_json::to_string_pretty(&body).unwrap());
+    Ok(())
+}
+
+async fn cmd_run_reprocess_logs(
+    client: &ApiClient,
+    run_id: &RunId,
+    dry_run: bool,
+    reschedule: bool,
+) -> Result<(), String> {
+    let path = format!("cupboard/api/run/{}/reprocess-logs", run_id);
+    let mut form: Vec<(&str, String)> = Vec::new();
+    if dry_run {
+        form.push(("dry_run", "1".to_string()));
+    }
+    if reschedule {
+        form.push(("reschedule", "1".to_string()));
+    }
+    let resp = client
+        .request(reqwest::Method::POST, &path)?
+        .form(&form)
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -406,12 +510,18 @@ async fn main() -> ExitCode {
             WorkerCmd::Delete { name } => cmd_worker_delete(&client, &name).await,
         },
         Command::Reschedule(args) => cmd_reschedule(&client, &args).await,
+        Command::ReprocessLogs(args) => cmd_reprocess_logs(&client, &args).await,
         Command::Queue { cmd } => match cmd {
             QueueCmd::List { limit } => cmd_queue_list(&client, limit).await,
         },
         Command::Run { cmd } => match cmd {
             RunCmd::Kill { run_id } => cmd_run_kill(&client, &run_id).await,
             RunCmd::List => cmd_run_list(&client).await,
+            RunCmd::ReprocessLogs {
+                run_id,
+                dry_run,
+                reschedule,
+            } => cmd_run_reprocess_logs(&client, &run_id, dry_run, reschedule).await,
         },
         Command::Logs { run_id, name } => cmd_logs(&client, &run_id, &name).await,
     };
