@@ -538,6 +538,127 @@ async fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+
+    type Posted = Arc<Mutex<Vec<(String, Vec<(String, String)>)>>>;
+
+    async fn form_server() -> (ApiClient, Posted) {
+        let posted: Posted = Arc::default();
+        let record = posted.clone();
+        let app = axum::Router::new().fallback(move |uri: axum::http::Uri, body: String| {
+            let record = record.clone();
+            async move {
+                let fields = url::form_urlencoded::parse(body.as_bytes())
+                    .into_owned()
+                    .collect();
+                record
+                    .lock()
+                    .unwrap()
+                    .push((uri.path().to_string(), fields));
+                axum::Json(Vec::<Value>::new())
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (ApiClient::new(base, None, None).unwrap(), posted)
+    }
+
+    fn fields(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn test_reprocess_logs() {
+        let (client, posted) = form_server().await;
+        for argv in [
+            &[
+                "reprocess-logs",
+                "--run-id",
+                "run-1",
+                "--run-id",
+                "run-2",
+                "--dry-run",
+            ][..],
+            &[
+                "reprocess-logs",
+                "--campaign",
+                "lintian-fixes",
+                "--description-re",
+                "^Failed",
+                "--min-age",
+                "3",
+                "--reschedule",
+            ][..],
+        ] {
+            let cli = Cli::try_parse_from(
+                ["janitor-admin", "--url", "https://example.com"]
+                    .into_iter()
+                    .chain(argv.iter().copied()),
+            )
+            .unwrap();
+            let Command::ReprocessLogs(args) = cli.command else {
+                panic!("wrong subcommand");
+            };
+            cmd_reprocess_logs(&client, &args).await.unwrap();
+        }
+        assert_eq!(
+            *posted.lock().unwrap(),
+            vec![
+                (
+                    "/cupboard/api/reprocess-logs".to_string(),
+                    fields(&[("run_id", "run-1"), ("run_id", "run-2"), ("dry_run", "1")])
+                ),
+                (
+                    "/cupboard/api/reprocess-logs".to_string(),
+                    fields(&[
+                        ("campaign", "lintian-fixes"),
+                        ("description_re", "^Failed"),
+                        ("min_age", "3"),
+                        ("reschedule", "1"),
+                    ])
+                ),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reschedule_mass() {
+        let (client, posted) = form_server().await;
+        let cli = Cli::try_parse_from([
+            "janitor-admin",
+            "--url",
+            "https://example.com",
+            "reschedule",
+            "--result-code",
+            "never-processed",
+            "--campaign",
+            "lintian-fixes",
+            "--refresh",
+            "--offset",
+            "10",
+        ])
+        .unwrap();
+        let Command::Reschedule(args) = cli.command else {
+            panic!("wrong subcommand");
+        };
+        cmd_reschedule(&client, &args).await.unwrap();
+        assert_eq!(
+            *posted.lock().unwrap(),
+            vec![(
+                "/cupboard/api/mass-reschedule".to_string(),
+                fields(&[
+                    ("result_code", "never-processed"),
+                    ("campaign", "lintian-fixes"),
+                    ("offset", "10"),
+                    ("refresh", "1"),
+                ])
+            )]
+        );
+    }
 
     #[test]
     fn api_url_appends_when_base_has_no_trailing_slash() {
