@@ -941,7 +941,11 @@ INSERT INTO run (
         for codebase in codebases {
             // TODO: split segment parameters out of branch_url (and join
             // them into it when only url and branch are given).
-            let url = codebase.branch_url.as_ref().or(codebase.url.as_ref());
+            let url = codebase
+                .branch_url
+                .as_ref()
+                .or(codebase.url.as_ref())
+                .map(url::Url::as_str);
             // A branch without a URL is meaningless; drop it.
             let branch = url.and(codebase.branch.as_ref());
 
@@ -1093,9 +1097,9 @@ pub struct CodebaseUpload {
     /// Name of the codebase.
     pub name: Option<CodebaseName>,
     /// URL of the branch, including any branch parameters.
-    pub branch_url: Option<String>,
+    pub branch_url: Option<url::Url>,
     /// URL of the repository; used when `branch_url` is absent.
-    pub url: Option<String>,
+    pub url: Option<url::Url>,
     /// Name of the branch.
     pub branch: Option<String>,
     /// Subpath within the repository.

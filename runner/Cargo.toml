@@ -21,7 +21,7 @@ serde.workspace = true
 serde_json.workspace = true
 janitor = { path = "..", default-features = false, features = ["debian", "otlp", "testing"] }
 async-trait = "0.1.88"
-url.workspace = true
+url = { workspace = true, features = ["serde"] }
 debversion = { workspace = true, optional = true, features = ["sqlx"] }
 debian-control = { version = "0.3.13", optional = true }
 log.workspace = true

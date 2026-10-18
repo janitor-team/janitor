@@ -769,6 +769,17 @@ async fn update_codebases(
     State(state): State<Arc<AppState>>,
     Json(codebases): Json<Vec<crate::database::CodebaseUpload>>,
 ) -> impl IntoResponse {
+    // The schema needs a name or a branch_url, so this cannot be stored.
+    if codebases
+        .iter()
+        .any(|c| c.name.is_none() && c.branch_url.is_none() && c.url.is_none())
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"reason": "Codebase with no branch_url or url must have a name"})),
+        );
+    }
+
     match state.database.upload_codebases(&codebases).await {
         Ok(()) => (StatusCode::OK, Json(json!({}))),
         Err(e) => {
