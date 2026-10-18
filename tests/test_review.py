@@ -2,6 +2,8 @@ from datetime import timedelta
 
 import aiohttp_jinja2
 import aiozipkin
+import pytest
+from aiohttp import web
 from bs4 import BeautifulSoup
 from yarl import URL
 
@@ -95,3 +97,9 @@ def test_parse_review_form_empty_comment():
         "approved",
         None,
     )
+
+
+def test_parse_review_form_unknown_verdict():
+    with pytest.raises(web.HTTPBadRequest) as e:
+        parse_review_form({"verdict": "Bogus"})
+    assert e.value.text == "unknown verdict: Bogus"
