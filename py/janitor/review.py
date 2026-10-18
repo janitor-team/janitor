@@ -21,6 +21,15 @@ from yarl import URL
 
 from .schedule import do_schedule
 
+# Review form button -> verdict, as the review page script sends it.
+FORM_VERDICTS = {
+    "approve": "approved",
+    "reject": "rejected",
+    "reschedule": "reschedule",
+    "abstain": "abstained",
+}
+VERDICTS = tuple(FORM_VERDICTS.values())
+
 
 async def store_review(
     conn,

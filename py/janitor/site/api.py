@@ -427,7 +427,7 @@ async def handle_archive_diff(request):
 @routes.post("/run/{run_id}", name="run-update")
 @routes.post("/c/{codebase}/run/{run_id}", name="codebase-run-update")
 async def handle_run_post(request):
-    from ..review import store_review
+    from ..review import VERDICTS, store_review
 
     async with request.app["pool"].acquire() as conn:
         run_id = request.match_info["run_id"]
@@ -439,6 +439,8 @@ async def handle_run_post(request):
         review_comment = post.get("review-comment")
         if verdict:
             verdict = verdict.lower()
+            if verdict not in VERDICTS:
+                raise web.HTTPBadRequest(text=f"unknown verdict: {verdict}")
             with span.new_child("sql:update-run"):
                 try:
                     user = request["user"]["email"]

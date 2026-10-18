@@ -274,7 +274,7 @@ async def handle_publish_history(request):
 
 @routes.post("/cupboard/review", name="cupboard-review-post")
 async def handle_review_post(request):
-    from ...review import store_review
+    from ...review import FORM_VERDICTS, store_review
     from .review import generate_review
 
     check_logged_in(request)
@@ -284,12 +284,12 @@ async def handle_review_post(request):
     publishable_only = post.get("publishable_only", "false") == "true"
     async with request.app["pool"].acquire() as conn:
         if "verdict" in post:
-            verdict = {
-                "approve": "approved",
-                "reject": "rejected",
-                "reschedule": "rescheduled",
-                "abstain": "abstained",
-            }[post["verdict"].lower()]
+            try:
+                verdict = FORM_VERDICTS[post["verdict"].lower()]
+            except KeyError as e:
+                raise web.HTTPBadRequest(
+                    text=f"unknown verdict: {post['verdict']}"
+                ) from e
             review_comment = post.get("review_comment")
             try:
                 user = request["user"]["email"]
