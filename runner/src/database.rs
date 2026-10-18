@@ -1,7 +1,6 @@
 //! Database operations for the runner.
 
 use crate::{BuilderResult, JanitorResult};
-use breezyshim::RevisionId;
 use chrono::{DateTime, Duration, Utc};
 use janitor::{Campaign, ChangeSetId, CodebaseName, RunId};
 use redis::AsyncCommands;
@@ -196,7 +195,7 @@ impl RunnerDatabase {
             change_set: Some(run.change_set),
             tags: run.result_tags.map(|tags| {
                 tags.into_iter()
-                    .map(|(name, rev)| (name, Some(RevisionId::from(rev.as_bytes()))))
+                    .map(|tag| (tag.actual_name, Some(tag.revision)))
                     .collect()
             }),
             // TODO: remote URLs reported by the worker are not stored.
