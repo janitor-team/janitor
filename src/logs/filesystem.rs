@@ -80,25 +80,10 @@ impl LogFileManager for FileSystemLogFileManager {
         let dest_dir = self.log_directory.join(codebase).join(run_id);
         tokio::fs::create_dir_all(&dest_dir).await?;
 
-        let data = tokio::fs::read(orig_path).await?;
-
-        let basename = basename.unwrap_or_else(|| {
-            Path::new(orig_path)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("unknown")
-        });
+        let basename =
+            basename.unwrap_or_else(|| crate::logs::path_basename(orig_path).unwrap_or("unknown"));
         let dest_path = dest_dir.join(format!("{}.gz", basename));
-
-        // Compress data in a blocking task to avoid blocking the executor
-        let compressed = tokio::task::spawn_blocking(move || -> io::Result<Vec<u8>> {
-            let mut encoder =
-                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-            io::copy(&mut io::Cursor::new(&data), &mut encoder)?;
-            encoder.finish()
-        })
-        .await
-        .map_err(|e| Error::Other(e.to_string()))??;
+        let compressed = crate::logs::read_compressed(orig_path).await?;
 
         tokio::fs::write(&dest_path, compressed).await?;
 
