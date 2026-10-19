@@ -1,10 +1,8 @@
-//! Tests for the backchannel implementations that verify actual
-//! behavior (not just "unreachable server returns Err").
+//! Behavioural tests for backchannel implementations. Trait-level unit
+//! tests live in `src/backchannel.rs`; this file covers behaviour that
+//! only makes sense against a non-mocked backchannel.
 
-use chrono::Utc;
-use janitor_runner::backchannel::{
-    Backchannel, HealthStatus, JenkinsBackchannel, PollingBackchannel,
-};
+use janitor_runner::backchannel::{Backchannel, JenkinsBackchannel, PollingBackchannel};
 use url::Url;
 
 /// Jenkins only exposes a single log file (`worker.log`) via the
@@ -17,28 +15,6 @@ async fn jenkins_list_log_files_returns_only_worker_log() {
 
     let files = backchannel.list_log_files().await.unwrap();
     assert_eq!(files, vec!["worker.log".to_string()]);
-}
-
-/// `HealthStatus` is exchanged with the watchdog through Redis; the
-/// serde round-trip must be stable for all fields.
-#[test]
-fn health_status_round_trip() {
-    let original = HealthStatus {
-        alive: true,
-        current_run_id: Some("run-1".to_string()),
-        status: "healthy".to_string(),
-        last_ping: Some(Utc::now()),
-        uptime: Some(std::time::Duration::from_secs(3600)),
-    };
-
-    let json = serde_json::to_string(&original).unwrap();
-    let parsed: HealthStatus = serde_json::from_str(&json).unwrap();
-
-    assert_eq!(parsed.alive, original.alive);
-    assert_eq!(parsed.current_run_id, original.current_run_id);
-    assert_eq!(parsed.status, original.status);
-    assert_eq!(parsed.last_ping, original.last_ping);
-    assert_eq!(parsed.uptime, original.uptime);
 }
 
 /// A polling backchannel pointed at a non-routable IP should time out
