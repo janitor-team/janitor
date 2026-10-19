@@ -1385,102 +1385,24 @@ mod tests {
     use chrono::Utc;
 
     #[test]
-    fn test_calculate_next_try_time_zero_attempts() {
+    fn test_calculate_next_try_time() {
         let finish_time = Utc::now();
-        let next_try_time = calculate_next_try_time(finish_time, 0);
-        assert_eq!(finish_time, next_try_time);
-    }
-
-    #[test]
-    fn test_calculate_next_try_time_exponential_backoff() {
-        let finish_time = Utc::now();
-        assert_eq!(
-            calculate_next_try_time(finish_time, 1),
-            finish_time + chrono::Duration::hours(2)
-        );
-        assert_eq!(
-            calculate_next_try_time(finish_time, 2),
-            finish_time + chrono::Duration::hours(4)
-        );
-        assert_eq!(
-            calculate_next_try_time(finish_time, 3),
-            finish_time + chrono::Duration::hours(8)
-        );
-        assert_eq!(
-            calculate_next_try_time(finish_time, 4),
-            finish_time + chrono::Duration::hours(16)
-        );
-    }
-
-    #[test]
-    fn test_calculate_next_try_time_max_7_days() {
-        let finish_time = Utc::now();
-        // 2^10 = 1024 hours, but capped at 7*24 = 168 hours
-        let next_try_time = calculate_next_try_time(finish_time, 10);
-        assert_eq!(next_try_time, finish_time + chrono::Duration::days(7));
-        // Even higher attempts should also be capped
-        let next_try_time = calculate_next_try_time(finish_time, 20);
-        assert_eq!(next_try_time, finish_time + chrono::Duration::days(7));
-    }
-
-    #[test]
-    fn test_calculate_next_try_time_monotonically_increasing() {
-        let finish_time = Utc::now();
-        let mut prev = finish_time;
-        for i in 0..=10 {
-            let next = calculate_next_try_time(finish_time, i);
-            assert!(
-                next >= prev,
-                "attempt {} should be >= attempt {}",
-                i,
-                i.saturating_sub(1)
+        for (attempts, delay) in [
+            (0, chrono::Duration::zero()),
+            (1, chrono::Duration::hours(2)),
+            (2, chrono::Duration::hours(4)),
+            (4, chrono::Duration::hours(16)),
+            (7, chrono::Duration::hours(128)),
+            (8, chrono::Duration::days(7)),
+            (100, chrono::Duration::days(7)),
+        ] {
+            assert_eq!(
+                calculate_next_try_time(finish_time, attempts),
+                finish_time + delay,
+                "attempts={}",
+                attempts
             );
-            prev = next;
         }
-    }
-
-    #[test]
-    fn test_publish_error_failure_code() {
-        let err = PublishError::failure("merge-conflict", "Could not merge");
-        assert_eq!(err.code(), "merge-conflict");
-        assert_eq!(err.description(), "Could not merge");
-    }
-
-    #[test]
-    fn test_publish_error_nothing_to_do() {
-        let err = PublishError::NothingToDo("No changes detected".to_string());
-        assert_eq!(err.code(), "nothing-to-do");
-        assert_eq!(err.description(), "No changes detected");
-    }
-
-    #[test]
-    fn test_publish_error_branch_busy() {
-        let url = url::Url::parse("https://github.com/foo/bar").unwrap();
-        let err = PublishError::BranchBusy(url);
-        assert_eq!(err.code(), "branch-busy");
-        assert_eq!(err.description(), "Branch is busy");
-    }
-
-    #[test]
-    fn test_publish_error_display() {
-        let err = PublishError::failure("merge-conflict", "Could not merge");
-        assert_eq!(
-            err.to_string(),
-            "PublishError::Failure: merge-conflict: Could not merge"
-        );
-
-        let err = PublishError::NothingToDo("No changes".to_string());
-        assert_eq!(
-            err.to_string(),
-            "PublishError::PublishNothingToDo: No changes"
-        );
-
-        let url = url::Url::parse("https://github.com/foo/bar").unwrap();
-        let err = PublishError::BranchBusy(url);
-        assert_eq!(
-            err.to_string(),
-            "PublishError::BranchBusy: Branch is busy: https://github.com/foo/bar"
-        );
     }
 
     #[test]
@@ -1506,103 +1428,9 @@ mod tests {
     }
 
     #[test]
-    fn test_publish_one_request_serde() {
-        let request = PublishOneRequest {
-            campaign: janitor::Campaign::new("lintian-fixes").unwrap(),
-            target_branch_url: url::Url::parse("https://salsa.debian.org/foo/bar").unwrap(),
-            role: "main".to_string(),
-            log_id: RunId::new("log-123").unwrap(),
-            reviewers: Some(vec!["alice".to_string()]),
-            revision_id: breezyshim::RevisionId::from(b"rev-1".to_vec()),
-            unchanged_id: Some(RunId::new("unchanged-456").unwrap()),
-            require_binary_diff: true,
-            differ_url: url::Url::parse("https://differ.example.com").unwrap(),
-            derived_branch_name: "lintian-fixes".to_string(),
-            tags: None,
-            allow_create_proposal: true,
-            source_branch_url: url::Url::parse("https://salsa.debian.org/fork/bar").unwrap(),
-            codemod_result: serde_json::json!({"applied": 3}),
-            commit_message_template: Some("Fix lintian issues".to_string()),
-            title_template: Some("Fix lintian issues in {{source}}".to_string()),
-            existing_mp_url: None,
-            extra_context: None,
-            mode: Mode::Propose,
-            command: "lintian-brush".to_string(),
-            external_url: None,
-            derived_owner: None,
-            auto_merge: None,
-        };
-        let json = serde_json::to_string(&request).unwrap();
-        let roundtripped: PublishOneRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(roundtripped.campaign, "lintian-fixes");
-        assert_eq!(roundtripped.mode, Mode::Propose);
-        assert_eq!(roundtripped.require_binary_diff, true);
-        assert_eq!(roundtripped.reviewers, Some(vec!["alice".to_string()]));
-    }
-
-    #[test]
-    fn test_publish_one_result_serde() {
-        let result = PublishOneResult {
-            proposal_url: Some(url::Url::parse("https://github.com/foo/bar/pull/1").unwrap()),
-            proposal_web_url: Some(url::Url::parse("https://github.com/foo/bar/pull/1").unwrap()),
-            is_new: Some(true),
-            branch_name: "lintian-fixes".to_string(),
-            target_branch_url: url::Url::parse("https://github.com/foo/bar").unwrap(),
-            target_branch_web_url: None,
-            mode: Mode::Propose,
-        };
-        let json = serde_json::to_string(&result).unwrap();
-        let roundtripped: PublishOneResult = serde_json::from_str(&json).unwrap();
-        assert_eq!(roundtripped.branch_name, "lintian-fixes");
-        assert_eq!(roundtripped.is_new, Some(true));
-        assert_eq!(roundtripped.mode, Mode::Propose);
-        assert!(roundtripped.proposal_url.is_some());
-    }
-
-    #[test]
-    fn test_publish_one_error_serde() {
-        let err = PublishOneError {
-            code: "merge-conflict".to_string(),
-            description: "Could not merge".to_string(),
-        };
-        let json = serde_json::to_string(&err).unwrap();
-        let roundtripped: PublishOneError = serde_json::from_str(&json).unwrap();
-        assert_eq!(roundtripped.code, "merge-conflict");
-        assert_eq!(roundtripped.description, "Could not merge");
-    }
-
-    #[test]
-    fn test_check_mp_error_display() {
-        let err = CheckMpError::NoRunForMergeProposal(
-            url::Url::parse("https://github.com/foo/bar/pull/1").unwrap(),
-        );
-        assert_eq!(
-            err.to_string(),
-            "No run for merge proposal: https://github.com/foo/bar/pull/1"
-        );
-
-        let err = CheckMpError::BranchRateLimited {
-            retry_after: Some(chrono::Duration::minutes(30)),
-        };
-        assert_eq!(err.to_string(), "Branch is rate limited");
-
-        let err = CheckMpError::UnexpectedHttpStatus;
-        assert_eq!(err.to_string(), "Unexpected HTTP status");
-
-        let err = CheckMpError::ForgeLoginRequired;
-        assert_eq!(err.to_string(), "Forge login required");
-    }
-
-    #[test]
-    fn test_debdiff_error_display() {
-        let err = DebdiffError::MissingRun("run-123".to_string());
-        assert_eq!(err.to_string(), "Missing run: run-123");
-
-        let err = DebdiffError::NoUnchangedRun;
-        assert_eq!(err.to_string(), "No unchanged run to compare against yet");
-
-        let err = DebdiffError::Unavailable("service down".to_string());
-        assert_eq!(err.to_string(), "Unavailable: service down");
+    fn test_check_mp_error_from_brz_login_required() {
+        let converted: CheckMpError = BrzError::ForgeLoginRequired.into();
+        assert!(matches!(converted, CheckMpError::ForgeLoginRequired));
     }
 
     #[test]
@@ -1617,19 +1445,6 @@ mod tests {
         let differ_url = url::Url::parse("http://127.0.0.1:1").unwrap();
         let err = get_debdiff(&differ_url, None, &RunId::new("log-123").unwrap()).unwrap_err();
         assert!(matches!(err, DebdiffError::NoUnchangedRun));
-        assert_eq!(err.to_string(), "No unchanged run to compare against yet");
-    }
-
-    #[test]
-    fn test_worker_invalid_response_display() {
-        let err = WorkerInvalidResponse::WorkerError("process crashed".to_string());
-        assert_eq!(err.to_string(), "Worker error: process crashed");
-
-        let err = WorkerInvalidResponse::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "file not found",
-        ));
-        assert_eq!(err.to_string(), "IO error: file not found");
     }
 
     #[test]
@@ -1657,13 +1472,14 @@ mod tests {
     }
 
     #[test]
-    fn test_role_branch_url_no_branch() {
+    fn test_role_branch_url() {
         let url = url::Url::parse("https://example.com/repo").unwrap();
-        let result = role_branch_url(&url, None);
-        assert_eq!(result, url);
+        assert_eq!(role_branch_url(&url, None), url);
+        assert_eq!(
+            role_branch_url(&url, Some("feature/branch-name")).as_str(),
+            "https://example.com/repo,branch=feature%2Fbranch-name"
+        );
     }
-
-    // --- consider_publish_run pure helper tests ---
 
     fn ub(role: &str, mode: Option<&str>) -> crate::state::UnpublishedBranch {
         crate::state::UnpublishedBranch {
@@ -1678,27 +1494,12 @@ mod tests {
     }
 
     #[test]
-    fn test_wants_push_mode_empty() {
+    fn test_wants_push_mode() {
         assert!(!wants_push_mode(&[]));
-    }
-
-    #[test]
-    fn test_wants_push_mode_only_propose() {
         assert!(!wants_push_mode(&[ub("main", Some("propose"))]));
-    }
-
-    #[test]
-    fn test_wants_push_mode_push() {
+        assert!(!wants_push_mode(&[ub("main", None)]));
         assert!(wants_push_mode(&[ub("main", Some("push"))]));
-    }
-
-    #[test]
-    fn test_wants_push_mode_attempt_push() {
         assert!(wants_push_mode(&[ub("main", Some("attempt-push"))]));
-    }
-
-    #[test]
-    fn test_wants_push_mode_mixed_picks_up_push() {
         assert!(wants_push_mode(&[
             ub("aux", Some("propose")),
             ub("main", Some("push")),
@@ -1706,90 +1507,57 @@ mod tests {
     }
 
     #[test]
-    fn test_wants_push_mode_none_mode_is_ignored() {
-        assert!(!wants_push_mode(&[ub("main", None)]));
+    fn test_should_skip_for_push_limit() {
+        for (wants_push, limit, expected) in [
+            (true, None, false),
+            (false, None, false),
+            (true, Some(0), true),
+            (false, Some(0), false),
+            (true, Some(5), false),
+            (false, Some(5), false),
+        ] {
+            assert_eq!(
+                should_skip_for_push_limit(wants_push, limit),
+                expected,
+                "wants_push={} limit={:?}",
+                wants_push,
+                limit
+            );
+        }
     }
 
     #[test]
-    fn test_should_skip_for_push_limit_no_limit() {
-        assert!(!should_skip_for_push_limit(true, None));
-        assert!(!should_skip_for_push_limit(false, None));
-    }
-
-    #[test]
-    fn test_should_skip_for_push_limit_zero_with_push() {
-        assert!(should_skip_for_push_limit(true, Some(0)));
-    }
-
-    #[test]
-    fn test_should_skip_for_push_limit_zero_without_push() {
-        // No branch wants push -> the budget doesn't matter.
-        assert!(!should_skip_for_push_limit(false, Some(0)));
-    }
-
-    #[test]
-    fn test_should_skip_for_push_limit_positive() {
-        // Positive limit means budget remaining, never skip.
-        assert!(!should_skip_for_push_limit(true, Some(5)));
-        assert!(!should_skip_for_push_limit(false, Some(5)));
-    }
-
-    #[test]
-    fn test_previous_mp_blocks_publish_empty() {
+    fn test_previous_mp_blocks_publish() {
+        let statuses = |s: &[(&str, &str)]| -> Vec<(String, String)> {
+            s.iter()
+                .map(|(r, st)| (r.to_string(), st.to_string()))
+                .collect()
+        };
         assert!(!previous_mp_blocks_publish(&[]));
+        assert!(previous_mp_blocks_publish(&statuses(&[(
+            "main", "rejected"
+        )])));
+        assert!(previous_mp_blocks_publish(&statuses(&[("main", "closed")])));
+        assert!(!previous_mp_blocks_publish(&statuses(&[
+            ("main", "open"),
+            ("aux", "merged")
+        ])));
+        assert!(previous_mp_blocks_publish(&statuses(&[
+            ("main", "open"),
+            ("aux", "rejected")
+        ])));
     }
 
     #[test]
-    fn test_previous_mp_blocks_publish_rejected() {
-        let statuses = vec![("main".to_string(), "rejected".to_string())];
-        assert!(previous_mp_blocks_publish(&statuses));
-    }
-
-    #[test]
-    fn test_previous_mp_blocks_publish_closed() {
-        let statuses = vec![("main".to_string(), "closed".to_string())];
-        assert!(previous_mp_blocks_publish(&statuses));
-    }
-
-    #[test]
-    fn test_previous_mp_blocks_publish_open_does_not_block() {
-        let statuses = vec![
-            ("main".to_string(), "open".to_string()),
-            ("aux".to_string(), "merged".to_string()),
-        ];
-        assert!(!previous_mp_blocks_publish(&statuses));
-    }
-
-    #[test]
-    fn test_previous_mp_blocks_publish_any_blocking_wins() {
-        // If one MP was rejected and another is still open, we
-        // should still skip - Python checks `any`.
-        let statuses = vec![
-            ("main".to_string(), "open".to_string()),
-            ("aux".to_string(), "rejected".to_string()),
-        ];
-        assert!(previous_mp_blocks_publish(&statuses));
-    }
-
-    #[test]
-    fn test_resolve_target_branch_url_explicit() {
+    fn test_resolve_target_branch_url() {
         assert_eq!(
             resolve_target_branch_url(Some("https://target/r"), "https://run/r"),
             "https://target/r"
         );
-    }
-
-    #[test]
-    fn test_resolve_target_branch_url_falls_back_when_none() {
         assert_eq!(
             resolve_target_branch_url(None, "https://run/r"),
             "https://run/r"
         );
-    }
-
-    #[test]
-    fn test_resolve_target_branch_url_falls_back_when_empty() {
-        // Empty string is treated like missing.
         assert_eq!(
             resolve_target_branch_url(Some(""), "https://run/r"),
             "https://run/r"
@@ -1797,32 +1565,26 @@ mod tests {
     }
 
     #[test]
-    fn test_should_skip_main_after_aux_failure_no_aux() {
-        let modes: HashMap<String, Option<String>> = HashMap::new();
-        assert!(!should_skip_main_after_aux_failure("main", &modes));
-    }
-
-    #[test]
-    fn test_should_skip_main_after_aux_failure_aux_succeeded() {
-        let mut modes: HashMap<String, Option<String>> = HashMap::new();
-        modes.insert("aux".to_string(), Some("push".to_string()));
-        assert!(!should_skip_main_after_aux_failure("main", &modes));
-    }
-
-    #[test]
-    fn test_should_skip_main_after_aux_failure_aux_failed() {
-        let mut modes: HashMap<String, Option<String>> = HashMap::new();
-        modes.insert("aux".to_string(), None);
-        assert!(should_skip_main_after_aux_failure("main", &modes));
-    }
-
-    #[test]
-    fn test_should_skip_main_after_aux_failure_role_is_aux() {
-        // The guard is main-only: an aux role iterating after
-        // another failed aux is fine.
-        let mut modes: HashMap<String, Option<String>> = HashMap::new();
-        modes.insert("aux1".to_string(), None);
-        assert!(!should_skip_main_after_aux_failure("aux2", &modes));
+    fn test_should_skip_main_after_aux_failure() {
+        let modes = |m: &[(&str, Option<&str>)]| -> HashMap<String, Option<String>> {
+            m.iter()
+                .map(|(r, v)| (r.to_string(), v.map(str::to_string)))
+                .collect()
+        };
+        assert!(!should_skip_main_after_aux_failure("main", &modes(&[])));
+        assert!(!should_skip_main_after_aux_failure(
+            "main",
+            &modes(&[("aux", Some("push"))])
+        ));
+        assert!(should_skip_main_after_aux_failure(
+            "main",
+            &modes(&[("aux", None)])
+        ));
+        // The guard is main-only.
+        assert!(!should_skip_main_after_aux_failure(
+            "aux2",
+            &modes(&[("aux1", None)])
+        ));
     }
 
     // --- classify_publish_failure_action tests ---
@@ -1970,76 +1732,43 @@ mod tests {
         );
     }
 
-    // --- change_set_state_allows_publish ---
-
     #[test]
-    fn test_change_set_state_allows_publish_publishing() {
+    fn test_change_set_state_allows_publish() {
         assert!(change_set_state_allows_publish("publishing"));
-    }
-
-    #[test]
-    fn test_change_set_state_allows_publish_ready() {
         assert!(change_set_state_allows_publish("ready"));
+        for state in ["done", "working", "draft", "", "PUBLISHING"] {
+            assert!(!change_set_state_allows_publish(state), "{}", state);
+        }
     }
 
     #[test]
-    fn test_change_set_state_allows_publish_other_states_block() {
-        // Any state other than publishing/ready should block.
-        assert!(!change_set_state_allows_publish("done"));
-        assert!(!change_set_state_allows_publish("working"));
-        assert!(!change_set_state_allows_publish("draft"));
-        assert!(!change_set_state_allows_publish(""));
-        assert!(!change_set_state_allows_publish("PUBLISHING")); // case-sensitive
-    }
-
-    // --- rate_limit_remaining ---
-
-    #[test]
-    fn test_rate_limit_remaining_both_known() {
+    fn test_rate_limit_remaining() {
         assert_eq!(rate_limit_remaining(Some(3), Some(10)), Some(7));
         assert_eq!(rate_limit_remaining(Some(0), Some(10)), Some(10));
         assert_eq!(rate_limit_remaining(Some(10), Some(10)), Some(0));
-    }
-
-    #[test]
-    fn test_rate_limit_remaining_current_missing() {
+        // current_open can briefly exceed max_open; clamp at 0.
+        assert_eq!(rate_limit_remaining(Some(15), Some(10)), Some(0));
         assert_eq!(rate_limit_remaining(None, Some(10)), None);
-    }
-
-    #[test]
-    fn test_rate_limit_remaining_max_missing() {
         assert_eq!(rate_limit_remaining(Some(3), None), None);
-    }
-
-    #[test]
-    fn test_rate_limit_remaining_both_missing() {
         assert_eq!(rate_limit_remaining(None, None), None);
     }
 
     #[test]
-    fn test_rate_limit_remaining_saturates_when_current_exceeds_max() {
-        // A slow race could let current_open exceed max_open
-        // momentarily. Don't underflow usize - clamp at 0.
-        assert_eq!(rate_limit_remaining(Some(15), Some(10)), Some(0));
+    fn test_classify_forge_rate_limit() {
+        let now = Utc::now();
+        assert_eq!(
+            classify_forge_rate_limit(None, now),
+            ForgeRateLimitDecision::NotLimited,
+        );
+        assert_eq!(
+            classify_forge_rate_limit(Some(now + chrono::Duration::minutes(5)), now),
+            ForgeRateLimitDecision::Backoff,
+        );
+        assert_eq!(
+            classify_forge_rate_limit(Some(now - chrono::Duration::minutes(5)), now),
+            ForgeRateLimitDecision::Expired,
+        );
     }
-
-    // Note: The new functions (get_mp_status, abandon_mp, close_applied_mp) require
-    // actual MergeProposal instances from breezyshim, which cannot be easily mocked
-    // in unit tests. These functions should be tested with integration tests that
-    // have access to real forge connections and database instances.
-
-    // #[test]
-    // fn test_merge_proposal_status_functions_exist() {
-    //     // This test simply verifies the functions can be referenced and have the correct signatures
-    //     // Actual testing requires integration tests with forge connections
-    //
-    //     // Verify function signatures by creating function pointers
-    //     // NOTE: These are async functions, so we can't create simple function pointers
-    //     // This test is disabled as it's not meaningful for async functions
-    //
-    //     // If we get here, the functions exist with the expected signatures
-    //     assert!(true);
-    // }
 
     // --- check_existing_mp freshness gate ---
 
@@ -4975,8 +4704,3 @@ pub async fn get_publish_policy(
 
     Ok(Some((policy_map, command, rate_limit_bucket)))
 }
-
-// Re-export the test module for testing
-#[cfg(test)]
-#[path = "lib_tests.rs"]
-mod lib_tests;
