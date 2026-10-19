@@ -2498,25 +2498,15 @@ async fn finish_run_multipart_internal(
     // and the regression it fixes (per-run page wrongly saying
     // "this run did not produce a build" on successful runs).
     let worker_result = uploaded_result.worker_result.clone();
-    let builder_result = match state
+    let builder_result = state
         .upload_processor
         .extract_builder_result(&uploaded_result)
-    {
-        Ok(Some(br)) => Some(br),
-        Ok(None) => worker_result
-            .target
-            .as_ref()
-            .and_then(BuilderResult::from_target_details),
-        Err(e) => {
-            log::warn!("Failed to extract builder result: {}", e);
-            worker_result.builder_result.clone().or_else(|| {
-                worker_result
-                    .target
-                    .as_ref()
-                    .and_then(BuilderResult::from_target_details)
-            })
-        }
-    };
+        .or_else(|| {
+            worker_result
+                .target
+                .as_ref()
+                .and_then(BuilderResult::from_target_details)
+        });
 
     let mut janitor_result = active_run.create_result(
         worker_result.code.clone(),
