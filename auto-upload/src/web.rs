@@ -1,7 +1,7 @@
 //! Minimal web server for the auto-upload service.
 //!
-//! An axum server with a single `/metrics` route that renders the Prometheus
-//! registry.
+//! An axum server with `/health`, `/ready` and a `/metrics` route that
+//! renders the Prometheus registry.
 
 use axum::{
     http::StatusCode,
@@ -16,7 +16,14 @@ use crate::error::Result;
 
 /// Build the auto-upload web application.
 pub fn create_app() -> Router {
-    Router::new().route("/metrics", get(metrics_handler))
+    Router::new()
+        .route("/health", get(health_handler))
+        .route("/ready", get(health_handler))
+        .route("/metrics", get(metrics_handler))
+}
+
+async fn health_handler() -> &'static str {
+    "ok"
 }
 
 async fn metrics_handler() -> Response {
@@ -103,5 +110,18 @@ mod tests {
             text.contains("debsign_failed"),
             "metrics output missing debsign_failed:\n{text}"
         );
+    }
+
+    #[tokio::test]
+    async fn health_and_ready_respond_ok() {
+        for path in ["/health", "/ready"] {
+            let response = create_app()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(&body[..], b"ok");
+        }
     }
 }
