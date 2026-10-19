@@ -20,7 +20,6 @@ pub mod pyo3_bridge;
 pub mod repository;
 pub mod smart_protocol;
 pub mod web;
-pub mod web_utils;
 
 pub use config::Config;
 pub use error::{BzrError, Result};
