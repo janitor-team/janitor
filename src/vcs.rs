@@ -584,6 +584,7 @@ mod tests {
                     Ok(diff) => Ok(diff),
                     Err(DiffError::Status(status, body)) => Err(Some((status.as_u16(), body))),
                     Err(DiffError::Request(_)) => Err(None),
+                    Err(e) => panic!("{kind}: {case}: {e}"),
                 };
                 assert_eq!(result, expected, "{kind}: {case}");
             }
@@ -650,6 +651,27 @@ mod tests {
                 .as_str(),
             "https://vcs.example.com/bzr/mycodebase"
         );
+    }
+
+    #[tokio::test]
+    async fn git_get_diff_refuses_option_as_sha() {
+        let base = tempfile::tempdir().unwrap();
+        git2::Repository::init(base.path().join("codebase")).unwrap();
+        let out = base.path().join("out");
+        let old = RevisionId::from(format!("git-v1:--output={}", out.display()).into_bytes());
+        let new = RevisionId::from(b"git-v1:4b825dc642cb6eb9a060e54bf8d69288fbee4904".to_vec());
+        let manager = LocalGitVcsManager::new(base.path().to_path_buf());
+        let codebase = CodebaseName::new("codebase").unwrap();
+        let result = manager.get_diff(&codebase, &old, &new).await;
+        assert!(matches!(result, Err(DiffError::InvalidRevision(ref r)) if *r == old));
+        let result = manager.get_revision_info(&codebase, &old, &new).await;
+        assert!(matches!(result, Err(DiffError::InvalidRevision(ref r)) if *r == old));
+        assert!(!out.exists());
+        let short = RevisionId::from(b"git-v1:4b825dc".to_vec());
+        let result = manager.get_diff(&codebase, &short, &new).await;
+        assert!(matches!(result, Err(DiffError::InvalidRevision(ref r)) if *r == short));
+        let result = manager.get_revision_info(&codebase, &short, &new).await;
+        assert!(matches!(result, Err(DiffError::InvalidRevision(ref r)) if *r == short));
     }
 }
 
@@ -840,13 +862,15 @@ pub struct RevisionInfo {
     pub link: Option<Url>,
 }
 
-/// Why `get_diff` failed.
+/// Why `get_diff` or `get_revision_info` failed.
 #[derive(Debug)]
 pub enum DiffError {
     /// The VCS store was not reached or its answer not read.
     Request(reqwest::Error),
     /// The VCS store answered with an error status and this body.
     Status(reqwest::StatusCode, String),
+    /// The revision id does not hold a git sha.
+    InvalidRevision(RevisionId),
 }
 
 impl std::fmt::Display for DiffError {
@@ -854,6 +878,7 @@ impl std::fmt::Display for DiffError {
         match self {
             Self::Request(e) => write!(f, "VCS store diff request failed: {}", e),
             Self::Status(status, body) => write!(f, "VCS store diff failed: {}: {}", status, body),
+            Self::InvalidRevision(revid) => write!(f, "not a git revision id: {}", revid),
         }
     }
 }
@@ -898,7 +923,16 @@ pub trait VcsManager: Send + Sync {
         codebase: &CodebaseName,
         old_revid: &RevisionId,
         new_revid: &RevisionId,
-    ) -> Vec<RevisionInfo>;
+    ) -> Result<Vec<RevisionInfo>, DiffError>;
+}
+
+/// Parse the git sha that `revid` maps to.
+fn git_oid(revid: &RevisionId, sha: &[u8]) -> Result<git2::Oid, DiffError> {
+    std::str::from_utf8(sha)
+        .ok()
+        .and_then(|sha| git2::Oid::from_str(sha).ok())
+        .filter(|oid| oid.to_string().as_bytes() == sha)
+        .ok_or_else(|| DiffError::InvalidRevision(revid.clone()))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1004,12 +1038,14 @@ impl VcsManager for LocalGitVcsManager {
         } else {
             repo.lookup_bzr_revision_id(new_revid).unwrap().0
         };
+        let old_sha = git_oid(old_revid, &old_sha)?;
+        let new_sha = git_oid(new_revid, &new_sha)?;
         let current_dir = repo.user_transport().local_abspath(Path::new(".")).unwrap();
         drop(repo); // Drop repo before await
         let output = tokio::process::Command::new("git")
             .arg("diff")
-            .arg(std::str::from_utf8(&old_sha).unwrap())
-            .arg(std::str::from_utf8(&new_sha).unwrap())
+            .arg(old_sha.to_string())
+            .arg(new_sha.to_string())
             .current_dir(current_dir)
             .output()
             .await
@@ -1028,19 +1064,19 @@ impl VcsManager for LocalGitVcsManager {
         codebase: &CodebaseName,
         old_revid: &RevisionId,
         new_revid: &RevisionId,
-    ) -> Vec<RevisionInfo> {
+    ) -> Result<Vec<RevisionInfo>, DiffError> {
         let repo = self.get_repository(codebase).unwrap().unwrap();
         let old_sha = repo.lookup_bzr_revision_id(old_revid).unwrap().0;
         let new_sha = repo.lookup_bzr_revision_id(new_revid).unwrap().0;
-        let old_sha_str = std::str::from_utf8(&old_sha).unwrap();
-        let new_sha_str = std::str::from_utf8(&new_sha).unwrap();
+        let old_sha = git_oid(old_revid, &old_sha)?;
+        let new_sha = git_oid(new_revid, &new_sha)?;
         let repo_path = repo.user_transport().local_abspath(Path::new(".")).unwrap();
 
         // Use git log with a format that separates commit hash and message with a NUL byte
         let output = tokio::process::Command::new("git")
             .arg("log")
             .arg("--format=%H%x00%s")
-            .arg(&format!("{}..{}", old_sha_str, new_sha_str))
+            .arg(&format!("{}..{}", old_sha, new_sha))
             .current_dir(&repo_path)
             .output()
             .await
@@ -1071,7 +1107,7 @@ impl VcsManager for LocalGitVcsManager {
             })
             .collect();
         std::mem::drop(lock);
-        ret
+        Ok(ret)
     }
 }
 
@@ -1169,7 +1205,7 @@ impl VcsManager for LocalBzrVcsManager {
         let output = tokio::process::Command::new("bzr")
             .arg("diff")
             .arg("-r")
-            .arg(format!("{}..{}", old_revid, new_revid))
+            .arg(format!("revid:{}..revid:{}", old_revid, new_revid))
             .current_dir(repo.user_transport().local_abspath(Path::new(".")).unwrap())
             .output()
             .await
@@ -1188,7 +1224,7 @@ impl VcsManager for LocalBzrVcsManager {
         codebase: &CodebaseName,
         old_revid: &RevisionId,
         new_revid: &RevisionId,
-    ) -> Vec<RevisionInfo> {
+    ) -> Result<Vec<RevisionInfo>, DiffError> {
         let repo = self.get_repository(codebase).unwrap().unwrap();
 
         let lock = repo.lock_read().unwrap();
@@ -1212,7 +1248,7 @@ impl VcsManager for LocalBzrVcsManager {
         }
 
         std::mem::drop(lock);
-        ret
+        Ok(ret)
     }
 }
 
@@ -1323,7 +1359,7 @@ impl VcsManager for RemoteGitVcsManager {
         codebase: &CodebaseName,
         old_revid: &RevisionId,
         new_revid: &RevisionId,
-    ) -> Vec<RevisionInfo> {
+    ) -> Result<Vec<RevisionInfo>, DiffError> {
         let url = self
             .base_url
             .join(&format!(
@@ -1343,7 +1379,7 @@ impl VcsManager for RemoteGitVcsManager {
             .unwrap();
         let client = reqwest::Client::new();
         let resp = client.get(url).send().await.unwrap();
-        resp.json().await.unwrap()
+        Ok(resp.json().await.unwrap())
     }
 
     fn get_branch_url(&self, codebase: &CodebaseName, branch_name: &str) -> Url {
@@ -1460,7 +1496,7 @@ impl VcsManager for RemoteBzrVcsManager {
         codebase: &CodebaseName,
         old_revid: &RevisionId,
         new_revid: &RevisionId,
-    ) -> Vec<RevisionInfo> {
+    ) -> Result<Vec<RevisionInfo>, DiffError> {
         let url = self
             .base_url
             .join(&format!(
@@ -1477,7 +1513,7 @@ impl VcsManager for RemoteBzrVcsManager {
         }
 
         let resp = request.send().await.unwrap();
-        resp.json().await.unwrap()
+        Ok(resp.json().await.unwrap())
     }
 
     fn get_branch_url(&self, codebase: &CodebaseName, branch_name: &str) -> Url {
