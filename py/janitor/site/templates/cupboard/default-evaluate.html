@@ -15,7 +15,7 @@
                 {% for rev in get_revision_info(role) %}
                     <li>
                         {% if rev['link'] %}<a href="{{ rev['link'] }}">{% endif %}
-                            {{ rev['revision-id'] }}
+                            {{ rev['revision_id'].decode('utf-8', 'replace') }}
                             {% if rev['link'] %}</a>{% endif %}
                         : <pre>{{ rev['message'] }}</pre>
                     </li>
