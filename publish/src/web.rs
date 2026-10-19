@@ -1052,7 +1052,6 @@ async fn consider(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> 
         // The bulk /autopublish path still respects it.
         if let Err(e) = crate::consider_publish_run(
             &state.conn,
-            state.redis.clone(),
             state.config,
             &state.publish_worker,
             &state.vcs_managers,
