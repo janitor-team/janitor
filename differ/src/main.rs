@@ -409,17 +409,27 @@ async fn handle_diffoscope(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Response> {
-    state
-        .metrics
-        .requests
-        .with_label_values(&["diffoscope"])
-        .inc();
-    let result = handle_diffoscope_inner(&old_id, &new_id, query, &state, &headers).await;
+    count_request(
+        &state,
+        "diffoscope",
+        handle_diffoscope_inner(&old_id, &new_id, query, &state, &headers),
+    )
+    .await
+}
+
+/// Count a request of `kind`, and its failure if it fails.
+async fn count_request(
+    state: &AppState,
+    kind: &str,
+    handler: impl std::future::Future<Output = Result<Response>>,
+) -> Result<Response> {
+    state.metrics.requests.with_label_values(&[kind]).inc();
+    let result = handler.await;
     if let Err(e) = &result {
         state
             .metrics
             .errors
-            .with_label_values(&["diffoscope", e.reason()])
+            .with_label_values(&[kind, e.reason()])
             .inc();
     }
     result
@@ -449,8 +459,8 @@ async fn handle_diffoscope_inner(
     let (old_run, new_run) = get_run_pair(&state.pool, old_id, new_id).await?;
 
     let cache_path = state.diffoscope_cache_path(&old_run.id, &new_run.id);
-    if let Some(parent) = cache_path.as_deref().and_then(|p| p.parent()) {
-        if let Err(e) = tokio::fs::create_dir_all(parent).await {
+    if let Some(p) = cache_path.as_deref() {
+        if let Err(e) = create_cache_parent(p).await {
             error!("failed to create diffoscope cache dir: {e}");
         }
     }
@@ -501,61 +511,73 @@ async fn handle_diffoscope_inner(
     Ok(typed_text_response(content_type, body))
 }
 
+/// Load a diff from the cache, or generate it. Concurrent requests for
+/// the same pair of runs wait for a single generation and then re-read
+/// the cache.
+async fn load_or_generate<T, L, G>(
+    state: &AppState,
+    inflight: &InFlight,
+    kind: &str,
+    key: (String, String),
+    load: impl Fn() -> L,
+    generate: impl Fn() -> G,
+) -> Result<T>
+where
+    L: std::future::Future<Output = Option<T>>,
+    G: std::future::Future<Output = Result<T>>,
+{
+    let cache_hit = || state.metrics.cache_hits.with_label_values(&[kind]).inc();
+    if let Some(v) = load().await {
+        cache_hit();
+        return Ok(v);
+    }
+
+    let guard = match inflight.acquire(key.clone()) {
+        InFlightHandle::Generate(g) => g,
+        InFlightHandle::Wait(notify) => {
+            notify.notified().await;
+            if let Some(v) = load().await {
+                cache_hit();
+                return Ok(v);
+            }
+            // Cache wasn't populated (generator failed or caching
+            // disabled). Fall through and generate ourselves.
+            match inflight.acquire(key) {
+                InFlightHandle::Generate(g) => g,
+                InFlightHandle::Wait(_) => {
+                    // Extremely unlikely race; just generate without a
+                    // guard rather than looping.
+                    return generate().await;
+                }
+            }
+        }
+    };
+
+    let v = generate().await;
+    drop(guard);
+    v
+}
+
 async fn load_or_generate_diffoscope(
     state: &AppState,
     old_run: &Run,
     new_run: &Run,
     cache_path: Option<&StdPath>,
 ) -> Result<DiffoscopeOutput> {
-    // Try the cache once up front.
-    if let Some(p) = cache_path {
-        if let Some(d) = try_load_diffoscope_cache(p).await {
-            state
-                .metrics
-                .cache_hits
-                .with_label_values(&["diffoscope"])
-                .inc();
-            return Ok(d);
-        }
-    }
-
-    // Dedupe: if another task is already generating for this pair,
-    // wait for them and re-read the cache before falling back to
-    // running diffoscope ourselves.
-    let key = (old_run.id.clone(), new_run.id.clone());
-    let guard = match state.diffoscope_inflight.acquire(key) {
-        InFlightHandle::Generate(g) => g,
-        InFlightHandle::Wait(notify) => {
-            notify.notified().await;
-            if let Some(p) = cache_path {
-                if let Some(d) = try_load_diffoscope_cache(p).await {
-                    state
-                        .metrics
-                        .cache_hits
-                        .with_label_values(&["diffoscope"])
-                        .inc();
-                    return Ok(d);
-                }
+    load_or_generate(
+        state,
+        &state.diffoscope_inflight,
+        "diffoscope",
+        (old_run.id.clone(), new_run.id.clone()),
+        || async move {
+            match cache_path {
+                Some(p) => try_load_diffoscope_cache(p).await,
+                None => None,
             }
-            // Cache wasn't populated (generator failed or caching
-            // disabled). Fall through and generate ourselves.
-            match state
-                .diffoscope_inflight
-                .acquire((old_run.id.clone(), new_run.id.clone()))
-            {
-                InFlightHandle::Generate(g) => g,
-                InFlightHandle::Wait(_) => {
-                    // Extremely unlikely race; just generate without a
-                    // guard rather than looping.
-                    return generate_diffoscope(state, old_run, new_run, cache_path).await;
-                }
-            }
-        }
-    };
-
-    let diff = generate_diffoscope(state, old_run, new_run, cache_path).await;
-    drop(guard);
-    diff
+        },
+        || generate_diffoscope(state, old_run, new_run, cache_path),
+    )
+    .await
 }
 
 async fn try_load_diffoscope_cache(p: &StdPath) -> Option<DiffoscopeOutput> {
@@ -598,46 +620,7 @@ async fn generate_diffoscope(
 
     let (_old_dir, old_bins, _new_dir, new_bins) =
         fetch_binaries(&*state.artifact_manager, &old_run.id, &new_run.id).await?;
-
-    let old_args = os_pairs(&old_bins).map_err(|r| Error::DiffCommandError {
-        command: "diffoscope",
-        reason: r,
-    })?;
-    let new_args = os_pairs(&new_bins).map_err(|r| Error::DiffCommandError {
-        command: "diffoscope",
-        reason: r,
-    })?;
-    let old_slice: Vec<(&str, &str)> = old_args
-        .iter()
-        .map(|(a, b)| (a.as_str(), b.as_str()))
-        .collect();
-    let new_slice: Vec<(&str, &str)> = new_args
-        .iter()
-        .map(|(a, b)| (a.as_str(), b.as_str()))
-        .collect();
-
-    let diff = diffoscope::run_diffoscope(
-        &old_slice,
-        &new_slice,
-        Some(state.task_timeout as f64),
-        Some(state.task_memory_limit),
-        Some(&state.diffoscope_command),
-    )
-    .instrument(info_span!("run-diffoscope"))
-    .await?;
-
-    if let Some(p) = cache_path {
-        if let Err(e) = write_diffoscope_cache(p, &diff).await {
-            error!("failed to write diffoscope cache {}: {e}", p.display());
-            state
-                .metrics
-                .cache_write_errors
-                .with_label_values(&["diffoscope"])
-                .inc();
-        }
-    }
-
-    Ok(diff)
+    generate_diffoscope_with_binaries(state, &old_bins, &new_bins, cache_path).await
 }
 
 async fn write_diffoscope_cache(p: &StdPath, diff: &DiffoscopeOutput) -> std::io::Result<()> {
@@ -657,16 +640,12 @@ async fn handle_debdiff(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Response> {
-    state.metrics.requests.with_label_values(&["debdiff"]).inc();
-    let result = handle_debdiff_inner(&old_id, &new_id, query, &state, &headers).await;
-    if let Err(e) = &result {
-        state
-            .metrics
-            .errors
-            .with_label_values(&["debdiff", e.reason()])
-            .inc();
-    }
-    result
+    count_request(
+        &state,
+        "debdiff",
+        handle_debdiff_inner(&old_id, &new_id, query, &state, &headers),
+    )
+    .await
 }
 
 async fn handle_debdiff_inner(
@@ -688,8 +667,8 @@ async fn handle_debdiff_inner(
     let (old_run, new_run) = get_run_pair(&state.pool, old_id, new_id).await?;
 
     let cache_path = state.debdiff_cache_path(&old_run.id, &new_run.id);
-    if let Some(parent) = cache_path.as_deref().and_then(|p| p.parent()) {
-        if let Err(e) = tokio::fs::create_dir_all(parent).await {
+    if let Some(p) = cache_path.as_deref() {
+        if let Err(e) = create_cache_parent(p).await {
             error!("failed to create debdiff cache dir: {e}");
         }
     }
@@ -752,51 +731,31 @@ async fn load_or_generate_debdiff(
     new_run: &Run,
     cache_path: Option<&StdPath>,
 ) -> Result<Vec<u8>> {
-    if let Some(p) = cache_path {
-        match tokio::fs::read(p).await {
-            Ok(bytes) => {
-                state
-                    .metrics
-                    .cache_hits
-                    .with_label_values(&["debdiff"])
-                    .inc();
-                return Ok(bytes);
+    load_or_generate(
+        state,
+        &state.debdiff_inflight,
+        "debdiff",
+        (old_run.id.clone(), new_run.id.clone()),
+        || async move {
+            match cache_path {
+                Some(p) => try_load_debdiff_cache(p).await,
+                None => None,
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => error!("failed to read debdiff cache {}: {e}", p.display()),
+        },
+        || generate_debdiff(state, old_run, new_run, cache_path),
+    )
+    .await
+}
+
+async fn try_load_debdiff_cache(p: &StdPath) -> Option<Vec<u8>> {
+    match tokio::fs::read(p).await {
+        Ok(bytes) => Some(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            error!("failed to read debdiff cache {}: {e}", p.display());
+            None
         }
     }
-
-    let key = (old_run.id.clone(), new_run.id.clone());
-    let guard = match state.debdiff_inflight.acquire(key) {
-        InFlightHandle::Generate(g) => g,
-        InFlightHandle::Wait(notify) => {
-            notify.notified().await;
-            if let Some(p) = cache_path {
-                if let Ok(bytes) = tokio::fs::read(p).await {
-                    state
-                        .metrics
-                        .cache_hits
-                        .with_label_values(&["debdiff"])
-                        .inc();
-                    return Ok(bytes);
-                }
-            }
-            match state
-                .debdiff_inflight
-                .acquire((old_run.id.clone(), new_run.id.clone()))
-            {
-                InFlightHandle::Generate(g) => g,
-                InFlightHandle::Wait(_) => {
-                    return generate_debdiff(state, old_run, new_run, cache_path).await;
-                }
-            }
-        }
-    };
-
-    let bytes = generate_debdiff(state, old_run, new_run, cache_path).await;
-    drop(guard);
-    bytes
 }
 
 async fn generate_debdiff(
@@ -819,37 +778,15 @@ async fn generate_debdiff(
 
     let (_old_dir, old_bins, _new_dir, new_bins) =
         fetch_binaries(&*state.artifact_manager, &old_run.id, &new_run.id).await?;
+    generate_debdiff_with_binaries(state, &old_bins, &new_bins, cache_path).await
+}
 
-    let old_paths = str_paths(&old_bins).map_err(|r| Error::DiffCommandError {
-        command: "debdiff",
-        reason: r,
-    })?;
-    let new_paths = str_paths(&new_bins).map_err(|r| Error::DiffCommandError {
-        command: "debdiff",
-        reason: r,
-    })?;
-
-    let run =
-        janitor::debdiff::run_debdiff(old_paths, new_paths).instrument(info_span!("run-debdiff"));
-    let bytes = tokio::time::timeout(std::time::Duration::from_secs(state.task_timeout), run)
-        .await
-        .map_err(|_| Error::DiffCommandTimeout("debdiff"))?
-        .map_err(|e| Error::DiffCommandError {
-            command: "debdiff",
-            reason: e.message().to_string(),
-        })?;
-
-    if let Some(p) = cache_path {
-        if let Err(e) = tokio::fs::write(p, &bytes).await {
-            error!("failed to write debdiff cache {}: {e}", p.display());
-            state
-                .metrics
-                .cache_write_errors
-                .with_label_values(&["debdiff"])
-                .inc();
-        }
+/// Create the directory a cache file lives in.
+async fn create_cache_parent(p: &StdPath) -> std::io::Result<()> {
+    match p.parent() {
+        Some(parent) => tokio::fs::create_dir_all(parent).await,
+        None => Ok(()),
     }
-    Ok(bytes)
 }
 
 async fn precache(state: &AppState, old_id: String, new_id: String) -> Result<()> {
@@ -886,9 +823,7 @@ async fn precache(state: &AppState, old_id: String, new_id: String) -> Result<()
 
     if debdiff_needed {
         if let Some(p) = debdiff_cache_path.as_deref() {
-            if let Some(parent) = p.parent() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
+            create_cache_parent(p).await?;
         }
         generate_debdiff_with_binaries(
             state,
@@ -906,9 +841,7 @@ async fn precache(state: &AppState, old_id: String, new_id: String) -> Result<()
 
     if diffoscope_needed {
         if let Some(p) = diffoscope_cache_path.as_deref() {
-            if let Some(parent) = p.parent() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
+            create_cache_parent(p).await?;
         }
         generate_diffoscope_with_binaries(
             state,
@@ -927,8 +860,8 @@ async fn precache(state: &AppState, old_id: String, new_id: String) -> Result<()
     Ok(())
 }
 
-/// Run debdiff on already-fetched binaries. Precache uses this to avoid
-/// refetching artifacts once for debdiff and once for diffoscope.
+/// Run debdiff on already-fetched binaries, so precache can fetch the
+/// artifacts once for both debdiff and diffoscope.
 async fn generate_debdiff_with_binaries(
     state: &AppState,
     old_bins: &[(std::ffi::OsString, PathBuf)],
@@ -943,13 +876,14 @@ async fn generate_debdiff_with_binaries(
         command: "debdiff",
         reason: r,
     })?;
-    let run = janitor::debdiff::run_debdiff(old_paths, new_paths);
+    let run =
+        janitor::debdiff::run_debdiff(old_paths, new_paths).instrument(info_span!("run-debdiff"));
     let bytes = tokio::time::timeout(std::time::Duration::from_secs(state.task_timeout), run)
         .await
         .map_err(|_| Error::DiffCommandTimeout("debdiff"))?
         .map_err(|e| Error::DiffCommandError {
             command: "debdiff",
-            reason: e.to_string(),
+            reason: e.message().to_string(),
         })?;
     if let Some(p) = cache_path {
         if let Err(e) = tokio::fs::write(p, &bytes).await {
@@ -993,6 +927,7 @@ async fn generate_diffoscope_with_binaries(
         Some(state.task_memory_limit),
         Some(&state.diffoscope_command),
     )
+    .instrument(info_span!("run-diffoscope"))
     .await?;
     if let Some(p) = cache_path {
         if let Err(e) = write_diffoscope_cache(p, &diff).await {
