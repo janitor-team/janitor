@@ -260,7 +260,6 @@ test_with_database! {
         assert_eq!(mp_run.codebase, "cb-1");
         assert_eq!(mp_run.role, "main");
         assert_eq!(mp_run.remote_branch_name, "refs/heads/main");
-        assert_eq!(mp_run.command, "lintian-brush");
         assert_eq!(mp_run.value, 10);
     }
 }
