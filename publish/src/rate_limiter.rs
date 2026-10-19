@@ -178,7 +178,12 @@ impl RateLimiter for FixedRateLimiter {
         &mut self,
         mps_per_bucket: &HashMap<MergeProposalStatus, HashMap<String, usize>>,
     ) {
-        self.open_mps_per_bucket = mps_per_bucket.get(&MergeProposalStatus::Open).cloned();
+        self.open_mps_per_bucket = Some(
+            mps_per_bucket
+                .get(&MergeProposalStatus::Open)
+                .cloned()
+                .unwrap_or_default(),
+        );
     }
 
     fn check_allowed(&self, bucket: &str) -> RateLimitStatus {

@@ -44,6 +44,13 @@ fn limited_after_reaching_the_maximum() {
 }
 
 #[test]
+fn allowed_after_a_scan_with_no_open_proposals() {
+    let mut limiter = FixedRateLimiter::new(3);
+    limiter.set_mps_per_bucket(&HashMap::new());
+    assert!(limiter.check_allowed("bucket").is_allowed());
+}
+
+#[test]
 fn limited_before_the_first_scan() {
     let limiter = FixedRateLimiter::new(3);
     assert!(!limiter.check_allowed("bucket").is_allowed());
