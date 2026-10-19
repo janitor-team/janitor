@@ -43,8 +43,7 @@ pub mod builder;
 pub mod database;
 /// Error tracking and logging.
 pub mod error_tracking;
-/// Module for log file management.
-pub mod logs;
+pub use janitor::logs;
 /// Module for Prometheus metrics collection.
 pub mod metrics;
 /// Resume logic for interrupted runs.
@@ -207,6 +206,25 @@ pub fn deb_package_name_from_filename(filename: &str) -> Option<String> {
     }
 }
 
+/// Record a field of the current changes file in `previous`, failing
+/// if it disagrees with the value from the changes files seen so far.
+fn record_consistent<T: PartialEq>(
+    previous: &mut Option<T>,
+    found: Option<T>,
+    field: &'static str,
+    names: &[String],
+    inconsistent: fn(Vec<String>, T, T) -> FindChangesError,
+) -> Result<(), FindChangesError> {
+    if let Some(expected) = previous.take() {
+        if found.as_ref() != Some(&expected) {
+            let found = found.ok_or(FindChangesError::MissingChangesFileFields(field))?;
+            return Err(inconsistent(names.to_vec(), found, expected));
+        }
+    }
+    *previous = found;
+    Ok(())
+}
+
 /// Find and parse Debian changes files in a directory.
 ///
 /// # Arguments
@@ -243,46 +261,27 @@ pub fn find_changes(path: &Path) -> Result<ChangesSummary, FindChangesError> {
         let changes = debian_control::changes::Changes::read(&f)
             .map_err(|e| FindChangesError::ParseError(file_path, e.into()))?;
         names.push(entry.file_name().to_string_lossy().to_string());
-        if let Some(version) = &version {
-            if changes.version().as_ref() != Some(version) {
-                let found_version = changes
-                    .version()
-                    .ok_or_else(|| FindChangesError::MissingChangesFileFields("Version"))?;
-                return Err(FindChangesError::InconsistentVersion(
-                    names,
-                    found_version,
-                    version.clone(),
-                ));
-            }
-        }
-        version = changes.version();
-        if let Some(source) = &source {
-            if changes.source().as_ref() != Some(source) {
-                let found_source = changes
-                    .source()
-                    .ok_or_else(|| FindChangesError::MissingChangesFileFields("Source"))?;
-                return Err(FindChangesError::InconsistentSource(
-                    names,
-                    found_source,
-                    source.to_string(),
-                ));
-            }
-        }
-        source = changes.source();
-
-        if let Some(distribution) = &distribution {
-            if changes.distribution().as_ref() != Some(distribution) {
-                let found_distribution = changes
-                    .distribution()
-                    .ok_or_else(|| FindChangesError::MissingChangesFileFields("Distribution"))?;
-                return Err(FindChangesError::InconsistentDistribution(
-                    names,
-                    found_distribution,
-                    distribution.to_string(),
-                ));
-            }
-        }
-        distribution = changes.distribution();
+        record_consistent(
+            &mut version,
+            changes.version(),
+            "Version",
+            &names,
+            FindChangesError::InconsistentVersion,
+        )?;
+        record_consistent(
+            &mut source,
+            changes.source(),
+            "Source",
+            &names,
+            FindChangesError::InconsistentSource,
+        )?;
+        record_consistent(
+            &mut distribution,
+            changes.distribution(),
+            "Distribution",
+            &names,
+            FindChangesError::InconsistentDistribution,
+        )?;
 
         binary_packages.extend(
             changes
@@ -834,24 +833,22 @@ impl<'de> Deserialize<'de> for Backchannel {
         let obj = v
             .as_object()
             .ok_or_else(|| serde::de::Error::custom("Backchannel: expected a JSON object"))?;
+        let my_url = || -> Result<String, D::Error> {
+            obj.get("my_url")
+                .and_then(|u| u.as_str())
+                .map(str::to_string)
+                .ok_or_else(|| serde::de::Error::missing_field("my_url"))
+        };
 
         if let Some(tag) = obj.get("type").and_then(|t| t.as_str()) {
             return match tag {
                 "jenkins" => {
-                    let my_url = obj
-                        .get("my_url")
-                        .and_then(|u| u.as_str())
-                        .ok_or_else(|| serde::de::Error::missing_field("my_url"))?
-                        .to_string();
+                    let my_url = my_url()?;
                     let jenkins = obj.get("jenkins").cloned();
                     Ok(Backchannel::Jenkins { my_url, jenkins })
                 }
                 "polling" => {
-                    let my_url = obj
-                        .get("my_url")
-                        .and_then(|u| u.as_str())
-                        .ok_or_else(|| serde::de::Error::missing_field("my_url"))?
-                        .to_string();
+                    let my_url = my_url()?;
                     Ok(Backchannel::Polling { my_url })
                 }
                 "none" => Ok(Backchannel::None {}),
@@ -866,11 +863,7 @@ impl<'de> Deserialize<'de> for Backchannel {
         // null) means Jenkins; lone `my_url` means Polling; empty
         // object means None.
         if obj.contains_key("jenkins") {
-            let my_url = obj
-                .get("my_url")
-                .and_then(|u| u.as_str())
-                .ok_or_else(|| serde::de::Error::missing_field("my_url"))?
-                .to_string();
+            let my_url = my_url()?;
             let jenkins = obj.get("jenkins").cloned();
             return Ok(Backchannel::Jenkins { my_url, jenkins });
         }
@@ -1612,23 +1605,6 @@ pub struct QueueItem {
     pub codebase: String,
 }
 
-impl QueueItem {
-    /// Convert to JSON representation.
-    pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "id": self.id,
-            "context": self.context,
-            "command": self.command,
-            "estimated_duration": self.estimated_duration.map(|d| d.as_secs_f64()),
-            "campaign": self.campaign,
-            "refresh": self.refresh,
-            "requester": self.requester,
-            "change_set": self.change_set,
-            "codebase": self.codebase
-        })
-    }
-}
-
 /// Queue assignment result.
 #[derive(Debug)]
 pub struct QueueAssignment {
@@ -1714,6 +1690,20 @@ pub struct ComponentHealth {
     pub error: Option<String>,
 }
 
+impl ComponentHealth {
+    fn from_result<E: std::fmt::Display>(name: &str, result: Result<(), E>) -> Self {
+        let (status, error) = match result {
+            Ok(()) => (ServiceHealthStatus::Healthy, None),
+            Err(e) => (ServiceHealthStatus::Unhealthy, Some(e.to_string())),
+        };
+        Self {
+            name: name.to_string(),
+            status,
+            error,
+        }
+    }
+}
+
 /// Aggregated health report as returned by `/health`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthReport {
@@ -1736,69 +1726,32 @@ pub struct HealthReport {
 pub struct HealthChecker {
     database: Arc<database::RunnerDatabase>,
     log_manager: Arc<dyn logs::LogFileManager>,
-    _vcs_manager: Arc<vcs::RunnerVcsManager>,
-    _artifact_manager: Arc<dyn janitor::artifacts::ArtifactManager>,
 }
 
 impl HealthChecker {
     /// Build a health checker wired to the runner's collaborators.
     pub fn new(
         database: Arc<database::RunnerDatabase>,
-        vcs_manager: Arc<vcs::RunnerVcsManager>,
         log_manager: Arc<dyn logs::LogFileManager>,
-        artifact_manager: Arc<dyn janitor::artifacts::ArtifactManager>,
     ) -> Self {
         Self {
             database,
             log_manager,
-            _vcs_manager: vcs_manager,
-            _artifact_manager: artifact_manager,
         }
     }
 
     /// Full report across every component.
     pub async fn report(&self) -> HealthReport {
-        let db = match sqlx::query("SELECT 1")
+        let db = sqlx::query("SELECT 1")
             .fetch_one(self.database.pool())
             .await
-        {
-            Ok(_) => ComponentHealth {
-                name: "database".to_string(),
-                status: ServiceHealthStatus::Healthy,
-                error: None,
-            },
-            Err(e) => ComponentHealth {
-                name: "database".to_string(),
-                status: ServiceHealthStatus::Unhealthy,
-                error: Some(e.to_string()),
-            },
-        };
-
-        let logs = match self.log_manager.health_check().await {
-            Ok(()) => ComponentHealth {
-                name: "logs".to_string(),
-                status: ServiceHealthStatus::Healthy,
-                error: None,
-            },
-            Err(e) => ComponentHealth {
-                name: "logs".to_string(),
-                status: ServiceHealthStatus::Unhealthy,
-                error: Some(e.to_string()),
-            },
-        };
-
-        let vcs = ComponentHealth {
-            name: "vcs".to_string(),
-            status: ServiceHealthStatus::Healthy,
-            error: None,
-        };
-        let artifacts = ComponentHealth {
-            name: "artifacts".to_string(),
-            status: ServiceHealthStatus::Healthy,
-            error: None,
-        };
-
-        let checks = vec![db, vcs, logs, artifacts];
+            .map(|_| ());
+        let checks = vec![
+            ComponentHealth::from_result("database", db),
+            ComponentHealth::from_result("vcs", Ok::<(), String>(())),
+            ComponentHealth::from_result("logs", self.log_manager.health_check().await),
+            ComponentHealth::from_result("artifacts", Ok::<(), String>(())),
+        ];
         let overall = if checks
             .iter()
             .any(|c| c.status == ServiceHealthStatus::Unhealthy)

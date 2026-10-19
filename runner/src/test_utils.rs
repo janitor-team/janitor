@@ -442,9 +442,7 @@ pub async fn create_test_app_state_with_config(
 
     let health_checker = Arc::new(crate::HealthChecker::new(
         runner_db_arc.clone(),
-        vcs_manager.clone(),
         log_manager.clone(),
-        artifact_manager.clone(),
     ));
 
     let public_vcs_managers =

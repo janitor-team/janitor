@@ -1418,7 +1418,7 @@ async fn peek_active_run(State(state): State<Arc<AppState>>) -> impl IntoRespons
             (
                 StatusCode::CREATED,
                 Json(json!({
-                    "queue_item": assignment.queue_item.to_json(),
+                    "queue_item": assignment.queue_item,
                     "vcs_info": assignment.vcs_info,
                     "build_config": build_config,
                     "estimated_duration": assignment
