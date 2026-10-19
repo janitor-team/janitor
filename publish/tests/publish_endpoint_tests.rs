@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use janitor::{schema::setup_test_database, test_utils::TestDatabase, test_with_database};
+use janitor::{schema::setup_test_database, test_with_database};
 use janitor_publish::{AppState, PublishWorker};
 use sqlx::PgPool;
 use tower::ServiceExt;
