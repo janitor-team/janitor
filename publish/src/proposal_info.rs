@@ -331,135 +331,11 @@ impl ProposalInfoManager {
         }
         Ok(())
     }
-
-    /// Check if a proposal exists in the database.
-    ///
-    /// # Arguments
-    /// * `url` - The URL of the merge proposal
-    ///
-    /// # Returns
-    /// True if the proposal exists, false otherwise
-    pub async fn proposal_exists(&self, url: &url::Url) -> Result<bool, sqlx::Error> {
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM merge_proposal WHERE url = $1")
-            .bind(url.to_string())
-            .fetch_one(&self.conn)
-            .await?;
-
-        Ok(count > 0)
-    }
-
-    /// Get all proposals for a specific codebase.
-    ///
-    /// # Arguments
-    /// * `codebase` - The codebase name
-    /// * `status_filter` - Optional status filter
-    ///
-    /// # Returns
-    /// List of proposal info for the codebase
-    pub async fn get_proposals_for_codebase(
-        &self,
-        codebase: &CodebaseName,
-        status_filter: Option<&str>,
-    ) -> Result<Vec<ProposalInfo>, sqlx::Error> {
-        const BASE: &str = "SELECT rate_limit_bucket, revision, status, target_branch_url, \
-                            codebase, can_be_merged, last_scanned \
-                            FROM merge_proposal WHERE codebase = $1";
-
-        if let Some(status) = status_filter {
-            let sql = format!("{} AND status = $2", BASE);
-            sqlx::query_as::<_, ProposalInfo>(sqlx::AssertSqlSafe(&*sql))
-                .bind(codebase)
-                .bind(status)
-                .fetch_all(&self.conn)
-                .await
-        } else {
-            sqlx::query_as::<_, ProposalInfo>(sqlx::AssertSqlSafe(BASE))
-                .bind(codebase)
-                .fetch_all(&self.conn)
-                .await
-        }
-    }
-
-    /// Update the last scanned timestamp for a proposal.
-    ///
-    /// # Arguments
-    /// * `url` - The URL of the merge proposal
-    ///
-    /// # Returns
-    /// Ok(()) if successful, or a sqlx::Error
-    pub async fn touch_proposal(&self, url: &url::Url) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE merge_proposal SET last_scanned = NOW() WHERE url = $1")
-            .bind(url.to_string())
-            .execute(&self.conn)
-            .await?;
-        Ok(())
-    }
-
-    /// Get statistics about proposals in the database.
-    ///
-    /// # Returns
-    /// A map of status -> count
-    pub async fn get_proposal_statistics(
-        &self,
-    ) -> Result<std::collections::HashMap<String, i64>, sqlx::Error> {
-        let rows: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT status::text, COUNT(*) as count FROM merge_proposal GROUP BY status",
-        )
-        .fetch_all(&self.conn)
-        .await?;
-
-        Ok(rows.into_iter().collect())
-    }
-
-    /// Clean up old closed proposals.
-    /// Now uses tombstone approach - marks very old proposals as archived instead of deleting.
-    ///
-    /// # Arguments
-    /// * `days_old` - Archive proposals closed more than this many days ago
-    ///
-    /// # Returns
-    /// Number of proposals archived
-    pub async fn cleanup_old_proposals(&self, days_old: i32) -> Result<u64, sqlx::Error> {
-        // Use tombstone approach - mark as archived instead of deleting
-        // Only archive proposals that are already closed/merged and very old
-        let result = sqlx::query(
-            "UPDATE merge_proposal SET status = 'archived' WHERE status IN ('closed', 'merged') AND last_scanned < NOW() - INTERVAL '$1 days' AND status != 'archived'"
-        )
-        .bind(days_old)
-        .execute(&self.conn)
-        .await?;
-
-        Ok(result.rows_affected())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn test_proposal_info_manager_creation() {
-        // This would need a test database connection
-        // let manager = ProposalInfoManager::new(pool, None).await;
-        // assert!(manager.redis.is_none());
-    }
-
-    #[test]
-    fn test_proposal_info_serialization() {
-        let info = ProposalInfo {
-            can_be_merged: Some(true),
-            status: "open".to_string(),
-            revision: Some("abc123".to_string()),
-            target_branch_url: Some("https://github.com/test/repo".to_string()),
-            rate_limit_bucket: Some("default".to_string()),
-            codebase: Some(CodebaseName::new("test-codebase").unwrap()),
-            last_scanned: None,
-        };
-
-        assert_eq!(info.status, "open");
-        assert_eq!(info.codebase.as_deref(), Some("test-codebase"));
-        assert!(info.can_be_merged.unwrap());
-    }
 
     /// Regression: `merge_proposal.codebase` is `text references
     /// codebase(name) on delete set null`, so rows discovered by
@@ -510,32 +386,5 @@ mod tests {
             info.codebase
         );
         assert!(info.last_scanned.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_get_proposal_statistics() {
-        use janitor::schema::setup_test_database;
-        use janitor::test_utils::TestDatabase;
-
-        let Ok(Some(db)) = TestDatabase::new_optional().await else {
-            eprintln!("Skipping: no Postgres available");
-            return;
-        };
-        setup_test_database(&db.pool).await.unwrap();
-        sqlx::query(
-            "INSERT INTO merge_proposal (url, status) VALUES \
-             ('https://example.com/1', 'open'), \
-             ('https://example.com/2', 'open'), \
-             ('https://example.com/3', 'merged')",
-        )
-        .execute(&db.pool)
-        .await
-        .unwrap();
-
-        let mgr = ProposalInfoManager::new(db.pool.clone(), None).await;
-        assert_eq!(
-            mgr.get_proposal_statistics().await.unwrap(),
-            std::collections::HashMap::from([("open".to_string(), 2), ("merged".to_string(), 1)])
-        );
     }
 }
