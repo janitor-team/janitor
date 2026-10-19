@@ -2,9 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
-use crate::metrics::MetricsCollector;
 use janitor_types::CodebaseName;
 
 pub use janitor::vcs::VcsType;
@@ -69,19 +67,16 @@ impl RunnerVcsManager {
             })
         };
 
-        // Record metrics
-        let duration = start_time.elapsed();
+        let vcs_type = vcs_type.to_string();
         let status = if result.is_ok() { "success" } else { "error" };
-
-        MetricsCollector::record_vcs_operation_duration(
-            &vcs_type.to_string(),
+        crate::metrics::MetricsCollector::record_vcs_operation_duration(
+            &vcs_type,
             "open_branch",
             status,
-            duration,
+            start_time.elapsed(),
         );
-
         if let Err(ref failure) = result {
-            MetricsCollector::record_vcs_error(&vcs_type.to_string(), &failure.code);
+            crate::metrics::MetricsCollector::record_vcs_error(&vcs_type, &failure.code);
         }
 
         result

@@ -10,24 +10,14 @@ const RUN_COUNT: &str = "run_count_total";
 const ASSIGNMENT_COUNT: &str = "assignments_total";
 const QUEUE_EMPTY_COUNT: &str = "queue_empty_total";
 const RATE_LIMITED_COUNT: &str = "rate_limited_host_total";
-const QUEUE_SIZE: &str = "janitor_runner_queue_size";
 /// Matches the Python `last_success_gauge` exported via aiohttp_openmetrics
 /// so existing dashboards keep working.
 const LAST_SUCCESS_GAUGE: &str = "job_last_success_unixtime";
 const RUN_RESULT_COUNT: &str = "result_total";
 const BUILD_DURATION: &str = "build_duration";
-const DATABASE_OPERATIONS_TOTAL: &str = "janitor_runner_database_operations_total";
-const DATABASE_OPERATION_DURATION: &str = "janitor_runner_database_operation_duration_seconds";
 const REDIS_OPERATIONS_TOTAL: &str = "janitor_runner_redis_operations_total";
-const WORKER_HEALTH_CHECKS_TOTAL: &str = "janitor_runner_worker_health_checks_total";
-const WATCHDOG_TERMINATED_RUNS_TOTAL: &str = "janitor_runner_watchdog_terminated_runs_total";
-const RATE_LIMITED_HOSTS: &str = "janitor_runner_rate_limited_hosts";
-const ARTIFACT_UPLOADS_TOTAL: &str = "janitor_runner_artifact_uploads_total";
-const ARTIFACT_UPLOAD_SIZE_BYTES: &str = "janitor_runner_artifact_upload_size_bytes";
-const VCS_OPERATIONS_TOTAL: &str = "janitor_runner_vcs_operations_total";
 const VCS_OPERATION_DURATION: &str = "janitor_runner_vcs_operation_duration_seconds";
 const VCS_ERRORS_TOTAL: &str = "janitor_runner_vcs_errors_total";
-const MEMORY_USAGE_BYTES: &str = "janitor_runner_memory_usage_bytes";
 const SYSTEM_INFO: &str = "janitor_runner_system_info";
 const FORGE_LOGIN_REQUIRED_COUNT: &str = "forge_login_required";
 const ARTIFACT_UPLOAD_FAILED_COUNT: &str = "artifact_upload_failed_total";
@@ -62,43 +52,18 @@ fn describe() {
         "Number of times the queue was empty when an assignment was requested"
     );
     describe_counter!(RATE_LIMITED_COUNT, "Rate limiting per host");
-    describe_gauge!(QUEUE_SIZE, "Number of items in queue by campaign");
     describe_gauge!(
         LAST_SUCCESS_GAUGE,
         "Last time a batch job successfully finished"
     );
     describe_counter!(RUN_RESULT_COUNT, "Result counts");
     describe_histogram!(BUILD_DURATION, "Build duration");
-    describe_counter!(
-        DATABASE_OPERATIONS_TOTAL,
-        "Total number of database operations"
-    );
-    describe_histogram!(
-        DATABASE_OPERATION_DURATION,
-        "Database operation duration in seconds"
-    );
     describe_counter!(REDIS_OPERATIONS_TOTAL, "Total number of Redis operations");
-    describe_counter!(
-        WORKER_HEALTH_CHECKS_TOTAL,
-        "Total number of worker health checks"
-    );
-    describe_counter!(
-        WATCHDOG_TERMINATED_RUNS_TOTAL,
-        "Total number of runs terminated by watchdog"
-    );
-    describe_gauge!(RATE_LIMITED_HOSTS, "Number of rate limited hosts");
-    describe_counter!(ARTIFACT_UPLOADS_TOTAL, "Total number of artifact uploads");
-    describe_counter!(
-        ARTIFACT_UPLOAD_SIZE_BYTES,
-        "Size of uploaded artifacts in bytes"
-    );
-    describe_counter!(VCS_OPERATIONS_TOTAL, "Total number of VCS operations");
     describe_histogram!(VCS_OPERATION_DURATION, "VCS operation duration in seconds");
     describe_counter!(
         VCS_ERRORS_TOTAL,
         "Total number of VCS errors by type and error code"
     );
-    describe_gauge!(MEMORY_USAGE_BYTES, "Memory usage in bytes");
     describe_gauge!(SYSTEM_INFO, "System information");
     describe_counter!(
         FORGE_LOGIN_REQUIRED_COUNT,
@@ -162,19 +127,6 @@ impl MetricsCollector {
         histogram!(BUILD_DURATION, "campaign" => campaign.as_str().to_string()).record(duration);
     }
 
-    /// Record database operation
-    pub fn record_database_operation(operation: &str, success: bool, duration: f64) {
-        let status = if success { "success" } else { "error" };
-        counter!(
-            DATABASE_OPERATIONS_TOTAL,
-            "operation" => operation.to_string(),
-            "status" => status
-        )
-        .increment(1);
-        histogram!(DATABASE_OPERATION_DURATION, "operation" => operation.to_string())
-            .record(duration);
-    }
-
     /// Record a failed Redis operation.
     pub fn record_redis_error(operation: &'static str) {
         counter!(REDIS_OPERATIONS_TOTAL, "operation" => operation, "status" => "error")
@@ -222,71 +174,6 @@ impl MetricsCollector {
         gauge!(ACTIVE_RUNS, "worker" => worker.to_string()).set(count as f64);
     }
 
-    /// Update queue size
-    pub fn set_queue_size(campaign: &janitor_types::Campaign, bucket: &str, size: i64) {
-        gauge!(
-            QUEUE_SIZE,
-            "campaign" => campaign.as_str().to_string(),
-            "bucket" => bucket.to_string()
-        )
-        .set(size as f64);
-    }
-
-    /// Record worker health check
-    pub fn record_worker_health_check(worker: &str, healthy: bool) {
-        let status = if healthy { "healthy" } else { "unhealthy" };
-        counter!(
-            WORKER_HEALTH_CHECKS_TOTAL,
-            "worker" => worker.to_string(),
-            "status" => status
-        )
-        .increment(1);
-    }
-
-    /// Record watchdog termination
-    pub fn record_watchdog_termination(reason: &str) {
-        counter!(WATCHDOG_TERMINATED_RUNS_TOTAL, "reason" => reason.to_string()).increment(1);
-    }
-
-    /// Update rate limited hosts
-    pub fn set_rate_limited_hosts(host: &str, active: bool) {
-        gauge!(RATE_LIMITED_HOSTS, "host" => host.to_string()).set(if active { 1.0 } else { 0.0 });
-    }
-
-    /// Record artifact upload
-    pub fn record_artifact_upload(storage_type: &str, success: bool, size_bytes: u64) {
-        let status = if success { "success" } else { "error" };
-        counter!(
-            ARTIFACT_UPLOADS_TOTAL,
-            "storage_type" => storage_type.to_string(),
-            "status" => status
-        )
-        .increment(1);
-        if success {
-            counter!(ARTIFACT_UPLOAD_SIZE_BYTES, "storage_type" => storage_type.to_string())
-                .increment(size_bytes);
-        }
-    }
-
-    /// Record VCS operation
-    pub fn record_vcs_operation(operation: &str, vcs_type: &str, success: bool, duration: f64) {
-        let status = if success { "success" } else { "error" };
-        counter!(
-            VCS_OPERATIONS_TOTAL,
-            "operation" => operation.to_string(),
-            "vcs_type" => vcs_type.to_string(),
-            "status" => status
-        )
-        .increment(1);
-        histogram!(
-            VCS_OPERATION_DURATION,
-            "vcs_type" => vcs_type.to_string(),
-            "operation" => operation.to_string(),
-            "status" => status
-        )
-        .record(duration);
-    }
-
     /// Record the duration of a VCS operation.
     pub fn record_vcs_operation_duration(
         vcs_type: &str,
@@ -311,11 +198,6 @@ impl MetricsCollector {
             "error_code" => error_code.to_string()
         )
         .increment(1);
-    }
-
-    /// Update memory usage
-    pub fn set_memory_usage(memory_type: &str, bytes: i64) {
-        gauge!(MEMORY_USAGE_BYTES, "type" => memory_type.to_string()).set(bytes as f64);
     }
 
     /// Initialize system info metrics
@@ -373,23 +255,6 @@ mod tests {
                 ("job_last_success_unixtime".to_string(), Value::Gauge(0.0)),
                 ("queue_empty_total".to_string(), Value::Counter(0)),
                 ("run_count_total".to_string(), Value::Counter(0)),
-            ])
-        );
-    }
-
-    #[test]
-    fn record_vcs_operation() {
-        assert_eq!(
-            capture(|| MetricsCollector::record_vcs_operation("fetch", "git", false, 0.003)),
-            Snapshot::from([
-                (
-                    "janitor_runner_vcs_operation_duration_seconds{vcs_type=\"git\",operation=\"fetch\",status=\"error\"}".to_string(),
-                    Value::Histogram(vec![0.003])
-                ),
-                (
-                    "janitor_runner_vcs_operations_total{operation=\"fetch\",vcs_type=\"git\",status=\"error\"}".to_string(),
-                    Value::Counter(1)
-                ),
             ])
         );
     }

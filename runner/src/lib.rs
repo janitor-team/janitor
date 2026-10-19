@@ -1617,8 +1617,6 @@ pub struct AppState {
     pub backup_log_manager: Option<Arc<logs::LogFileManager>>,
     /// Artifact manager to fall back to when `artifact_manager` fails.
     pub backup_artifact_manager: Option<Arc<janitor::artifacts::ArtifactManager>>,
-    /// Metrics collector.
-    pub metrics: Arc<metrics::MetricsCollector>,
     /// Configuration.
     pub config: Arc<janitor::config::Config>,
     /// Upload processor for multipart forms.
