@@ -33,8 +33,6 @@ pub mod repository;
 pub mod scanner;
 /// GPG signing for `Release.gpg` and `InRelease`.
 pub mod sign;
-/// Log output and optional span export to `zipkin_address`.
-pub mod tracing_setup;
 /// HTTP handlers and axum wiring.
 pub mod web;
 
