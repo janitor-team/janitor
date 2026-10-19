@@ -2,9 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
-use crate::metrics::MetricsCollector;
 use janitor::CodebaseName;
 
 pub use janitor::vcs::VcsType;
@@ -16,7 +14,6 @@ use janitor::vcs::{BranchOpenFailure, VcsManager};
 #[derive(Clone)]
 pub struct RunnerVcsManager {
     managers: HashMap<VcsType, Arc<dyn VcsManager>>,
-    metrics: Arc<MetricsCollector>,
 }
 
 impl RunnerVcsManager {
@@ -29,7 +26,6 @@ impl RunnerVcsManager {
 
         Self {
             managers: arc_managers,
-            metrics: Arc::new(MetricsCollector {}),
         }
     }
 
@@ -71,48 +67,18 @@ impl RunnerVcsManager {
             })
         };
 
-        // Record metrics
-        let duration = start_time.elapsed();
+        let vcs_type = vcs_type.to_string();
         let status = if result.is_ok() { "success" } else { "error" };
-
-        self.metrics.record_vcs_operation_duration(
-            &vcs_type.to_string(),
-            "open_branch",
-            status,
-            duration,
-        );
-
+        crate::metrics::VCS_OPERATION_DURATION
+            .with_label_values(&[vcs_type.as_str(), "open_branch", status])
+            .observe(start_time.elapsed().as_secs_f64());
         if let Err(ref failure) = result {
-            self.metrics
-                .record_vcs_error(&vcs_type.to_string(), &failure.code);
+            crate::metrics::VCS_ERRORS_TOTAL
+                .with_label_values(&[vcs_type.as_str(), failure.code.as_str()])
+                .inc();
         }
 
         result
-    }
-}
-
-/// Integration with metrics collection
-impl MetricsCollector {
-    /// Record the duration of a VCS operation for metrics.
-    pub fn record_vcs_operation_duration(
-        &self,
-        vcs_type: &str,
-        operation: &str,
-        status: &str,
-        duration: Duration,
-    ) {
-        if let Ok(histogram) = crate::metrics::VCS_OPERATION_DURATION
-            .get_metric_with_label_values(&[vcs_type, operation, status])
-        {
-            histogram.observe(duration.as_secs_f64());
-        }
-    }
-
-    /// Record a VCS error for metrics.
-    pub fn record_vcs_error(&self, vcs_type: &str, error_code: &str) {
-        crate::metrics::VCS_ERRORS_TOTAL
-            .with_label_values(&[vcs_type, error_code])
-            .inc();
     }
 }
 
