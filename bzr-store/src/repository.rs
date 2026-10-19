@@ -129,6 +129,7 @@ pub trait RepositoryManager: Send + Sync {
 /// [`RepositoryManager::get_revision_info`]. Serialized as the
 /// Python response shape expects.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct RevisionInfo {
     /// Unique identifier for the revision.
     pub revision_id: String,

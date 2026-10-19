@@ -23,13 +23,12 @@ use tracing::warn;
 
 use crate::api_types::{
     RemoteConfiguredResponse, RemoteInfo, RemotesListResponse, RepositoryCreatedResponse,
-    RevisionInfoResponse,
 };
 use crate::bzr_browse::BrowseRouters;
 use crate::config::Config;
 use crate::database::DatabaseManager;
 use crate::error::{BzrError, Result};
-use crate::repository::{PyO3RepositoryManager, RepositoryManager, RepositoryPath};
+use crate::repository::{PyO3RepositoryManager, RepositoryManager, RepositoryPath, RevisionInfo};
 use crate::smart_protocol::{
     smart_protocol_campaign_handler, smart_protocol_codebase_handler, smart_protocol_dispatch,
     smart_protocol_role_handler,
@@ -589,15 +588,14 @@ async fn revision_info_handler(
     State(state): State<AppState>,
     Path(codebase): Path<String>,
     Query(query): Query<RevisionInfoQuery>,
-) -> Result<Json<RevisionInfoResponse>> {
+) -> Result<Json<Vec<RevisionInfo>>> {
     let repo_path = RepositoryPath::codebase_only(codebase);
     let revisions = state
         .repository_manager
         .get_revision_info(&repo_path, &query.old, &query.new)
         .await?;
 
-    let response = RevisionInfoResponse { revisions };
-    Ok(Json(response))
+    Ok(Json(revisions))
 }
 
 /// `POST /{codebase}/remotes/{remote}` — set the parent location of

@@ -235,11 +235,9 @@ test_with_database! {
         let body: serde_json::Value = resp.json().await.unwrap();
         // The ancestry walk between rev1 and rev2 includes exactly
         // one revision (rev2 itself; rev1 is the stop node).
-        let revs = body["revisions"]
-            .as_array()
-            .expect("revisions must be an array");
+        let revs = body.as_array().expect("body must be a list");
         assert_eq!(revs.len(), 1, "expected one revision between r1 and r2, got {:?}", revs);
-        assert_eq!(revs[0]["revision_id"], rev2);
+        assert_eq!(revs[0]["revision-id"], rev2);
         assert_eq!(revs[0]["message"], "second");
 
         handle.abort();

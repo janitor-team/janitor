@@ -16,13 +16,6 @@ pub struct RepositoryCreatedResponse {
     pub full_path: String,
 }
 
-/// Response for revision info queries.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RevisionInfoResponse {
-    /// List of revision information.
-    pub revisions: Vec<crate::repository::RevisionInfo>,
-}
-
 /// Response for remote configuration operations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteConfiguredResponse {
