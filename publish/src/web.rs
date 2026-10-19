@@ -447,12 +447,7 @@ async fn get_policy(
                     serde_json::to_value(NotFoundResponse {
                         reason: "Publish policy not found".to_string(),
                         name: Some(name),
-                        url: None,
-                        id: None,
-                        bucket: None,
-                        run_id: None,
-                        campaign: None,
-                        codebase: None,
+                        ..Default::default()
                     })
                     .unwrap(),
                 ),
@@ -813,12 +808,7 @@ async fn update_merge_proposal(
                     serde_json::to_value(NotFoundResponse {
                         reason: "No such merge proposal".to_string(),
                         url: Some(form.url),
-                        name: None,
-                        id: None,
-                        bucket: None,
-                        run_id: None,
-                        campaign: None,
-                        codebase: None,
+                        ..Default::default()
                     })
                     .unwrap(),
                 ),
@@ -1126,12 +1116,7 @@ WHERE id = $1
                 serde_json::to_value(NotFoundResponse {
                     reason: "No such publish".to_string(),
                     id: Some(id),
-                    name: None,
-                    url: None,
-                    bucket: None,
-                    run_id: None,
-                    campaign: None,
-                    codebase: None,
+                    ..Default::default()
                 })
                 .unwrap(),
             ),
@@ -2052,12 +2037,7 @@ WHERE run.id = $1
                     serde_json::to_value(NotFoundResponse {
                         reason: "No such publish-ready run".to_string(),
                         run_id: Some(id),
-                        name: None,
-                        url: None,
-                        id: None,
-                        bucket: None,
-                        campaign: None,
-                        codebase: None,
+                        ..Default::default()
                     })
                     .unwrap(),
                 ),
