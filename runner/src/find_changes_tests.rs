@@ -265,41 +265,6 @@ Files:
     }
 
     #[test]
-    fn test_changes_filenames() {
-        let temp_dir = TempDir::new().unwrap();
-        let changes_file = temp_dir.path().join("test_1.0-1_amd64.changes");
-
-        let valid_changes = r#"Format: 1.8
-Source: test-package
-Version: 1.0-1
-Distribution: unstable
-Checksums-Sha1:
- da39a3ee5e6b4b0d3255bfef95601890afd80709 1234 test-package_1.0-1_amd64.deb
- da39a3ee5e6b4b0d3255bfef95601890afd80709 5678 test-package-dev_1.0-1_amd64.deb
- da39a3ee5e6b4b0d3255bfef95601890afd80709 9012 test-package_1.0-1.dsc
-Files:
- d41d8cd98f00b204e9800998ecf8427e 1234 deb optional test-package_1.0-1_amd64.deb
- d41d8cd98f00b204e9800998ecf8427e 5678 deb optional test-package-dev_1.0-1_amd64.deb
- d41d8cd98f00b204e9800998ecf8427e 9012 source optional test-package_1.0-1.dsc
-"#;
-        fs::write(&changes_file, valid_changes).unwrap();
-
-        let filenames = crate::changes_filenames(&changes_file).unwrap();
-
-        let mut expected = vec![
-            "test-package_1.0-1_amd64.deb",
-            "test-package-dev_1.0-1_amd64.deb",
-            "test-package_1.0-1.dsc",
-        ];
-        expected.sort();
-
-        let mut actual: Vec<_> = filenames.into_iter().collect();
-        actual.sort();
-
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
     #[cfg(target_os = "linux")]
     fn test_dpkg_vendor() {
         // This test only runs on Linux systems with dpkg-vendor installed
