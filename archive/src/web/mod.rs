@@ -260,7 +260,7 @@ async fn serve_from_suite(
         .repositories
         .get(suite)
         .ok_or(StatusCode::NOT_FOUND)?;
-    serve_from_dir(repo_config.suite_path(), 2, request).await
+    serve_from_dir(repo_config.base_path.clone(), 2, request).await
 }
 
 /// Serve `/dists/{a}/{b}/{file}`. On-demand repositories only have
@@ -839,7 +839,6 @@ mod tests {
                 architectures: vec!["amd64".to_string()],
                 components: vec!["main".to_string()],
                 base_path: PathBuf::from("/x"),
-                by_hash: true,
             },
         );
         assert!(is_valid_on_demand_kind("lintian-fixes", None, &ac));

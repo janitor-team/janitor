@@ -41,6 +41,6 @@ pub mod web;
 pub use error::{ArchiveError, ArchiveResult};
 pub use manager::GeneratorManager;
 pub use redis::RedisSubscriber;
-pub use repository::{RepositoryGenerationConfig, RepositoryGenerator};
+pub use repository::RepositoryGenerator;
 pub use scanner::{BuildInfo, PackageScanner};
 pub use web::{AppState, ArchiveWebService, PublishRequest, PublishResponse};

@@ -13,7 +13,7 @@ use janitor_archive::{
     manager::GeneratorManager,
     periodic::spawn_republish_loop,
     redis::RedisSubscriber,
-    repository::{RepositoryGenerationConfig, RepositoryGenerator},
+    repository::RepositoryGenerator,
     scanner::PackageScanner,
     tracing_setup,
     web::ArchiveWebService,
@@ -139,7 +139,7 @@ async fn main() -> ArchiveResult<()> {
             start_web_server(&cli, &config, &locations).await?;
         }
         Some(Cmd::Cleanup) => {
-            cleanup_repositories(&config, &locations).await?;
+            cleanup_repositories(&config).await?;
         }
     }
 
@@ -192,11 +192,7 @@ async fn build_generator(
     let scanner =
         Arc::new(PackageScanner::with_cache(&locations.artifacts, cache_directory).await?);
     let database = Arc::new(ArchiveDatabase::new(db_pool));
-    let repo_config = RepositoryGenerationConfig::default();
-    let mut generator = match config.gpg.clone() {
-        Some(gpg) => RepositoryGenerator::with_gpg(scanner, database, repo_config, gpg),
-        None => RepositoryGenerator::new(scanner, database, repo_config),
-    };
+    let mut generator = RepositoryGenerator::new(scanner, database, config.gpg.clone());
     if let Some(runtime) = config.runtime_config.as_ref() {
         generator = generator.with_runtime_config(runtime.clone());
     }
@@ -300,16 +296,14 @@ async fn start_web_server(
 }
 
 /// Clean up old repository files.
-async fn cleanup_repositories(config: &ArchiveConfig, locations: &Locations) -> ArchiveResult<()> {
-    let db_pool = locations.connect_database().await?;
-    let database = Arc::new(ArchiveDatabase::new(db_pool));
-    let scanner = Arc::new(PackageScanner::new(&locations.artifacts).await?);
-    let repo_config = RepositoryGenerationConfig::default();
-    let generator = RepositoryGenerator::new(scanner, database, repo_config);
-
+async fn cleanup_repositories(config: &ArchiveConfig) -> ArchiveResult<()> {
     for (name, repo_config) in &config.repositories {
         info!("Cleaning up repository: {}", name);
-        generator.cleanup_repository(repo_config).await?;
+        match tokio::fs::remove_dir_all(&repo_config.base_path).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
     }
 
     Ok(())
