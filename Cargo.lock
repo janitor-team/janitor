@@ -3452,7 +3452,6 @@ dependencies = [
  "askama 0.16.1",
  "async-compression",
  "async-trait",
- "axum",
  "breezyshim",
  "bytes",
  "chrono",
