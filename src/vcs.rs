@@ -38,72 +38,15 @@ impl From<url::ParseError> for VcsConfigError {
     }
 }
 
-/// Trace context for distributed tracing across HTTP requests
-#[derive(Debug, Clone, Default)]
-pub struct TraceContext {
-    /// Traceparent header value (W3C Trace Context standard)
-    pub traceparent: Option<String>,
-    /// Tracestate header value (W3C Trace Context standard)
-    pub tracestate: Option<String>,
-    /// Additional custom trace headers
-    pub custom_headers: HashMap<String, String>,
-}
-
-impl TraceContext {
-    /// Create a new trace context from existing headers
-    pub fn from_headers(headers: &HashMap<String, String>) -> Self {
-        Self {
-            traceparent: headers.get("traceparent").cloned(),
-            tracestate: headers.get("tracestate").cloned(),
-            custom_headers: headers
-                .iter()
-                .filter(|(k, _)| k.starts_with("x-trace-") || k.starts_with("x-janitor-"))
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-        }
-    }
-
-    /// Generate trace headers for HTTP requests
-    pub fn to_headers(&self) -> HashMap<String, String> {
-        let mut headers = HashMap::new();
-
-        if let Some(ref traceparent) = self.traceparent {
-            headers.insert("traceparent".to_string(), traceparent.clone());
-        }
-
-        if let Some(ref tracestate) = self.tracestate {
-            headers.insert("tracestate".to_string(), tracestate.clone());
-        }
-
-        headers.extend(self.custom_headers.clone());
-        headers
-    }
-
-    /// Create a new trace context with a generated request ID
-    pub fn with_request_id(request_id: &str) -> Self {
-        let mut context = Self::default();
-        context
-            .custom_headers
-            .insert("x-janitor-request-id".to_string(), request_id.to_string());
-        context
-    }
-}
-
 pub fn is_authenticated_url(url: &Url) -> bool {
     ["git+ssh", "bzr+ssh"].contains(&url.scheme())
 }
 
-// Serialize as string ("bzr" or "git")
-impl Serialize for VcsType {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(match self {
-            VcsType::Bzr => "bzr",
-            VcsType::Git => "git",
-        })
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Copy, std::hash::Hash, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VcsType {
+    Bzr,
+    Git,
 }
 
 impl<'a> Deserialize<'a> for VcsType {
@@ -114,12 +57,6 @@ impl<'a> Deserialize<'a> for VcsType {
         let s = String::deserialize(deserializer)?;
         std::str::FromStr::from_str(&s).map_err(serde::de::Error::custom)
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Copy, std::hash::Hash)]
-pub enum VcsType {
-    Bzr,
-    Git,
 }
 
 impl std::fmt::Display for VcsType {
@@ -488,31 +425,17 @@ pub fn open_branch_ext(
     }
 }
 
-/// Extended branch opening with trace context support
-pub fn open_branch_ext_with_trace(
-    vcs_url: &Url,
-    possible_transports: Option<&mut Vec<breezyshim::transport::Transport>>,
-    probers: Option<&[&dyn breezyshim::controldir::PyProber]>,
-    trace_context: Option<&TraceContext>,
-) -> Result<breezyshim::branch::GenericBranch, BranchOpenFailure> {
-    // Log trace context information if available
-    if let Some(trace_ctx) = trace_context {
-        let headers = trace_ctx.to_headers();
-        if !headers.is_empty() {
-            log::debug!(
-                "Opening branch {} with trace context: {:?}",
-                vcs_url,
-                headers.keys().collect::<Vec<_>>()
-            );
-        }
-    }
-
-    // For now, call the existing function since breezyshim doesn't support
-    // custom headers yet. The trace context is logged for observability.
-    match silver_platter::vcs::open_branch(vcs_url, possible_transports, probers, None) {
-        Ok(branch) => Ok(branch),
-        Err(e) => Err(convert_branch_exception(vcs_url, e)),
-    }
+/// Map breezy's "<VCS> branches are not yet supported" messages to a result code.
+fn unsupported_vcs_code(description: &str) -> Option<&'static str> {
+    [
+        ("Subversion", "unsupported-vcs-svn"),
+        ("Mercurial", "unsupported-vcs-hg"),
+        ("Darcs", "unsupported-vcs-darcs"),
+        ("Fossil", "unsupported-vcs-fossil"),
+    ]
+    .into_iter()
+    .find(|(vcs, _)| description.contains(&format!("{} branches are not yet", vcs)))
+    .map(|(_, code)| code)
 }
 
 fn convert_branch_exception(vcs_url: &Url, e: BranchOpenError) -> BranchOpenFailure {
@@ -541,16 +464,8 @@ fn convert_branch_exception(vcs_url: &Url, e: BranchOpenError) -> BranchOpenFail
                 || description.contains("Unexpected HTTP status 502 for ")
             {
                 "502-bad-gateway"
-            } else if description.contains("Subversion branches are not yet") {
-                "unsupported-vcs-svn"
-            } else if description.contains("Mercurial branches are not yet") {
-                "unsupported-vcs-hg"
-            } else if description.contains("Darcs branches are not yet") {
-                "unsupported-vcs-darcs"
-            } else if description.contains("Fossil branches are not yet") {
-                "unsupported-vcs-fossil"
             } else {
-                "branch-unavailable"
+                unsupported_vcs_code(description).unwrap_or("branch-unavailable")
             };
             BranchOpenFailure {
                 code: code.to_string(),
@@ -594,16 +509,8 @@ fn convert_branch_exception(vcs_url: &Url, e: BranchOpenError) -> BranchOpenFail
                 } else {
                     "unsupported-vcs-protocol"
                 }
-            } else if description.contains("Subversion branches are not yet") {
-                "unsupported-vcs-svn"
-            } else if description.contains("Mercurial branches are not yet") {
-                "unsupported-vcs-hg"
-            } else if description.contains("Darcs branches are not yet") {
-                "unsupported-vcs-darcs"
-            } else if description.contains("Fossil branches are not yet") {
-                "unsupported-vcs-fossil"
             } else {
-                "unsupported-vcs"
+                unsupported_vcs_code(&description).unwrap_or("unsupported-vcs")
             };
             BranchOpenFailure {
                 code: code.to_string(),
@@ -644,7 +551,14 @@ pub trait VcsManager: Send + Sync {
     fn get_repository(
         &self,
         codebase: &CodebaseName,
-    ) -> Result<Option<GenericRepository>, BrzError>;
+    ) -> Result<Option<GenericRepository>, BrzError> {
+        let url = self.get_repository_url(codebase);
+        match breezyshim::repository::open(&url) {
+            Ok(repo) => Ok(Some(repo)),
+            Err(BrzError::NotBranchError(..)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
 
     /// Get the URL for the repository.
     fn get_repository_url(&self, codebase: &CodebaseName) -> Url;
@@ -666,6 +580,37 @@ pub trait VcsManager: Send + Sync {
         old_revid: &RevisionId,
         new_revid: &RevisionId,
     ) -> Vec<RevisionInfo>;
+}
+
+fn local_repository_url(base_path: &Path, codebase: &CodebaseName) -> Url {
+    std::fs::create_dir_all(base_path).unwrap();
+    let base_path = base_path.canonicalize().unwrap();
+    Url::from_directory_path(base_path)
+        .unwrap()
+        .join(codebase)
+        .unwrap()
+}
+
+fn list_local_repositories(base_path: &Path) -> Vec<String> {
+    base_path
+        .read_dir()
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+        .collect()
+}
+
+/// Open a branch in a local store, treating a missing or unavailable branch as absent.
+fn open_local_branch(
+    url: &Url,
+    vcs: &str,
+) -> Result<Option<breezyshim::branch::GenericBranch>, BranchOpenError> {
+    let probers = silver_platter::probers::select_probers(Some(vcs));
+    let probers = probers.iter().map(AsRef::as_ref).collect::<Vec<_>>();
+    match silver_platter::vcs::open_branch(url, None, Some(probers.as_slice()), None) {
+        Ok(branch) => Ok(Some(branch)),
+        Err(BranchOpenError::Unavailable { .. }) | Err(BranchOpenError::Missing { .. }) => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -690,26 +635,7 @@ impl VcsManager for LocalGitVcsManager {
         codebase: &CodebaseName,
         branch_name: &str,
     ) -> Result<Option<breezyshim::branch::GenericBranch>, BranchOpenError> {
-        let url = self.get_branch_url(codebase, branch_name);
-        let probers = silver_platter::probers::select_probers(Some("git"));
-        match silver_platter::vcs::open_branch(
-            &url,
-            None,
-            Some(
-                probers
-                    .iter()
-                    .map(AsRef::as_ref)
-                    .collect::<Vec<_>>()
-                    .as_slice(),
-            ),
-            None,
-        ) {
-            Ok(branch) => Ok(Some(branch)),
-            Err(BranchOpenError::Unavailable { .. }) | Err(BranchOpenError::Missing { .. }) => {
-                Ok(None)
-            }
-            Err(e) => Err(e),
-        }
+        open_local_branch(&self.get_branch_url(codebase, branch_name), "git")
     }
 
     fn get_branch_url(&self, codebase: &CodebaseName, branch_name: &str) -> Url {
@@ -724,33 +650,12 @@ impl VcsManager for LocalGitVcsManager {
         breezyshim::urlutils::join_segment_parameters(&url, params)
     }
 
-    fn get_repository(
-        &self,
-        codebase: &CodebaseName,
-    ) -> Result<Option<GenericRepository>, BrzError> {
-        let url = self.get_repository_url(codebase);
-        match breezyshim::repository::open(&url) {
-            Ok(repo) => Ok(Some(repo)),
-            Err(BrzError::NotBranchError(..)) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
-
     fn get_repository_url(&self, codebase: &CodebaseName) -> Url {
-        std::fs::create_dir_all(&self.base_path).unwrap();
-        let base_path = self.base_path.canonicalize().unwrap();
-        Url::from_directory_path(base_path)
-            .unwrap()
-            .join(codebase)
-            .unwrap()
+        local_repository_url(&self.base_path, codebase)
     }
 
     fn list_repositories(&self) -> Vec<String> {
-        self.base_path
-            .read_dir()
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
-            .collect()
+        list_local_repositories(&self.base_path)
     }
 
     async fn get_diff(
@@ -863,26 +768,7 @@ impl VcsManager for LocalBzrVcsManager {
         codebase: &CodebaseName,
         branch_name: &str,
     ) -> Result<Option<breezyshim::branch::GenericBranch>, BranchOpenError> {
-        let url = self.get_branch_url(codebase, branch_name);
-        let probers = silver_platter::probers::select_probers(Some("bzr"));
-        match silver_platter::vcs::open_branch(
-            &url,
-            None,
-            Some(
-                probers
-                    .iter()
-                    .map(AsRef::as_ref)
-                    .collect::<Vec<_>>()
-                    .as_slice(),
-            ),
-            None,
-        ) {
-            Ok(branch) => Ok(Some(branch)),
-            Err(BranchOpenError::Unavailable { .. }) | Err(BranchOpenError::Missing { .. }) => {
-                Ok(None)
-            }
-            Err(e) => Err(e),
-        }
+        open_local_branch(&self.get_branch_url(codebase, branch_name), "bzr")
     }
 
     fn get_branch_url(&self, codebase: &CodebaseName, branch_name: &str) -> Url {
@@ -893,33 +779,12 @@ impl VcsManager for LocalBzrVcsManager {
             .unwrap()
     }
 
-    fn get_repository(
-        &self,
-        codebase: &CodebaseName,
-    ) -> Result<Option<GenericRepository>, BrzError> {
-        let url = self.get_repository_url(codebase);
-        match breezyshim::repository::open(&url) {
-            Ok(repo) => Ok(Some(repo)),
-            Err(BrzError::NotBranchError(..)) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
-
     fn get_repository_url(&self, codebase: &CodebaseName) -> Url {
-        std::fs::create_dir_all(&self.base_path).unwrap();
-        let base_path = self.base_path.canonicalize().unwrap();
-        Url::from_directory_path(base_path)
-            .unwrap()
-            .join(codebase)
-            .unwrap()
+        local_repository_url(&self.base_path, codebase)
     }
 
     fn list_repositories(&self) -> Vec<String> {
-        self.base_path
-            .read_dir()
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
-            .collect()
+        list_local_repositories(&self.base_path)
     }
 
     async fn get_diff(
@@ -1132,18 +997,6 @@ impl VcsManager for RemoteGitVcsManager {
         self.base_url.join(codebase).unwrap()
     }
 
-    fn get_repository(
-        &self,
-        codebase: &CodebaseName,
-    ) -> Result<Option<GenericRepository>, BrzError> {
-        let url = self.get_repository_url(codebase);
-        match breezyshim::repository::open(&url) {
-            Ok(repo) => Ok(Some(repo)),
-            Err(BrzError::NotBranchError(..)) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
-
     fn list_repositories(&self) -> Vec<String> {
         // For remote Git VCS manager, try to query the repository list endpoint
         let list_url = match self.base_url.join("repositories") {
@@ -1269,18 +1122,6 @@ impl VcsManager for RemoteBzrVcsManager {
         self.base_url.join(codebase).unwrap()
     }
 
-    fn get_repository(
-        &self,
-        codebase: &CodebaseName,
-    ) -> Result<Option<GenericRepository>, BrzError> {
-        let url = self.get_repository_url(codebase);
-        match breezyshim::repository::open(&url) {
-            Ok(repo) => Ok(Some(repo)),
-            Err(BrzError::NotBranchError(..)) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
-
     fn list_repositories(&self) -> Vec<String> {
         // For remote Bzr VCS manager, try to query the repository list endpoint
         let list_url = match self.base_url.join("repositories") {
@@ -1383,39 +1224,37 @@ pub fn get_vcs_managers(
     }
 }
 
+/// Parse a store location: the path for a `file:` URL, otherwise the URL itself.
+fn local_path(location: &str) -> Result<Result<PathBuf, Url>, VcsConfigError> {
+    let url = Url::parse(location)?;
+    if url.scheme() == "file" {
+        url.to_file_path()
+            .map(Ok)
+            .map_err(|_| VcsConfigError::InvalidFilePath)
+    } else {
+        Ok(Err(url))
+    }
+}
+
 pub fn get_vcs_managers_from_config(
     config: &crate::config::Config,
 ) -> Result<HashMap<VcsType, Box<dyn VcsManager>>, VcsConfigError> {
     let mut ret: HashMap<VcsType, Box<dyn VcsManager>> = HashMap::new();
 
-    if let Some(git_location) = config.git_location.as_ref() {
-        let url = Url::parse(git_location)?;
-        if url.scheme() == "file" {
-            let file_path = url
-                .to_file_path()
-                .map_err(|_| VcsConfigError::InvalidFilePath)?;
-            ret.insert(VcsType::Git, Box::new(LocalGitVcsManager::new(file_path)));
-        } else {
-            ret.insert(
-                VcsType::Git,
-                Box::new(RemoteGitVcsManager::new(url.clone())),
-            );
-        }
+    if let Some(location) = config.git_location.as_ref() {
+        let manager: Box<dyn VcsManager> = match local_path(location)? {
+            Ok(path) => Box::new(LocalGitVcsManager::new(path)),
+            Err(url) => Box::new(RemoteGitVcsManager::new(url)),
+        };
+        ret.insert(VcsType::Git, manager);
     }
 
-    if let Some(bzr_location) = config.bzr_location.as_ref() {
-        let url = Url::parse(bzr_location)?;
-        if url.scheme() == "file" {
-            let file_path = url
-                .to_file_path()
-                .map_err(|_| VcsConfigError::InvalidFilePath)?;
-            ret.insert(VcsType::Bzr, Box::new(LocalBzrVcsManager::new(file_path)));
-        } else {
-            ret.insert(
-                VcsType::Bzr,
-                Box::new(RemoteBzrVcsManager::new(url.clone())),
-            );
-        }
+    if let Some(location) = config.bzr_location.as_ref() {
+        let manager: Box<dyn VcsManager> = match local_path(location)? {
+            Ok(path) => Box::new(LocalBzrVcsManager::new(path)),
+            Err(url) => Box::new(RemoteBzrVcsManager::new(url)),
+        };
+        ret.insert(VcsType::Bzr, manager);
     }
 
     Ok(ret)
