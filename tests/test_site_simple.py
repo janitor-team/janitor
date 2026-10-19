@@ -193,6 +193,42 @@ async def test_webhook_github_push_reschedules_without_crashing(
     assert "https://github.com/jelmer/example" in body["urls"]
 
 
+async def test_webhook_gitlab_push_matches_codebase(aiohttp_client, database_location):
+    conn = await asyncpg.connect(database_location)
+    try:
+        await conn.execute(
+            "INSERT INTO codebase (name, branch_url, url, vcs_type) "
+            "VALUES ($1, $2, $2, $3)",
+            "example",
+            "https://gitlab.com/jelmer/example.git",
+            "git",
+        )
+    finally:
+        await conn.close()
+
+    _private_app, app = await create_app(
+        config=create_config(database_location), redis=FakeRedis()
+    )
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/webhook",
+        headers={"X-Gitlab-Event": "Push Hook"},
+        json={
+            "ref": "refs/heads/main",
+            "after": "0" * 40,
+            "project": {
+                "git_http_url": "https://gitlab.com/jelmer/example.git",
+                "git_ssh_url": "git@gitlab.com:jelmer/example.git",
+                "default_branch": "main",
+            },
+        },
+    )
+    assert (resp.status, await resp.json()) == (
+        200,
+        {"rescheduled": {}, "urls": ["https://gitlab.com/jelmer/example.git"]},
+    )
+
+
 async def test_candidates_with_multiple_unscored_does_not_500(
     aiohttp_client, database_location
 ):
