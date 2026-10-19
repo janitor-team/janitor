@@ -252,7 +252,6 @@ mod tests {
                 branch_url: "https://example.invalid/finish-run-codebase".to_string(),
                 subpath: Some("".to_string()),
                 code: "success".to_string(),
-                transient: None,
                 codebase: "finish-run-codebase".to_string(),
                 campaign: "lintian-fixes".to_string(),
                 description: Some("ok".to_string()),
@@ -263,28 +262,23 @@ mod tests {
                 finish_time,
                 revision: Some(RevisionId::from(b"tip-revision".to_vec())),
                 main_branch_revision: Some(RevisionId::from(b"base-revision".to_vec())),
-                change_set: None,
                 tags: Some(vec![
                     ("v1.0".to_string(), Some(RevisionId::from(b"tag-rev".to_vec()))),
                 ]),
-                remotes: None,
                 branches: Some(vec![(
                     Some("main".to_string()),
                     Some("refs/heads/main".to_string()),
                     Some(RevisionId::from(b"base-revision".to_vec())),
                     Some(RevisionId::from(b"tip-revision".to_vec())),
                 )]),
-                failure_details: None,
-                failure_stage: None,
                 resume: Some(ResultResume {
                     run_id: "earlier-run".to_string(),
                 }),
-                target: None,
                 worker_name: Some("worker-42".to_string()),
                 vcs_type: Some("git".to_string()),
                 target_branch_url: Some("https://example.invalid/finish-run-codebase".to_string()),
                 context: Some(serde_json::json!({})),
-                builder_result: None,
+                ..Default::default()
             };
 
             let runner_db = create_test_runner_db(&test_db);

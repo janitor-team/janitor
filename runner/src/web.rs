@@ -2511,26 +2511,12 @@ async fn abort_assignment(
         codebase: assignment.queue_item.codebase.clone(),
         campaign: assignment.queue_item.campaign.clone(),
         description: Some(description.to_string()),
-        codemod: None,
-        value: None,
-        logfilenames: Vec::new(),
         start_time: now,
         finish_time: now,
-        revision: None,
-        main_branch_revision: None,
         change_set: assignment.queue_item.change_set.clone(),
-        tags: None,
-        remotes: None,
-        branches: None,
-        failure_details: None,
-        failure_stage: None,
-        resume: None,
-        target: None,
-        worker_name: None,
         vcs_type: assignment.vcs_info.vcs_type.clone(),
-        target_branch_url: None,
         context: assignment.queue_item.context.clone(),
-        builder_result: None,
+        ..Default::default()
     };
     if let Err(e) = state
         .database
