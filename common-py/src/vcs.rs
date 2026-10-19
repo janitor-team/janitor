@@ -3,7 +3,7 @@ use breezyshim::RevisionId;
 use janitor::CodebaseName;
 use pyo3::basic::CompareOp;
 use pyo3::create_exception;
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyConnectionError, PyRuntimeError, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyList};
 use std::collections::HashMap;
@@ -17,7 +17,10 @@ pub struct RevisionInfo(pub(crate) janitor::vcs::RevisionInfo);
 impl RevisionInfo {
     #[getter]
     fn commit_id<'a>(&self, py: Python<'a>) -> Option<Bound<'a, PyBytes>> {
-        self.0.commit_id.as_ref().map(|x| PyBytes::new(py, x))
+        self.0
+            .commit_id
+            .as_ref()
+            .map(|x| PyBytes::new(py, x.as_bytes()))
     }
 
     #[getter]
@@ -78,7 +81,20 @@ impl VcsManager {
     ) -> PyResult<Bound<'a, PyAny>> {
         let z = self.0.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let infos = z.get_revision_info(&codebase, &old_revid, &new_revid).await;
+            let infos = z
+                .get_revision_info(&codebase, &old_revid, &new_revid)
+                .await
+                .map_err(|e| match e {
+                    janitor::vcs::RevisionInfoError::Request(ref r) if r.is_timeout() => {
+                        PyTimeoutError::new_err(e.to_string())
+                    }
+                    janitor::vcs::RevisionInfoError::Request(_) => {
+                        PyConnectionError::new_err(e.to_string())
+                    }
+                    janitor::vcs::RevisionInfoError::Decode(_) => {
+                        PyValueError::new_err(e.to_string())
+                    }
+                })?;
             Ok(infos
                 .into_iter()
                 .map(|info| RevisionInfo(info))
