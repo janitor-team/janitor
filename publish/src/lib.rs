@@ -2706,13 +2706,12 @@ async fn check_existing_mp(
                 .status
                 .parse::<janitor::publish::MergeProposalStatus>()
                 .unwrap_or(janitor::publish::MergeProposalStatus::Open);
-            return finish_check_existing_mp_no_action(
-                status,
+            count_bucket(
+                mps_per_bucket,
                 effective_status,
                 rate_limit_bucket.as_deref(),
-                mps_per_bucket,
-                check_only,
             );
+            return Ok(false);
         }
     }
 
@@ -2940,13 +2939,12 @@ async fn check_existing_mp(
                     mp_url
                 );
                 bump_last_scanned(conn, &mp_url).await?;
-                return finish_check_existing_mp_no_action(
-                    status,
+                count_bucket(
+                    mps_per_bucket,
                     effective_status,
                     rate_limit_bucket.as_deref(),
-                    mps_per_bucket,
-                    check_only,
                 );
+                return Ok(false);
             }
         };
         proposal_info_manager
@@ -2967,14 +2965,11 @@ async fn check_existing_mp(
         None
     };
 
-    // Update the bucket counter.
-    if let (Some(mps_per_bucket), Some(bucket)) = (mps_per_bucket, rate_limit_bucket.as_deref()) {
-        *mps_per_bucket
-            .entry(effective_status)
-            .or_default()
-            .entry(bucket.to_string())
-            .or_insert(0) += 1;
-    }
+    count_bucket(
+        mps_per_bucket,
+        effective_status,
+        rate_limit_bucket.as_deref(),
+    );
 
     // Non-open / check_only proposals: nothing else to do.
     if status != breezyshim::forge::MergeProposalStatus::Open || check_only {
@@ -3777,30 +3772,22 @@ pub(crate) fn check_existing_mp_should_skip_per_mp_fetch(
     }
 }
 
-/// Helper: finish a check_existing_mp call early when there's
-/// nothing more we can do (missing target URL, non-open status,
-/// check_only). Bumps `mps_per_bucket` and returns the appropriate
-/// "no action taken" success flag.
-fn finish_check_existing_mp_no_action(
-    status: breezyshim::forge::MergeProposalStatus,
-    effective_status: janitor::publish::MergeProposalStatus,
-    rate_limit_bucket: Option<&str>,
+/// Count a merge proposal with `status` towards the open/merged/...
+/// counts for its rate-limit bucket.
+fn count_bucket(
     mps_per_bucket: Option<
         &mut HashMap<janitor::publish::MergeProposalStatus, HashMap<String, usize>>,
     >,
-    check_only: bool,
-) -> Result<bool, CheckMpError> {
+    status: janitor::publish::MergeProposalStatus,
+    rate_limit_bucket: Option<&str>,
+) {
     if let (Some(mps_per_bucket), Some(bucket)) = (mps_per_bucket, rate_limit_bucket) {
         *mps_per_bucket
-            .entry(effective_status)
+            .entry(status)
             .or_default()
             .entry(bucket.to_string())
             .or_insert(0) += 1;
     }
-    if status != breezyshim::forge::MergeProposalStatus::Open || check_only {
-        return Ok(false);
-    }
-    Ok(false)
 }
 
 /// Iterate over all merge proposals.
@@ -3913,14 +3900,7 @@ async fn check_existing(
         MergeProposalStatus::Rejected => maplit::hashmap! {},
     };
     let mut possible_transports = Vec::new();
-    let mut status_count = maplit::hashmap! {
-        MergeProposalStatus::Open => 0,
-        MergeProposalStatus::Closed => 0,
-        MergeProposalStatus::Merged => 0,
-        MergeProposalStatus::Applied => 0,
-        MergeProposalStatus::Abandoned => 0,
-        MergeProposalStatus::Rejected => 0,
-    };
+    let mut scanned_total = 0;
 
     let mut modified_mps = 0;
     let mut unexpected = 0;
@@ -3955,7 +3935,7 @@ async fn check_existing(
                 continue;
             }
         };
-        *status_count.entry(status.into()).or_insert(0) += 1;
+        scanned_total += 1;
         // Key the per-forge rate-limit map on `base_url` rather than
         // the human-readable `forge_name` string. Two forges can share
         // a `forge_name` (e.g. two GitHub Enterprise deployments), so
@@ -4101,7 +4081,6 @@ async fn check_existing(
         }
     }
 
-    let scanned_total: i32 = status_count.values().sum();
     log::info!(
         "Successfully scanned {} existing merge proposals ({} iter errors)",
         scanned_total,
@@ -4172,19 +4151,7 @@ async fn check_existing(
     !was_forge_ratelimited
 }
 
-/// Decide whether to publish a single publish-ready run, then dispatch
-/// one `publish_from_policy` call per role.
-///
-/// Returns a `role -> Option<mode>` map. A `Some(mode)` entry means
-/// `publish_from_policy` actually published something for that role
-/// (with `mode` the effective mode; AttemptPush may collapse to Propose
-/// or Push). A `None` entry means the publish was gated off
-/// (rate-limited, max frequency, already published, etc.), not that it
-/// failed.
-///
-/// Pre-flight bails return a single-entry map `{"__status": Some(reason)}`.
-/// Reasons: `exponential_backoff`, `push_limit_reached`,
-/// `rejected_last_mp`, `missing_branch_url`, `no_revision`.
+/// Does any of the branches want to be pushed?
 #[must_use]
 pub(crate) fn wants_push_mode(branches: &[crate::state::UnpublishedBranch]) -> bool {
     branches.iter().any(|b| {
@@ -4279,6 +4246,20 @@ pub(crate) fn should_skip_main_after_aux_failure(
     role == "main" && actual_modes.values().any(|v| v.is_none())
 }
 
+/// Outcome of [`consider_publish_run`].
+#[derive(Debug)]
+pub(crate) enum Consideration {
+    /// The run was skipped before considering any role, for this reason.
+    Skipped(&'static str),
+    /// Per role, the effective mode it was published with (AttemptPush
+    /// may collapse to Propose or Push), or `None` when publishing was
+    /// gated off (rate-limited, max frequency, already published, etc.)
+    /// rather than failed.
+    Roles(HashMap<String, Option<String>>),
+}
+
+/// Decide whether to publish a single publish-ready run, then dispatch
+/// one `publish_from_policy` call per role.
 #[allow(clippy::too_many_arguments)]
 async fn consider_publish_run(
     conn: &sqlx::PgPool,
@@ -4292,7 +4273,7 @@ async fn consider_publish_run(
     command: &str,
     push_limit: Option<usize>,
     require_binary_diff: bool,
-) -> Result<HashMap<String, Option<String>>, PublishError> {
+) -> Result<Consideration, PublishError> {
     log::info!(
         "Considering publish for run {} (campaign: {}, codebase: {})",
         run.id,
@@ -4300,38 +4281,26 @@ async fn consider_publish_run(
         run.codebase
     );
 
-    // Helper: return a single-key "__status" map so the caller can
-    // tell pre-flight skips apart from the real per-role result map.
-    fn status_only(reason: &str) -> HashMap<String, Option<String>> {
-        let mut m = HashMap::new();
-        m.insert("__status".to_string(), Some(reason.to_string()));
-        m
-    }
-
-    if run.revision.is_none() {
+    let Some(revision) = run.revision.as_ref() else {
         log::warn!(
             "Run {} is publish ready, but does not have revision set.",
             run.id
         );
-        return Ok(status_only("no_revision"));
-    }
+        return Ok(Consideration::Skipped("no_revision"));
+    };
 
-    let campaign_config = match config.campaign.iter().find(|c| c.name() == run.suite) {
+    let campaign_config = match config.get_campaign(&run.suite) {
         Some(c) => c,
         None => {
             log::warn!("No campaign configuration found for suite {}", run.suite);
-            return Ok(status_only("no_campaign_config"));
+            return Ok(Consideration::Skipped("no_campaign_config"));
         }
     };
 
     // Exponential backoff: skip the run if the previous attempt was
     // too recent. Matches py/janitor/publish.py::consider_publish_run.
-    let attempt_count = match run.revision.as_ref() {
-        Some(rev) => {
-            crate::state::get_publish_attempt_count(conn, rev, &["differ-unreachable"]).await?
-        }
-        None => 0,
-    };
+    let attempt_count =
+        crate::state::get_publish_attempt_count(conn, revision, &["differ-unreachable"]).await?;
     let next_try_time = calculate_next_try_time(run.finish_time, attempt_count);
     if chrono::Utc::now() < next_try_time {
         log::info!(
@@ -4342,7 +4311,7 @@ async fn consider_publish_run(
             next_try_time
         );
         crate::metrics::EXPONENTIAL_BACKOFF_COUNT.inc();
-        return Ok(status_only("exponential_backoff"));
+        return Ok(Consideration::Skipped("exponential_backoff"));
     }
 
     // Push limit: if any branch wants push/attempt-push and the
@@ -4355,7 +4324,7 @@ async fn consider_publish_run(
             run.suite
         );
         crate::metrics::PUSH_LIMIT_COUNT.inc();
-        return Ok(status_only("push_limit_reached"));
+        return Ok(Consideration::Skipped("push_limit_reached"));
     }
 
     // Missing branch_url: can't publish anywhere.
@@ -4365,7 +4334,7 @@ async fn consider_publish_run(
             run.id
         );
         crate::metrics::MISSING_BRANCH_URL_COUNT.inc();
-        return Ok(status_only("missing_branch_url"));
+        return Ok(Consideration::Skipped("missing_branch_url"));
     }
 
     // Rejected/closed previous MP: the maintainer has explicitly
@@ -4379,7 +4348,7 @@ async fn consider_publish_run(
             previous_mp_status
         );
         crate::metrics::REJECTED_LAST_MP_COUNT.inc();
-        return Ok(status_only("rejected_last_mp"));
+        return Ok(Consideration::Skipped("rejected_last_mp"));
     }
 
     // Resolve the target branch URL that publish_from_policy will
@@ -4396,7 +4365,7 @@ async fn consider_publish_run(
                 target_branch_url_str,
                 e
             );
-            return Ok(status_only("invalid_branch_url"));
+            return Ok(Consideration::Skipped("invalid_branch_url"));
         }
     };
 
@@ -4485,7 +4454,7 @@ async fn consider_publish_run(
         }
     }
 
-    Ok(actual_modes)
+    Ok(Consideration::Roles(actual_modes))
 }
 
 /// Fetch the publish policy for a (codebase, campaign) pair: the

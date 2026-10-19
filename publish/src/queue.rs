@@ -3,7 +3,7 @@
 //! This module handles the main queue processing loop and related functionality,
 //! ported from the Python implementation.
 
-use crate::{consider_publish_run, AppState, PublishError};
+use crate::{consider_publish_run, AppState, Consideration, PublishError};
 use chrono::Utc;
 use sqlx::PgPool;
 use std::collections::HashMap;
@@ -230,7 +230,7 @@ pub async fn publish_pending_ready(
     require_binary_diff: bool,
 ) -> Result<(), PublishError> {
     let start_time = std::time::Instant::now();
-    let mut actions: HashMap<Option<String>, usize> = HashMap::new();
+    let mut actions: HashMap<String, usize> = HashMap::new();
     let mut published_count = 0;
     let mut error_count = 0;
 
@@ -306,23 +306,22 @@ pub async fn publish_pending_ready(
                     run.suite,
                     run.codebase,
                 );
-                *actions.entry(Some("timeout".to_string())).or_insert(0) += 1;
+                *actions.entry("timeout".to_string()).or_insert(0) += 1;
             }
-            Ok(Ok(results)) => {
-                if let Some(pre_flight) = results.get("__status").and_then(|v| v.as_ref()) {
-                    *actions.entry(Some(pre_flight.clone())).or_insert(0) += 1;
-                } else {
-                    for (role, mode) in &results {
-                        match mode {
-                            Some(m) => {
-                                *actions.entry(Some(m.clone())).or_insert(0) += 1;
-                                if m != "build-only" && m != "skip" {
-                                    published_count += 1;
-                                }
+            Ok(Ok(Consideration::Skipped(reason))) => {
+                *actions.entry(reason.to_string()).or_insert(0) += 1;
+            }
+            Ok(Ok(Consideration::Roles(results))) => {
+                for (role, mode) in &results {
+                    match mode {
+                        Some(m) => {
+                            *actions.entry(m.clone()).or_insert(0) += 1;
+                            if m != "build-only" && m != "skip" {
+                                published_count += 1;
                             }
-                            None => {
-                                *actions.entry(Some(format!("gated:{}", role))).or_insert(0) += 1;
-                            }
+                        }
+                        None => {
+                            *actions.entry(format!("gated:{}", role)).or_insert(0) += 1;
                         }
                     }
                 }
@@ -332,7 +331,7 @@ pub async fn publish_pending_ready(
             Ok(Err(e)) => {
                 error_count += 1;
                 log::error!("Error considering run {} for publishing: {}", run.id, e);
-                *actions.entry(Some("error".to_string())).or_insert(0) += 1;
+                *actions.entry("error".to_string()).or_insert(0) += 1;
             }
         }
     }
