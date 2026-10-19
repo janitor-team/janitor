@@ -490,6 +490,102 @@ mod tests {
             "https://vcs.example.com/bzr/mycodebase"
         );
     }
+
+    const SHA: &str = "2282dc9d1e5e2c0b95c1a8e1f1e6a5f2b3c4d5e6";
+
+    fn git_revision_info() -> RevisionInfo {
+        RevisionInfo {
+            commit_id: Some(SHA.to_string()),
+            revision_id: RevisionId::from(format!("git-v1:{}", SHA).into_bytes()),
+            message: "Add a thing\n".to_string(),
+            link: Some(format!("/git/foo/commit/{}/", SHA)),
+        }
+    }
+
+    /// `git_revision_info()` as the git store sends it.
+    fn git_wire() -> serde_json::Value {
+        serde_json::json!({
+            "commit-id": SHA,
+            "revision-id": format!("git-v1:{}", SHA),
+            "message": "Add a thing\n",
+            "link": format!("/git/foo/commit/{}/", SHA),
+        })
+    }
+
+    #[test]
+    fn test_revision_info_wire_names() {
+        assert_eq!(
+            serde_json::to_value(git_revision_info()).unwrap(),
+            git_wire()
+        );
+        assert_eq!(
+            serde_json::from_value::<RevisionInfo>(git_wire()).unwrap(),
+            git_revision_info()
+        );
+    }
+
+    /// Serves `body` with `status` for every revision-info request. `None` refuses connections.
+    async fn revision_info_store(answer: Option<(u16, String)>) -> Url {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        match answer {
+            Some((status, body)) => {
+                let status = axum::http::StatusCode::from_u16(status).unwrap();
+                let app = axum::Router::new().route(
+                    "/{codebase}/revision-info",
+                    axum::routing::get(move || async move { (status, body) }),
+                );
+                tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            }
+            None => drop(listener),
+        }
+        url.parse().unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_remote_get_revision_info() {
+        let payload = serde_json::json!([git_wire()]).to_string();
+        let revid = |sha: &str| RevisionId::from(format!("git-v1:{}", sha).into_bytes());
+        let (old, new) = (revid(&"0".repeat(40)), revid(SHA));
+        let mut results = vec![];
+        for answer in [
+            Some((200, payload.clone())),
+            Some((500, payload)),
+            Some((200, "<html>".to_string())),
+            None,
+        ] {
+            let base_url = revision_info_store(answer).await;
+            let managers: [Box<dyn VcsManager>; 2] = [
+                Box::new(RemoteGitVcsManager::new(base_url.clone())),
+                Box::new(RemoteBzrVcsManager::new(base_url)),
+            ];
+            for manager in managers {
+                results.push(
+                    match manager
+                        .get_revision_info(&CodebaseName::new("foo").unwrap(), &old, &new)
+                        .await
+                    {
+                        Ok(infos) => Ok(infos),
+                        Err(RevisionInfoError::Request(_)) => Err("request"),
+                        Err(RevisionInfoError::Decode(_)) => Err("decode"),
+                    },
+                );
+            }
+        }
+        assert_eq!(
+            results,
+            vec![
+                Ok(vec![git_revision_info()]),
+                Ok(vec![git_revision_info()]),
+                Err("request"),
+                Err("request"),
+                Err("decode"),
+                Err("decode"),
+                Err("request"),
+                Err("request"),
+            ]
+        );
+    }
 }
 
 /// Add a `,branch=` segment parameter for a colocated git branch. The
