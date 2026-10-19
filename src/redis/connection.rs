@@ -63,9 +63,4 @@ impl ConnectionPool {
             )),
         }
     }
-
-    /// Get the number of available connections
-    pub fn available_connections(&self) -> usize {
-        self.semaphore.available_permits()
-    }
 }

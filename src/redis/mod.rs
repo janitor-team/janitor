@@ -189,11 +189,6 @@ impl RedisManager {
         self.test_connection().await
     }
 
-    /// Get the current connection state
-    pub async fn connection_state(&self) -> ConnectionState {
-        *self.connection_state.read().await
-    }
-
     /// Create a publisher for pub/sub operations
     pub fn publisher(&self) -> Publisher {
         Publisher::new(self.clone())
@@ -274,73 +269,11 @@ impl RedisManager {
                 | redis::ErrorKind::Server(redis::ServerErrorKind::MasterDown)
         )
     }
-
-    /// Get a simple string value
-    pub async fn get(&self, key: &str) -> Result<Option<String>, JanitorError> {
-        let mut cmd = redis::cmd("GET");
-        cmd.arg(key);
-        self.execute(&mut cmd).await
-    }
-
-    /// Set a simple string value
-    pub async fn set(&self, key: &str, value: &str) -> Result<(), JanitorError> {
-        let mut cmd = redis::cmd("SET");
-        cmd.arg(key).arg(value);
-        self.execute::<String>(&mut cmd).await?;
-        Ok(())
-    }
-
-    /// Set a value with expiration
-    pub async fn set_ex(&self, key: &str, value: &str, seconds: u64) -> Result<(), JanitorError> {
-        let mut cmd = redis::cmd("SET");
-        cmd.arg(key).arg(value).arg("EX").arg(seconds);
-        self.execute::<String>(&mut cmd).await?;
-        Ok(())
-    }
-
-    /// Delete a key
-    pub async fn del(&self, key: &str) -> Result<bool, JanitorError> {
-        let mut cmd = redis::cmd("DEL");
-        cmd.arg(key);
-        let result: i32 = self.execute(&mut cmd).await?;
-        Ok(result > 0)
-    }
-
-    /// Check if a key exists
-    pub async fn exists(&self, key: &str) -> Result<bool, JanitorError> {
-        let mut cmd = redis::cmd("EXISTS");
-        cmd.arg(key);
-        let result: i32 = self.execute(&mut cmd).await?;
-        Ok(result > 0)
-    }
-
-    /// Get time to live for a key
-    pub async fn ttl(&self, key: &str) -> Result<Option<Duration>, JanitorError> {
-        let mut cmd = redis::cmd("TTL");
-        cmd.arg(key);
-        let result: i64 = self.execute(&mut cmd).await?;
-
-        match result {
-            -2 => Ok(None),                // Key does not exist
-            -1 => Ok(Some(Duration::MAX)), // Key exists but has no TTL
-            seconds => Ok(Some(Duration::from_secs(seconds as u64))),
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_connection_state_transitions() {
-        // Test that ConnectionState enum works correctly
-        let state = ConnectionState::Disconnected;
-        assert_eq!(state, ConnectionState::Disconnected);
-
-        let state = ConnectionState::Connected;
-        assert_eq!(state, ConnectionState::Connected);
-    }
 
     #[test]
     fn test_is_connection_error() {
