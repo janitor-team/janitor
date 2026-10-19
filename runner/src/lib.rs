@@ -46,7 +46,6 @@ pub mod backchannel;
 pub mod builder;
 /// Database operations.
 pub mod database;
-/// Error tracking and logging.
 /// Module for log file management.
 pub mod logs;
 /// Module for Prometheus metrics collection.
