@@ -1,0 +1,37 @@
+---
+# The archive signs Release files with this key. It has its own GNUPGHOME,
+# apart from auto_upload's: /pgp_keys exports every key in its keyring.
+- name: Create the archive's GNUPG home
+  ansible.builtin.file:
+    path: "{{ janitor_home }}/gnupg-archive"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0700"
+
+- name: Check whether the archive signing key exists
+  become: true
+  become_user: "{{ ansible_user }}"
+  ansible.builtin.command: gpg --homedir {{ janitor_home }}/gnupg-archive --list-secret-keys --with-colons
+  register: archive_gpg_list
+  changed_when: false
+  failed_when: false
+
+- name: Generate the archive signing key
+  # No passphrase: the archive signs unattended. RSA, since gpgv on older
+  # apt clients may not verify ed25519.
+  become: true
+  become_user: "{{ ansible_user }}"
+  ansible.builtin.command: gpg --homedir {{ janitor_home }}/gnupg-archive --batch --gen-key /dev/stdin
+  args:
+    stdin: |
+      Key-Type: RSA
+      Key-Length: 4096
+      Subkey-Type: RSA
+      Subkey-Length: 4096
+      Name-Real: {{ janitor_github_org }} archive
+      Name-Email: archive@{{ janitor_domain }}
+      Expire-Date: 0
+      %no-protection
+      %commit
+  changed_when: true
+  when: "'sec:' not in archive_gpg_list.stdout"

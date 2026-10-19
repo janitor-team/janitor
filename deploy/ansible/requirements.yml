@@ -1,0 +1,6 @@
+---
+collections:
+  # >=4.0.0 for the login_db option of the postgresql_* modules.
+  - name: community.postgresql
+    version: ">=4.0.0"
+  - name: ansible.posix

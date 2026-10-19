@@ -1,0 +1,21 @@
+# Managed by ansible (roles/worker_firewall).
+[Unit]
+Description=nftables table janitor_worker: port 9821 only from the control host
+Wants=network-pre.target
+Before=network-pre.target shutdown.target
+# nftables.service flushes the whole ruleset: follow its restart and reload.
+After=nftables.service
+PartOf=nftables.service
+ReloadPropagatedFrom=nftables.service
+Conflicts=shutdown.target
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/janitor-worker-firewall.nft
+ExecReload=/usr/sbin/nft -f /etc/janitor-worker-firewall.nft
+ExecStop=-/usr/sbin/nft delete table inet janitor_worker
+
+[Install]
+WantedBy=sysinit.target

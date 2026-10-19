@@ -1,0 +1,8 @@
+---
+# Made as create-sbuild-chroot-unshare.py does, under a .partial name sbuild skips, then moved.
+janitor_quadlet_sbuild_chroot_build: >-
+  mmdebstrap --variant=buildd unstable
+  /root/.cache/sbuild/{{ janitor_sbuild_chroot }}.partial.tar.xz
+  http://deb.debian.org/debian --mode=unshare --arch=amd64 --components=main &&
+  mv /root/.cache/sbuild/{{ janitor_sbuild_chroot }}.partial.tar.xz
+  /root/.cache/sbuild/{{ janitor_sbuild_chroot }}.tar.xz
