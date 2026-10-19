@@ -244,7 +244,7 @@ impl GCSLogFileManager {
 #[pyo3(signature = (location=None))]
 fn get_log_manager(location: Option<&str>) -> PyResult<LogFileManager> {
     let manager = pyo3_async_runtimes::tokio::get_runtime()
-        .block_on(janitor::logs::get_log_manager(location))
+        .block_on(janitor::logs::create_log_manager(location))
         .map_err(convert_logs_error_to_py)?;
     Ok(LogFileManager(Arc::from(manager)))
 }
