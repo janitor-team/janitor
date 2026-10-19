@@ -46,7 +46,7 @@ async def openid_middleware(request, handler):
 async def handle_oauth_callback(request):
     code = request.query.get("code")
     state_code = request.query.get("state")
-    if request.cookies.get("state") != state_code:
+    if not state_code or request.cookies.get("state") != state_code:
         return web.Response(status=400, text="state variable mismatch")
     if not request.app["openid_config"]:
         raise web.HTTPNotFound(text="login disabled")
