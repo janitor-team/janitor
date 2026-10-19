@@ -66,10 +66,7 @@ fn test_debdiff_error_display() {
 
 #[test]
 fn test_publish_error_code() {
-    let err = PublishError::Failure {
-        code: "test-code".to_string(),
-        description: "Test description".to_string(),
-    };
+    let err = PublishError::failure("test-code", "Test description");
     assert_eq!(err.code(), "test-code");
 
     let err = PublishError::NothingToDo("Nothing to do".to_string());
@@ -84,10 +81,7 @@ fn test_publish_error_code() {
 
 #[test]
 fn test_publish_error_description() {
-    let err = PublishError::Failure {
-        code: "test-code".to_string(),
-        description: "Test description".to_string(),
-    };
+    let err = PublishError::failure("test-code", "Test description");
     assert_eq!(err.description(), "Test description");
 
     let err = PublishError::NothingToDo("Nothing to do".to_string());
@@ -102,10 +96,7 @@ fn test_publish_error_description() {
 
 #[test]
 fn test_publish_error_display() {
-    let err = PublishError::Failure {
-        code: "test-code".to_string(),
-        description: "Test description".to_string(),
-    };
+    let err = PublishError::failure("test-code", "Test description");
     assert_eq!(
         err.to_string(),
         "PublishError::Failure: test-code: Test description"
