@@ -136,13 +136,6 @@ impl ApplicationBuilder {
         Ok(())
     }
 
-    fn tracing_config(&self) -> crate::tracing::TracingConfig {
-        crate::tracing::TracingConfig {
-            log_level: if self.debug { "debug" } else { "info" }.to_string(),
-            ..Default::default()
-        }
-    }
-
     fn error_tracking_config() -> ErrorTrackingConfig {
         ErrorTrackingConfig {
             max_errors_in_memory: 1000,
@@ -165,7 +158,7 @@ impl ApplicationBuilder {
                 .map(crate::tracing::init_span_export)
                 .transpose()
         } else {
-            crate::tracing::init_tracing(&self.tracing_config(), zipkin_address)
+            crate::tracing::init_tracing(if self.debug { "debug" } else { "info" }, zipkin_address)
         }
         .map_err(|e| {
             ApplicationError::Configuration(format!("Failed to initialize tracing: {}", e))
