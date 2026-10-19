@@ -365,9 +365,7 @@ fn assemble_app_state(
 
     let health_checker = Arc::new(crate::HealthChecker::new(
         runner_db_arc.clone(),
-        vcs_manager.clone(),
         log_manager.clone(),
-        artifact_manager.clone(),
     ));
 
     let public_vcs_managers =
