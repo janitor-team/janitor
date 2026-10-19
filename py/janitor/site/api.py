@@ -17,6 +17,7 @@
 
 import asyncio
 import logging
+import math
 from typing import Optional
 
 import aiozipkin
@@ -147,6 +148,59 @@ class ScheduleResultSchema(Schema):
     )
 
 
+def _form_offset(post) -> Optional[float]:
+    if post.get("offset") is None:
+        return None
+    offset = float(post["offset"])
+    if not math.isfinite(offset):
+        raise ValueError(offset)
+    return offset
+
+
+@docs(summary="Schedule a codebase")
+@form_schema(ScheduleRequestSchema())
+@response_schema(ScheduleResultSchema())
+@routes.post("/{campaign}/c/{codebase}/schedule", name="codebase-schedule")
+async def handle_codebase_schedule(request):
+    check_logged_in(request)
+    codebase = request.match_info["codebase"]
+    campaign = request.match_info["campaign"]
+    post = await request.post()
+    try:
+        offset = _form_offset(post)
+    except ValueError:
+        return web.json_response({"error": "invalid number for offset"}, status=400)
+    try:
+        refresh = bool(int(post.get("refresh", "0")))
+    except ValueError:
+        return web.json_response({"error": "invalid boolean for refresh"}, status=400)
+    try:
+        requester = request["user"]["email"]
+    except KeyError:
+        requester = request["user"]["name"]
+    json = {
+        "campaign": campaign,
+        "codebase": codebase,
+        "refresh": refresh,
+        "requester": requester,
+        "bucket": "manual",
+        "offset": offset,
+    }
+    url = URL(request.app["runner_url"]) / "schedule"
+    try:
+        async with request.app["http_client_session"].post(url, json=json) as resp:
+            ret = await resp.json()
+            if resp.status >= 400:
+                return web.json_response(ret, status=resp.status)
+    except ContentTypeError as e:
+        return web.json_response(
+            {"error": f"runner returned error {e.code}"}, status=400
+        )
+    except ClientConnectorError:
+        return web.json_response({"error": "unable to contact runner"}, status=502)
+    return web.json_response(ret)
+
+
 @docs(summary="Reschedule a run")
 @form_schema(ScheduleRequestSchema())
 @response_schema(ScheduleResultSchema())
@@ -155,7 +209,10 @@ async def handle_run_reschedule(request):
     check_logged_in(request)
     run_id = request.match_info["run_id"]
     post = await request.post()
-    offset = post.get("offset")
+    try:
+        offset = _form_offset(post)
+    except ValueError:
+        return web.json_response({"error": "invalid number for offset"}, status=400)
     try:
         refresh = bool(int(post.get("refresh", "0")))
     except ValueError:
@@ -197,7 +254,10 @@ async def handle_schedule_control(request):
     check_logged_in(request)
     run_id = request.match_info["run_id"]
     post = await request.post()
-    offset = post.get("offset")
+    try:
+        offset = _form_offset(post)
+    except ValueError:
+        return web.json_response({"error": "invalid number for offset"}, status=400)
     try:
         refresh = bool(int(post.get("refresh", "0")))
     except ValueError:
@@ -221,15 +281,18 @@ async def handle_schedule_control(request):
     queue_position_url = URL(request.app["runner_url"]) / "queue" / "position"
     try:
         async with request.app["http_client_session"].post(
-            schedule_url, json=json, raise_for_status=True
+            schedule_url, json=json
         ) as resp:
             ret = await resp.json()
+            if resp.status >= 400:
+                return web.json_response(ret, status=resp.status)
         async with request.app["http_client_session"].get(
             queue_position_url,
             params={"campaign": ret["campaign"], "codebase": ret["codebase"]},
-            raise_for_status=True,
         ) as resp:
             queue_position = await resp.json()
+            if resp.status >= 400:
+                return web.json_response(queue_position, status=resp.status)
     except ContentTypeError as e:
         return web.json_response(
             {"error": f"runner returned error {e.code}"}, status=400
