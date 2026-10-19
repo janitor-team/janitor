@@ -572,6 +572,15 @@ test_with_database! {
             Some("rev-tip"),
         )
         .await;
+        // `Run.worker_name` is decoded from the `run.worker` column.
+        sqlx::query("INSERT INTO worker (name, password) VALUES ('worker-1', 'secret')")
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE run SET worker = 'worker-1' WHERE id = 'run-1'")
+            .execute(test_db.pool())
+            .await
+            .unwrap();
 
         let run = get_run(test_db.pool(), &RunId::new("run-1").unwrap())
             .await
@@ -583,6 +592,7 @@ test_with_database! {
         assert_eq!(run.command, "lintian-brush");
         assert_eq!(run.result_code, "success");
         assert_eq!(run.value, Some(42));
+        assert_eq!(run.worker_name.as_deref(), Some("worker-1"));
         let branches = run.result_branches.expect("result_branches missing");
         assert_eq!(branches.len(), 1);
         assert_eq!(branches[0].0, "main");

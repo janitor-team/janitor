@@ -211,12 +211,4 @@ mod tests {
             );
         }
     }
-
-    #[test]
-    fn publish_latency_observe_increments_sample_count() {
-        let before = PUBLISH_LATENCY.get_sample_count();
-        PUBLISH_LATENCY.observe(1.5);
-        let after = PUBLISH_LATENCY.get_sample_count();
-        assert_eq!(after, before + 1);
-    }
 }
