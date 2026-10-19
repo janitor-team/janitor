@@ -233,7 +233,6 @@ mod tests {
             architectures: vec!["amd64".to_string()],
             components: vec!["main".to_string()],
             base_path: PathBuf::from(format!("/tmp/{}", name)),
-            by_hash: true,
         }
     }
 
