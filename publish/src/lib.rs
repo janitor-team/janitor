@@ -15,7 +15,6 @@ use janitor::publish::{MergeProposalStatus, Mode};
 use janitor::state::Run;
 use janitor::vcs::{VcsManager, VcsType};
 use janitor::{CodebaseName, PublishId, RunId};
-use reqwest::header::HeaderMap;
 use serde::ser::SerializeStruct;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -409,14 +408,10 @@ pub fn get_debdiff(
         ))
         .map_err(|_e| DebdiffError::Unavailable("Invalid URL format".to_string()))?;
 
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "Accept",
-        "text/plain".parse().expect("Invalid header value"),
-    );
-
-    let client = reqwest::blocking::Client::new();
-    let response = client.get(debdiff_url).headers(headers).send()?;
+    let response = reqwest::blocking::Client::new()
+        .get(debdiff_url)
+        .header("Accept", "text/plain")
+        .send()?;
 
     match response.status() {
         reqwest::StatusCode::OK => Ok(response.bytes()?.to_vec()),
@@ -1138,11 +1133,9 @@ async fn has_cotenants(
 /// The URL for the role branch
 pub fn role_branch_url(url: &url::Url, remote_branch_name: Option<&str>) -> url::Url {
     if let Some(remote_branch_name) = remote_branch_name {
-        let parsed_url = match url.to_string().trim_end_matches('/').parse() {
-            Ok(url) => url,
-            Err(_) => return url.clone(), // Return original URL if parsing fails
+        let Some((base_url, mut params)) = split_segment_parameters(url) else {
+            return url.clone();
         };
-        let (base_url, mut params) = breezyshim::urlutils::split_segment_parameters(&parsed_url);
 
         params.insert(
             "branch".to_owned(),
@@ -1153,6 +1146,12 @@ pub fn role_branch_url(url: &url::Url, remote_branch_name: Option<&str>) -> url:
     } else {
         url.clone()
     }
+}
+
+/// Split the segment parameters off `url`, ignoring any trailing slash.
+fn split_segment_parameters(url: &url::Url) -> Option<(url::Url, HashMap<String, String>)> {
+    let url = url.as_str().trim_end_matches('/').parse().ok()?;
+    Some(breezyshim::urlutils::split_segment_parameters(&url))
 }
 
 /// Resolve redirects for a URL to get the canonical URL.
@@ -1207,17 +1206,12 @@ pub fn branches_match(
         (Some(a), Some(b)) => (a, b),
         _ => return false,
     };
-    let parsed_url_a = match url_a.to_string().trim_end_matches('/').parse() {
-        Ok(url) => url,
-        Err(_) => return false,
+    let (Some((base_url_a, _)), Some((base_url_b, _))) = (
+        split_segment_parameters(url_a),
+        split_segment_parameters(url_b),
+    ) else {
+        return false;
     };
-    let (base_url_a, _params_a) = breezyshim::urlutils::split_segment_parameters(&parsed_url_a);
-
-    let parsed_url_b = match url_b.to_string().trim_end_matches('/').parse() {
-        Ok(url) => url,
-        Err(_) => return false,
-    };
-    let (base_url_b, _params_b) = breezyshim::urlutils::split_segment_parameters(&parsed_url_b);
     // Support following redirects by normalizing URLs
     let normalized_url_a = resolve_redirects(&base_url_a);
     let normalized_url_b = resolve_redirects(&base_url_b);
