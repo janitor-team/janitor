@@ -349,7 +349,11 @@ pub async fn bundle_results<'a>(
             if !entry.file_type().await?.is_file() {
                 continue;
             }
-            let file_name = entry.file_name().to_string_lossy().into_owned();
+            // read_dir yields bare basenames, which is what the runner requires.
+            let file_name = entry
+                .file_name()
+                .into_string()
+                .map_err(|name| format!("Output file name {:?} is not valid UTF-8", name))?;
             filenames.insert(file_name.clone());
 
             let file = tokio::fs::File::open(entry.path()).await?;
@@ -555,6 +559,24 @@ mod tests {
         let expected: std::collections::HashSet<String> =
             ["a.log", "b.txt"].iter().map(|s| s.to_string()).collect();
         assert_eq!(bundle.filenames, expected);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bundle_results_rejects_non_utf8_filenames() {
+        use std::os::unix::ffi::OsStrExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let name = std::ffi::OsStr::from_bytes(b"bad\xff.log");
+        tokio::fs::write(tmp.path().join(name), b"x").await.unwrap();
+
+        let metadata = Metadata::default();
+        let err = bundle_results(&metadata, Some(tmp.path()))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Output file name \"bad\\xFF.log\" is not valid UTF-8"
+        );
     }
 
     #[derive(Clone)]
