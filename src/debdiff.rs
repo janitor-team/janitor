@@ -138,16 +138,7 @@ pub fn filter_boring(debdiff: &str, old_version: &str, new_version: &str) -> Str
             ));
             continue;
         };
-        let (package, wdiff) = if let Some((_, package)) = lazy_regex::regex_captures!(
-            r"Control files of package (.*): lines which differ \(wdiff format\)",
-            title
-        ) {
-            (Some(package), true)
-        } else if title == "Control files: lines which differ (wdiff format)" {
-            (None, true)
-        } else {
-            (None, false)
-        };
+        let (wdiff, package) = section_is_wdiff(title);
         if wdiff {
             let mut paragraph_unfiltered = Vec::new();
             for lines in iter_fields(paragraph.into_iter()) {
@@ -366,15 +357,7 @@ pub fn htmlize_debdiff(debdiff: &str) -> String {
     for (title, lines) in iter_sections(debdiff) {
         if let Some(title) = title {
             ret.push(format!("<h4>{}</h4>", title));
-            let wdiff = if lazy_regex::regex_is_match!(
-                r"Control files of package .*: lines which differ \(wdiff format\)",
-                title,
-            ) {
-                true
-            } else {
-                title == "Control files: lines which differ (wdiff format)"
-            };
-            if wdiff {
+            if section_is_wdiff(title).0 {
                 ret.push("<ul>".to_owned());
                 for mlines in iter_fields(lines.into_iter()) {
                     if mlines.is_empty() {
