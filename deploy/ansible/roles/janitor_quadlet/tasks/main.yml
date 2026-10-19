@@ -10,7 +10,7 @@
 
 - name: Write the worker's login file
   ansible.builtin.copy:
-    content: "{{ {'login': worker_name, 'password': worker_password} | to_json }}\n"
+    content: "{{ {'login': worker_name, 'password': janitor_worker_password} | to_json }}\n"
     dest: "{{ janitor_home }}/worker-credentials.json"
     owner: "{{ ansible_user }}"
     mode: "0600"
@@ -110,7 +110,7 @@
          + (janitor_stale.results | selectattr('stdout', 'search', 'STALE') | map(attribute='item') | list)
          + (janitor_services | difference(['worker']) if janitor_conf is changed else [])
          + (janitor_worker_instances | list if janitor_worker_credentials is changed else [])
-         + (janitor_worker_instances | list if control_cert_trust is changed else []) }}
+         + (janitor_units | intersect(janitor_worker_instances | list + ['publish', 'runner', 'site']) if control_cert_trust is changed else []) }}
   loop: "{{ janitor_units }}"
 
 - name: Wait for each service's health route

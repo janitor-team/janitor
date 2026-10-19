@@ -9,3 +9,10 @@ password = {{ breezy_github_token }}
 private_token = {{ breezy_github_token }}
 
 {% endif %}
+{% if breezy_service in ['runner', 'publish'] and enable_gitea | bool %}
+[gitea]
+forge = gitea
+url = https://{{ gitea_domain }}/
+private_token = {{ gitea_bot_token }}
+
+{% endif %}

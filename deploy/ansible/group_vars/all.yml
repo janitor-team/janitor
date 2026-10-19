@@ -5,7 +5,8 @@
 #
 # Required secrets:
 #   janitor_db_password  password of the "janitor" PostgreSQL role
-#   worker_password      password of the worker in janitor_workers below
+#   worker_password      password of the worker in janitor_workers below;
+#                        with several workers, give each entry its own
 #   breezy_whoami        "Name <email>", the commit author the worker uses
 # Optional secrets:
 #   breezy_github_token  GitHub token publish pushes and opens pull
@@ -13,8 +14,9 @@
 #                        runner lists proposals with it; never the worker
 #   oauth_client_id      OAuth2 client for the site login; omit both
 #   oauth_client_secret  to run the site without login
-# With a login, also set oauth_base_url: an OpenID Connect provider
-# (GitHub is not one).
+# With a login, also set oauth_base_url (an OpenID Connect provider;
+# GitHub is not one), oauth_qa_reviewer_group and oauth_admin_group
+# (OpenID groups).
 # Secrets may not contain @ : / % quotes or whitespace (checked by
 # site.yml).
 
@@ -50,11 +52,14 @@ enable_worker_firewall: true
 # ansible_host, or janitor_domain for one without.
 worker_firewall_sources: "{{ groups['control'] | map('extract', hostvars) | map(attribute='ansible_host', default=janitor_domain) | list }}"
 
-# Every worker gets a row in the worker table on the control host.
+# Every worker gets a row in the worker table on the control host, each
+# with its own password.
 worker_name: worker-1
 janitor_workers:
   - name: "{{ worker_name }}"
     password: "{{ worker_password }}"
+# A worker host logs in with its own entry.
+janitor_worker_password: "{{ (janitor_workers | selectattr('name', 'equalto', worker_name) | first).password }}"
 
 # The lintian-fixes campaign's build distribution, also in the worker's sbuild chroot name.
 janitor_lintian_fixes_build_distribution: lintian-fixes
@@ -108,6 +113,29 @@ janitor_worker_extra_packages: []
 janitor_worker_image: >-
   {{ 'localhost/janitor-worker-custom:latest' if janitor_worker_extra_packages | length > 0
      else 'ghcr.io/jelmer/janitor/worker:latest' }}
+
+# Optional: Gitea on the control host, served by Caddy at
+# https://<gitea_domain>/ (its own host name). publish and the runner use
+# the bot's token; publish pushes over SSH on 127.0.0.1:gitea_ssh_port.
+enable_gitea: false
+gitea_domain: CHANGEME
+gitea_image: docker.io/gitea/gitea:1.27.3-rootless
+gitea_home: "/home/{{ ansible_user }}/gitea"
+gitea_http_port: 3000
+gitea_ssh_port: 2222
+gitea_admin_user: gitea-admin
+gitea_bot_user: janitor-bot
+gitea_bot_token_scopes: write:repository,write:issue,read:user,read:organization
+# Test accounts, an organisation owned by the first one, and repositories
+# copied into it once ({name, clone_url}).
+gitea_test_users: []
+gitea_test_token_scopes: write:repository,write:issue,write:organization,read:user
+gitea_test_org: ""
+gitea_test_repos: []
+# Register the site with Gitea and log in to it there (OAuth2).
+gitea_site_login: false
+# Extra /etc/hosts entries ({name: address}) on every host.
+janitor_extra_hosts: {}
 
 # Health routes the playbook waits for after starting each service.
 janitor_health_urls:

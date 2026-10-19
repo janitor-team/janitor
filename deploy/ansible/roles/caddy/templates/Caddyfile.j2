@@ -46,6 +46,17 @@
 {% endif %}
 {{ security_headers(true) }}
 {{ janitor_routes() }}}
+{% if enable_gitea | bool %}
+
+{{ gitea_domain }} {
+{% if caddy_self_signed | default(false) | bool %}
+	tls /etc/caddy/janitor.crt /etc/caddy/janitor.key
+{% endif %}
+	# Gitea's PDF viewer frames the file from Gitea itself.
+{{ security_headers(true, 'SAMEORIGIN', "frame-ancestors 'self'") }}
+	reverse_proxy 127.0.0.1:{{ gitea_http_port }}
+}
+{% endif %}
 
 # Plain HTTP serves only the apt repository (janitor_apt_archive_url) and
 # sends everything else, worker logins included, to HTTPS.
@@ -54,11 +65,18 @@
 	handle /dists/* {
 		reverse_proxy 127.0.0.1:9914
 	}
-	# Pool files: <suite>/pkg/<codebase>/<run id>/<file>.
-	@apt_pool path_regexp ^/[^/]+/pkg/[^/]+/[^/]+/[^/]+$
+	# Pool files: <suite>/pkg/<codebase>/<run id>/<file>. The site serves
+	# the run's logs on the same path, so only package files match.
+	@apt_pool path_regexp ^/[^/]+/pkg/[^/]+/[^/]+/[^/]+\.(u?deb|ddeb|dsc|diff\.gz|tar\.(gz|xz|bz2|lzma|zst)(\.asc)?)$
 	handle @apt_pool {
 		reverse_proxy 127.0.0.1:8090
 	}
+{% if enable_gitea | bool and caddy_self_signed | default(false) | bool %}
+	@gitea host {{ gitea_domain }}
+	handle @gitea {
+		redir https://{{ gitea_domain }}{uri} permanent
+	}
+{% endif %}
 	# The configured name, never the client's Host header.
 	handle {
 		redir https://{{ janitor_domain }}{uri} permanent

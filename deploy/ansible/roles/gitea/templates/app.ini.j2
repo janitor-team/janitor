@@ -1,0 +1,53 @@
+; Managed by ansible (roles/gitea). Paths are inside the container.
+APP_NAME = Gitea
+RUN_MODE = prod
+WORK_PATH = /var/lib/gitea
+
+[server]
+APP_DATA_PATH = /var/lib/gitea/data
+PROTOCOL = http
+HTTP_ADDR = 127.0.0.1
+HTTP_PORT = {{ gitea_http_port }}
+; Caddy serves it over HTTPS.
+DOMAIN = {{ gitea_domain }}
+ROOT_URL = https://{{ gitea_domain }}/
+START_SSH_SERVER = true
+SSH_DOMAIN = {{ gitea_domain }}
+; Only publish pushes over SSH; its container maps gitea_domain to 127.0.0.1.
+SSH_LISTEN_HOST = 127.0.0.1
+SSH_PORT = {{ gitea_ssh_port }}
+SSH_LISTEN_PORT = {{ gitea_ssh_port }}
+SSH_SERVER_HOST_KEYS = ssh/gitea.ed25519
+LFS_START_SERVER = false
+OFFLINE_MODE = true
+
+[database]
+DB_TYPE = sqlite3
+PATH = /var/lib/gitea/data/gitea.db
+
+[security]
+INSTALL_LOCK = true
+SECRET_KEY = {{ gitea_secrets.secret_key }}
+INTERNAL_TOKEN = {{ gitea_secrets.internal_token }}
+
+[oauth2]
+JWT_SECRET = {{ gitea_secrets.jwt_secret }}
+
+[service]
+DISABLE_REGISTRATION = true
+DEFAULT_KEEP_EMAIL_PRIVATE = true
+
+[repository]
+ROOT = /var/lib/gitea/git/repositories
+
+[migrations]
+; Lets the playbook copy gitea_test_repos in from public forges.
+ALLOWED_DOMAINS = {{ gitea_test_repos | map(attribute='clone_url') | map('urlsplit', 'hostname') | unique | join(',') }}
+
+[webhook]
+; janitor's webhook receiver is on the same host.
+ALLOWED_HOST_LIST = {{ janitor_domain }}
+
+[log]
+MODE = console
+LEVEL = info

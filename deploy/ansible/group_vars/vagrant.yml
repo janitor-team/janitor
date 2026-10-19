@@ -10,11 +10,25 @@ janitor_db_password: vagrant-dev-only-db
 worker_password: vagrant-dev-only-worker
 breezy_whoami: "Vagrant Test Bot <vagrant-test@example.invalid>"
 
-# Every VM in [worker] is a worker named after itself.
+# Every VM in [worker] is a worker named after itself. Vagrantfile.multi-host
+# passes janitor_workers with a password per worker: every worker to
+# control, and only its own to each worker.
 worker_name: "{{ inventory_hostname }}"
-janitor_workers: >-
-  {{ groups['worker'] | map('regex_replace', '^(.*)$', '{"name": "\1"}') | map('from_json')
-     | map('combine', {'password': worker_password}) | list }}
 
 # The lintian-fixes campaign needs lintian-brush on the worker.
 janitor_worker_extra_packages: [lintian-brush]
+
+# Gitea on control, with test accounts and repositories; the site logs in there.
+enable_gitea: true
+gitea_domain: gitea.janitor.test
+janitor_extra_hosts: "{{ {gitea_domain: janitor_domain} }}"
+gitea_test_users: [maintainer, contributor]
+gitea_test_org: packages
+gitea_test_repos:
+  - {name: sl, clone_url: "https://salsa.debian.org/debian/sl.git"}
+  - {name: cmatrix, clone_url: "https://salsa.debian.org/debian/cmatrix.git"}
+  - {name: xjump, clone_url: "https://salsa.debian.org/games-team/xjump.git"}
+gitea_site_login: true
+# Gitea's OpenID groups: members of the org review, its owners are admins.
+oauth_qa_reviewer_group: "{{ gitea_test_org }}"
+oauth_admin_group: "{{ gitea_test_org }}:owners"

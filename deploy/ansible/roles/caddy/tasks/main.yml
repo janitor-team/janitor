@@ -6,19 +6,31 @@
       - openssl
     state: present
 
+- name: Read the names of the self-signed certificate
+  ansible.builtin.command: openssl x509 -in /etc/caddy/janitor.crt -noout -ext subjectAltName
+  register: caddy_cert_names
+  changed_when: false
+  failed_when: false
+  when: caddy_self_signed | default(false) | bool
+
 - name: Generate a self-signed certificate for a host without a real domain
-  # Only for test hosts (caddy_self_signed); each worker host trusts it.
-  # TLS clients match the name against subjectAltName, not the CN.
+  # Only for test hosts (caddy_self_signed); every host trusts it. TLS
+  # clients match the names against subjectAltName, not the CN.
   ansible.builtin.command: >
     openssl req -x509 -newkey rsa:2048 -nodes -days 3650
     -keyout /etc/caddy/janitor.key
     -out /etc/caddy/janitor.crt
     -subj "/CN={{ janitor_domain }}"
-    -addext "subjectAltName={{ 'IP' if janitor_domain is match('^[0-9.]+$') else 'DNS' }}:{{ janitor_domain }}"
+    -addext "subjectAltName={{ caddy_cert_sans | join(',') }}"
     -addext "basicConstraints=critical,CA:FALSE"
-  args:
-    creates: /etc/caddy/janitor.crt
-  when: caddy_self_signed | default(false) | bool
+  when:
+    - caddy_self_signed | default(false) | bool
+    - caddy_cert_names.stdout_lines[1:] | map('trim') | join(', ') != caddy_cert_sans | join(', ') | replace('IP:', 'IP Address:')
+  vars:
+    caddy_cert_sans: >-
+      {{ [('IP:' if janitor_domain is match('^[0-9.]+$') else 'DNS:') + janitor_domain]
+         + (['DNS:' + gitea_domain] if enable_gitea | bool else []) }}
+  changed_when: true
   notify: Restart caddy
 
 - name: Let caddy read the self-signed key

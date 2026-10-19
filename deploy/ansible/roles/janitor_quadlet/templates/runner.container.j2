@@ -14,4 +14,8 @@ Volume={{ janitor_home }}/janitor.conf:/mnt/janitor/janitor.conf:ro
 Volume={{ janitor_home }}/data/logs:/mnt/janitor/data/logs:rw
 Volume={{ janitor_home }}/data/artifacts:/mnt/janitor/data/artifacts:rw
 Volume={{ janitor_breezy_dir }}/runner:/root/.config/breezy:ro
+{% if caddy_self_signed | default(false) | bool %}
+# The host's CA bundle, which holds the self-signed certificate (Gitea's too).
+Volume=/etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro
+{% endif %}
 {% include 'common.j2' %}

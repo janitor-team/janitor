@@ -10,7 +10,8 @@ host or onto several, and comes with Vagrant VMs to try it locally.
 - `ansible/site.yml`: a play that checks the secrets, then one play per
   inventory group:
   - `control`: `base`, `janitor_source`, `postgres`, `redis`, `caddy`,
-    `archive_signing_key`, `janitor_config`, `janitor_quadlet`.
+    `archive_signing_key`, `gitea` (optional), `janitor_config`,
+    `janitor_quadlet`.
   - `worker`: `base`, `worker_firewall`, `janitor_source`,
     `janitor_config`, `janitor_quadlet`.
 - `ansible/inventory.ini`: the hosts. One host in both groups for a single
@@ -61,9 +62,10 @@ With `janitor_scheme: https` (the default) plain HTTP serves only the apt
 repository (`janitor_apt_archive_url`), which the build chroots read
 without CA certificates; every other path, worker logins included, is
 redirected to HTTPS. `caddy_self_signed: true` (the Vagrant VMs) makes a
-self-signed certificate for a control host without a real domain; each
-worker host fetches it from the control host when the playbook runs,
-adds it to its CA bundle and mounts that bundle into the worker.
+self-signed certificate for a control host without a real domain; every
+host fetches it from the control host when the playbook runs, adds it to
+its CA bundle and mounts that bundle into the worker, publish, runner and
+site.
 
 With every page, file and redirect, Caddy's public sites send
 `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` and,
@@ -133,7 +135,8 @@ candidates get in is in [docs/flow.md](../docs/flow.md).
 - `janitor.conf` is a fixed template,
   `ansible/roles/janitor_config/templates/janitor.conf.j2`; edit it for
   your own campaigns.
-- Back up PostgreSQL, `janitor_home/data` and `janitor_home/gnupg-archive`.
+- Back up PostgreSQL, `janitor_home/data` and `janitor_home/gnupg-archive`,
+  and with Gitea `gitea_home/secrets`.
 
 ### Several hosts
 
@@ -142,9 +145,24 @@ Put the hosts in `[control]` and `[worker]`, and set:
 - `janitor_domain`: a name every worker can reach the control host on.
 - `janitor_worker_address`, per worker host: its own address, which the
   runner pings.
-- `janitor_workers`: every worker's `name` and `password`; the control
-  host registers them all, and each worker uses the entry for its
+- `janitor_workers`: every worker's `name` and its own `password`; the
+  control host registers them all, and each worker uses the entry for its
   `worker_name`.
+
+### Gitea (optional)
+
+`enable_gitea: true` runs Gitea on the control host, served by Caddy at
+`https://<gitea_domain>/` (its own host name). The playbook makes an
+admin, the bot
+(`gitea_bot_user`, whose token publish and the runner use and whose SSH
+key publish pushes with), the `gitea_test_users`, the `gitea_test_org`
+and copies `gitea_test_repos` into it. Gitea's SSH server listens on
+127.0.0.1:`gitea_ssh_port` only, for publish; people clone over HTTPS.
+`gitea_site_login: true` registers
+the site as an OAuth2 application and logs in there; set
+`oauth_qa_reviewer_group` and `oauth_admin_group` to Gitea organizations
+or teams (`org:team`). Gitea's secrets and tokens are kept in
+`gitea_home/secrets`.
 
 ## Vagrant
 
@@ -160,8 +178,12 @@ vagrant destroy -f
 ```
 
 The site is at `https://<control IP>/` (`192.168.56.10` for one VM,
-`192.168.60.11` for several), with the self-signed certificate. With
-several VMs, provision control first: the workers fetch its certificate.
+`192.168.60.11` for several), with the self-signed certificate. Both
+Vagrantfiles turn on Gitea, at `https://gitea.janitor.test/`: each VM
+has an /etc/hosts entry for it, and the machine your browser runs on
+needs one too (`<control IP> gitea.janitor.test`), or the site login
+cannot reach Gitea. With several VMs, each worker gets its own password,
+made once in `.vagrant/worker-passwords.json`.
 
 Environment variables:
 
