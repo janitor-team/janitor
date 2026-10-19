@@ -383,6 +383,7 @@ pub fn app(state: Arc<RwLock<AppState>>) -> Router {
             "/openapi.json",
             get(move || async move { ([("content-type", "application/json")], spec) }),
         )
+        .route("/ready", get(health))
         .with_state(state.clone().clone())
 }
 
@@ -465,6 +466,18 @@ mod tests {
 
         let body = get_body(response).await;
         assert_eq!(body, "ok");
+    }
+
+    #[tokio::test]
+    async fn test_ready() {
+        let app = app(Arc::new(RwLock::new(AppState::default())));
+        let request = Request::builder()
+            .uri("/ready")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(get_body(response).await, "ok");
     }
 
     #[tokio::test]
