@@ -2,9 +2,9 @@
 
 use lazy_static::lazy_static;
 use prometheus::{
-    register_counter_vec, register_gauge, register_gauge_vec, register_histogram_vec,
-    register_int_counter, register_int_counter_vec, register_int_gauge_vec, CounterVec, Gauge,
-    GaugeVec, HistogramVec, IntCounter, IntCounterVec, IntGaugeVec, TextEncoder,
+    register_gauge, register_gauge_vec, register_histogram_vec, register_int_counter,
+    register_int_counter_vec, register_int_gauge_vec, Gauge, GaugeVec, HistogramVec, IntCounter,
+    IntCounterVec, IntGaugeVec, TextEncoder,
 };
 
 lazy_static! {
@@ -55,13 +55,6 @@ lazy_static! {
         &["host"]
     ).unwrap();
 
-    /// Queue metrics
-    pub static ref QUEUE_SIZE: IntGaugeVec = register_int_gauge_vec!(
-        "janitor_runner_queue_size",
-        "Number of items in queue by campaign",
-        &["campaign", "bucket"]
-    ).unwrap();
-
     /// Unix timestamp at which the runner last successfully finished a
     /// run. Matches the Python `last_success_gauge` /
     /// `job_last_success_unixtime` exported via aiohttp_openmetrics so
@@ -85,74 +78,11 @@ lazy_static! {
         &["campaign"]
     ).unwrap();
 
-    /// Database operation metrics
-    pub static ref DATABASE_OPERATIONS_TOTAL: IntCounterVec = register_int_counter_vec!(
-        "janitor_runner_database_operations_total",
-        "Total number of database operations",
-        &["operation", "status"]
-    ).unwrap();
-
-    /// Database operation duration
-    pub static ref DATABASE_OPERATION_DURATION: HistogramVec = register_histogram_vec!(
-        "janitor_runner_database_operation_duration_seconds",
-        "Database operation duration in seconds",
-        &["operation"]
-    ).unwrap();
-
     /// Redis operation metrics
     pub static ref REDIS_OPERATIONS_TOTAL: IntCounterVec = register_int_counter_vec!(
         "janitor_runner_redis_operations_total",
         "Total number of Redis operations",
         &["operation", "status"]
-    ).unwrap();
-
-    /// Worker health metrics
-    pub static ref WORKER_HEALTH_CHECKS_TOTAL: IntCounterVec = register_int_counter_vec!(
-        "janitor_runner_worker_health_checks_total",
-        "Total number of worker health checks",
-        &["worker", "status"]
-    ).unwrap();
-
-    /// Watchdog metrics
-    pub static ref WATCHDOG_TERMINATED_RUNS_TOTAL: IntCounterVec = register_int_counter_vec!(
-        "janitor_runner_watchdog_terminated_runs_total",
-        "Total number of runs terminated by watchdog",
-        &["reason"]
-    ).unwrap();
-
-    /// Rate limiting metrics
-    pub static ref RATE_LIMITED_HOSTS: IntGaugeVec = register_int_gauge_vec!(
-        "janitor_runner_rate_limited_hosts",
-        "Number of rate limited hosts",
-        &["host"]
-    ).unwrap();
-
-    /// Artifact upload metrics
-    pub static ref ARTIFACT_UPLOADS_TOTAL: IntCounterVec = register_int_counter_vec!(
-        "janitor_runner_artifact_uploads_total",
-        "Total number of artifact uploads",
-        &["storage_type", "status"]
-    ).unwrap();
-
-    /// Artifact upload size
-    pub static ref ARTIFACT_UPLOAD_SIZE_BYTES: CounterVec = register_counter_vec!(
-        "janitor_runner_artifact_upload_size_bytes",
-        "Size of uploaded artifacts in bytes",
-        &["storage_type"]
-    ).unwrap();
-
-    /// Log file metrics
-    pub static ref LOG_FILE_OPERATIONS_TOTAL: IntCounterVec = register_int_counter_vec!(
-        "janitor_runner_log_file_operations_total",
-        "Total number of log file operations",
-        &["operation", "status"]
-    ).unwrap();
-
-    /// VCS operation metrics
-    pub static ref VCS_OPERATIONS_TOTAL: IntCounterVec = register_int_counter_vec!(
-        "janitor_runner_vcs_operations_total",
-        "Total number of VCS operations",
-        &["operation", "vcs_type", "status"]
     ).unwrap();
 
     /// VCS operation duration
@@ -170,39 +100,11 @@ lazy_static! {
         &["vcs_type", "error_code"]
     ).unwrap();
 
-    /// VCS branch cache hits
-    pub static ref VCS_BRANCH_CACHE_HITS: IntCounterVec = register_int_counter_vec!(
-        "janitor_runner_vcs_branch_cache_hits_total",
-        "Total number of VCS branch cache hits",
-        &["vcs_type"]
-    ).unwrap();
-
-    /// VCS branch cache misses
-    pub static ref VCS_BRANCH_CACHE_MISSES: IntCounterVec = register_int_counter_vec!(
-        "janitor_runner_vcs_branch_cache_misses_total",
-        "Total number of VCS branch cache misses",
-        &["vcs_type"]
-    ).unwrap();
-
     /// Error tracking metrics
     pub static ref ERROR_OCCURRENCES_TOTAL: IntCounterVec = register_int_counter_vec!(
         "janitor_runner_error_occurrences_total",
         "Total number of tracked errors by category, component, and severity",
         &["category", "component", "severity"]
-    ).unwrap();
-
-    /// Error patterns detected
-    pub static ref ERROR_PATTERNS_DETECTED: IntCounterVec = register_int_counter_vec!(
-        "janitor_runner_error_patterns_detected_total",
-        "Total number of error patterns detected",
-        &["category", "component", "operation"]
-    ).unwrap();
-
-    /// Memory usage gauge
-    pub static ref MEMORY_USAGE_BYTES: IntGaugeVec = register_int_gauge_vec!(
-        "janitor_runner_memory_usage_bytes",
-        "Memory usage in bytes",
-        &["type"]
     ).unwrap();
 
     /// System metrics
@@ -229,16 +131,6 @@ lazy_static! {
 pub struct MetricsCollector;
 
 impl MetricsCollector {
-    /// Record HTTP request
-    pub fn record_http_request(method: &str, endpoint: &str, status: u16, duration: f64) {
-        HTTP_REQUESTS_TOTAL
-            .with_label_values(&[method, endpoint, &status.to_string()])
-            .inc();
-        HTTP_REQUEST_DURATION
-            .with_label_values(&[method, endpoint])
-            .observe(duration);
-    }
-
     /// Record run completion
     pub fn record_run_completion(campaign: &janitor::Campaign, result_code: &str, duration: f64) {
         RUN_RESULT_COUNT
@@ -249,80 +141,9 @@ impl MetricsCollector {
             .observe(duration);
     }
 
-    /// Record database operation
-    pub fn record_database_operation(operation: &str, success: bool, duration: f64) {
-        let status = if success { "success" } else { "error" };
-        DATABASE_OPERATIONS_TOTAL
-            .with_label_values(&[operation, status])
-            .inc();
-        DATABASE_OPERATION_DURATION
-            .with_label_values(&[operation])
-            .observe(duration);
-    }
-
     /// Update active runs count
     pub fn set_active_runs(worker: &str, count: i64) {
         ACTIVE_RUNS.with_label_values(&[worker]).set(count);
-    }
-
-    /// Update queue size
-    pub fn set_queue_size(campaign: &janitor::Campaign, bucket: &str, size: i64) {
-        QUEUE_SIZE
-            .with_label_values(&[campaign.as_str(), bucket])
-            .set(size);
-    }
-
-    /// Record worker health check
-    pub fn record_worker_health_check(worker: &str, healthy: bool) {
-        let status = if healthy { "healthy" } else { "unhealthy" };
-        WORKER_HEALTH_CHECKS_TOTAL
-            .with_label_values(&[worker, status])
-            .inc();
-    }
-
-    /// Record watchdog termination
-    pub fn record_watchdog_termination(reason: &str) {
-        WATCHDOG_TERMINATED_RUNS_TOTAL
-            .with_label_values(&[reason])
-            .inc();
-    }
-
-    /// Update rate limited hosts
-    pub fn set_rate_limited_hosts(host: &str, active: bool) {
-        RATE_LIMITED_HOSTS
-            .with_label_values(&[host])
-            .set(if active { 1 } else { 0 });
-    }
-
-    /// Record artifact upload
-    pub fn record_artifact_upload(storage_type: &str, success: bool, size_bytes: f64) {
-        let status = if success { "success" } else { "error" };
-        ARTIFACT_UPLOADS_TOTAL
-            .with_label_values(&[storage_type, status])
-            .inc();
-        if success {
-            ARTIFACT_UPLOAD_SIZE_BYTES
-                .with_label_values(&[storage_type])
-                .inc_by(size_bytes);
-        }
-    }
-
-    /// Record VCS operation
-    pub fn record_vcs_operation(operation: &str, vcs_type: &str, success: bool, duration: f64) {
-        let status = if success { "success" } else { "error" };
-        VCS_OPERATIONS_TOTAL
-            .with_label_values(&[operation, vcs_type, status])
-            .inc();
-        VCS_OPERATION_DURATION
-            .with_label_values(&[operation, vcs_type])
-            .observe(duration);
-    }
-
-    /// Update memory usage
-    pub fn set_memory_usage(memory_type: &str, bytes: i64) {
-        MEMORY_USAGE_BYTES
-            .with_label_values(&[memory_type])
-            .set(bytes);
     }
 
     /// Collect and return all metrics in Prometheus format
@@ -357,35 +178,4 @@ fn register_unlabelled_metrics() {
 pub fn init_metrics() {
     MetricsCollector::init_system_info();
     log::info!("Metrics system initialized");
-}
-
-/// Middleware for automatic HTTP metrics collection
-pub async fn metrics_middleware(
-    request: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> axum::response::Response {
-    let start = std::time::Instant::now();
-    let method = request.method().to_string();
-    let path = request.uri().path().to_string();
-
-    let response = next.run(request).await;
-
-    let duration = start.elapsed().as_secs_f64();
-    let status = response.status().as_u16();
-
-    MetricsCollector::record_http_request(&method, &path, status, duration);
-
-    response
-}
-
-#[cfg(test)]
-mod tests {
-    use super::FORGE_LOGIN_REQUIRED_COUNT;
-
-    #[test]
-    fn forge_login_required_counter_increments() {
-        let before = FORGE_LOGIN_REQUIRED_COUNT.get();
-        FORGE_LOGIN_REQUIRED_COUNT.inc();
-        assert_eq!(FORGE_LOGIN_REQUIRED_COUNT.get(), before + 1);
-    }
 }
