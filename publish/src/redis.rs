@@ -217,7 +217,7 @@ impl RedisSubscriber {
         };
 
         // Campaign config from the static config loaded at startup.
-        let campaign_config = match state.config.campaign.iter().find(|c| c.name() == run.suite) {
+        let campaign_config = match state.config.get_campaign(&run.suite) {
             Some(c) => c,
             None => {
                 log::warn!(
