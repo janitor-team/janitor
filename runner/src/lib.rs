@@ -45,8 +45,6 @@ pub mod auth;
 pub mod backchannel;
 /// Module for build system implementations.
 pub mod builder;
-/// Module for generating configuration files.
-pub mod config_generator;
 /// Database operations.
 pub mod database;
 /// Error tracking and logging.
@@ -386,21 +384,6 @@ pub fn dpkg_vendor() -> Option<String> {
             log::warn!("Failed to determine dpkg vendor");
             Some(String::new())
         })
-}
-
-#[cfg(feature = "debian")]
-/// Read the source filenames from a changes file.
-pub fn changes_filenames(
-    changes_location: &Path,
-) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let mut f = std::fs::File::open(changes_location)?;
-    let changes = debian_control::changes::Changes::read(&mut f)?;
-    Ok(changes
-        .files()
-        .unwrap_or_default()
-        .iter()
-        .map(|file| file.filename.clone())
-        .collect())
 }
 
 /// Scan a directory for log files.
