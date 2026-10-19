@@ -1892,68 +1892,24 @@ async fn admin_cleanup_runs(
         }
     };
 
-    // Build the WHERE clause incrementally so optional filters drop
-    // out cleanly. `run.finish_time` is TIMESTAMP (no TZ) on the
-    // schema; cast to timestamptz for the comparison so the bound
-    // we received in UTC matches the stored value's intent.
-    let mut sql = String::from(
-        "SELECT id, codebase, suite::text AS suite, command \
-         FROM run \
-         WHERE result_code = $1",
-    );
-    let mut next_param = 2;
-    if q.campaign.is_some() {
-        sql.push_str(&format!(" AND suite::text = ${}", next_param));
-        next_param += 1;
-    }
-    if q.description_like.is_some() {
-        sql.push_str(&format!(" AND description ILIKE ${}", next_param));
-        next_param += 1;
-    }
-    if min_ts.is_some() {
-        sql.push_str(&format!(
-            " AND (finish_time AT TIME ZONE 'UTC') >= ${}",
-            next_param
-        ));
-        next_param += 1;
-    }
-    if max_ts.is_some() {
-        sql.push_str(&format!(
-            " AND (finish_time AT TIME ZONE 'UTC') < ${}",
-            next_param
-        ));
-        next_param += 1;
-    }
-    sql.push_str(&format!(" ORDER BY finish_time ASC LIMIT ${}", next_param));
-
-    let mut query =
-        sqlx::query_as::<_, (RunId, CodebaseName, Campaign, String)>(sqlx::AssertSqlSafe(&*sql))
-            .bind(&q.result_code);
-    if let Some(ref c) = q.campaign {
-        query = query.bind(c);
-    }
-    if let Some(ref d) = q.description_like {
-        query = query.bind(d);
-    }
-    if let Some(ts) = min_ts {
-        query = query.bind(ts);
-    }
-    if let Some(ts) = max_ts {
-        query = query.bind(ts);
-    }
-    query = query.bind(max);
-
-    let rows: Vec<(RunId, CodebaseName, Campaign, String)> =
-        match query.fetch_all(state.database.pool()).await {
-            Ok(r) => r,
-            Err(e) => {
-                log::error!("cleanup-runs SELECT failed: {}", e);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": format!("select failed: {}", e)})),
-                );
-            }
-        };
+    let filter = crate::database::CleanupRunsFilter {
+        result_code: &q.result_code,
+        campaign: q.campaign.as_ref(),
+        description_like: q.description_like.as_deref(),
+        min_finish_time: min_ts,
+        max_finish_time: max_ts,
+        limit: max,
+    };
+    let rows = match state.database.find_runs_for_cleanup(&filter).await {
+        Ok(r) => r,
+        Err(e) => {
+            log::error!("cleanup-runs SELECT failed: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("select failed: {}", e)})),
+            );
+        }
+    };
 
     if rows.is_empty() {
         return (
@@ -1968,9 +1924,8 @@ async fn admin_cleanup_runs(
         );
     }
 
-    let run_ids: Vec<RunId> = rows.iter().map(|(id, ..)| id.clone()).collect();
-
     if dry_run {
+        let run_ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
         return (
             StatusCode::OK,
             Json(json!({
@@ -1984,145 +1939,17 @@ async fn admin_cleanup_runs(
         );
     }
 
-    let mut tx = match state.database.pool().begin().await {
-        Ok(t) => t,
-        Err(e) => {
-            log::error!("cleanup-runs begin tx failed: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("tx begin failed: {}", e)})),
-            );
-        }
-    };
-
-    // Reschedule each (codebase, suite, command). The queue table
-    // has a unique index on `(codebase, suite, coalesce(change_set,
-    // ''))`. Use ON CONFLICT so a re-run is idempotent: bump priority
-    // on an existing queue row instead of failing.
     let requester = format!("cleanup:{}", q.result_code);
-    let mut rescheduled = 0i64;
-    for (_id, codebase, suite, command) in rows.iter() {
-        let r = sqlx::query(
-            "INSERT INTO queue (codebase, suite, command, priority, bucket, requester) \
-             VALUES ($1, $2::suite_name, $3, 0, 'reschedule', $4) \
-             ON CONFLICT (codebase, suite, coalesce(change_set, '')) DO UPDATE \
-             SET priority = LEAST(queue.priority, 0), \
-                 bucket = 'reschedule', \
-                 requester = EXCLUDED.requester",
-        )
-        .bind(codebase)
-        .bind(suite)
-        .bind(command)
-        .bind(&requester)
-        .execute(&mut *tx)
-        .await;
-        match r {
-            Ok(res) => rescheduled += res.rows_affected() as i64,
-            Err(e) => {
-                log::warn!(
-                    "cleanup-runs: failed to reschedule {} ({}/{}): {}",
-                    codebase,
-                    suite,
-                    command,
-                    e
-                );
-                let _ = tx.rollback().await;
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": format!("reschedule failed for {}: {}", codebase, e)})),
-                );
-            }
-        }
-    }
-
-    let deleted = if delete {
-        // Clear FK references that block the DELETE. None of the FKs on
-        // `last_run` declare ON DELETE behaviour. We're re-queuing the
-        // codebases anyway, so dropping the last_run pointers is the
-        // right semantic -- a fresh run will repopulate them. Same for
-        // `run.resume_from` self-references.
-        for (col, label) in [
-            ("last_run_id", "last_run_id"),
-            ("last_effective_run_id", "last_effective_run_id"),
-            ("last_unabsorbed_run_id", "last_unabsorbed_run_id"),
-        ] {
-            let stmt = format!("UPDATE last_run SET {} = NULL WHERE {} = ANY($1)", col, col);
-            if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(&*stmt))
-                .bind(&run_ids)
-                .execute(&mut *tx)
-                .await
-            {
-                log::error!("cleanup-runs: clear last_run.{} failed: {}", label, e);
-                let _ = tx.rollback().await;
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": format!("clear {} failed: {}", label, e)})),
-                );
-            }
-        }
-        if let Err(e) = sqlx::query("UPDATE run SET resume_from = NULL WHERE resume_from = ANY($1)")
-            .bind(&run_ids)
-            .execute(&mut *tx)
-            .await
-        {
-            log::error!("cleanup-runs: clear run.resume_from failed: {}", e);
-            let _ = tx.rollback().await;
+    let (rescheduled, deleted) = match state.database.cleanup_runs(&rows, &requester, delete).await
+    {
+        Ok(counts) => counts,
+        Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("clear resume_from failed: {}", e)})),
+                Json(json!({"error": e.to_string()})),
             );
         }
-
-        // Per-run-id child rows in tables that FK to `run.id` without
-        // an `ON DELETE CASCADE` clause. `new_result_branch` already
-        // cascades, and `run.resume_from` is `ON DELETE SET NULL`,
-        // so neither needs a hand DELETE; the tables below do.
-        for (table, fk_col, label) in [
-            ("debian_build", "run_id", "debian_build"),
-            ("review", "run_id", "review"),
-            ("followup", "origin", "followup"),
-        ] {
-            let stmt = format!("DELETE FROM {} WHERE {} = ANY($1)", table, fk_col);
-            if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(&*stmt))
-                .bind(&run_ids)
-                .execute(&mut *tx)
-                .await
-            {
-                log::error!("cleanup-runs: delete {} children failed: {}", label, e);
-                let _ = tx.rollback().await;
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": format!("delete {} children failed: {}", label, e)})),
-                );
-            }
-        }
-
-        match sqlx::query("DELETE FROM run WHERE id = ANY($1)")
-            .bind(&run_ids)
-            .execute(&mut *tx)
-            .await
-        {
-            Ok(r) => r.rows_affected() as i64,
-            Err(e) => {
-                log::error!("cleanup-runs DELETE failed: {}", e);
-                let _ = tx.rollback().await;
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": format!("delete failed: {}", e)})),
-                );
-            }
-        }
-    } else {
-        0
     };
-
-    if let Err(e) = tx.commit().await {
-        log::error!("cleanup-runs commit failed: {}", e);
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("commit failed: {}", e)})),
-        );
-    }
 
     log::info!(
         "cleanup-runs: result_code={}, campaign={:?}, matched={}, rescheduled={}, deleted={}",
@@ -3983,7 +3810,7 @@ mod tests {
         CandidatePreflight,
     };
     use crate::CampaignConfig;
-    use janitor::{Campaign, CodebaseName};
+    use janitor::{Campaign, CodebaseName, RunId};
     use serde_json::json;
     use std::collections::HashSet;
 
@@ -4278,17 +4105,10 @@ distribution {
         }
     }
 
-    /// Regression for `admin_cleanup_runs`. The handler selects
-    /// run IDs matching `result_code` plus optional `campaign` and
-    /// `[min_finish_time, max_finish_time)`, then reschedules each
-    /// `(codebase, suite, command)` and clears the `last_run.*` /
-    /// `run.resume_from` FKs before deleting. The Python original
-    /// had no equivalent; this is the canonical contract test.
-    ///
-    /// We don't drive the handler through axum here -- that would
-    /// require building a full `AppState`. Instead reproduce the
-    /// SQL the handler runs against a freshly seeded test DB and
-    /// assert the side effects are right.
+    /// `admin_cleanup_runs` selects runs matching `result_code` plus
+    /// optional `campaign` and `[min_finish_time, max_finish_time)`,
+    /// then reschedules each `(codebase, suite, command)` and clears
+    /// the `last_run.*` / `run.resume_from` FKs before deleting.
     #[tokio::test]
     async fn test_admin_cleanup_runs_filters_and_cleans_up() {
         use chrono::{TimeZone, Utc};
@@ -4296,7 +4116,7 @@ distribution {
             eprintln!("Skipping: no Postgres available");
             return;
         };
-        if let Err(e) = janitor::schema::setup_test_database(&db.pool).await {
+        if let Err(e) = janitor::schema::setup_debian_test_database(&db.pool).await {
             eprintln!("Skipping: schema setup failed: {}", e);
             return;
         }
@@ -4431,63 +4251,31 @@ distribution {
         .await
         .unwrap();
 
-        // -- Run the same SELECT the handler builds for the filter
-        //    `result_code=success`, `campaign=lintian-fixes`,
-        //    `min=early` (inclusive), `max=late` (exclusive).
+        let database = crate::database::RunnerDatabase::new(pool.clone());
         let max_window = Utc.with_ymd_and_hms(2026, 3, 1, 0, 0, 0).unwrap();
-        let rows: Vec<(String, String, String, String)> = sqlx::query_as(
-            "SELECT id, codebase, suite::text AS suite, command \
-             FROM run \
-             WHERE result_code = $1 \
-               AND suite::text = $2 \
-               AND (finish_time AT TIME ZONE 'UTC') >= $3 \
-               AND (finish_time AT TIME ZONE 'UTC') < $4 \
-             ORDER BY finish_time ASC",
-        )
-        .bind("success")
-        .bind("lintian-fixes")
-        .bind(early)
-        .bind(max_window)
-        .fetch_all(pool)
-        .await
-        .unwrap();
-
-        let ids: Vec<&str> = rows.iter().map(|(id, _, _, _)| id.as_str()).collect();
+        let rows = database
+            .find_runs_for_cleanup(&crate::database::CleanupRunsFilter {
+                result_code: "success",
+                campaign: Some(&Campaign::new("lintian-fixes").unwrap()),
+                description_like: None,
+                min_finish_time: Some(early),
+                max_finish_time: Some(max_window),
+                limit: 1000,
+            })
+            .await
+            .unwrap();
+        let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(
             ids,
             vec!["r-old", "r-mid"],
             "filter should match the two in-window successes only"
         );
 
-        // -- Now run the cleanup mutation: clear FKs, delete rows.
-        //    Mirrors admin_cleanup_runs's UPDATE/DELETE block.
-        let run_ids: Vec<String> = rows.iter().map(|r| r.0.clone()).collect();
-        let mut tx = pool.begin().await.unwrap();
-        for col in [
-            "last_run_id",
-            "last_effective_run_id",
-            "last_unabsorbed_run_id",
-        ] {
-            let stmt = format!("UPDATE last_run SET {} = NULL WHERE {} = ANY($1)", col, col);
-            sqlx::query(sqlx::AssertSqlSafe(&*stmt))
-                .bind(&run_ids)
-                .execute(&mut *tx)
-                .await
-                .unwrap();
-        }
-        sqlx::query("UPDATE run SET resume_from = NULL WHERE resume_from = ANY($1)")
-            .bind(&run_ids)
-            .execute(&mut *tx)
+        let (rescheduled, deleted) = database
+            .cleanup_runs(&rows, "cleanup:success", true)
             .await
             .unwrap();
-        let deleted = sqlx::query("DELETE FROM run WHERE id = ANY($1)")
-            .bind(&run_ids)
-            .execute(&mut *tx)
-            .await
-            .unwrap()
-            .rows_affected();
-        tx.commit().await.unwrap();
-        assert_eq!(deleted, 2);
+        assert_eq!((rescheduled, deleted), (2, 2));
 
         // -- Untouched rows survive.
         let surviving: Vec<String> = sqlx::query_scalar("SELECT id FROM run ORDER BY id")
@@ -4534,8 +4322,7 @@ distribution {
         }
     }
 
-    /// Regression for the `description_like` filter on
-    /// `admin_cleanup_runs`. A single result_code (e.g. `lintian`)
+    /// The `description_like` filter of `admin_cleanup_runs`. A single result_code (e.g. `lintian`)
     /// covers multiple bug families; cleaning up runs from a
     /// recently-fixed deserialise bug requires matching its
     /// description substring without sweeping unrelated genuine
@@ -4605,22 +4392,21 @@ distribution {
         )
         .await;
 
-        // Same SQL fragment the extended handler builds when
-        // description_like is supplied. The %map% pattern targets
-        // only the deserialise-bug rows, leaving the genuine
-        // exit-code failure alone.
-        let rows: Vec<String> = sqlx::query_scalar(
-            "SELECT id FROM run \
-             WHERE result_code = $1 \
-               AND description ILIKE $2 \
-             ORDER BY id ASC",
-        )
-        .bind("lintian")
-        .bind("%invalid type: map%")
-        .fetch_all(pool)
-        .await
-        .unwrap();
-        assert_eq!(rows, vec!["r-bug".to_string(), "r-bug2".to_string()]);
+        // The %map% pattern targets only the deserialise-bug rows,
+        // leaving the genuine exit-code failure alone.
+        let rows = crate::database::RunnerDatabase::new(pool.clone())
+            .find_runs_for_cleanup(&crate::database::CleanupRunsFilter {
+                result_code: "lintian",
+                campaign: None,
+                description_like: Some("%invalid type: map%"),
+                min_finish_time: None,
+                max_finish_time: None,
+                limit: 1000,
+            })
+            .await
+            .unwrap();
+        let rows: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(rows, vec!["r-bug", "r-bug2"]);
     }
 
     /// Regression: `admin_cleanup_runs` originally only NULL'd the
@@ -4714,46 +4500,16 @@ distribution {
         .await
         .unwrap();
 
-        // Mirror the handler's transactional cleanup block for the
-        // single doomed run id.
-        let run_ids = vec!["r-doomed".to_string()];
-        let mut tx = pool.begin().await.unwrap();
-        for col in [
-            "last_run_id",
-            "last_effective_run_id",
-            "last_unabsorbed_run_id",
-        ] {
-            let stmt = format!("UPDATE last_run SET {} = NULL WHERE {} = ANY($1)", col, col);
-            sqlx::query(sqlx::AssertSqlSafe(&*stmt))
-                .bind(&run_ids)
-                .execute(&mut *tx)
-                .await
-                .unwrap();
-        }
-        sqlx::query("UPDATE run SET resume_from = NULL WHERE resume_from = ANY($1)")
-            .bind(&run_ids)
-            .execute(&mut *tx)
+        let doomed = crate::database::CleanupCandidate {
+            id: RunId::new("r-doomed").unwrap(),
+            codebase: CodebaseName::new("alpha").unwrap(),
+            suite: Campaign::new("lintian-fixes").unwrap(),
+            command: "cmd".to_string(),
+        };
+        let (_, deleted) = crate::database::RunnerDatabase::new(pool.clone())
+            .cleanup_runs(&[doomed], "cleanup:success", true)
             .await
             .unwrap();
-        for (table, fk_col) in [
-            ("debian_build", "run_id"),
-            ("review", "run_id"),
-            ("followup", "origin"),
-        ] {
-            let stmt = format!("DELETE FROM {} WHERE {} = ANY($1)", table, fk_col);
-            sqlx::query(sqlx::AssertSqlSafe(&*stmt))
-                .bind(&run_ids)
-                .execute(&mut *tx)
-                .await
-                .unwrap();
-        }
-        let deleted = sqlx::query("DELETE FROM run WHERE id = ANY($1)")
-            .bind(&run_ids)
-            .execute(&mut *tx)
-            .await
-            .unwrap()
-            .rows_affected();
-        tx.commit().await.unwrap();
         assert_eq!(deleted, 1, "the doomed run row should be gone");
 
         // r-keep's children survive; r-doomed's are gone.
