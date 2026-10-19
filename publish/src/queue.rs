@@ -251,10 +251,10 @@ pub async fn publish_pending_ready(
         .await
         .map_err(|e| {
             log::error!("Database error iterating publish-ready runs: {}", e);
-            PublishError::Failure {
-                code: "database-error".to_string(),
-                description: format!("Failed to iterate publish-ready runs: {}", e),
-            }
+            PublishError::failure(
+                "database-error",
+                format!("Failed to iterate publish-ready runs: {}", e),
+            )
         })?;
 
     for (run, rate_limit_bucket, policy_command, unpublished_branches) in ready_runs {
