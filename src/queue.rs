@@ -1,7 +1,6 @@
 use chrono::TimeDelta;
 use sqlx::postgres::types::PgInterval;
 use sqlx::{Error, FromRow, PgPool};
-use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 
 #[derive(Debug, FromRow)]
@@ -76,104 +75,6 @@ impl<'a> Queue<'a> {
         .await?;
 
         Ok(row)
-    }
-
-    pub async fn get_item(&self, queue_id: i32) -> Result<Option<QueueItem>, Error> {
-        let row = sqlx::query_as::<_, QueueItem>(
-            "SELECT id, context, command, estimated_duration, suite AS campaign, refresh, requester, change_set, codebase
-             FROM queue
-             WHERE id = $1"
-        )
-        .bind(queue_id)
-        .fetch_optional(self.pool)
-        .await?;
-
-        Ok(row)
-    }
-
-    /// Get the next item in the queue that is not assigned to any worker
-    ///
-    /// If `codebase` is provided, only items from that codebase will be considered.
-    /// If `campaign` is provided, only items from that campaign will be considered.
-    ///
-    /// # Arguments
-    /// * `codebase` - The codebase to filter by
-    /// * `campaign` - The campaign to filter by
-    /// * `exclude_hosts` - A set of VCS URL hosts to exclude
-    /// * `assigned_queue_items` - A set of queue items that are already assigned
-    pub async fn next_item(
-        &self,
-        codebase: Option<&str>,
-        campaign: Option<&str>,
-        exclude_hosts: Option<HashSet<String>>,
-        assigned_queue_items: Option<HashSet<i32>>,
-    ) -> Result<(Option<QueueItem>, Option<VcsInfo>), Error> {
-        let mut query = String::from(
-            "SELECT
-                queue.id, queue.context, queue.command, queue.estimated_duration, queue.suite AS campaign, 
-                queue.refresh, queue.requester, queue.change_set, queue.codebase,
-                codebase.vcs_type, codebase.branch_url, codebase.subpath
-             FROM queue
-             LEFT JOIN codebase ON codebase.name = queue.codebase"
-        );
-
-        let mut conditions = Vec::new();
-
-        if assigned_queue_items.is_some() {
-            conditions.push("NOT (queue.id = ANY($1::int[]))");
-        }
-
-        if codebase.is_some() {
-            conditions.push("queue.codebase = $2");
-        }
-
-        if campaign.is_some() {
-            conditions.push("queue.suite = $3");
-        }
-
-        if exclude_hosts.is_some() {
-            conditions.push(
-                "NOT (codebase.branch_url IS NOT NULL AND SUBSTRING(codebase.branch_url from '.*://(?:[^/@]*@)?([^/]*)') = ANY($4::text[]))"
-            );
-        }
-
-        if !conditions.is_empty() {
-            query += " WHERE ";
-            query += &conditions.join(" AND ");
-        }
-
-        query += " ORDER BY queue.bucket ASC, queue.priority ASC, queue.id ASC LIMIT 1";
-
-        let mut query_builder = sqlx::query(sqlx::AssertSqlSafe(query));
-
-        if let Some(assigned_queue_items) = assigned_queue_items {
-            query_builder =
-                query_builder.bind(assigned_queue_items.into_iter().collect::<Vec<_>>());
-        }
-
-        if let Some(codebase) = codebase {
-            query_builder = query_builder.bind(codebase);
-        }
-
-        if let Some(campaign) = campaign {
-            query_builder = query_builder.bind(campaign);
-        }
-
-        if let Some(exclude_hosts) = exclude_hosts.as_ref() {
-            query_builder = query_builder.bind(exclude_hosts.iter().collect::<Vec<_>>());
-        }
-
-        let row = query_builder.fetch_optional(self.pool).await?;
-
-        if let Some(row) = row {
-            let vcs_info = VcsInfo::from_row(&row)?;
-
-            let queue_item: QueueItem = QueueItem::from_row(&row)?;
-
-            Ok((Some(queue_item), Some(vcs_info)))
-        } else {
-            Ok((None, None))
-        }
     }
 
     pub async fn add(
