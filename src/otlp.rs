@@ -104,6 +104,102 @@ where
     ))
 }
 
+/// Errors from [`init`].
+#[derive(Debug)]
+pub enum InitError {
+    /// A global subscriber was already installed.
+    Subscriber(tracing_subscriber::util::TryInitError),
+    /// The OTLP exporter could not be built for the endpoint.
+    ExporterBuild(ExporterBuildError),
+}
+
+impl std::fmt::Display for InitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InitError::Subscriber(e) => write!(f, "install tracing subscriber: {}", e),
+            InitError::ExporterBuild(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for InitError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            InitError::Subscriber(e) => Some(e),
+            InitError::ExporterBuild(e) => Some(e),
+        }
+    }
+}
+
+impl From<tracing_subscriber::util::TryInitError> for InitError {
+    fn from(e: tracing_subscriber::util::TryInitError) -> Self {
+        InitError::Subscriber(e)
+    }
+}
+
+impl From<ExporterBuildError> for InitError {
+    fn from(e: ExporterBuildError) -> Self {
+        InitError::ExporterBuild(e)
+    }
+}
+
+/// Initialise the global tracing subscriber with console or JSON log
+/// output. When `collector_endpoint` is set, also export spans to that
+/// collector under `service_name`.
+///
+/// `debug` enables `debug` level across the service; `json_format`
+/// switches console output to JSON for Google Cloud Logging. The
+/// returned guard must be kept alive for as long as spans should be
+/// exported.
+pub fn init(
+    service_name: &str,
+    debug: bool,
+    json_format: bool,
+    collector_endpoint: Option<&str>,
+) -> Result<Option<TracerGuard>, InitError> {
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+
+    let level = if debug { "debug" } else { "info" };
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(format!("{level},hyper=warn,h2=warn")));
+
+    let fmt_layer: Box<dyn Layer<_> + Send + Sync> = if json_format {
+        Box::new(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_target(true)
+                .with_current_span(true)
+                .with_span_list(true),
+        )
+    } else {
+        Box::new(
+            tracing_subscriber::fmt::layer()
+                .with_target(true)
+                .with_thread_ids(false),
+        )
+    };
+
+    let registry = tracing_subscriber::registry()
+        .with(env_filter)
+        .with(fmt_layer);
+
+    let guard = if let Some(endpoint) = collector_endpoint {
+        let (layer, guard) = layer(service_name, endpoint)?;
+        registry.with(layer).try_init()?;
+        Some(guard)
+    } else {
+        registry.try_init()?;
+        None
+    };
+
+    tracing::info!(
+        service = service_name,
+        otlp_endpoint = collector_endpoint.unwrap_or("<disabled>"),
+        "tracing initialised"
+    );
+    Ok(guard)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,7 +7,6 @@ pub mod error;
 pub mod git_http;
 pub mod klaus;
 pub mod repository;
-pub mod tracing_setup;
 pub mod web;
 pub mod web_utils;
 
