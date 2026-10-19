@@ -17,10 +17,7 @@ use std::time::Duration;
 pub use janitor_types::api::VcsInfo;
 
 // Re-export builder types
-pub use builder::{
-    get_builder, Builder, BuilderError, CampaignConfig, DebianBuildConfig, DebianBuilder,
-    DistroConfig, GenericBuildConfig, GenericBuilder,
-};
+pub use builder::{CampaignConfig, DebianBuildConfig};
 
 // Re-export backchannel types
 pub use backchannel::{
@@ -42,7 +39,7 @@ pub mod application;
 pub mod auth;
 /// Module for handling backchannel communication with the worker.
 pub mod backchannel;
-/// Module for build system implementations.
+/// Campaign build configuration.
 pub mod builder;
 /// Database operations.
 pub mod database;
