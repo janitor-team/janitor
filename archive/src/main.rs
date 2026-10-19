@@ -15,7 +15,6 @@ use janitor_archive::{
     redis::RedisSubscriber,
     repository::RepositoryGenerator,
     scanner::PackageScanner,
-    tracing_setup,
     web::ArchiveWebService,
 };
 
@@ -106,7 +105,7 @@ async fn main() -> ArchiveResult<()> {
 
     // Hold the guard until the end of main so queued spans flush on
     // shutdown.
-    let _tracing_guard = tracing_setup::init(
+    let _tracing_guard = janitor::otlp::init(
         "janitor.debian.archive",
         debug,
         gcp,
