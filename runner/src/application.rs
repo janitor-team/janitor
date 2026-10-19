@@ -302,12 +302,6 @@ impl ApplicationBuilder {
         log::info!("Initializing authentication and security services...");
         let auth_service = Arc::new(crate::auth::WorkerAuthService::new(Arc::clone(&database)));
 
-        let security_config = crate::auth::SecurityConfig {
-            max_requests_per_minute: 100,
-            enable_audit_logging: true,
-            allowed_ip_ranges: vec![],
-            max_concurrent_runs_per_worker: 5,
-        };
         // ActiveRunStore is Redis-backed so worker /finish uploads
         // survive runner restarts and so multiple runner replicas share
         // a single source of truth for in-flight runs (see
@@ -320,7 +314,6 @@ impl ApplicationBuilder {
         })?;
         let active_runs = crate::active_runs::ActiveRunStore::new(redis_client);
         let security_service = Arc::new(crate::auth::SecurityService::new(
-            security_config,
             Arc::clone(&database),
             active_runs.clone(),
         ));
