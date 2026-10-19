@@ -20,8 +20,8 @@ host or onto several, and comes with Vagrant VMs to try it locally.
 - `ansible/group_vars/vagrant.yml`: fake, local-only values for the Vagrant
   VMs.
 - `ansible/requirements.yml`: the Galaxy collections the playbook needs.
-- `Vagrantfile` (one VM) and `Vagrantfile.multi-host` (a control VM and a
-  worker VM).
+- `Vagrantfile` (one VM) and `Vagrantfile.multi-host` (a control VM and two
+  worker VMs).
 
 ## What runs where
 
@@ -51,11 +51,19 @@ Caddy serves `janitor_external_url` and proxies `/runner/` (without the
 prefix) to the runner's public port, `/git/` and `/bzr/` to the stores'
 public ports, `/dists/` to the archive and everything else to the site.
 No private port is proxied. Workers use only that URL, so a worker host
-needs to reach the control host on port 80 or 443, and the control host
-needs to reach each worker on 9821. On a host only in `[worker]` an
-nftables table, `janitor_worker`, lets only the control host and the
-host itself reach 9821 (`enable_worker_firewall`,
-`worker_firewall_sources`).
+needs to reach the control host on port 443 (and 80 for the apt
+repository), and the control host needs to reach each worker on 9821.
+On a host only in `[worker]` an nftables table, `janitor_worker`, lets
+only the control host and the host itself reach 9821
+(`enable_worker_firewall`, `worker_firewall_sources`).
+
+With `janitor_scheme: https` (the default) plain HTTP serves only the apt
+repository (`janitor_apt_archive_url`), which the build chroots read
+without CA certificates; every other path, worker logins included, is
+redirected to HTTPS. `caddy_self_signed: true` (the Vagrant VMs) makes a
+self-signed certificate for a control host without a real domain; each
+worker host fetches it from the control host when the playbook runs,
+adds it to its CA bundle and mounts that bundle into the worker.
 
 With every page, file and redirect, Caddy's public sites send
 `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` and,
@@ -145,14 +153,15 @@ themselves (`ansible_local`).
 
 ```
 vagrant up                                         # one VM with everything
-VAGRANT_VAGRANTFILE=Vagrantfile.multi-host vagrant up   # control and worker1
+VAGRANT_VAGRANTFILE=Vagrantfile.multi-host vagrant up   # control, worker1 and worker2
 vagrant rsync && vagrant provision                 # copy changed files in, run the playbook again
-vagrant ssh [control|worker1]
+vagrant ssh [control|worker1|worker2]
 vagrant destroy -f
 ```
 
-The site is at `http://<control IP>/` (`192.168.56.10` for one VM,
-`192.168.60.11` for several).
+The site is at `https://<control IP>/` (`192.168.56.10` for one VM,
+`192.168.60.11` for several), with the self-signed certificate. With
+several VMs, provision control first: the workers fetch its certificate.
 
 Environment variables:
 

@@ -34,6 +34,13 @@
         quiet: true
       when: (oauth_client_id | default('') | string | length) > 0
 
+    - name: Check janitor_worker_concurrency is a whole number of at least 1
+      ansible.builtin.assert:
+        that:
+          - janitor_worker_concurrency | string is match('^[1-9][0-9]*$')
+        fail_msg: janitor_worker_concurrency must be a whole number of at least 1.
+        quiet: true
+
 - name: Deploy the janitor control services
   hosts: control
   become: true

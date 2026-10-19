@@ -64,6 +64,25 @@
   changed_when: true
   when: not use_prebuilt_images and item.rc == 1
 
+- name: Point each image's latest tag at this commit's build
+  # The units run :latest.
+  become: true
+  become_user: "{{ ansible_user }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    ref=ghcr.io/jelmer/janitor/{{ item.item }}
+    want=$(podman images --quiet --no-trunc "$ref:{{ janitor_head.stdout }}")
+    have=$(podman images --quiet --no-trunc "$ref:latest")
+    if [ "$want" != "$have" ]; then podman tag "$ref:{{ janitor_head.stdout }}" "$ref:latest"; echo RETAGGED; fi
+  args:
+    executable: /bin/bash
+  register: janitor_retag
+  changed_when: "'RETAGGED' in janitor_retag.stdout"
+  loop: "{{ janitor_image_exists.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: not use_prebuilt_images and item.rc == 0
+
 - name: Pull the pre-built images
   # Only a different image id counts as a change.
   become: true
@@ -109,26 +128,31 @@
   register: worker_containerfile
   when: "'worker' in janitor_services and janitor_worker_extra_packages | length > 0"
 
-- name: Check whether the derived worker image exists
+- name: Check whether the derived worker image exists and is built on the current worker image
   become: true
   become_user: "{{ ansible_user }}"
-  ansible.builtin.command: podman image exists localhost/janitor-worker-custom:latest
-  register: worker_custom_exists
+  ansible.builtin.shell: |
+    set -euo pipefail
+    base=$(podman images --quiet --no-trunc ghcr.io/jelmer/janitor/worker:latest)
+    echo "BASE=$base"
+    if ! podman image exists localhost/janitor-worker-custom:latest; then echo MISSING; exit 0; fi
+    built_on=$(podman image inspect localhost/janitor-worker-custom:latest | jq -r '.[0].Labels["janitor.base-image"] // ""')
+    test "$built_on" = "$base" || echo STALE
+  args:
+    executable: /bin/bash
+  register: worker_custom_state
   changed_when: false
-  failed_when: worker_custom_exists.rc not in [0, 1]
   when: "'worker' in janitor_services and janitor_worker_extra_packages | length > 0"
 
 - name: Build the derived worker image
   become: true
   become_user: "{{ ansible_user }}"
   ansible.builtin.command: >-
-    podman build --pull=never -t localhost/janitor-worker-custom:latest
+    podman build --pull=never
+    --label janitor.base-image={{ worker_custom_state.stdout_lines[0] | regex_replace('^BASE=', '') }}
+    -t localhost/janitor-worker-custom:latest
     /home/{{ ansible_user }}/janitor-worker-image
   changed_when: true
-  vars:
-    worker_base_rebuilt: >-
-      {{ janitor_image_exists.results | default([]) | selectattr('item', 'equalto', 'worker')
-         | selectattr('rc', 'equalto', 1) | list | length > 0 }}
   when:
     - "'worker' in janitor_services and janitor_worker_extra_packages | length > 0"
-    - worker_containerfile.changed or worker_custom_exists.rc == 1 or worker_base_rebuilt | bool
+    - worker_containerfile.changed or 'MISSING' in worker_custom_state.stdout or 'STALE' in worker_custom_state.stdout

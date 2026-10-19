@@ -2,7 +2,7 @@
 # Only for the local test VMs (../Vagrantfile, ../Vagrantfile.multi-host).
 # Every secret here is a fake, local-only value. The Vagrantfiles pass
 # janitor_domain and the worker addresses as extra vars.
-janitor_scheme: http
+# HTTPS with a self-signed certificate, which each worker host trusts.
 caddy_self_signed: true
 janitor_github_org: vagrant-test
 

@@ -6,10 +6,10 @@ delete table inet janitor_worker
 table inet janitor_worker {
 	chain input {
 		type filter hook input priority filter; policy accept;
-		tcp dport 9821 iifname "lo" accept
+		tcp dport {{ janitor_worker_ports }} iifname "lo" accept
 {% for family, addresses in [('ip', worker_firewall_addresses | reject('search', ':') | list), ('ip6', worker_firewall_addresses | select('search', ':') | list)] if addresses %}
-		tcp dport 9821 {{ family }} saddr { {{ addresses | join(', ') }} } accept
+		tcp dport {{ janitor_worker_ports }} {{ family }} saddr { {{ addresses | join(', ') }} } accept
 {% endfor %}
-		tcp dport 9821 reject with tcp reset
+		tcp dport {{ janitor_worker_ports }} reject with tcp reset
 	}
 }

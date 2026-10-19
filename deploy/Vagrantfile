@@ -21,7 +21,7 @@ Vagrant.configure("2") do |config|
   # trixie, the release the playbook targets.
   config.vm.box = "debian/trixie64"
   config.vm.hostname = "janitor-vagrant"
-  # vagrant-libvirt has no forwarded ports; reach the site at http://VM_IP/.
+  # vagrant-libvirt has no forwarded ports; reach the site at https://VM_IP/.
   config.vm.network "private_network", ip: VM_IP
   config.vm.synced_folder ".", "/vagrant", type: "rsync", rsync__exclude: [".vagrant/"]
   unless JANITOR_SOURCE.empty?

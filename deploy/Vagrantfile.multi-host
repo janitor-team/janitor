@@ -2,7 +2,8 @@
 # vi: set ft=ruby :
 #
 # Local VMs running the same playbook as a multi-host setup:
-# "control" (the janitor services, PostgreSQL, Redis, Caddy) and a worker.
+# "control" (the janitor services, PostgreSQL, Redis, Caddy) and two
+# workers that take work from the same runner.
 # Each VM runs the playbook for its own groups with ansible_local. See
 # README.md, "Several hosts".
 #
@@ -24,6 +25,7 @@ STORAGE_POOL = ENV.fetch("JANITOR_STORAGE_POOL", "default")
 MACHINES = {
   "control" => [["control"], 11, 8, 24576, 200],
   "worker1" => [["worker"], 21, 6, 12288, 150],
+  "worker2" => [["worker"], 22, 6, 12288, 150],
 }
 CONTROL_IP = "#{NETWORK}.11"
 

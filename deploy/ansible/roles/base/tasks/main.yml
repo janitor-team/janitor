@@ -8,6 +8,7 @@
       - make
       - curl
       - ca-certificates
+      - openssl
       - gnupg
       - jq
       # become_user needs setfacl for its temporary files.

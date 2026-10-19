@@ -21,14 +21,46 @@
 - name: Deploy the quadlet units
   # The file name sets the unit name.
   ansible.builtin.template:
-    src: "{{ item }}.container.j2"
+    src: "{{ 'worker' if item in janitor_worker_instances else item }}.container.j2"
     dest: "/home/{{ ansible_user }}/.config/containers/systemd/janitor-{{ item }}.container"
     owner: "{{ ansible_user }}"
     mode: "0600"
-  loop: "{{ janitor_services }}"
-  register: janitor_units
+  loop: "{{ janitor_units }}"
+  register: janitor_unit_files
   notify: Reload user systemd
   no_log: true
+
+- name: Find worker units beyond janitor_worker_concurrency
+  ansible.builtin.find:
+    paths: "/home/{{ ansible_user }}/.config/containers/systemd"
+    patterns: janitor-worker-*.container
+  register: janitor_worker_unit_files
+  when: "'worker' in janitor_services"
+
+- name: Stop and remove the worker units beyond janitor_worker_concurrency
+  vars:
+    janitor_surplus_units: >-
+      {{ janitor_worker_unit_files.files | default([]) | map(attribute='path') | map('basename')
+         | map('regex_replace', '^janitor-|[.]container$', '')
+         | difference(janitor_worker_instances | list) }}
+  block:
+    - name: Stop the worker units beyond janitor_worker_concurrency
+      become: true
+      become_user: "{{ ansible_user }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+      ansible.builtin.systemd:
+        name: "janitor-{{ item }}.service"
+        scope: user
+        state: stopped
+      loop: "{{ janitor_surplus_units }}"
+
+    - name: Remove the worker units beyond janitor_worker_concurrency
+      ansible.builtin.file:
+        path: "/home/{{ ansible_user }}/.config/containers/systemd/janitor-{{ item }}.container"
+        state: absent
+      loop: "{{ janitor_surplus_units }}"
+      notify: Reload user systemd
 
 - name: Flush handlers
   ansible.builtin.meta: flush_handlers
@@ -53,15 +85,17 @@
   ansible.builtin.shell: |
     set -eu
     running=$(podman inspect --format '{{ '{{.Image}}' }}' janitor-{{ item }} 2>/dev/null || true)
-    latest=$(podman image inspect --format '{{ '{{.Id}}' }}' {{ janitor_worker_image if item == 'worker' else 'ghcr.io/jelmer/janitor/' + item + ':latest' }})
+    latest=$(podman image inspect --format '{{ '{{.Id}}' }}' {{ janitor_image }})
     if [ -n "$running" ] && [ "$running" != "$latest" ]; then echo STALE; fi
   args:
     executable: /bin/bash
+  vars:
+    janitor_image: "{{ janitor_worker_image if item in janitor_worker_instances else 'ghcr.io/jelmer/janitor/' + item + ':latest' }}"
   register: janitor_stale
   changed_when: false
-  loop: "{{ janitor_services }}"
+  loop: "{{ janitor_units }}"
 
-- name: Start the janitor services, restarting those with a new image, unit or janitor.conf
+- name: Start the janitor services, restarting those with a new image, unit, janitor.conf or CA bundle
   become: true
   become_user: "{{ ansible_user }}"
   environment:
@@ -72,20 +106,23 @@
     state: "{{ 'restarted' if janitor_restart is contains(item) else 'started' }}"
   vars:
     janitor_restart: >-
-      {{ (janitor_units.results | selectattr('changed') | map(attribute='item') | list)
+      {{ (janitor_unit_files.results | selectattr('changed') | map(attribute='item') | list)
          + (janitor_stale.results | selectattr('stdout', 'search', 'STALE') | map(attribute='item') | list)
          + (janitor_services | difference(['worker']) if janitor_conf is changed else [])
-         + (['worker'] if janitor_worker_credentials is changed else []) }}
-  loop: "{{ janitor_services }}"
+         + (janitor_worker_instances | list if janitor_worker_credentials is changed else [])
+         + (janitor_worker_instances | list if control_cert_trust is changed else []) }}
+  loop: "{{ janitor_units }}"
 
 - name: Wait for each service's health route
   ansible.builtin.uri:
-    url: "{{ janitor_health_urls[item] }}"
+    url: >-
+      {{ janitor_health_urls[item] if item in janitor_health_urls
+         else 'http://%s:%d/health' % (janitor_worker_address, janitor_worker_instances[item]) }}
   register: janitor_health
   until: janitor_health.status == 200
   retries: 30
   delay: 5
-  loop: "{{ janitor_services }}"
+  loop: "{{ janitor_units }}"
 
 # The worker's build session image, made inside the worker container.
 - name: Cache the build session image (ogni cache-env, a few minutes)

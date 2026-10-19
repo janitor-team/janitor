@@ -28,6 +28,47 @@
   no_log: true
   when: "'control' in group_names"
 
+- name: Wait for the control host's HTTPS port
+  # Brought up together, a worker gets here long before control's Caddy.
+  ansible.builtin.wait_for:
+    host: "{{ janitor_domain }}"
+    port: 443
+    timeout: 7200
+  when:
+    - caddy_self_signed | default(false) | bool
+    - "'control' not in group_names"
+
+# Test hosts only (caddy_self_signed): the worker host trusts whatever
+# certificate the control host's HTTPS port shows when the playbook runs.
+- name: Fetch the control host's self-signed certificate
+  ansible.builtin.shell: >-
+    set -o pipefail &&
+    openssl s_client -connect {{ janitor_domain }}:443 </dev/null 2>/dev/null
+    | openssl x509
+  args:
+    executable: /bin/bash
+  register: control_cert
+  changed_when: false
+  when:
+    - caddy_self_signed | default(false) | bool
+    - "'worker' in janitor_services"
+
+- name: Trust the control host's self-signed certificate
+  ansible.builtin.copy:
+    content: "{{ control_cert.stdout }}\n"
+    dest: /usr/local/share/ca-certificates/janitor-control.crt
+    owner: root
+    group: root
+    mode: "0644"
+  register: control_cert_trust
+  notify: Update the host's CA bundle
+  when:
+    - caddy_self_signed | default(false) | bool
+    - "'worker' in janitor_services"
+
+- name: Update the CA bundle before the services start
+  ansible.builtin.meta: flush_handlers
+
 - name: Create a breezy config directory per service
   # The worker runs untrusted code as root; :ro does not stop it reading.
   ansible.builtin.file:

@@ -6,22 +6,24 @@
       - openssl
     state: present
 
-- name: Generate a self-signed certificate for the HTTPS test listener
-  # Only for a test host without a real domain (caddy_self_signed); the
-  # site's login cookies are secure-only, so they need HTTPS.
+- name: Generate a self-signed certificate for a host without a real domain
+  # Only for test hosts (caddy_self_signed); each worker host trusts it.
+  # TLS clients match the name against subjectAltName, not the CN.
   ansible.builtin.command: >
     openssl req -x509 -newkey rsa:2048 -nodes -days 3650
-    -keyout /etc/caddy/self-signed.key
-    -out /etc/caddy/self-signed.crt
+    -keyout /etc/caddy/janitor.key
+    -out /etc/caddy/janitor.crt
     -subj "/CN={{ janitor_domain }}"
+    -addext "subjectAltName={{ 'IP' if janitor_domain is match('^[0-9.]+$') else 'DNS' }}:{{ janitor_domain }}"
+    -addext "basicConstraints=critical,CA:FALSE"
   args:
-    creates: /etc/caddy/self-signed.crt
+    creates: /etc/caddy/janitor.crt
   when: caddy_self_signed | default(false) | bool
   notify: Restart caddy
 
 - name: Let caddy read the self-signed key
   ansible.builtin.file:
-    path: /etc/caddy/self-signed.key
+    path: /etc/caddy/janitor.key
     owner: root
     group: caddy
     mode: "0640"

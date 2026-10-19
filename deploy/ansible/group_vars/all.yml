@@ -23,17 +23,28 @@ janitor_branch: main
 janitor_home: "/home/{{ ansible_user }}/janitor"
 janitor_domain: CHANGEME        # e.g. janitor.example.com
 janitor_github_org: CHANGEME    # GitHub user or org the bot works as
-# http only for a test VM without a real domain; Caddy then serves plain HTTP.
+# http: Caddy serves everything over plain HTTP, worker logins included,
+# so only on a network nobody else can read.
 janitor_scheme: https
 # HSTS max-age in seconds; browsers keep it that long, so start low on a new domain.
 caddy_hsts_max_age: 31536000
 # Workers reach the runner, git_store and bzr_store through Caddy here.
 janitor_external_url: "{{ janitor_scheme }}://{{ janitor_domain }}/"
+# The build chroots read the apt repository over plain HTTP: they have no
+# CA certificates. Caddy serves only the repository there, no login.
+janitor_apt_archive_url: "http://{{ janitor_domain }}/"
 
 # Address this worker listens on and that the runner reaches it on.
 janitor_worker_address: 127.0.0.1
+# Builds this worker host runs at once: janitor-worker on port 9821, and
+# janitor-worker-<n> on port 9820 + n for n up to this, with one login.
+janitor_worker_concurrency: 1
+janitor_worker_instances: >-
+  {{ dict((['worker'] + range(2, janitor_worker_concurrency | int + 1) | map('regex_replace', '^', 'worker-') | list)
+          | zip(range(9821, 9821 + janitor_worker_concurrency | int))) }}
+janitor_worker_ports: "{{ '9821' if janitor_worker_concurrency | int == 1 else '9821-%d' % (9820 + janitor_worker_concurrency | int) }}"
 # On hosts only in [worker], an nftables table lets only the control
-# host and the host itself reach port 9821.
+# host and the host itself reach those ports.
 enable_worker_firewall: true
 # Names or addresses, resolved on the worker: each [control] host's
 # ansible_host, or janitor_domain for one without.
@@ -64,6 +75,10 @@ janitor_control_services:
 janitor_services: >-
   {{ (janitor_control_services if 'control' in group_names else [])
      + (['worker'] if 'worker' in group_names else []) }}
+# The systemd units of janitor_services, one per worker instance.
+janitor_units: >-
+  {{ janitor_services | difference(['worker'])
+     + (janitor_worker_instances | list if 'worker' in janitor_services else []) }}
 # Services that use breezy each get their own config dir under here.
 janitor_breezy_dir: "/home/{{ ansible_user }}/.config/janitor-breezy"
 janitor_breezy_services: "{{ janitor_services | intersect(['runner', 'publish', 'worker']) }}"

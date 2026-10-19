@@ -1,5 +1,6 @@
 ---
-# Only the control host and this host may reach janitor-worker's port 9821.
+# Only the control host and this host may reach janitor-worker's ports
+# (9821 and up).
 - name: Set up the worker firewall
   when: enable_worker_firewall | bool
   block:
@@ -8,7 +9,7 @@
         name: nftables
         state: present
 
-    - name: Resolve the addresses allowed to reach port 9821
+    - name: Resolve the addresses allowed to reach the worker ports
       ansible.builtin.command:
         cmd: getent ahosts {{ item }}
       loop: "{{ worker_firewall_sources }}"
