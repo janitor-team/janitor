@@ -315,7 +315,6 @@ async fn serve_from_suite(
         .repositories
         .get(suite)
         .ok_or(StatusCode::NOT_FOUND)?;
-
     // A configured suite that hasn't been published yet reports 503
     // for its Release file so clients can distinguish "not yet
     // available" from "unknown suite" (404).
@@ -323,7 +322,7 @@ async fn serve_from_suite(
         request.uri().path().rsplit('/').next(),
         Some("Release" | "Release.gpg" | "InRelease")
     );
-    match serve_from_dir(repo_config.suite_path(), 2, request).await {
+    match serve_from_dir(repo_config.base_path.clone(), 2, request).await {
         Err(StatusCode::NOT_FOUND) if wants_release => Ok(suite_not_yet_published_response(suite)),
         other => other,
     }
@@ -1002,7 +1001,6 @@ mod tests {
                 architectures: vec!["amd64".to_string()],
                 components: vec!["main".to_string()],
                 base_path: PathBuf::from("/x"),
-                by_hash: true,
             },
         );
         assert!(is_valid_on_demand_kind("lintian-fixes", None, &ac));
