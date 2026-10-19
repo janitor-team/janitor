@@ -127,6 +127,16 @@ pub fn convert_codemod_script_failed(i: i32, command: &str) -> WorkerFailure {
     }
 }
 
+fn split_codemod_command(command: &str) -> Result<Vec<String>, WorkerFailure> {
+    shlex::split(command).ok_or_else(|| WorkerFailure {
+        code: "invalid-command-syntax".to_string(),
+        description: format!("Invalid command syntax: {}", command),
+        details: None,
+        stage: vec!["codemod".to_string()],
+        transient: Some(false),
+    })
+}
+
 type BuildConfig = serde_json::Value;
 type ValidateConfig = serde_json::Value;
 
@@ -166,7 +176,7 @@ pub fn run_worker(
     run_id: &RunId,
     build_config: &serde_json::Value,
     env: HashMap<String, String>,
-    command: Vec<&str>,
+    command: &str,
     output_directory: &std::path::Path,
     metadata: &mut Metadata,
     target_repo_url: &Url,
@@ -191,6 +201,8 @@ pub fn run_worker(
     let worker_log_path = output_directory.join("worker.log");
     log::debug!("Writing worker log to {}", worker_log_path.display());
     let copy_output = crate::tee::CopyOutput::new(&worker_log_path, tee).unwrap();
+    let argv = split_codemod_command(command)?;
+    let command = argv.iter().map(|s| s.as_str()).collect::<Vec<_>>();
     metadata.command = Some(command.iter().map(|s| s.to_string()).collect());
     metadata.codebase = Some(codebase.clone());
 
@@ -959,11 +971,7 @@ pub async fn process_single_item(
             &assignment_.id,
             &assignment_.build.config,
             env,
-            shlex::split(&assignment_.codemod.command)
-                .unwrap()
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>(),
+            &assignment_.codemod.command,
             output_directory_.as_path(),
             &mut metadata,
             &assignment_.target_repository.url,
@@ -1150,6 +1158,28 @@ mod tests {
     }
 
     #[test]
+    fn test_split_codemod_command() {
+        assert_eq!(
+            split_codemod_command("lintian-brush --modern 'a b'"),
+            Ok(vec![
+                "lintian-brush".to_string(),
+                "--modern".to_string(),
+                "a b".to_string()
+            ])
+        );
+        assert_eq!(
+            split_codemod_command("echo 'oops"),
+            Err(WorkerFailure {
+                code: "invalid-command-syntax".to_string(),
+                description: "Invalid command syntax: echo 'oops".to_string(),
+                stage: vec!["codemod".to_string()],
+                details: None,
+                transient: Some(false),
+            })
+        );
+    }
+
+    #[test]
     fn test_convert_codemod_script_failed() {
         assert_eq!(
             convert_codemod_script_failed(127, "foobar"),
@@ -1217,7 +1247,7 @@ check:
                 "dep_server_url": serde_json::Value::Null,
             }),
             HashMap::new(),
-            vec!["sh", "-c", "echo foo > bar"],
+            "sh -c 'echo foo > bar'",
             &output_dir,
             &mut metadata,
             &Url::from_directory_path(tmp_path.join("target")).unwrap(),
@@ -1356,7 +1386,7 @@ check:
                 "dep_server_url": serde_json::Value::Null,
             }),
             HashMap::new(),
-            vec!["sh", "-c", "echo foo > bar"],
+            "sh -c 'echo foo > bar'",
             &output_dir,
             &mut metadata,
             &Url::from_directory_path(tmp_path.join("target")).unwrap(),
