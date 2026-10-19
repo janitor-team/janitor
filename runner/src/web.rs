@@ -1,4 +1,3 @@
-use crate::api_types::MessageResponse;
 use crate::{
     get_builder, metrics::MetricsCollector, ActiveRun, AppState, Backchannel, BuilderResult,
     CampaignConfig, QueueItem,
@@ -1747,17 +1746,13 @@ async fn admin_create_worker(
     {
         Ok(()) => (
             StatusCode::CREATED,
-            Json(MessageResponse {
-                message: "Worker created successfully".to_string(),
-            }),
+            Json(json!({"message": "Worker created successfully"})),
         ),
         Err(e) => {
             log::error!("Failed to create worker: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(MessageResponse {
-                    message: "Failed to create worker".to_string(),
-                }),
+                Json(json!({"message": "Failed to create worker"})),
             )
         }
     }
@@ -1769,17 +1764,11 @@ async fn admin_delete_worker(
     Path(name): Path<String>,
 ) -> impl IntoResponse {
     match state.auth_service.delete_worker(&name).await {
-        Ok(true) => Json(MessageResponse {
-            message: "Worker deleted successfully".to_string(),
-        }),
-        Ok(false) => Json(MessageResponse {
-            message: "Worker not found".to_string(),
-        }),
+        Ok(true) => Json(json!({"message": "Worker deleted successfully"})),
+        Ok(false) => Json(json!({"message": "Worker not found"})),
         Err(e) => {
             log::error!("Failed to delete worker: {}", e);
-            Json(MessageResponse {
-                message: "Failed to delete worker".to_string(),
-            })
+            Json(json!({"message": "Failed to delete worker"}))
         }
     }
 }
