@@ -6,7 +6,6 @@ use crate::database::RunnerDatabase;
 use crate::{
     auth::{SecurityService, WorkerAuthService},
     error_tracking::ErrorTracker,
-    metrics::MetricsCollector,
     upload::UploadProcessor,
     vcs::RunnerVcsManager,
     AppState,
@@ -189,7 +188,6 @@ fn assemble_app_state(
     let error_tracker = Arc::new(ErrorTracker::new(
         crate::error_tracking::ErrorTrackingConfig::default(),
     ));
-    let metrics = Arc::new(MetricsCollector);
 
     let temp_dir = std::env::temp_dir().join("janitor_test_uploads");
     let upload_processor = Arc::new(UploadProcessor::new(
@@ -229,7 +227,6 @@ fn assemble_app_state(
         backup_log_manager: None,
         backup_artifact_manager,
         error_tracker,
-        metrics,
         config,
         upload_processor,
         auth_service,

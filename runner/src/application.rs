@@ -3,7 +3,6 @@
 use crate::{
     database::RunnerDatabase,
     error_tracking::{ErrorSeverity, ErrorTracker, ErrorTrackingConfig},
-    metrics::MetricsCollector,
     vcs::RunnerVcsManager,
     AppState,
 };
@@ -189,7 +188,6 @@ impl ApplicationBuilder {
 
         // Initialize metrics first so other systems can use them
         log::info!("Initializing metrics collection...");
-        let metrics = Arc::new(MetricsCollector {});
         crate::metrics::init_metrics();
 
         // Initialize error tracking
@@ -343,7 +341,6 @@ impl ApplicationBuilder {
             backup_log_manager,
             backup_artifact_manager,
             error_tracker,
-            metrics,
             config: Arc::new(janitor_config),
             upload_processor,
             auth_service,

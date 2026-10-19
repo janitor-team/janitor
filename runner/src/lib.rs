@@ -1571,8 +1571,6 @@ pub struct AppState {
     pub backup_artifact_manager: Option<Arc<janitor::artifacts::ArtifactManager>>,
     /// Error tracking system.
     pub error_tracker: Arc<error_tracking::ErrorTracker>,
-    /// Metrics collector.
-    pub metrics: Arc<metrics::MetricsCollector>,
     /// Configuration.
     pub config: Arc<janitor::config::Config>,
     /// Upload processor for multipart forms.
