@@ -53,12 +53,6 @@ impl EnvParser {
         env::var(self.get_key(key)).ok()
     }
 
-    /// Get a required string value from environment
-    pub fn get_required_string(&self, key: &str) -> Result<String, ConfigError> {
-        self.get_string(key)
-            .ok_or_else(|| ConfigError::MissingRequired(self.get_key(key)))
-    }
-
     /// Get a boolean value from environment
     pub fn get_bool(&self, key: &str) -> Result<Option<bool>, ConfigError> {
         match self.get_string(key) {
@@ -99,21 +93,6 @@ impl EnvParser {
         self.parse_numeric(key)
     }
 
-    /// Get an i32 value from environment
-    pub fn get_i32(&self, key: &str) -> Result<Option<i32>, ConfigError> {
-        self.parse_numeric(key)
-    }
-
-    /// Get an i64 value from environment
-    pub fn get_i64(&self, key: &str) -> Result<Option<i64>, ConfigError> {
-        self.parse_numeric(key)
-    }
-
-    /// Get an f64 value from environment
-    pub fn get_f64(&self, key: &str) -> Result<Option<f64>, ConfigError> {
-        self.parse_numeric(key)
-    }
-
     /// Parse a numeric value from environment
     fn parse_numeric<T>(&self, key: &str) -> Result<Option<T>, ConfigError>
     where
@@ -131,116 +110,11 @@ impl EnvParser {
             None => Ok(None),
         }
     }
-
-    /// Get a comma-separated list of strings from environment
-    pub fn get_string_list(&self, key: &str) -> Option<Vec<String>> {
-        self.get_string(key).map(|value| {
-            value
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
-    }
-
-    /// Get a URL from environment
-    pub fn get_url(&self, key: &str) -> Result<Option<url::Url>, ConfigError> {
-        match self.get_string(key) {
-            Some(value) => {
-                let url = value
-                    .parse::<url::Url>()
-                    .map_err(|e| ConfigError::ParseError {
-                        field: self.get_key(key),
-                        message: format!("Invalid URL '{}': {}", value, e),
-                    })?;
-                Ok(Some(url))
-            }
-            None => Ok(None),
-        }
-    }
-
-    /// Get a duration in seconds from environment
-    pub fn get_duration_seconds(
-        &self,
-        key: &str,
-    ) -> Result<Option<std::time::Duration>, ConfigError> {
-        match self.get_u64(key)? {
-            Some(seconds) => Ok(Some(std::time::Duration::from_secs(seconds))),
-            None => Ok(None),
-        }
-    }
 }
 
 impl Default for EnvParser {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// Helper functions for common environment variable patterns
-pub mod helpers {
-    use super::*;
-
-    /// Get database URL from common environment variables
-    pub fn get_database_url() -> Result<String, ConfigError> {
-        // Try common database URL environment variables
-        for key in &["DATABASE_URL", "POSTGRES_URL", "POSTGRESQL_URL"] {
-            if let Ok(url) = env::var(key) {
-                return Ok(url);
-            }
-        }
-
-        // Try to construct from individual components
-        if let (Ok(host), Ok(user), Ok(db)) = (
-            env::var("PGHOST").or_else(|_| env::var("DB_HOST")),
-            env::var("PGUSER").or_else(|_| env::var("DB_USER")),
-            env::var("PGDATABASE").or_else(|_| env::var("DB_NAME")),
-        ) {
-            let port = env::var("PGPORT")
-                .or_else(|_| env::var("DB_PORT"))
-                .unwrap_or_else(|_| "5432".to_string());
-
-            let password = env::var("PGPASSWORD")
-                .or_else(|_| env::var("DB_PASSWORD"))
-                .unwrap_or_else(|_| "".to_string());
-
-            let auth = if password.is_empty() {
-                user
-            } else {
-                format!("{}:{}", user, password)
-            };
-
-            return Ok(format!("postgresql://{}@{}:{}/{}", auth, host, port, db));
-        }
-
-        Err(ConfigError::MissingRequired("DATABASE_URL".to_string()))
-    }
-
-    /// Get Redis URL from common environment variables
-    pub fn get_redis_url() -> Result<String, ConfigError> {
-        // Try common Redis URL environment variables
-        for key in &["REDIS_URL", "REDIS_URI"] {
-            if let Ok(url) = env::var(key) {
-                return Ok(url);
-            }
-        }
-
-        // Try to construct from individual components
-        if let Ok(host) = env::var("REDIS_HOST") {
-            let port = env::var("REDIS_PORT").unwrap_or_else(|_| "6379".to_string());
-            let db = env::var("REDIS_DB").unwrap_or_else(|_| "0".to_string());
-
-            let auth = if let Ok(password) = env::var("REDIS_PASSWORD") {
-                format!(":{}@", password)
-            } else {
-                "".to_string()
-            };
-
-            return Ok(format!("redis://{}{}:{}/{}", auth, host, port, db));
-        }
-
-        // Default to localhost
-        Ok("redis://localhost:6379/0".to_string())
     }
 }
 
@@ -314,37 +188,5 @@ mod tests {
         env::remove_var("BOOL_FALSE_2");
         env::remove_var("BOOL_FALSE_3");
         env::remove_var("BOOL_INVALID");
-    }
-
-    #[test]
-    fn test_string_list_parsing() {
-        env::set_var("LIST_VAR", "item1,item2,item3");
-        env::set_var("LIST_SPACES", " item1 , item2 , item3 ");
-        env::set_var("LIST_EMPTY", "");
-
-        let parser = EnvParser::new();
-
-        assert_eq!(
-            parser.get_string_list("LIST_VAR"),
-            Some(vec![
-                "item1".to_string(),
-                "item2".to_string(),
-                "item3".to_string()
-            ])
-        );
-        assert_eq!(
-            parser.get_string_list("LIST_SPACES"),
-            Some(vec![
-                "item1".to_string(),
-                "item2".to_string(),
-                "item3".to_string()
-            ])
-        );
-        assert_eq!(parser.get_string_list("LIST_EMPTY"), Some(vec![]));
-        assert_eq!(parser.get_string_list("NONEXISTENT"), None);
-
-        env::remove_var("LIST_VAR");
-        env::remove_var("LIST_SPACES");
-        env::remove_var("LIST_EMPTY");
     }
 }
