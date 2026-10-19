@@ -94,8 +94,11 @@ unset:
 - `git_location`/`bzr_location` - where `git_store`/`bzr_store` repos live
   (a local path, or a remote URL pointing at a `git_store`/`bzr_store`
   instance). Without these, that VCS type is not available at all.
-- `zipkin_address` - a Zipkin endpoint; if set, enables distributed tracing
-  at a 0.1 sample rate. No tracing without it.
+- `zipkin_address` - the `/v1/traces` URL of a Zipkin server that takes
+  OTLP, e.g. `http://localhost:9411/v1/traces`. `janitor-runner`,
+  `janitor-git-store` and `janitor-archive` send OTLP there; `janitor-site`
+  sends Zipkin JSON to the same URL with `/v1/traces` replaced by
+  `/api/v2/spans`. Traces are sampled at 0.1; no tracing without it.
 - `user_agent` - the HTTP User-Agent sent on outbound requests. Falls back to
   `janitor/<version>` if unset.
 - `hide_reviewer_identities` - if `true`, visitors who are not logged in
