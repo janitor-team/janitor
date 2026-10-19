@@ -9,32 +9,6 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Represents a publish-ready run with its associated metadata.
-///
-/// NOTE: retained for external API shape (`crate::state::iter_publish_ready`
-/// now returns a tuple). Prefer that function directly in new code -
-/// see commit history for why the previous in-module
-/// `PublishReadyIterator` was removed.
-#[derive(Debug, Clone)]
-pub struct PublishReadyRun {
-    /// The run information.
-    pub run: janitor::state::Run,
-    /// The rate limit bucket for this run.
-    pub rate_limit_bucket: String,
-    /// The command that was executed.
-    pub command: String,
-    /// List of unpublished branches for this run.
-    pub unpublished_branches: Vec<crate::state::UnpublishedBranch>,
-}
-
-// `PublishReadyIterator` was removed: its hand-rolled join bypassed
-// the `publish_ready` view and the associated gating (publish_status,
-// change_set_state, mode, max_frequency_days, ordering), hardcoded
-// `publish_mode = "propose"`, and returned a single run per call.
-// `publish_pending_ready` and the single-run path in
-// `handle_publish_run` now both go through
-// `crate::state::iter_publish_ready`.
-
 /// Periodically check existing merge proposals and publish pending
 /// ready changes.
 pub async fn process_queue_loop(
@@ -306,7 +280,6 @@ pub async fn publish_pending_ready(
             std::time::Duration::from_secs(PER_RUN_PUBLISH_TIMEOUT_SECS),
             consider_publish_run(
                 &state.conn,
-                state.redis.clone(),
                 state.config,
                 &state.publish_worker,
                 &state.vcs_managers,
