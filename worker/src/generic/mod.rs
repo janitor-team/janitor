@@ -20,13 +20,11 @@ pub fn generic_make_changes(
     resume_metadata: Option<&serde_json::Value>,
 ) -> std::result::Result<GenericCommandResult, WorkerFailure> {
     if argv.is_empty() {
-        return Err(WorkerFailure {
-            code: "no-changes".to_string(),
-            description: "No change build".to_string(),
-            details: None,
-            stage: vec!["codemod".to_string()],
-            transient: None,
-        });
+        return Err(WorkerFailure::new(
+            "no-changes",
+            "No change build",
+            ["codemod"],
+        ));
     }
 
     log::info!("Running {:?}", argv);
@@ -48,27 +46,24 @@ pub fn generic_make_changes(
         f.into(),
     ) {
         Ok(r) => Ok(r),
-        Err(GenericCodemodError::ScriptMadeNoChanges) => Err(WorkerFailure {
-            code: "nothing-to-do".to_string(),
-            description: "No changes made".to_string(),
-            details: None,
-            stage: vec!["codemod".to_string()],
-            transient: Some(false),
-        }),
+        Err(GenericCodemodError::ScriptMadeNoChanges) => {
+            Err(
+                WorkerFailure::new("nothing-to-do", "No changes made", ["codemod"])
+                    .with_transient(false),
+            )
+        }
         Err(GenericCodemodError::ExitCode(i)) => Err(convert_codemod_script_failed(
             i,
             shlex::try_join(argv.to_vec()).unwrap().as_str(),
         )),
-        Err(GenericCodemodError::ScriptNotFound) => Err(WorkerFailure {
-            code: "codemod-not-found".to_string(),
-            description: format!(
+        Err(GenericCodemodError::ScriptNotFound) => Err(WorkerFailure::new(
+            "codemod-not-found",
+            format!(
                 "Codemod script {} not found",
                 shlex::try_join(argv.to_vec()).unwrap()
             ),
-            details: None,
-            stage: vec!["codemod".to_string()],
-            transient: None,
-        }),
+            ["codemod"],
+        )),
         Err(GenericCodemodError::Detailed(f)) => {
             let mut stage = vec!["codemod".to_string()];
             if let Some(extra_stage) = f.stage {
@@ -84,34 +79,26 @@ pub fn generic_make_changes(
                 transient: None,
             })
         }
-        Err(GenericCodemodError::Io(e)) => Err(WorkerFailure {
-            code: "io-error".to_string(),
-            description: format!("IO error: {}", e),
-            details: None,
-            stage: vec!["codemod".to_string()],
-            transient: None,
-        }),
-        Err(GenericCodemodError::Json(e)) => Err(WorkerFailure {
-            code: "result-file-format".to_string(),
-            description: format!("JSON error: {}", e),
-            details: None,
-            stage: vec!["codemod".to_string()],
-            transient: None,
-        }),
-        Err(GenericCodemodError::Utf8(e)) => Err(WorkerFailure {
-            code: "utf8-error".to_string(),
-            description: format!("UTF8 error: {}", e),
-            details: None,
-            stage: vec!["codemod".to_string()],
-            transient: None,
-        }),
-        Err(GenericCodemodError::Other(e)) => Err(WorkerFailure {
-            code: "unknown-error".to_string(),
-            description: format!("Unknown error: {}", e),
-            details: None,
-            stage: vec!["codemod".to_string()],
-            transient: None,
-        }),
+        Err(GenericCodemodError::Io(e)) => Err(WorkerFailure::new(
+            "io-error",
+            format!("IO error: {}", e),
+            ["codemod"],
+        )),
+        Err(GenericCodemodError::Json(e)) => Err(WorkerFailure::new(
+            "result-file-format",
+            format!("JSON error: {}", e),
+            ["codemod"],
+        )),
+        Err(GenericCodemodError::Utf8(e)) => Err(WorkerFailure::new(
+            "utf8-error",
+            format!("UTF8 error: {}", e),
+            ["codemod"],
+        )),
+        Err(GenericCodemodError::Other(e)) => Err(WorkerFailure::new(
+            "unknown-error",
+            format!("Unknown error: {}", e),
+            ["codemod"],
+        )),
     }
 }
 
@@ -145,13 +132,11 @@ fn build(
         Box::new(
             ognibuild::session::schroot::SchrootSession::new(schroot, Some("janitor-worker"))
                 .map_err(|e| match e {
-                    ognibuild::session::Error::SetupFailure(_n, e) => WorkerFailure {
-                        code: "session-setup-failure".to_string(),
-                        description: format!("Failed to setup session: {}", e),
-                        details: None,
-                        stage: vec!["build".to_string()],
-                        transient: None,
-                    },
+                    ognibuild::session::Error::SetupFailure(_n, e) => WorkerFailure::new(
+                        "session-setup-failure",
+                        format!("Failed to setup session: {}", e),
+                        ["build"],
+                    ),
                     _e => unreachable!(),
                 })?,
         ) as Box<dyn Session>
@@ -161,13 +146,11 @@ fn build(
 
     #[cfg(not(target_os = "linux"))]
     let mut session: Box<dyn Session> = if schroot.is_some() {
-        return Err(WorkerFailure {
-            code: "chroot-not-supported".to_string(),
-            description: "Chroot is not supported".to_string(),
-            details: None,
-            stage: vec!["build".to_string()],
-            transient: None,
-        });
+        return Err(WorkerFailure::new(
+            "chroot-not-supported",
+            "Chroot is not supported",
+            ["build"],
+        ));
     } else {
         Box::new(ognibuild::session::plain::PlainSession::new())
     };
@@ -175,12 +158,12 @@ fn build(
     let scope = ognibuild::installer::InstallationScope::Global;
     let project = session
         .project_from_vcs(local_tree, None, None)
-        .map_err(|e| WorkerFailure {
-            code: "session-setup-failure".to_string(),
-            description: format!("Failed to setup session: {}", e),
-            details: None,
-            stage: vec!["build".to_string()],
-            transient: None,
+        .map_err(|e| {
+            WorkerFailure::new(
+                "session-setup-failure",
+                format!("Failed to setup session: {}", e),
+                ["build"],
+            )
         })?;
     session.chdir(project.internal_path()).unwrap();
     let installer = ognibuild::installer::auto_installer(session.as_ref(), scope, dep_server_url);
@@ -191,13 +174,11 @@ fn build(
         as Box<dyn ognibuild::fix_build::BuildFixer<InstallerError>>];
     let bss = ognibuild::buildsystem::detect_buildsystems(project.external_path());
     if bss.is_empty() {
-        return Err(WorkerFailure {
-            code: "no-build-system-detected".to_string(),
-            description: "No build system detected".to_string(),
-            details: None,
-            stage: vec!["build".to_string()],
-            transient: None,
-        });
+        return Err(WorkerFailure::new(
+            "no-build-system-detected",
+            "No build system detected",
+            ["build"],
+        ));
     }
 
     let mut log_manager = ognibuild::logs::DirectoryLogManager::new(
@@ -223,95 +204,80 @@ fn build(
     ) {
         Ok(_) => {}
         Err(BsError::Error(AnalyzedError::MissingCommandError { command })) => {
-            return Err(WorkerFailure {
-                code: "missing-command".to_string(),
-                description: format!("Missing command: {}", command),
-                details: None,
-                stage: vec!["build".to_string()],
-                transient: None,
-            });
+            return Err(WorkerFailure::new(
+                "missing-command",
+                format!("Missing command: {}", command),
+                ["build"],
+            ));
         }
         Err(BsError::Error(AnalyzedError::Unidentified {
             retcode,
             lines,
             secondary,
         })) => {
-            return Err(WorkerFailure {
-                code: "unidentified-error".to_string(),
-                description: if let Some(secondary) = secondary {
+            return Err(WorkerFailure::new(
+                "unidentified-error",
+                if let Some(secondary) = secondary {
                     format!("Unidentified error: {}", secondary.lines().join("\n"))
                 } else {
                     format!("Unidentified error: {}", lines.join("\n"))
                 },
-                details: Some(serde_json::json!({
-                    "retcode": retcode,
-                })),
-                stage: vec!["build".to_string()],
-                transient: None,
-            });
+                ["build"],
+            )
+            .with_details(serde_json::json!({
+                "retcode": retcode,
+            })));
         }
         Err(BsError::Error(AnalyzedError::Detailed { retcode, error })) => {
-            return Err(WorkerFailure {
-                code: error.kind().to_string(),
-                description: error.to_string(),
-                details: Some(serde_json::json!({
-                    "retcode": retcode,
-                })),
-                stage: vec!["build".to_string()],
-                transient: None,
-            });
+            return Err(
+                WorkerFailure::new(error.kind().to_string(), error.to_string(), ["build"])
+                    .with_details(serde_json::json!({
+                        "retcode": retcode,
+                    })),
+            );
         }
         Err(BsError::NoBuildSystemDetected) => {
-            return Err(WorkerFailure {
-                code: "no-build-system-detected".to_string(),
-                description: "No build system detected".to_string(),
-                details: None,
-                stage: vec!["build".to_string()],
-                transient: None,
-            });
+            return Err(WorkerFailure::new(
+                "no-build-system-detected",
+                "No build system detected",
+                ["build"],
+            ));
         }
         Err(BsError::DependencyInstallError(err)) => {
-            return Err(WorkerFailure {
-                code: "dependency-install-error".to_string(),
-                description: format!("Dependency install error: {}", err),
-                details: None,
-                stage: vec!["build".to_string()],
-                transient: None,
-            });
+            return Err(WorkerFailure::new(
+                "dependency-install-error",
+                format!("Dependency install error: {}", err),
+                ["build"],
+            ));
         }
         Err(BsError::Unimplemented) => {
-            return Err(WorkerFailure {
-                code: "build-action-unimplemented".to_string(),
-                description: format!(
+            return Err(WorkerFailure::new(
+                "build-action-unimplemented",
+                format!(
                     "The build action is not implemented for the detected buildsystem(s): {:?}",
                     bss.iter().map(|bs| bs.name()).collect::<Vec<_>>()
                 ),
-                details: Some(serde_json::json!({
-                    "detected_buildsystems": bss.iter().map(|bs| bs.name()).collect::<Vec<_>>(),
-                    "project_path": project.external_path(),
-                    "suggestion": "This build system may need additional implementation in ognibuild"
-                })),
-                stage: vec!["build".to_string()],
-                transient: None,
-            });
+                ["build"],
+            )
+            .with_details(serde_json::json!({
+                "detected_buildsystems": bss.iter().map(|bs| bs.name()).collect::<Vec<_>>(),
+                "project_path": project.external_path(),
+                "suggestion": "This build system may need additional implementation in ognibuild"
+            })));
         }
         Err(BsError::Error(AnalyzedError::IoError(e))) | Err(BsError::IoError(e)) => {
-            return Err(WorkerFailure {
-                code: "io-error".to_string(),
-                description: format!("IO error: {}", e),
-                details: None,
-                stage: vec!["build".to_string()],
-                transient: None,
-            });
+            return Err(WorkerFailure::new(
+                "io-error",
+                format!("IO error: {}", e),
+                ["build"],
+            ));
         }
         Err(BsError::Other(e)) => {
-            return Err(WorkerFailure {
-                code: "unknown-error".to_string(),
-                description: format!("Unknown error: {}", e),
-                details: None,
-                stage: vec!["build".to_string()],
-                transient: None,
-            });
+            return Err(WorkerFailure::new(
+                "unknown-error",
+                format!("Unknown error: {}", e),
+                ["build"],
+            ));
         }
     }
 
@@ -336,61 +302,51 @@ fn build(
     ) {
         Ok(_) => {}
         Err(BsError::Error(AnalyzedError::MissingCommandError { command })) => {
-            return Err(WorkerFailure {
-                code: "missing-command".to_string(),
-                description: format!("Missing command: {}", command),
-                details: None,
-                stage: vec!["test".to_string()],
-                transient: None,
-            });
+            return Err(WorkerFailure::new(
+                "missing-command",
+                format!("Missing command: {}", command),
+                ["test"],
+            ));
         }
         Err(BsError::Error(AnalyzedError::Unidentified {
             retcode,
             lines,
             secondary,
         })) => {
-            return Err(WorkerFailure {
-                code: "unidentified-error".to_string(),
-                description: if let Some(secondary) = secondary {
+            return Err(WorkerFailure::new(
+                "unidentified-error",
+                if let Some(secondary) = secondary {
                     format!("Unidentified error: {}", secondary.lines().join("\n"))
                 } else {
                     format!("Unidentified error: {}", lines.join("\n"))
                 },
-                details: Some(serde_json::json!({
-                    "retcode": retcode,
-                })),
-                stage: vec!["test".to_string()],
-                transient: None,
-            });
+                ["test"],
+            )
+            .with_details(serde_json::json!({
+                "retcode": retcode,
+            })));
         }
         Err(BsError::Error(AnalyzedError::Detailed { retcode, error })) => {
-            return Err(WorkerFailure {
-                code: error.kind().to_string(),
-                description: error.to_string(),
-                details: Some(serde_json::json!({
-                    "retcode": retcode,
-                })),
-                stage: vec!["test".to_string()],
-                transient: None,
-            });
+            return Err(
+                WorkerFailure::new(error.kind().to_string(), error.to_string(), ["test"])
+                    .with_details(serde_json::json!({
+                        "retcode": retcode,
+                    })),
+            );
         }
         Err(BsError::NoBuildSystemDetected) => {
-            return Err(WorkerFailure {
-                code: "no-build-system-detected".to_string(),
-                description: "No build system detected".to_string(),
-                details: None,
-                stage: vec!["test".to_string()],
-                transient: None,
-            });
+            return Err(WorkerFailure::new(
+                "no-build-system-detected",
+                "No build system detected",
+                ["test"],
+            ));
         }
         Err(BsError::DependencyInstallError(err)) => {
-            return Err(WorkerFailure {
-                code: "dependency-install-error".to_string(),
-                description: format!("Dependency install error: {}", err),
-                details: None,
-                stage: vec!["test".to_string()],
-                transient: None,
-            });
+            return Err(WorkerFailure::new(
+                "dependency-install-error",
+                format!("Dependency install error: {}", err),
+                ["test"],
+            ));
         }
         Err(BsError::Unimplemented) => {
             log::warn!(
@@ -401,22 +357,18 @@ fn build(
             // This is different from build actions which are essential
         }
         Err(BsError::Error(AnalyzedError::IoError(e))) | Err(BsError::IoError(e)) => {
-            return Err(WorkerFailure {
-                code: "io-error".to_string(),
-                description: format!("IO error: {}", e),
-                details: None,
-                stage: vec!["test".to_string()],
-                transient: None,
-            });
+            return Err(WorkerFailure::new(
+                "io-error",
+                format!("IO error: {}", e),
+                ["test"],
+            ));
         }
         Err(BsError::Other(e)) => {
-            return Err(WorkerFailure {
-                code: "unknown-error".to_string(),
-                description: format!("Unknown error: {}", e),
-                details: None,
-                stage: vec!["test".to_string()],
-                transient: None,
-            });
+            return Err(WorkerFailure::new(
+                "unknown-error",
+                format!("Unknown error: {}", e),
+                ["test"],
+            ));
         }
     }
 
@@ -445,14 +397,14 @@ impl crate::Target for GenericTarget {
         output_directory: &std::path::Path,
         config: &crate::BuildConfig,
     ) -> Result<serde_json::Value, WorkerFailure> {
-        let config: GenericBuildConfig =
-            serde_json::from_value(config.clone()).map_err(|e| WorkerFailure {
-                code: "build-config-parse-failure".to_string(),
-                description: format!("Failed to parse config: {}", e),
-                details: None,
-                stage: vec!["build".to_string()],
-                transient: Some(false),
-            })?;
+        let config: GenericBuildConfig = serde_json::from_value(config.clone()).map_err(|e| {
+            WorkerFailure::new(
+                "build-config-parse-failure",
+                format!("Failed to parse config: {}", e),
+                ["build"],
+            )
+            .with_transient(false)
+        })?;
         build_from_config(local_tree, subpath, output_directory, &config, &self.env)
     }
 
