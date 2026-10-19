@@ -32,38 +32,17 @@ struct QueueRowJoined {
     subpath: Option<String>,
 }
 
-impl QueueRowJoined {
-    fn into_queue_item(self) -> QueueItem {
-        let estimated_duration = self.estimated_duration.map(|iv| {
-            let secs = iv.microseconds.max(0) as u64 / 1_000_000;
-            std::time::Duration::from_secs(secs)
-        });
-        // `queue.context` is TEXT (Python stored plain strings there);
-        // QueueItem.context is Option<Value>. Parse as JSON when it
-        // looks like it, otherwise wrap so Value is always valid.
-        let context = self
-            .context
-            .map(|s| serde_json::from_str(&s).unwrap_or_else(|_| serde_json::Value::String(s)));
-        QueueItem {
-            id: self.id,
-            context,
-            command: self.command.unwrap_or_default(),
-            estimated_duration,
-            campaign: self.campaign,
-            refresh: self.refresh.unwrap_or(false),
-            requester: self.requester,
-            change_set: self.change_set,
-            codebase: self.codebase,
-        }
-    }
+/// Convert a Postgres interval to a whole-second duration, clamping
+/// negative intervals to zero.
+fn interval_to_duration(iv: &PgInterval) -> std::time::Duration {
+    std::time::Duration::from_secs(iv.microseconds.max(0) as u64 / 1_000_000)
+}
 
+impl QueueRowJoined {
     /// Consume the row into the two halves of a `QueueAssignment`
     /// without cloning the VCS strings.
     fn into_assignment(self) -> QueueAssignment {
-        let estimated_duration = self.estimated_duration.map(|iv| {
-            let secs = iv.microseconds.max(0) as u64 / 1_000_000;
-            std::time::Duration::from_secs(secs)
-        });
+        let estimated_duration = self.estimated_duration.as_ref().map(interval_to_duration);
         // `queue.context` is TEXT (Python stored plain strings there);
         // QueueItem.context is Option<Value>. Parse as JSON when it
         // looks like it, otherwise wrap so Value is always valid.
@@ -97,17 +76,6 @@ struct AssignmentInfo {
     worker_name: String,
     log_id: String,
     assigned_at: String,
-}
-
-/// Worker health record stored in the `worker-health` Redis hash.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkerHealth {
-    /// Reported worker status.
-    pub status: String,
-    /// Run the worker is currently processing, if any.
-    pub current_run: Option<String>,
-    /// RFC 3339 timestamp of the last heartbeat.
-    pub last_heartbeat: String,
 }
 
 // Re-export from main crate
@@ -190,49 +158,6 @@ impl RunnerDatabase {
     /// Get a reference to the Redis client if available.
     pub fn redis(&self) -> Option<&redis::Client> {
         self.shared_db.redis()
-    }
-
-    /// Convert a database Run to JanitorResult.
-    pub fn run_to_janitor_result(&self, run: Run) -> JanitorResult {
-        JanitorResult {
-            log_id: run.id,
-            branch_url: run.branch_url,
-            subpath: None, // Not stored in run table currently
-            code: run.result_code,
-            transient: run.failure_transient,
-            codebase: run.codebase,
-            campaign: run.suite,
-            description: run.description,
-            codemod: run.result,
-            value: run.value.map(|v| v as u64),
-            logfilenames: run.logfilenames.unwrap_or_default(),
-            start_time: run.start_time,
-            finish_time: run.finish_time,
-            revision: run.revision,
-            main_branch_revision: run.main_branch_revision,
-            change_set: Some(run.change_set),
-            tags: run.result_tags.map(|tags| {
-                tags.into_iter()
-                    .map(|(name, rev)| (name, Some(RevisionId::from(rev.as_bytes()))))
-                    .collect()
-            }),
-            remotes: None, // Use run_to_janitor_result_async() to fetch remotes
-            branches: run.result_branches.map(|branches| {
-                branches
-                    .into_iter()
-                    .map(|(fn_name, name, br, r)| (Some(fn_name), Some(name), br, r))
-                    .collect()
-            }),
-            failure_details: run.failure_details,
-            failure_stage: run.failure_stage.map(|s| vec![s]),
-            resume: None, // Use run_to_janitor_result_async() to fetch resume info
-            target: None, // Use run_to_janitor_result_async() to fetch target
-            worker_name: run.worker_name,
-            vcs_type: Some(run.vcs_type),
-            target_branch_url: run.target_branch_url,
-            context: run.context.and_then(|s| serde_json::from_str(&s).ok()),
-            builder_result: None, // Use run_to_janitor_result_async() to fetch builder result
-        }
     }
 
     /// Convert a Run to JanitorResult with async database calls for related data.
@@ -358,49 +283,6 @@ impl RunnerDatabase {
         .await?;
 
         Ok(rows.into_iter().map(|r| (r.key, r.value)).collect())
-    }
-
-    /// Check if a run exists.
-    pub async fn run_exists(&self, run_id: &str) -> Result<bool, sqlx::Error> {
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM run WHERE id = $1")
-            .bind(run_id)
-            .fetch_one(self.pool())
-            .await?;
-
-        Ok(count > 0)
-    }
-
-    /// Update a run result.
-    pub async fn update_run_result(
-        &self,
-        run_id: &str,
-        result_code: &str,
-        description: Option<&str>,
-        failure_details: Option<&serde_json::Value>,
-        failure_transient: Option<bool>,
-        finish_time: chrono::DateTime<chrono::Utc>,
-    ) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            r#"
-            UPDATE run SET
-                result_code = $2,
-                description = $3,
-                failure_details = $4,
-                failure_transient = $5,
-                finish_time = $6
-            WHERE id = $1
-            "#,
-        )
-        .bind(run_id)
-        .bind(result_code)
-        .bind(description)
-        .bind(failure_details)
-        .bind(failure_transient)
-        .bind(finish_time)
-        .execute(self.pool())
-        .await?;
-
-        Ok(())
     }
 
     /// Insert a change_set row, ignoring conflicts.
@@ -617,18 +499,6 @@ INSERT INTO run (
         Ok(FinishOutcome::Stored)
     }
 
-    /// Store builder result data.
-    pub async fn store_builder_result(
-        &self,
-        run_id: &str,
-        builder_result: &BuilderResult,
-    ) -> Result<(), sqlx::Error> {
-        let mut tx = self.pool().begin().await?;
-        self.store_builder_result_tx(&mut tx, run_id, builder_result)
-            .await?;
-        tx.commit().await
-    }
-
     /// Transaction-aware counterpart of [`store_builder_result`], so
     /// callers that already hold a transaction (e.g. the finish-run
     /// path) can include the debian_build insert in the same atomic
@@ -687,132 +557,6 @@ INSERT INTO run (
         Ok(())
     }
 
-    /// Get the next available queue item for assignment.
-    pub async fn next_queue_item(
-        &self,
-        codebase: Option<&str>,
-        campaign: Option<&str>,
-        exclude_hosts: &[String],
-        assigned_queue_items: &[i64],
-    ) -> Result<Option<QueueAssignment>, sqlx::Error> {
-        let mut query = r#"
-            SELECT
-                queue.command,
-                queue.context,
-                queue.id::bigint AS id,
-                queue.estimated_duration,
-                queue.suite::text AS campaign,
-                queue.refresh,
-                queue.requester,
-                queue.change_set,
-                codebase.vcs_type::text AS vcs_type,
-                codebase.branch_url,
-                codebase.subpath,
-                queue.codebase
-            FROM
-                queue
-            LEFT JOIN codebase ON codebase.name = queue.codebase
-        "#
-        .to_string();
-
-        let mut conditions = Vec::new();
-        let mut bind_count = 0;
-
-        // Exclude already assigned queue items
-        if !assigned_queue_items.is_empty() {
-            bind_count += 1;
-            conditions.push(format!("NOT (queue.id = ANY(${}::int[]))", bind_count));
-        }
-
-        // Filter by codebase if specified
-        if codebase.is_some() {
-            bind_count += 1;
-            conditions.push(format!("queue.codebase = ${}", bind_count));
-        }
-
-        // Filter by campaign if specified
-        if campaign.is_some() {
-            bind_count += 1;
-            conditions.push(format!("queue.suite = ${}", bind_count));
-        }
-
-        // Exclude hosts
-        if !exclude_hosts.is_empty() {
-            bind_count += 1;
-            conditions.push(format!(
-                "NOT (codebase.branch_url IS NOT NULL AND SUBSTRING(codebase.branch_url from '.*://(?:[^/@]*@)?([^/]*)') = ANY(${}::text[]))",
-                bind_count
-            ));
-        }
-
-        if !conditions.is_empty() {
-            query.push_str(" WHERE ");
-            query.push_str(&conditions.join(" AND "));
-        }
-
-        query.push_str(
-            r#"
-            ORDER BY
-            queue.bucket ASC,
-            queue.priority ASC,
-            queue.id ASC
-            LIMIT 1
-        "#,
-        );
-
-        let mut sqlx_query = sqlx::query_as::<_, QueueRowJoined>(sqlx::AssertSqlSafe(&*query));
-
-        if !assigned_queue_items.is_empty() {
-            sqlx_query = sqlx_query.bind(assigned_queue_items);
-        }
-        if let Some(cb) = codebase {
-            sqlx_query = sqlx_query.bind(cb);
-        }
-        if let Some(camp) = campaign {
-            sqlx_query = sqlx_query.bind(camp);
-        }
-        if !exclude_hosts.is_empty() {
-            sqlx_query = sqlx_query.bind(exclude_hosts);
-        }
-
-        Ok(sqlx_query
-            .fetch_optional(self.pool())
-            .await?
-            .map(QueueRowJoined::into_assignment))
-    }
-
-    /// Get a queue item by ID.
-    pub async fn get_queue_item(&self, queue_id: i64) -> Result<Option<QueueItem>, sqlx::Error> {
-        // Join through codebase to satisfy `QueueRowJoined`'s
-        // `vcs_type` / `branch_url` / `subpath` fields; the caller
-        // discards them via `into_queue_item()`.
-        let row: Option<QueueRowJoined> = sqlx::query_as(
-            r#"
-            SELECT
-                queue.id::bigint AS id,
-                queue.command,
-                queue.context,
-                queue.estimated_duration,
-                queue.suite::text AS campaign,
-                queue.refresh,
-                queue.requester,
-                queue.change_set,
-                queue.codebase,
-                codebase.vcs_type::text AS vcs_type,
-                codebase.branch_url,
-                codebase.subpath
-            FROM queue
-            LEFT JOIN codebase ON codebase.name = queue.codebase
-            WHERE queue.id = $1
-            "#,
-        )
-        .bind(queue_id)
-        .fetch_optional(self.pool())
-        .await?;
-
-        Ok(row.map(|r| r.into_queue_item()))
-    }
-
     /// Get queue position for a specific codebase and campaign.
     pub async fn get_queue_position(
         &self,
@@ -825,7 +569,7 @@ INSERT INTO run (
         #[derive(sqlx::FromRow)]
         struct PositionRow {
             position: i64,
-            wait_time: sqlx::postgres::types::PgInterval,
+            wait_time: PgInterval,
         }
         let row: Option<PositionRow> = sqlx::query_as(
             "SELECT position, wait_time FROM queue_positions WHERE codebase = $1 AND suite = $2",
@@ -835,10 +579,7 @@ INSERT INTO run (
         .fetch_optional(self.pool())
         .await?;
 
-        Ok(row.map(|r| {
-            let secs = r.wait_time.microseconds.max(0) as u64 / 1_000_000;
-            (r.position as i32, std::time::Duration::from_secs(secs))
-        }))
+        Ok(row.map(|r| (r.position as i32, interval_to_duration(&r.wait_time))))
     }
 
     /// Update run publish status.
@@ -975,89 +716,6 @@ INSERT INTO run (
         Ok(())
     }
 
-    /// Get detailed assigned queue items from Redis with worker info.
-    pub async fn get_assigned_queue_items_detailed(
-        &self,
-    ) -> Result<Vec<(i64, String, String, String)>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut result = Vec::new();
-
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
-            let assignments: HashMap<String, String> = conn.hgetall("assigned-queue-items").await?;
-
-            for (queue_id_str, assignment_info_str) in assignments {
-                if let (Ok(queue_id), Ok(info)) = (
-                    queue_id_str.parse::<i64>(),
-                    serde_json::from_str::<AssignmentInfo>(&assignment_info_str),
-                ) {
-                    result.push((queue_id, info.worker_name, info.log_id, info.assigned_at));
-                }
-            }
-        }
-
-        Ok(result)
-    }
-
-    /// Get queue items assigned to a specific worker.
-    pub async fn get_worker_queue_items(
-        &self,
-        worker_name: &str,
-    ) -> Result<Vec<i64>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut result = Vec::new();
-
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
-            let queue_ids: Vec<String> = conn
-                .smembers(format!("worker-queue-items:{}", worker_name))
-                .await?;
-
-            for queue_id_str in queue_ids {
-                if let Ok(queue_id) = queue_id_str.parse::<i64>() {
-                    result.push(queue_id);
-                }
-            }
-        }
-
-        Ok(result)
-    }
-
-    /// Check if a queue item is currently assigned.
-    pub async fn is_queue_item_assigned(
-        &self,
-        queue_id: i64,
-    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
-            let exists: bool = conn
-                .hexists("assigned-queue-items", queue_id.to_string())
-                .await?;
-            Ok(exists)
-        } else {
-            Ok(false)
-        }
-    }
-
-    /// Get the worker assigned to a queue item.
-    pub async fn get_queue_item_assignment(
-        &self,
-        queue_id: i64,
-    ) -> Result<Option<(String, String)>, Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
-
-            if let Ok(assignment_info_str) = conn
-                .hget::<&str, String, String>("assigned-queue-items", queue_id.to_string())
-                .await
-            {
-                if let Ok(info) = serde_json::from_str::<AssignmentInfo>(&assignment_info_str) {
-                    return Ok(Some((info.worker_name, info.log_id)));
-                }
-            }
-        }
-
-        Ok(None)
-    }
-
     /// Publish a JSON payload to a Redis pub/sub channel. A runner
     /// without Redis configured is a no-op rather than an error,
     /// matching the existing pattern in [`Self::unassign_queue_item`].
@@ -1101,142 +759,6 @@ INSERT INTO run (
         }
 
         Ok(())
-    }
-
-    /// Coordinate worker health status via Redis.
-    pub async fn update_worker_health(
-        &self,
-        worker_name: &str,
-        status: &str,
-        current_run: Option<&str>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
-
-            let health_info = WorkerHealth {
-                status: status.to_string(),
-                current_run: current_run.map(String::from),
-                last_heartbeat: Utc::now().to_rfc3339(),
-            };
-
-            let _: () = conn
-                .hset(
-                    "worker-health",
-                    worker_name,
-                    serde_json::to_string(&health_info)?,
-                )
-                .await?;
-
-            // Set expiration for worker health (cleanup stale workers)
-            let _: () = conn.expire("worker-health", 1800).await?; // 30 minutes
-        }
-
-        Ok(())
-    }
-
-    /// Get worker health status from Redis.
-    pub async fn get_worker_health(
-        &self,
-        worker_name: &str,
-    ) -> Result<Option<WorkerHealth>, Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
-
-            match conn
-                .hget::<&str, &str, String>("worker-health", worker_name)
-                .await
-            {
-                Ok(health_str) => {
-                    let health_info: WorkerHealth = serde_json::from_str(&health_str)?;
-                    return Ok(Some(health_info));
-                }
-                Err(_) => {
-                    // Worker health not found
-                }
-            }
-        }
-
-        Ok(None)
-    }
-
-    /// Get all worker health statuses.
-    pub async fn get_all_worker_health(
-        &self,
-    ) -> Result<HashMap<String, WorkerHealth>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut result = HashMap::new();
-
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
-            let workers: HashMap<String, String> = conn.hgetall("worker-health").await?;
-
-            for (worker_name, health_str) in workers {
-                if let Ok(health_info) = serde_json::from_str::<WorkerHealth>(&health_str) {
-                    result.insert(worker_name, health_info);
-                }
-            }
-        }
-
-        Ok(result)
-    }
-
-    /// Store coordination lock in Redis.
-    pub async fn acquire_lock(
-        &self,
-        lock_name: &str,
-        holder: &str,
-        ttl_seconds: u64,
-    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
-
-            // Use SET with NX (only if not exists) and EX (expiration)
-            let result: Option<String> = conn
-                .set_options(
-                    format!("lock:{}", lock_name),
-                    holder,
-                    redis::SetOptions::default()
-                        .conditional_set(redis::ExistenceCheck::NX)
-                        .get(true)
-                        .with_expiration(redis::SetExpiry::EX(ttl_seconds)),
-                )
-                .await?;
-
-            Ok(result.is_some())
-        } else {
-            // No Redis, assume lock acquired
-            Ok(true)
-        }
-    }
-
-    /// Release coordination lock in Redis.
-    pub async fn release_lock(
-        &self,
-        lock_name: &str,
-        holder: &str,
-    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(redis_client) = self.redis() {
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
-
-            // Lua script to atomically check holder and delete
-            let script = r#"
-                if redis.call("GET", KEYS[1]) == ARGV[1] then
-                    return redis.call("DEL", KEYS[1])
-                else
-                    return 0
-                end
-            "#;
-
-            let result: i32 = redis::Script::new(script)
-                .key(format!("lock:{}", lock_name))
-                .arg(holder)
-                .invoke_async(&mut conn)
-                .await?;
-
-            Ok(result == 1)
-        } else {
-            // No Redis, assume lock released
-            Ok(true)
-        }
     }
 
     /// Assign the next queue item, filtering out rate-limited hosts
@@ -1370,93 +892,6 @@ INSERT INTO run (
             .map(QueueRowJoined::into_assignment))
     }
 
-    /// Calculate queue position for a specific queue item or codebase/campaign combination.
-    pub async fn calculate_queue_position(
-        &self,
-        codebase: Option<&str>,
-        campaign: Option<&str>,
-        queue_id: Option<i64>,
-    ) -> Result<Option<i64>, sqlx::Error> {
-        // success_chance lives on `candidate`, joined via
-        // (codebase, suite, change_set); the queue table itself has
-        // no schedule_time/success_chance columns.
-        if let Some(id) = queue_id {
-            let position: Option<i64> = sqlx::query_scalar(
-                r#"
-                WITH ranked_queue AS (
-                    SELECT
-                        queue.id::bigint AS id,
-                        ROW_NUMBER() OVER (
-                            ORDER BY
-                                queue.bucket ASC,
-                                CASE
-                                    WHEN candidate.success_chance IS NOT NULL THEN
-                                        (candidate.success_chance * 100) + (100 - queue.priority)
-                                    ELSE
-                                        (100 - queue.priority)
-                                END DESC,
-                                queue.priority ASC,
-                                queue.id ASC
-                        ) as position
-                    FROM queue
-                    LEFT JOIN candidate
-                           ON candidate.codebase = queue.codebase
-                          AND candidate.suite = queue.suite
-                          AND coalesce(candidate.change_set, '') = coalesce(queue.change_set, '')
-                )
-                SELECT position FROM ranked_queue WHERE id = $1
-                "#,
-            )
-            .bind(id)
-            .fetch_optional(self.pool())
-            .await?;
-
-            Ok(position)
-        } else if let (Some(cb), Some(camp)) = (codebase, campaign) {
-            let position: Option<i64> = sqlx::query_scalar(
-                r#"
-                WITH ranked_queue AS (
-                    SELECT
-                        queue.id::bigint AS id,
-                        queue.codebase,
-                        queue.suite,
-                        ROW_NUMBER() OVER (
-                            ORDER BY
-                                queue.bucket ASC,
-                                CASE
-                                    WHEN candidate.success_chance IS NOT NULL THEN
-                                        (candidate.success_chance * 100) + (100 - queue.priority)
-                                    ELSE
-                                        (100 - queue.priority)
-                                END DESC,
-                                queue.priority ASC,
-                                queue.id ASC
-                        ) as position
-                    FROM queue
-                    LEFT JOIN candidate
-                           ON candidate.codebase = queue.codebase
-                          AND candidate.suite = queue.suite
-                          AND coalesce(candidate.change_set, '') = coalesce(queue.change_set, '')
-                )
-                SELECT MIN(position) FROM ranked_queue
-                WHERE codebase = $1 AND suite = $2
-                "#,
-            )
-            .bind(cb)
-            .bind(camp)
-            .fetch_optional(self.pool())
-            .await?;
-
-            Ok(position)
-        } else {
-            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM queue")
-                .fetch_one(self.pool())
-                .await?;
-
-            Ok(Some(count))
-        }
-    }
-
     /// Clean up orphaned data and maintain database consistency.
     pub async fn maintenance_cleanup(&self) -> Result<(), sqlx::Error> {
         // The old "DELETE FROM active_run" query lived here but that
@@ -1485,35 +920,6 @@ INSERT INTO run (
         }
 
         Ok(())
-    }
-
-    /// Get statistics about failed runs and retries.
-    pub async fn get_failure_stats(&self) -> Result<HashMap<String, i64>, sqlx::Error> {
-        let rows: Vec<(String, i64)> = sqlx::query_as(
-            r#"
-            SELECT 
-                'total_failed' as stat_name, 
-                COUNT(*) as count
-            FROM run 
-            WHERE result_code != 'success' AND finish_time > NOW() - INTERVAL '24 hours'
-            UNION ALL
-            SELECT 
-                'transient_failures' as stat_name, 
-                COUNT(*) as count
-            FROM run 
-            WHERE failure_transient = true AND finish_time > NOW() - INTERVAL '24 hours'
-            UNION ALL
-            SELECT 
-                'retry_eligible' as stat_name, 
-                COUNT(*) as count
-            FROM queue 
-            WHERE COALESCE(retry_count, 0) > 0
-            "#,
-        )
-        .fetch_all(self.pool())
-        .await?;
-
-        Ok(rows.into_iter().collect())
     }
 
     /// Get all codebases from the database.
@@ -1580,82 +986,6 @@ INSERT INTO run (
         .await
     }
 
-    /// Upload/update candidates in the database.
-    pub async fn upload_candidates(
-        &self,
-        candidates: &[serde_json::Value],
-    ) -> Result<Vec<String>, sqlx::Error> {
-        let mut tx = self.pool().begin().await?;
-        let mut errors = Vec::new();
-
-        for candidate in candidates {
-            let codebase = match candidate.get("codebase").and_then(|v| v.as_str()) {
-                Some(cb) => cb,
-                None => {
-                    errors.push("Missing or invalid codebase field".to_string());
-                    continue;
-                }
-            };
-
-            let campaign = match candidate.get("campaign").and_then(|v| v.as_str()) {
-                Some(c) => c,
-                None => {
-                    errors.push("Missing or invalid campaign field".to_string());
-                    continue;
-                }
-            };
-
-            let command = candidate.get("command").and_then(|v| v.as_str());
-            let publish_policy = candidate.get("publish-policy").and_then(|v| v.as_str());
-            let change_set = candidate.get("change_set").and_then(|v| v.as_str());
-            let context = candidate.get("context");
-            let value = candidate.get("value").and_then(|v| v.as_i64());
-            let success_chance = candidate.get("success_chance").and_then(|v| v.as_f64());
-
-            let result = sqlx::query(
-                r#"
-                INSERT INTO candidate 
-                (suite, command, change_set, context, value, success_chance, publish_policy, codebase) 
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
-                ON CONFLICT (codebase, suite, coalesce(change_set, ''::text)) 
-                DO UPDATE SET
-                    context = EXCLUDED.context,
-                    value = EXCLUDED.value,
-                    success_chance = EXCLUDED.success_chance,
-                    command = EXCLUDED.command,
-                    publish_policy = COALESCE(EXCLUDED.publish_policy, candidate.publish_policy),
-                    codebase = EXCLUDED.codebase
-                RETURNING id
-                "#
-            )
-            .bind(campaign)
-            .bind(command)
-            .bind(change_set)
-            .bind(context)
-            .bind(value)
-            .bind(success_chance)
-            .bind(publish_policy)
-            .bind(codebase)
-            .fetch_one(&mut *tx)
-            .await;
-
-            if let Err(e) = result {
-                errors.push(format!(
-                    "Failed to insert candidate for {}/{}: {}",
-                    codebase, campaign, e
-                ));
-            }
-        }
-
-        if errors.is_empty() {
-            tx.commit().await?;
-        } else {
-            tx.rollback().await?;
-        }
-
-        Ok(errors)
-    }
-
     /// Delete a candidate by ID.
     pub async fn delete_candidate(&self, candidate_id: i64) -> Result<bool, sqlx::Error> {
         let mut tx = self.pool().begin().await?;
@@ -1711,37 +1041,6 @@ INSERT INTO run (
         .await?;
 
         Ok(resume_run_id.map(|run_id| crate::ResultResume { run_id }))
-    }
-
-    /// Get codebase configuration from database.
-    pub async fn get_codebase_config(
-        &self,
-        codebase_name: &str,
-    ) -> Result<Option<CodebaseConfig>, sqlx::Error> {
-        // codebase.vcs_type is a postgres enum; cast to text so it
-        // decodes into a String.
-        sqlx::query_as(
-            r#"
-            SELECT name, branch_url, vcs_type::text AS vcs_type, subpath
-            FROM codebase
-            WHERE name = $1
-            "#,
-        )
-        .bind(codebase_name)
-        .fetch_optional(self.pool())
-        .await
-    }
-
-    /// Get distribution configuration from database.
-    // TODO: implement lookup against a distributions table.
-    // Python's runner reads distribution config from janitor.conf; when
-    // that moves into the database this needs to query and return the
-    // matching row. Callers currently fall back to config-file entries.
-    pub async fn get_distribution_config(
-        &self,
-        _distribution_name: &str,
-    ) -> Result<Option<DistributionConfig>, sqlx::Error> {
-        Ok(None)
     }
 
     /// Get the debian_build row for a run, if any.
@@ -1859,32 +1158,6 @@ impl From<DebianBuildRow> for BuilderResult {
             binary_packages: row.binary_packages,
         }
     }
-}
-
-/// Configuration for a codebase from database.
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct CodebaseConfig {
-    /// Name of the codebase.
-    pub name: String,
-    /// URL of the branch.
-    pub branch_url: Option<String>,
-    /// Type of version control system.
-    pub vcs_type: Option<String>,
-    /// Subpath within the repository.
-    pub subpath: Option<String>,
-}
-
-/// Configuration for a distribution from database.
-#[derive(Debug, Clone)]
-pub struct DistributionConfig {
-    /// Name of the distribution.
-    pub name: String,
-    /// Archive mirror URI.
-    pub archive_mirror_uri: Option<String>,
-    /// Chroot environment name.
-    pub chroot: Option<String>,
-    /// Distribution vendor.
-    pub vendor: Option<String>,
 }
 
 impl RunnerDatabase {
