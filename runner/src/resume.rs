@@ -3,8 +3,6 @@ use breezyshim::branch::{Branch, GenericBranch};
 use breezyshim::error::Error as BrzError;
 use breezyshim::forge::get_forge;
 use serde::{Deserialize, Serialize};
-use std::error::Error;
-use std::fmt;
 
 /// Information about a run that can be resumed from.
 ///
@@ -38,38 +36,6 @@ pub struct ResumeInfo {
     pub result_branches: Vec<(String, Option<String>, Option<String>, Option<String>)>,
 }
 
-/// Errors that can occur during resume operations.
-#[derive(Debug)]
-pub enum ResumeError {
-    /// Database operation failed.
-    DatabaseError(sqlx::Error),
-    /// No resume information found.
-    NoResumeFound,
-    /// Invalid resume branch.
-    InvalidResumeBranch(String),
-    /// VCS operation failed.
-    VcsError(String),
-}
-
-impl fmt::Display for ResumeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ResumeError::DatabaseError(e) => write!(f, "Database error: {}", e),
-            ResumeError::NoResumeFound => write!(f, "No suitable resume found"),
-            ResumeError::InvalidResumeBranch(msg) => write!(f, "Invalid resume branch: {}", msg),
-            ResumeError::VcsError(msg) => write!(f, "VCS error: {}", msg),
-        }
-    }
-}
-
-impl Error for ResumeError {}
-
-impl From<sqlx::Error> for ResumeError {
-    fn from(error: sqlx::Error) -> Self {
-        ResumeError::DatabaseError(error)
-    }
-}
-
 /// Service for managing resume logic for interrupted runs.
 pub struct ResumeService {
     database: RunnerDatabase,
@@ -90,7 +56,7 @@ impl ResumeService {
         &self,
         campaign: &str,
         resume_revision: &str,
-    ) -> Result<Option<ResumeInfo>, ResumeError> {
+    ) -> Result<Option<ResumeInfo>, sqlx::Error> {
         // `publish_status` is a Postgres ENUM; cast to text so sqlx
         // decodes it as Option<String>.
         #[derive(sqlx::FromRow)]
@@ -187,7 +153,7 @@ impl ResumeService {
         &self,
         run_id: &str,
         resume_from_id: &str,
-    ) -> Result<(), ResumeError> {
+    ) -> Result<(), sqlx::Error> {
         sqlx::query(
             r#"
             UPDATE run 
@@ -203,48 +169,9 @@ impl ResumeService {
         Ok(())
     }
 
-    /// Check if a run can be resumed from another run
-    pub async fn can_resume_from(
-        &self,
-        run_id: &str,
-        potential_resume_id: &str,
-    ) -> Result<bool, ResumeError> {
-        #[derive(sqlx::FromRow)]
-        struct RunPair {
-            current_campaign: String,
-            current_codebase: String,
-            resume_campaign: String,
-            resume_codebase: String,
-            resume_result: String,
-        }
-        let row: Option<RunPair> = sqlx::query_as(
-            r#"
-            SELECT
-                r1.suite as current_campaign,
-                r1.codebase as current_codebase,
-                r2.suite as resume_campaign,
-                r2.codebase as resume_codebase,
-                r2.result_code as resume_result
-            FROM run r1, run r2
-            WHERE r1.id = $1 AND r2.id = $2
-            "#,
-        )
-        .bind(run_id)
-        .bind(potential_resume_id)
-        .fetch_optional(self.database.pool())
-        .await?;
-
-        // Can only resume if campaigns and codebases match and previous run was successful
-        Ok(row.is_some_and(|row| {
-            row.current_campaign == row.resume_campaign
-                && row.current_codebase == row.resume_codebase
-                && (row.resume_result == "success" || row.resume_result == "nothing-new-to-do")
-        }))
-    }
-
     /// Get all runs that resume from a specific run
-    pub async fn get_resume_descendants(&self, run_id: &str) -> Result<Vec<String>, ResumeError> {
-        Ok(sqlx::query_scalar(
+    pub async fn get_resume_descendants(&self, run_id: &str) -> Result<Vec<String>, sqlx::Error> {
+        sqlx::query_scalar(
             r#"
             WITH RECURSIVE resume_tree AS (
                 SELECT id, resume_from, 1 as level
@@ -263,12 +190,12 @@ impl ResumeService {
         )
         .bind(run_id)
         .fetch_all(self.database.pool())
-        .await?)
+        .await
     }
 
     /// Get the resume chain for a run (all the runs it transitively resumes from)
-    pub async fn get_resume_chain(&self, run_id: &str) -> Result<Vec<String>, ResumeError> {
-        Ok(sqlx::query_scalar(
+    pub async fn get_resume_chain(&self, run_id: &str) -> Result<Vec<String>, sqlx::Error> {
+        sqlx::query_scalar(
             r#"
             WITH RECURSIVE resume_chain AS (
                 SELECT id, resume_from, 0 as level
@@ -287,11 +214,11 @@ impl ResumeService {
         )
         .bind(run_id)
         .fetch_all(self.database.pool())
-        .await?)
+        .await
     }
 
     /// Validate that resume relationships are consistent
-    pub async fn validate_resume_consistency(&self) -> Result<Vec<String>, ResumeError> {
+    pub async fn validate_resume_consistency(&self) -> Result<Vec<String>, sqlx::Error> {
         let rows: Vec<(String, Option<String>)> = sqlx::query_as(
             r#"
             SELECT r1.id, r1.resume_from
@@ -439,38 +366,4 @@ pub fn open_resume_branch(
     }
 
     ResumeLookup::NotFound
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_resume_info_serialization() {
-        let resume_info = ResumeInfo {
-            run_id: "test-run-1".to_string(),
-            campaign: "test-campaign".to_string(),
-            codebase: "https://example.com/repo".to_string(),
-            branch_name: "test-branch".to_string(),
-            result_code: "success".to_string(),
-            revision: Some("abc123".to_string()),
-            result: None,
-            result_branches: Vec::new(),
-        };
-
-        let json = serde_json::to_string(&resume_info).unwrap();
-        let deserialized: ResumeInfo = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(resume_info.run_id, deserialized.run_id);
-        assert_eq!(resume_info.campaign, deserialized.campaign);
-    }
-
-    #[test]
-    fn test_resume_error_display() {
-        let error = ResumeError::NoResumeFound;
-        assert_eq!(error.to_string(), "No suitable resume found");
-
-        let error = ResumeError::InvalidResumeBranch("test".to_string());
-        assert_eq!(error.to_string(), "Invalid resume branch: test");
-    }
 }
