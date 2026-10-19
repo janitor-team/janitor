@@ -3433,7 +3433,6 @@ async fn assign_work_internal(
         queue_id: assignment.queue_item.id,
         log_id: log_id.clone(),
         start_time,
-        finish_time: None,
         estimated_duration: assignment.queue_item.estimated_duration,
         campaign: assignment.queue_item.campaign.clone(),
         change_set: assignment.queue_item.change_set.clone(),
