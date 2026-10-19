@@ -279,6 +279,15 @@ def _login_links(html):
     return [a.get_text() for a in soup.select('a[href^="/login?"]')]
 
 
+async def test_oauth_callback_without_state(
+    aiohttp_client, aiohttp_server, database_location
+):
+    provider = await _start_provider(aiohttp_server)
+    client = await _openid_site(aiohttp_client, database_location, provider)
+    resp = await client.get("/oauth/callback", params={"code": "some-code"})
+    assert (resp.status, await resp.text()) == (400, "state variable mismatch")
+
+
 @pytest.mark.parametrize(
     "discovery, links",
     [(None, ["Login"]), ({}, [])],
