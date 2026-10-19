@@ -4,7 +4,7 @@
 
 #![deny(missing_docs)]
 
-use crate::health::{BaseAppState, BasicHealthChecker, HealthCheckHandler};
+use crate::health::BasicHealthChecker;
 use breezyshim::branch::Branch;
 use breezyshim::error::Error as BrzError;
 use breezyshim::forge::Forge;
@@ -2441,20 +2441,6 @@ pub struct AppState {
     /// stop completing, the timestamp ages out and publishing pauses
     /// until a fresh scan lands. `None` until the first pass completes.
     pub last_full_scan_at: tokio::sync::watch::Sender<Option<chrono::DateTime<chrono::Utc>>>,
-}
-
-impl BaseAppState for AppState {
-    fn service_name(&self) -> &str {
-        "publish"
-    }
-
-    fn service_version(&self) -> &str {
-        env!("CARGO_PKG_VERSION")
-    }
-
-    fn health_checker(&self) -> Arc<dyn HealthCheckHandler> {
-        self.health_checker.clone()
-    }
 }
 
 /// Errors that can occur when checking a merge proposal.
