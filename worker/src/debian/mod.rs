@@ -446,21 +446,22 @@ fn tree_set_changelog_version(
     tree: &breezyshim::workingtree::GenericWorkingTree,
     build_version: &debversion::Version,
     subpath: &Path,
-) -> Result<(), debian_analyzer::editor::EditorError> {
+) -> Result<(), String> {
     use debian_analyzer::editor::{Editor, MutableTreeEdit};
-    let editor = tree.edit_file::<debian_changelog::ChangeLog>(
-        &subpath.join("debian/changelog"),
-        true,
-        true,
-    )?;
+    let editor = tree
+        .edit_file::<debian_changelog::ChangeLog>(&subpath.join("debian/changelog"), true, true)
+        .map_err(|e| e.to_string())?;
     if let Some(mut entry) = editor.iter().next() {
-        let version: debversion::Version =
-            format!("{}~", entry.version().unwrap()).parse().unwrap();
+        let version: debversion::Version = entry
+            .try_version()
+            .ok_or("the top changelog entry has no version")?
+            .and_then(|v| format!("{}~", v).parse())
+            .map_err(|e| format!("invalid version in the top changelog entry: {}", e))?;
         if version > *build_version {
             return Ok(());
         }
         entry.set_version(build_version);
-        editor.commit()?;
+        editor.commit().map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -831,5 +832,55 @@ mod tests {
         assert_eq!(failure.code, "build-config-parse-failure");
         assert_eq!(failure.stage, vec!["build".to_string()]);
         assert_eq!(failure.transient, Some(false));
+    }
+
+    #[test]
+    fn test_tree_set_changelog_version() {
+        let changelog = |version: &str| {
+            format!(
+                r#"foo ({}) unstable; urgency=low
+
+  * Initial release.
+
+ -- Joe Example <joe@example.com>  Mon, 01 Jan 2001 00:00:00 +0000
+"#,
+                version
+            )
+        };
+        let invalid = |e: &str| Err(format!("invalid version in the top changelog entry: {}", e));
+        for (version, result, after) in [
+            ("0.9-1", Ok(()), "1.0-1"),
+            ("2.0-1", Ok(()), "2.0-1"),
+            ("1_0", invalid("Invalid version string: 1_0"), "1_0"),
+            (
+                "99999999999:",
+                invalid("Error parsing epoch: number too large to fit in target type"),
+                "99999999999:",
+            ),
+        ] {
+            let td = tempfile::tempdir().unwrap();
+            let tree = empty_tree(&td);
+            tree.mkdir(std::path::Path::new("debian")).unwrap();
+            tree.put_file_bytes_non_atomic(
+                std::path::Path::new("debian/changelog"),
+                changelog(version).as_bytes(),
+            )
+            .unwrap();
+            tree.add(&[std::path::Path::new("debian/changelog")])
+                .unwrap();
+
+            assert_eq!(
+                (
+                    tree_set_changelog_version(
+                        &tree,
+                        &"1.0-1".parse().unwrap(),
+                        std::path::Path::new("")
+                    ),
+                    tree.get_file_text(std::path::Path::new("debian/changelog"))
+                        .unwrap()
+                ),
+                (result, changelog(after).into_bytes())
+            );
+        }
     }
 }
