@@ -15,12 +15,8 @@ pub enum TerminationReason {
     Timeout,
     /// Worker health check failed.
     HealthCheckFailed,
-    /// Run was manually killed.
-    ManualKill,
     /// Worker disappeared or stopped responding.
     WorkerDisappeared,
-    /// Resource constraints or system issues.
-    SystemFailure(String),
 }
 
 impl TerminationReason {
@@ -29,9 +25,7 @@ impl TerminationReason {
         match self {
             TerminationReason::Timeout => "worker-timeout",
             TerminationReason::HealthCheckFailed => "worker-failure",
-            TerminationReason::ManualKill => "killed",
             TerminationReason::WorkerDisappeared => "worker-disappeared",
-            TerminationReason::SystemFailure(_) => "system-failure",
         }
     }
 
@@ -40,9 +34,7 @@ impl TerminationReason {
         match self {
             TerminationReason::Timeout => "Run exceeded maximum allowed duration".to_string(),
             TerminationReason::HealthCheckFailed => "Worker health check failed".to_string(),
-            TerminationReason::ManualKill => "Run was manually terminated".to_string(),
             TerminationReason::WorkerDisappeared => "Worker stopped responding".to_string(),
-            TerminationReason::SystemFailure(msg) => format!("System failure: {}", msg),
         }
     }
 
@@ -51,9 +43,7 @@ impl TerminationReason {
         match self {
             TerminationReason::Timeout => true,
             TerminationReason::HealthCheckFailed => true,
-            TerminationReason::ManualKill => false,
             TerminationReason::WorkerDisappeared => true,
-            TerminationReason::SystemFailure(_) => true,
         }
     }
 
@@ -93,14 +83,8 @@ impl TerminationReason {
             TerminationReason::HealthCheckFailed => {
                 details["health_check_failed"] = json!(true);
             }
-            TerminationReason::ManualKill => {
-                details["manual_termination"] = json!(true);
-            }
             TerminationReason::WorkerDisappeared => {
                 details["worker_unreachable"] = json!(true);
-            }
-            TerminationReason::SystemFailure(msg) => {
-                details["system_failure_message"] = json!(msg);
             }
         }
 
@@ -303,20 +287,17 @@ impl Watchdog {
                             (now - last_ping).num_seconds()
                         );
 
-                        let failures = self.health_failures.entry(run.log_id.clone()).or_insert(0);
-                        *failures += 1;
-
-                        if *failures >= self.config.max_health_failures {
-                            return Ok(Some(TerminationReason::WorkerDisappeared));
-                        } else {
+                        let (failures, reason) =
+                            self.bump_failure(&run.log_id, TerminationReason::WorkerDisappeared);
+                        if reason.is_none() {
                             log::warn!(
                                 "Heartbeat timeout {}/{} for run {}",
                                 failures,
                                 self.config.max_health_failures,
                                 run.log_id
                             );
-                            return Ok(None);
                         }
+                        return Ok(reason);
                     }
                 }
 
@@ -350,12 +331,9 @@ impl Watchdog {
                         Ok(None)
                     }
                     "unhealthy" | "failed" | "aborted" => {
-                        let failures = self.health_failures.entry(run.log_id.clone()).or_insert(0);
-                        *failures += 1;
-
-                        if *failures >= self.config.max_health_failures {
-                            Ok(Some(TerminationReason::HealthCheckFailed))
-                        } else {
+                        let (failures, reason) =
+                            self.bump_failure(&run.log_id, TerminationReason::HealthCheckFailed);
+                        if reason.is_none() {
                             log::warn!(
                                 "Health check failure {}/{} for run {} (status: {})",
                                 failures,
@@ -363,8 +341,8 @@ impl Watchdog {
                                 run.log_id,
                                 health.status
                             );
-                            Ok(None)
                         }
+                        Ok(reason)
                     }
                     "not-found" | "unreachable" => {
                         // Worker or job no longer exists
@@ -429,9 +407,10 @@ impl Watchdog {
                                 // Soft-fail-then-give-up so a
                                 // genuinely stuck worker still gets
                                 // killed eventually.
-                                let failures =
-                                    self.health_failures.entry(run.log_id.clone()).or_insert(0);
-                                *failures += 1;
+                                let (failures, reason) = self.bump_failure(
+                                    &run.log_id,
+                                    TerminationReason::WorkerDisappeared,
+                                );
                                 log::debug!(
                                     "Worker {} hasn't yet picked up run {} (still on {}, started {}); \
                                      soft-failure {}/{}",
@@ -442,11 +421,7 @@ impl Watchdog {
                                     failures,
                                     self.config.max_health_failures,
                                 );
-                                if *failures >= self.config.max_health_failures {
-                                    Ok(Some(TerminationReason::WorkerDisappeared))
-                                } else {
-                                    Ok(None)
-                                }
+                                Ok(reason)
                             }
                             None => {
                                 log::warn!(
@@ -469,14 +444,9 @@ impl Watchdog {
                         );
 
                         // Treat unknown status as potential issue but not immediate failure
-                        let failures = self.health_failures.entry(run.log_id.clone()).or_insert(0);
-                        *failures += 1;
-
-                        if *failures >= self.config.max_health_failures {
-                            Ok(Some(TerminationReason::HealthCheckFailed))
-                        } else {
-                            Ok(None)
-                        }
+                        Ok(self
+                            .bump_failure(&run.log_id, TerminationReason::HealthCheckFailed)
+                            .1)
                     }
                 }
             }
@@ -502,13 +472,8 @@ impl Watchdog {
                     TerminationReason::HealthCheckFailed
                 };
 
-                // Increment failure count for non-fatal errors
-                let failures = self.health_failures.entry(run.log_id.clone()).or_insert(0);
-                *failures += 1;
-
-                if *failures >= self.config.max_health_failures {
-                    Ok(Some(failure_reason))
-                } else {
+                let (failures, reason) = self.bump_failure(&run.log_id, failure_reason);
+                if reason.is_none() {
                     log::warn!(
                         "Health check error {}/{} for run {}: {}",
                         failures,
@@ -516,10 +481,26 @@ impl Watchdog {
                         run.log_id,
                         e
                     );
-                    Ok(None)
                 }
+                Ok(reason)
             }
         }
+    }
+
+    /// Count a health failure for `run_id`. Returns the new failure
+    /// count, and `reason` once `max_health_failures` is reached.
+    fn bump_failure(
+        &mut self,
+        run_id: &RunId,
+        reason: TerminationReason,
+    ) -> (u32, Option<TerminationReason>) {
+        let failures = self.health_failures.entry(run_id.clone()).or_insert(0);
+        *failures += 1;
+        let failures = *failures;
+        (
+            failures,
+            (failures >= self.config.max_health_failures).then_some(reason),
+        )
     }
 
     /// Terminate a run and clean up its state.
@@ -630,28 +611,6 @@ impl Watchdog {
         Ok(())
     }
 
-    /// Manually terminate a specific run.
-    pub async fn kill_run(
-        &mut self,
-        run_id: &RunId,
-    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(run) = self.active_runs.get(run_id).await {
-            self.terminate_run(&run, TerminationReason::ManualKill)
-                .await?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
-    /// Get current watchdog statistics.
-    pub fn get_stats(&self) -> WatchdogStats {
-        WatchdogStats {
-            runs_with_health_failures: self.health_failures.len(),
-            total_health_failures: self.health_failures.values().sum(),
-        }
-    }
-
     /// Get detailed health status for all active runs.
     pub async fn get_detailed_health_status(
         &self,
@@ -683,53 +642,6 @@ impl Watchdog {
 
         Ok(health_statuses)
     }
-
-    /// Force a health check on a specific run.
-    pub async fn check_run_health(
-        &mut self,
-        run_id: &RunId,
-    ) -> Result<Option<RunHealthStatus>, Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(run) = self.active_runs.get(run_id).await {
-            let now = Utc::now();
-
-            let termination_reason = self.check_worker_health(&run, now).await?;
-
-            let health_status = (run.backchannel.get_health_status(&run.log_id).await).ok();
-
-            let failure_count = self.health_failures.get(&run.log_id).copied().unwrap_or(0);
-
-            // If termination was triggered, handle it
-            if let Some(reason) = termination_reason {
-                log::info!(
-                    "Health check triggered termination for run {}: {:?}",
-                    run_id,
-                    reason
-                );
-                self.terminate_run(&run, reason).await?;
-            }
-
-            Ok(Some(RunHealthStatus {
-                log_id: run.log_id,
-                worker_name: run.worker_name,
-                start_time: run.start_time,
-                estimated_duration: run.estimated_duration,
-                health: health_status,
-                failure_count,
-                max_failures: self.config.max_health_failures,
-            }))
-        } else {
-            Ok(None)
-        }
-    }
-}
-
-/// Statistics about watchdog operation.
-#[derive(Debug, Clone)]
-pub struct WatchdogStats {
-    /// Number of runs currently experiencing health check failures.
-    pub runs_with_health_failures: usize,
-    /// Total number of health check failures across all monitored runs.
-    pub total_health_failures: u32,
 }
 
 /// Detailed health status for a specific run.
@@ -836,8 +748,9 @@ mod tests {
         assert_eq!(map.get("run-a"), Some(&t(1000)));
     }
 
-    /// Reading after the timeout returns HealthCheckFailed and
-    /// drops the entry so a re-assigned id starts a fresh timer.
+    /// Reading at the timeout returns HealthCheckFailed (the boundary
+    /// is inclusive) and drops the entry so a re-assigned id starts a
+    /// fresh timer.
     #[test]
     fn test_check_idle_timeout_past_window_returns_failure_and_clears() {
         let mut map = HashMap::new();
@@ -851,17 +764,6 @@ mod tests {
             !map.contains_key("run-a"),
             "entry must be cleared after firing"
         );
-    }
-
-    /// `elapsed == timeout` is the boundary: we fire (>=). This pins
-    /// the inequality direction so a future refactor can't flip it
-    /// silently and end up never firing.
-    #[test]
-    fn test_check_idle_timeout_boundary_is_inclusive() {
-        let mut map = HashMap::new();
-        let _ = check_idle_timeout(&mut map, &rid("run-a"), t(1000), 900);
-        let res = check_idle_timeout(&mut map, &rid("run-a"), t(1900), 900);
-        assert!(matches!(res, Some(TerminationReason::HealthCheckFailed)));
     }
 
     /// After firing once, a fresh idle reading for the same log_id
