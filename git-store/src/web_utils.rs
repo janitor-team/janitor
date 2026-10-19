@@ -27,6 +27,9 @@ const HTTP_REQUESTS_TOTAL: &str = "http_requests_total";
 /// mix of fast metadata calls and long-running smart-protocol pushes.
 const HTTP_REQUEST_DURATION_SECONDS: &str = "http_request_duration_seconds";
 
+/// Git requests whose body did not arrive in full, by service.
+pub(crate) const INCOMPLETE_REQUEST_BODIES_TOTAL: &str = "git_incomplete_request_bodies_total";
+
 /// Histogram bucket overrides for this service.
 pub const METRICS_BUCKETS: janitor_service::metrics::BucketOverrides = &[(
     HTTP_REQUEST_DURATION_SECONDS,
@@ -40,6 +43,10 @@ pub fn install_metrics() {
     metrics::describe_histogram!(
         HTTP_REQUEST_DURATION_SECONDS,
         "HTTP request duration in seconds"
+    );
+    metrics::describe_counter!(
+        INCOMPLETE_REQUEST_BODIES_TOTAL,
+        "Git requests whose body did not arrive in full"
     );
 }
 
