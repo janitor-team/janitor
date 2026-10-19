@@ -2498,34 +2498,14 @@ pub async fn publish_from_policy(
 
     let derived_name = derived_branch_name(conn, campaign_config, run, role).await?;
 
-    let vcs_type_parsed = match <VcsType as std::str::FromStr>::from_str(&run.vcs_type) {
-        Ok(v) => v,
+    let vcs_manager = match vcs_manager_for(vcs_managers, run) {
+        Ok(m) => m,
         Err(e) => {
-            log::warn!(
-                "publish_from_policy: unknown vcs_type {:?} for run {}: {}",
-                run.vcs_type,
-                run.id,
-                e
-            );
-            return Ok(None);
-        }
-    };
-    let vcs_manager = match vcs_managers.get(&vcs_type_parsed) {
-        Some(m) => m.as_ref(),
-        None => {
-            log::warn!(
-                "publish_from_policy: no VcsManager registered for vcs_type {:?}",
-                vcs_type_parsed
-            );
+            log::warn!("publish_from_policy: {}", e);
             return Ok(None);
         }
     };
 
-    let tags: Option<Vec<(String, RevisionId)>> = run.result_tags.as_ref().map(|t| {
-        t.iter()
-            .map(|(name, rev)| (name.clone(), RevisionId::from(rev.as_bytes().to_vec())))
-            .collect()
-    });
     let codemod_result = run.result.clone().unwrap_or(serde_json::Value::Null);
     log::info!(
         "Publishing {} / {:?} / {} (mode: {})",
@@ -2550,7 +2530,7 @@ pub async fn publish_from_policy(
             vcs_manager,
             require_binary_diff,
             run_sufficient_for_proposal(campaign_config, run.value),
-            tags,
+            result_tags(run),
             campaign_config.merge_proposal.commit_message.as_deref(),
             campaign_config.merge_proposal.title.as_deref(),
             &codemod_result,
@@ -2584,21 +2564,13 @@ pub async fn publish_from_policy(
         Err(other) => return Err(Box::new(other)),
     };
 
-    // MODE_ATTEMPT_PUSH collapses now that we know whether a
-    // proposal was created.
-    let effective_mode = if mode == Mode::AttemptPush {
-        if publish_result_opt
+    let effective_mode = effective_mode(
+        mode,
+        publish_result_opt
             .as_ref()
             .and_then(|r| r.proposal_url())
-            .is_some()
-        {
-            Mode::Propose
-        } else {
-            Mode::Push
-        }
-    } else {
-        mode
-    };
+            .is_some(),
+    );
 
     // Persist the outcome. Fields that only exist on a real
     // PublishOneResult are pulled from it when available; otherwise
@@ -2690,11 +2662,7 @@ pub async fn publish_from_policy(
             "run_id": run.id,
             "publish_delay": publish_delay_secs,
         });
-        let payload = serde_json::to_string(&entry)?;
-        manager
-            .publisher()
-            .publish_to_channel("publish", &payload)
-            .await?;
+        announce_publish(manager, entry).await?;
     }
 
     if code == "success" {
@@ -2702,6 +2670,55 @@ pub async fn publish_from_policy(
     } else {
         Ok(None)
     }
+}
+
+/// Look up the VCS manager for the VCS type of `run`.
+fn vcs_manager_for<'a>(
+    vcs_managers: &'a HashMap<VcsType, Box<dyn VcsManager>>,
+    run: &janitor::state::Run,
+) -> Result<&'a dyn VcsManager, String> {
+    let vcs_type: VcsType = run.vcs_type.parse().map_err(|e| {
+        format!(
+            "unknown vcs_type {:?} for run {}: {}",
+            run.vcs_type, run.id, e
+        )
+    })?;
+    vcs_managers
+        .get(&vcs_type)
+        .map(|m| m.as_ref())
+        .ok_or_else(|| format!("no VcsManager registered for vcs_type {:?}", vcs_type))
+}
+
+/// The result tags of `run`, in the form `publish_one` takes them.
+fn result_tags(run: &janitor::state::Run) -> Option<Vec<(String, RevisionId)>> {
+    run.result_tags.as_ref().map(|t| {
+        t.iter()
+            .map(|(name, rev)| (name.clone(), RevisionId::from(rev.as_bytes().to_vec())))
+            .collect()
+    })
+}
+
+/// Collapse `Mode::AttemptPush` to propose or push, depending on
+/// whether a merge proposal was created.
+fn effective_mode(mode: Mode, created_proposal: bool) -> Mode {
+    match mode {
+        Mode::AttemptPush if created_proposal => Mode::Propose,
+        Mode::AttemptPush => Mode::Push,
+        mode => mode,
+    }
+}
+
+/// Announce a publish attempt on the `publish` Redis channel.
+async fn announce_publish(
+    manager: &janitor::redis::RedisManager,
+    entry: serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let payload = serde_json::to_string(&entry)?;
+    manager
+        .publisher()
+        .publish_to_channel("publish", &payload)
+        .await?;
+    Ok(())
 }
 
 /// Publish a single run under a given mode/role and persist the result.
@@ -2758,40 +2775,11 @@ pub async fn publish_and_store(
     // main-branch revision. Used as `unchanged_id` so the publisher
     // can diff against the pre-codemod tree. Matches the inline SQL
     // in py/janitor/publish.py::publish_and_store.
-    let unchanged_run_id: Option<String> = if let Some(main_rev) = run.main_branch_revision.as_ref()
-    {
-        sqlx::query_scalar::<_, String>(
-            "SELECT id FROM run \
-                 WHERE codebase = $1 AND revision = $2 AND result_code = 'success' \
-                 ORDER BY finish_time DESC LIMIT 1",
-        )
-        .bind(&run.codebase)
-        .bind(main_rev.to_string())
-        .fetch_optional(conn)
-        .await?
-    } else {
-        None
-    };
+    let unchanged_run_id = crate::state::get_unchanged_run_id(conn, run).await?;
 
     let derived_name = derived_branch_name(conn, campaign_config, run, role).await?;
 
-    let vcs_type: VcsType = run.vcs_type.parse().map_err(|e| {
-        format!(
-            "unknown vcs_type {:?} for run {}: {}",
-            run.vcs_type, run.id, e
-        )
-    })?;
-    let vcs_manager = vcs_managers
-        .get(&vcs_type)
-        .ok_or_else(|| format!("no VcsManager registered for vcs_type {:?}", vcs_type))?
-        .as_ref();
-
-    // Convert result_tags from (String, String) -> (String, RevisionId).
-    let tags: Option<Vec<(String, RevisionId)>> = run.result_tags.as_ref().map(|t| {
-        t.iter()
-            .map(|(name, rev)| (name.clone(), RevisionId::from(rev.as_bytes().to_vec())))
-            .collect()
-    });
+    let vcs_manager = vcs_manager_for(vcs_managers, run)?;
 
     let codemod_result = run.result.clone().unwrap_or(serde_json::Value::Null);
     // On a successful publish that created a new proposal, the bucket
@@ -2813,7 +2801,7 @@ pub async fn publish_and_store(
             vcs_manager,
             require_binary_diff,
             allow_create_proposal,
-            tags,
+            result_tags(run),
             campaign_config.merge_proposal.commit_message.as_deref(),
             campaign_config.merge_proposal.title.as_deref(),
             &codemod_result,
@@ -2858,27 +2846,13 @@ pub async fn publish_and_store(
                     "result": run.result.clone().unwrap_or(serde_json::Value::Null),
                     "codebase": run.codebase,
                 });
-                let payload = serde_json::to_string(&entry)?;
-                manager
-                    .publisher()
-                    .publish_to_channel("publish", &payload)
-                    .await?;
+                announce_publish(manager, entry).await?;
             }
             Ok(())
         }
         Err(other) => Err(Box::new(other)),
         Ok(publish_result) => {
-            // MODE_ATTEMPT_PUSH collapses to propose or push based on
-            // whether publish_one ended up creating a proposal.
-            let effective_mode = if mode == Mode::AttemptPush {
-                if publish_result.proposal_url().is_some() {
-                    Mode::Propose
-                } else {
-                    Mode::Push
-                }
-            } else {
-                mode
-            };
+            let effective_mode = effective_mode(mode, publish_result.proposal_url().is_some());
 
             crate::state::store_publish(
                 conn,
@@ -2932,11 +2906,7 @@ pub async fn publish_and_store(
                     "run_id": run.id,
                     "codebase": run.codebase,
                 });
-                let payload = serde_json::to_string(&entry)?;
-                manager
-                    .publisher()
-                    .publish_to_channel("publish", &payload)
-                    .await?;
+                announce_publish(manager, entry).await?;
             }
             Ok(())
         }
@@ -3774,56 +3744,15 @@ async fn check_existing_mp(
 
         // unchanged_run_id: most recent successful run on the same
         // codebase + main_branch_revision.
-        let unchanged_run_id: Option<String> =
-            if let Some(main_rev) = last_run.main_branch_revision.as_ref() {
-                sqlx::query_scalar::<_, String>(
-                    "SELECT id FROM run \
-                     WHERE codebase = $1 AND revision = $2 AND result_code = 'success' \
-                     ORDER BY finish_time DESC LIMIT 1",
-                )
-                .bind(&last_run.codebase)
-                .bind(main_rev.to_string())
-                .fetch_optional(conn)
-                .await?
-            } else {
-                None
-            };
+        let unchanged_run_id = crate::state::get_unchanged_run_id(conn, &last_run).await?;
 
-        // Resolve the right VcsManager for the new run's vcs_type.
-        let vcs_type_for_publish =
-            match <VcsType as std::str::FromStr>::from_str(&last_run.vcs_type) {
-                Ok(v) => v,
-                Err(e) => {
-                    log::warn!(
-                        "{}: unknown vcs_type {:?} for new run {}: {}",
-                        mp_url,
-                        last_run.vcs_type,
-                        last_run.id,
-                        e
-                    );
-                    return Ok(false);
-                }
-            };
-        let vcs_manager_for_publish = match vcs_managers.get(&vcs_type_for_publish) {
-            Some(m) => m.as_ref(),
-            None => {
-                log::warn!(
-                    "{}: no VcsManager registered for vcs_type {:?}",
-                    mp_url,
-                    vcs_type_for_publish
-                );
+        let vcs_manager_for_publish = match vcs_manager_for(vcs_managers, &last_run) {
+            Ok(m) => m,
+            Err(e) => {
+                log::warn!("{}: {}", mp_url, e);
                 return Ok(false);
             }
         };
-
-        // Convert the run's result_tags from Vec<(String, String)> to
-        // Vec<(String, RevisionId)> the way publish_one wants them.
-        let tags_for_publish: Option<Vec<(String, RevisionId)>> =
-            last_run.result_tags.as_ref().map(|tags| {
-                tags.iter()
-                    .map(|(name, rev)| (name.clone(), RevisionId::from(rev.as_bytes().to_vec())))
-                    .collect()
-            });
 
         let codemod_result = last_run.result.clone().unwrap_or(serde_json::Value::Null);
         // The bucket rate limiter isn't incremented here even if this
@@ -3845,7 +3774,7 @@ async fn check_existing_mp(
                 vcs_manager_for_publish,
                 false, // require_binary_diff
                 true,  // allow_create_proposal
-                tags_for_publish,
+                result_tags(&last_run),
                 campaign_config.merge_proposal.commit_message.as_deref(),
                 campaign_config.merge_proposal.title.as_deref(),
                 &codemod_result,
