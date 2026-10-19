@@ -40,8 +40,6 @@ pub mod backchannel;
 pub mod builder;
 /// Database operations.
 pub mod database;
-/// Error tracking and logging.
-pub mod error_tracking;
 pub use janitor::logs;
 /// Module for Prometheus metrics collection.
 pub mod metrics;
@@ -1317,8 +1315,6 @@ pub struct AppState {
     pub backup_log_manager: Option<Arc<dyn logs::LogFileManager>>,
     /// Artifact manager to fall back to when `artifact_manager` fails.
     pub backup_artifact_manager: Option<Arc<dyn janitor::artifacts::ArtifactManager>>,
-    /// Error tracking system.
-    pub error_tracker: Arc<error_tracking::ErrorTracker>,
     /// Configuration.
     pub config: Arc<janitor::config::Config>,
     /// Upload processor for multipart forms.
