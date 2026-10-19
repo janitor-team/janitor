@@ -10,7 +10,7 @@ from breezy.revision import NULL_REVISION
 
 from janitor import state
 
-from ..common import render_template_for_request
+from ..common import parse_int_query_param, render_template_for_request
 from . import iter_needs_review
 
 
@@ -48,7 +48,7 @@ async def generate_review(
     publishable_only=True,
     required_only=None,
 ):
-    limit = int(request.query.get("limit", "100"))
+    limit = parse_int_query_param(request, "limit", 100)
 
     span = aiozipkin.request_span(request)
 
