@@ -228,7 +228,7 @@ mod tests {
         // Verify all expected campaigns exist
         for name in &[
             "lintian-fixes",
-            "unchanged",
+            "control",
             "fresh-releases",
             "fresh-snapshots",
             "multiarch-fixes",
