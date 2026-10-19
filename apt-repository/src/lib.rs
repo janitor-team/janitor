@@ -16,8 +16,7 @@
 //! ## Example
 //!
 //! ```rust
-//! use apt_repository::{Repository, RepositoryBuilder, Compression};
-//! use std::path::Path;
+//! use apt_repository::RepositoryBuilder;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let repo = RepositoryBuilder::new()
@@ -29,8 +28,8 @@
 //!     .components(vec!["main".to_string()])
 //!     .build()?;
 //!
-//! // Generate repository files
-//! // repo.generate_repository("/path/to/repo")?;
+//! // Generate repository files with
+//! // AsyncRepository::new(repo).generate_repository(path, &packages, &sources)
 //! # Ok(())
 //! # }
 //! ```

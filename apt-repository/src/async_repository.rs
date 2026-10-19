@@ -1,10 +1,7 @@
 //! Async repository generation functionality.
 
 #[cfg(feature = "async")]
-use crate::{
-    AptRepositoryError, HashedFile, PackageFile, Release, ReleaseBuilder, Repository, Result,
-    SourceFile,
-};
+use crate::{AptRepositoryError, HashedFile, PackageFile, Release, Repository, Result, SourceFile};
 use std::path::{Path, PathBuf};
 use tempfile::TempPath;
 use tokio::fs;
@@ -33,143 +30,93 @@ impl AsyncRepository {
         source_provider: &SP,
     ) -> Result<Release> {
         let base_path = base_path.as_ref();
-        let mut release_builder = ReleaseBuilder::new()
-            .suite(self.inner.suite.clone())
-            .architectures(self.inner.architectures.clone())
-            .components(self.inner.components.clone())
-            .not_automatic(self.inner.not_automatic)
-            .but_automatic_upgrades(self.inner.but_automatic_upgrades)
-            .acquire_by_hash(self.inner.acquire_by_hash);
-
-        if let Some(ref origin) = self.inner.origin {
-            release_builder = release_builder.origin(origin.clone());
-        }
-        if let Some(ref label) = self.inner.label {
-            release_builder = release_builder.label(label.clone());
-        }
-        if let Some(ref codename) = self.inner.codename {
-            release_builder = release_builder.codename(codename.clone());
-        }
-        if let Some(ref version) = self.inner.version {
-            release_builder = release_builder.version(version.clone());
-        }
-        if let Some(ref description) = self.inner.description {
-            release_builder = release_builder.description(description.clone());
-        }
-
-        let mut release = release_builder.build()?;
+        let mut release = self.inner.release_builder().build()?;
 
         // Index files are written to temporary files and only renamed
         // into place once every index has been generated, so a failure
         // leaves the previous indices in place.
         let mut pending: Vec<(TempPath, PathBuf)> = Vec::new();
 
-        // Generate files for each component and architecture
         for component in &self.inner.components {
-            // Create component directory
-            let component_dir = base_path.join(component);
-            fs::create_dir_all(&component_dir)
-                .await
-                .map_err(|e| AptRepositoryError::DirectoryCreation(e.to_string()))?;
-
-            // Generate binary package files
             for arch in &self.inner.architectures {
-                let arch_dir = component_dir.join(format!("binary-{}", arch));
-                fs::create_dir_all(&arch_dir)
-                    .await
-                    .map_err(|e| AptRepositoryError::DirectoryCreation(e.to_string()))?;
-
                 let packages = package_provider
                     .get_packages(&self.inner.suite, component, arch)
                     .await?;
-                let (packages_files, temp_paths) = self
-                    .write_compressed_file_async(
-                        &arch_dir,
-                        "Packages",
-                        packages.to_string().as_bytes(),
-                    )
-                    .await?;
-
-                for file in &packages_files {
-                    let relative_path = component_dir
-                        .join(format!("binary-{}", arch))
-                        .join(&file.path)
-                        .strip_prefix(base_path)
-                        .unwrap()
-                        .to_string_lossy()
-                        .to_string();
-                    let mut hashed_file = HashedFile::new(relative_path, file.size);
-                    hashed_file.hashes = file.hashes.clone();
-                    release.add_file(hashed_file);
-                }
-
-                // Create by-hash directory structure if enabled
-                if self.inner.acquire_by_hash {
-                    self.create_by_hash_links_async(&arch_dir, &packages_files, &temp_paths)
-                        .await?;
-                    if let Some(keep_count) = self.inner.by_hash_keep {
-                        self.cleanup_by_hash_files_async(&arch_dir, keep_count)
-                            .await?;
-                    }
-                }
-                pending.extend(
-                    temp_paths
-                        .into_iter()
-                        .zip(packages_files.iter().map(|file| arch_dir.join(&file.path))),
-                );
+                self.write_index(
+                    base_path,
+                    &format!("{}/binary-{}", component, arch),
+                    "Packages",
+                    packages.to_string().as_bytes(),
+                    &mut release,
+                    &mut pending,
+                )
+                .await?;
             }
-
-            // Generate source package files
-            let source_dir = component_dir.join("source");
-            fs::create_dir_all(&source_dir)
-                .await
-                .map_err(|e| AptRepositoryError::DirectoryCreation(e.to_string()))?;
 
             let sources = source_provider
                 .get_sources(&self.inner.suite, component)
                 .await?;
-            let (sources_files, temp_paths) = self
-                .write_compressed_file_async(&source_dir, "Sources", sources.to_string().as_bytes())
-                .await?;
-
-            for file in &sources_files {
-                let relative_path = component_dir
-                    .join("source")
-                    .join(&file.path)
-                    .strip_prefix(base_path)
-                    .unwrap()
-                    .to_string_lossy()
-                    .to_string();
-                let mut hashed_file = HashedFile::new(relative_path, file.size);
-                hashed_file.hashes = file.hashes.clone();
-                release.add_file(hashed_file);
-            }
-
-            // Create by-hash directory structure if enabled
-            if self.inner.acquire_by_hash {
-                self.create_by_hash_links_async(&source_dir, &sources_files, &temp_paths)
-                    .await?;
-                if let Some(keep_count) = self.inner.by_hash_keep {
-                    self.cleanup_by_hash_files_async(&source_dir, keep_count)
-                        .await?;
-                }
-            }
-            pending.extend(
-                temp_paths
-                    .into_iter()
-                    .zip(sources_files.iter().map(|file| source_dir.join(&file.path))),
-            );
+            self.write_index(
+                base_path,
+                &format!("{}/source", component),
+                "Sources",
+                sources.to_string().as_bytes(),
+                &mut release,
+                &mut pending,
+            )
+            .await?;
         }
 
         for (temp_path, path) in pending {
             temp_path.persist(&path).map_err(|e| e.error)?;
         }
 
-        // Write the Release file
         let release_content = release.to_string();
         fs::write(base_path.join("Release"), &release_content).await?;
 
         Ok(release)
+    }
+
+    /// Write the compressed variants of one index file into `rel_dir`
+    /// under `base_path`, record them in `release` and queue them in
+    /// `pending` for renaming into place.
+    async fn write_index(
+        &self,
+        base_path: &Path,
+        rel_dir: &str,
+        basename: &str,
+        content: &[u8],
+        release: &mut Release,
+        pending: &mut Vec<(TempPath, PathBuf)>,
+    ) -> Result<()> {
+        let dir = base_path.join(rel_dir);
+        fs::create_dir_all(&dir)
+            .await
+            .map_err(|e| AptRepositoryError::DirectoryCreation(e.to_string()))?;
+
+        let (files, temp_paths) = self
+            .write_compressed_file_async(&dir, basename, content)
+            .await?;
+
+        for file in &files {
+            let mut hashed_file = HashedFile::new(format!("{}/{}", rel_dir, file.path), file.size);
+            hashed_file.hashes = file.hashes.clone();
+            release.add_file(hashed_file);
+        }
+
+        if self.inner.acquire_by_hash {
+            self.create_by_hash_links_async(&dir, &files, &temp_paths)
+                .await?;
+            if let Some(keep_count) = self.inner.by_hash_keep {
+                self.cleanup_by_hash_files_async(&dir, keep_count).await?;
+            }
+        }
+        pending.extend(
+            temp_paths
+                .into_iter()
+                .zip(files.iter().map(|file| dir.join(&file.path))),
+        );
+        Ok(())
     }
 
     /// Write a file with multiple compression formats to temporary
@@ -278,11 +225,6 @@ impl AsyncRepository {
     /// Get the inner repository.
     pub fn inner(&self) -> &Repository {
         &self.inner
-    }
-
-    /// Get a mutable reference to the inner repository.
-    pub fn inner_mut(&mut self) -> &mut Repository {
-        &mut self.inner
     }
 }
 
@@ -622,40 +564,5 @@ mod tests {
                 .collect::<Vec<_>>(),
             expected
         );
-    }
-
-    #[tokio::test]
-    async fn test_async_providers() {
-        let mut package_provider = AsyncMemoryPackageProvider::new();
-        let mut source_provider = AsyncMemorySourceProvider::new();
-
-        // Create test data
-        let mut packages = PackageFile::new();
-        packages.add_package(crate::packages::new_package(
-            "test-pkg", "1.0.0", "amd64", "test.deb", 1024,
-        ));
-
-        let mut sources = SourceFile::new();
-        sources.add_source(crate::sources::new_source(
-            "test-src",
-            "1.0.0",
-            "any",
-            "pool/main/t/test",
-        ));
-
-        package_provider.add_packages("stable", "main", "amd64", packages);
-        source_provider.add_sources("stable", "main", sources);
-
-        // Test retrieval
-        let retrieved_packages = package_provider
-            .get_packages("stable", "main", "amd64")
-            .await
-            .unwrap();
-        assert_eq!(retrieved_packages.len(), 1);
-        assert_eq!(retrieved_packages.packages()[0].name, "test-pkg");
-
-        let retrieved_sources = source_provider.get_sources("stable", "main").await.unwrap();
-        assert_eq!(retrieved_sources.len(), 1);
-        assert_eq!(retrieved_sources.sources()[0].package, "test-src");
     }
 }

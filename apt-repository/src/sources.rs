@@ -73,11 +73,6 @@ impl SourceFile {
         &self.sources
     }
 
-    /// Get a mutable reference to all source packages.
-    pub fn sources_mut(&mut self) -> &mut Vec<Source> {
-        &mut self.sources
-    }
-
     /// Parse a Sources file from a string.
     pub fn from_str(content: &str) -> Result<Self> {
         use deb822_fast::{Deb822, FromDeb822Paragraph};

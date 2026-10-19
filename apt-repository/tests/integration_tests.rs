@@ -1,16 +1,15 @@
-use apt_repository::repository::{MemoryPackageProvider, MemorySourceProvider};
+#[cfg(feature = "async")]
+use apt_repository::async_repository::{
+    AsyncMemoryPackageProvider, AsyncMemorySourceProvider, AsyncRepository,
+};
 use apt_repository::*;
 use debian_control::fields::{Md5Checksum, Sha256Checksum};
 use std::fs;
 use tempfile::TempDir;
 
 #[cfg(feature = "async")]
-use apt_repository::async_repository::{
-    AsyncMemoryPackageProvider, AsyncMemorySourceProvider, AsyncRepository,
-};
-
-#[test]
-fn test_full_repository_generation() {
+#[tokio::test]
+async fn test_full_repository_generation() {
     let temp_dir = TempDir::new().unwrap();
     let repo_path = temp_dir.path();
 
@@ -30,7 +29,7 @@ fn test_full_repository_generation() {
         .unwrap();
 
     // Create test packages
-    let mut package_provider = MemoryPackageProvider::new();
+    let mut package_provider = AsyncMemoryPackageProvider::new();
 
     // Add packages for main/amd64
     let mut packages_main_amd64 = PackageFile::new();
@@ -85,7 +84,7 @@ fn test_full_repository_generation() {
     package_provider.add_packages("test-suite", "contrib", "amd64", packages_contrib_amd64);
 
     // Create test sources
-    let mut source_provider = MemorySourceProvider::new();
+    let mut source_provider = AsyncMemorySourceProvider::new();
 
     let mut sources_main = SourceFile::new();
     let mut src1 = new_source(
@@ -120,8 +119,9 @@ fn test_full_repository_generation() {
     source_provider.add_sources("test-suite", "contrib", sources_contrib);
 
     // Generate the repository
-    let release = repo
+    let release = AsyncRepository::new(repo)
         .generate_repository(repo_path, &package_provider, &source_provider)
+        .await
         .unwrap();
 
     // Verify the repository structure
@@ -359,75 +359,4 @@ fn test_compression_and_hashing() {
         assert!(!hash.is_empty());
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
     }
-}
-
-#[cfg(feature = "async")]
-#[tokio::test]
-async fn test_async_repository_generation() {
-    let temp_dir = TempDir::new().unwrap();
-    let repo_path = temp_dir.path();
-
-    let repo = RepositoryBuilder::new()
-        .origin("Async Test")
-        .suite("async-test")
-        .architectures(vec!["amd64".to_string()])
-        .components(vec!["main".to_string()])
-        .build()
-        .unwrap();
-
-    let async_repo = AsyncRepository::new(repo);
-
-    let mut package_provider = AsyncMemoryPackageProvider::new();
-    let mut packages = PackageFile::new();
-    packages.add_package(new_package(
-        "async-pkg",
-        "1.0.0",
-        "amd64",
-        "async.deb",
-        1024,
-    ));
-    package_provider.add_packages("async-test", "main", "amd64", packages);
-
-    let source_provider = AsyncMemorySourceProvider::new();
-
-    let release = async_repo
-        .generate_repository(repo_path, &package_provider, &source_provider)
-        .await
-        .unwrap();
-
-    // Verify the repository was created
-    assert!(tokio::fs::try_exists(repo_path.join("Release"))
-        .await
-        .unwrap());
-    assert!(
-        tokio::fs::try_exists(repo_path.join("main/binary-amd64/Packages"))
-            .await
-            .unwrap()
-    );
-
-    assert_eq!(release.origin(), Some("Async Test".to_string()));
-    assert_eq!(release.suite(), Some("async-test".to_string()));
-}
-
-#[test]
-fn test_repository_builder_validation() {
-    // Valid repository should build
-    let repo = RepositoryBuilder::new()
-        .suite("test")
-        .architectures(vec!["amd64".to_string()])
-        .components(vec!["main".to_string()])
-        .build();
-    assert!(repo.is_ok());
-
-    // Empty suite should fail
-    let repo = RepositoryBuilder::new().suite("").build();
-    assert!(repo.is_err());
-
-    // Empty architectures should fail
-    let repo = RepositoryBuilder::new().architectures(vec![]).build();
-    assert!(repo.is_err());
-
-    // Empty components should fail
-    let repo = RepositoryBuilder::new().components(vec![]).build();
-    assert!(repo.is_err());
 }

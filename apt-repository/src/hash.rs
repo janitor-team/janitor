@@ -1,11 +1,10 @@
 //! Cryptographic hashing support for APT repositories.
 
-use crate::Result;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::HashMap;
 use std::fmt;
-use std::io::{Read, Write};
+use std::io::Write;
 
 /// Supported hash algorithms for APT repositories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -227,13 +226,6 @@ impl Write for MultiHasher {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
-}
-
-/// Hash a reader with the specified algorithms.
-pub fn hash_reader<R: Read>(mut reader: R, algorithms: &[HashAlgorithm]) -> Result<(u64, HashSet)> {
-    let mut hasher = MultiHasher::new(algorithms);
-    std::io::copy(&mut reader, &mut hasher)?;
-    Ok(hasher.finalize())
 }
 
 /// Hash data with the specified algorithms.

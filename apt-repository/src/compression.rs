@@ -24,45 +24,6 @@ impl Compression {
         }
     }
 
-    /// Get the MIME type for this compression format.
-    pub fn mime_type(&self) -> &'static str {
-        match self {
-            Compression::None => "text/plain",
-            Compression::Gzip => "application/gzip",
-            Compression::Bzip2 => "application/x-bzip2",
-        }
-    }
-
-    /// Create a compressor that implements Write.
-    pub fn writer<W: Write + 'static>(self, writer: W) -> Result<Box<dyn Write>> {
-        match self {
-            Compression::None => Ok(Box::new(writer)),
-            Compression::Gzip => {
-                let encoder = flate2::write::GzEncoder::new(writer, flate2::Compression::default());
-                Ok(Box::new(encoder))
-            }
-            Compression::Bzip2 => {
-                let encoder = bzip2::write::BzEncoder::new(writer, bzip2::Compression::default());
-                Ok(Box::new(encoder))
-            }
-        }
-    }
-
-    /// Create a decompressor that implements Read.
-    pub fn reader<R: Read + 'static>(self, reader: R) -> Result<Box<dyn Read>> {
-        match self {
-            Compression::None => Ok(Box::new(reader)),
-            Compression::Gzip => {
-                let decoder = flate2::read::GzDecoder::new(reader);
-                Ok(Box::new(decoder))
-            }
-            Compression::Bzip2 => {
-                let decoder = bzip2::read::BzDecoder::new(reader);
-                Ok(Box::new(decoder))
-            }
-        }
-    }
-
     /// Compress data using this compression format.
     pub fn compress(&self, data: &[u8]) -> Result<Vec<u8>> {
         match self {
@@ -121,71 +82,6 @@ impl std::fmt::Display for Compression {
     }
 }
 
-/// A writer that supports multiple compression formats simultaneously.
-pub struct MultiCompressionWriter<W: Write> {
-    writers: Vec<(Compression, Box<dyn Write>)>,
-    _phantom: std::marker::PhantomData<W>,
-}
-
-impl<W: Write + Clone + 'static> MultiCompressionWriter<W> {
-    /// Create a new multi-compression writer.
-    pub fn new(base_writer: W, compressions: &[Compression]) -> Result<Self> {
-        let mut writers = Vec::new();
-
-        for &compression in compressions {
-            let writer = base_writer.clone();
-            let compressed_writer = compression.writer(writer)?;
-            writers.push((compression, compressed_writer));
-        }
-
-        Ok(Self {
-            writers,
-            _phantom: std::marker::PhantomData,
-        })
-    }
-
-    /// Write data to all compression formats.
-    pub fn write_all(&mut self, data: &[u8]) -> Result<()> {
-        for (_, writer) in &mut self.writers {
-            writer.write_all(data)?;
-        }
-        Ok(())
-    }
-
-    /// Flush all writers.
-    pub fn flush(&mut self) -> Result<()> {
-        for (_, writer) in &mut self.writers {
-            writer.flush()?;
-        }
-        Ok(())
-    }
-
-    /// Finish all compression writers.
-    pub fn finish(mut self) -> Result<()> {
-        self.flush()?;
-
-        // Finish compression for encoders that need it
-        for (compression, mut writer) in self.writers {
-            match compression {
-                Compression::Gzip => {
-                    // The GzEncoder will finish when dropped
-                }
-                Compression::Bzip2 => {
-                    // The BzEncoder will finish when dropped
-                }
-                Compression::None => {}
-            }
-            writer.flush()?;
-        }
-
-        Ok(())
-    }
-}
-
-// We can't implement Write for MultiCompressionWriter because we need to handle
-// multiple writers, and the Write trait doesn't allow for proper error handling
-// in all cases we need.
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,13 +91,6 @@ mod tests {
         assert_eq!(Compression::None.extension(), "");
         assert_eq!(Compression::Gzip.extension(), ".gz");
         assert_eq!(Compression::Bzip2.extension(), ".bz2");
-    }
-
-    #[test]
-    fn test_compression_mime_types() {
-        assert_eq!(Compression::None.mime_type(), "text/plain");
-        assert_eq!(Compression::Gzip.mime_type(), "application/gzip");
-        assert_eq!(Compression::Bzip2.mime_type(), "application/x-bzip2");
     }
 
     #[test]

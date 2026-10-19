@@ -74,11 +74,6 @@ impl PackageFile {
         &self.packages
     }
 
-    /// Get a mutable reference to all packages.
-    pub fn packages_mut(&mut self) -> &mut Vec<Package> {
-        &mut self.packages
-    }
-
     /// Parse a Packages file from a string.
     pub fn from_str(content: &str) -> Result<Self> {
         use deb822_fast::{Deb822, FromDeb822Paragraph};
