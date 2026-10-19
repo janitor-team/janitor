@@ -181,3 +181,28 @@ test_with_database! {
         assert_eq!(err.to_string(), "no VcsManager registered for vcs_type Git");
     }
 }
+
+test_with_database! {
+    schema = Core;
+    async fn publish_and_store_errors_on_missing_run_fields(test_db: TestDatabase) {
+        let mut runs: Vec<_> = (0..4).map(|_| make_run("main", Some("rev-tip"))).collect();
+        runs[0].command = None;
+        runs[1].branch_url = None;
+        runs[2].vcs_type = None;
+        runs[3].result_branches.as_mut().unwrap()[0].1 = None;
+        let mut errors = Vec::new();
+        for run in &runs {
+            let err = publish_main_role(test_db.pool(), run).await.unwrap_err();
+            errors.push(err.to_string());
+        }
+        assert_eq!(
+            errors,
+            [
+                "run run-1 has no command",
+                "run run-1 has no branch URL",
+                "run run-1 has no VCS type",
+                "run run-1 role main has no remote branch name",
+            ]
+        );
+    }
+}

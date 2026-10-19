@@ -755,3 +755,53 @@ test_with_database! {
         assert_eq!(run.result_tags, None);
     }
 }
+
+test_with_database! {
+    schema = Core;
+    async fn test_read_run_with_null_columns(test_db: TestDatabase) {
+        let pool = test_db.pool();
+        let url = "https://example.invalid/cb-1";
+        seed_codebase_and_change_set(pool, "cb-1", "cs-1", "lintian-fixes", url).await;
+        seed_run(
+            pool,
+            "run-1",
+            "cb-1",
+            "lintian-fixes",
+            "lintian-brush",
+            url,
+            Some("rev-tip"),
+            10,
+            "cs-1",
+            5,
+        )
+        .await;
+        seed_result_branch(pool, "run-1", "main", "master", None, Some("rev-tip")).await;
+        seed_merge_proposal(pool, "https://example.invalid/mp/1", "rev-tip", url, "cb-1").await;
+        sqlx::raw_sql(
+            "UPDATE run SET command = NULL, branch_url = NULL, vcs_type = NULL;
+             UPDATE new_result_branch SET remote_name = NULL",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let run = get_run(pool, &RunId::new("run-1").unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (run.command.clone(), run.branch_url.clone(), run.vcs_type.clone()),
+            (None, None, None)
+        );
+        assert_eq!(
+            run.get_result_branch("main"),
+            Some((None, None, Some(breezyshim::RevisionId::from(b"rev-tip".to_vec()))))
+        );
+        let mp_url = "https://example.invalid/mp/1".parse().unwrap();
+        let mp_run = get_merge_proposal_run(pool, &mp_url).await.unwrap().unwrap();
+        assert_eq!(
+            (mp_run.command, mp_run.branch_url, mp_run.remote_branch_name),
+            (None, None, None)
+        );
+    }
+}
