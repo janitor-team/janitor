@@ -45,7 +45,7 @@ from .. import (
     is_qa_reviewer,
     worker_link_is_global,
 )
-from ..common import html_template
+from ..common import PageQuerySchema, html_template
 from ..pkg import MergeProposalUserUrlResolver
 from ..setup import setup_postgres
 
@@ -64,10 +64,8 @@ async def handle_rejected(request):
 
 @routes.get("/cupboard/history", name="history")
 @html_template("cupboard/history.html", headers={"Vary": "Cookie"})
-async def handle_history(request):
-    limit = int(request.query.get("limit", "100"))
-    offset = int(request.query.get("offset", "0"))
-
+@use_kwargs(PageQuerySchema(), locations=("query",))
+async def handle_history(request, limit, offset):
     query = """\
 SELECT finish_time, codebase, campaign, worker.link AS worker_link,
 worker as worker_name, finish_time - start_time AS duration,
@@ -109,8 +107,8 @@ async def handle_workers(request):
 
 @routes.get("/cupboard/queue", name="queue")
 @html_template("cupboard/queue.html", headers={"Vary": "Cookie"})
-async def handle_queue(request):
-    limit = int(request.query.get("limit", "100"))
+@use_kwargs(PageQuerySchema(only=["limit"]), locations=("query",))
+async def handle_queue(request, limit):
     from .queue import write_queue
 
     return await write_queue(
@@ -283,8 +281,8 @@ async def handle_publish(request):
 
 @routes.get("/cupboard/publish/", name="publish-history")
 @html_template("cupboard/publish-history.html", headers={"Vary": "Cookie"})
-async def handle_publish_history(request):
-    limit = int(request.query.get("limit", "100"))
+@use_kwargs(PageQuerySchema(only=["limit"]), locations=("query",))
+async def handle_publish_history(request, limit):
     from .publish import write_history
 
     return await write_history(
@@ -326,8 +324,9 @@ class ReviewQuerySchema(Schema):
 
 
 @routes.post("/cupboard/review", name="cupboard-review-post")
+@use_kwargs(PageQuerySchema(only=["limit"]), locations=("query",))
 @use_kwargs(ReviewPostSchema(), locations=("form",))
-async def handle_review_post(request, required_only, publishable_only, **form):
+async def handle_review_post(request, limit, required_only, publishable_only, **form):
     from ...review import store_review
     from .review import generate_review
 
@@ -360,6 +359,7 @@ async def handle_review_post(request, required_only, publishable_only, **form):
             campaigns=post.getall("campaign", None),
             publishable_only=publishable_only,
             required_only=required_only,
+            limit=limit,
         )
         return web.Response(
             content_type="text/html",
@@ -369,8 +369,9 @@ async def handle_review_post(request, required_only, publishable_only, **form):
 
 
 @routes.get("/cupboard/review", name="cupboard-review")
+@use_kwargs(PageQuerySchema(only=["limit"]), locations=("query",))
 @use_kwargs(ReviewQuerySchema(), locations=("query",))
-async def handle_review(request, publishable_only, required_only):
+async def handle_review(request, limit, publishable_only, required_only):
     from .review import generate_review
 
     campaigns = request.query.getall("campaign", None)
@@ -384,6 +385,7 @@ async def handle_review(request, publishable_only, required_only):
             campaigns=campaigns,
             publishable_only=publishable_only,
             required_only=required_only,
+            limit=limit,
         )
     return web.Response(
         content_type="text/html", text=text, headers={"Cache-Control": "no-cache"}
