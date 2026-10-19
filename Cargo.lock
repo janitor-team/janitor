@@ -3306,9 +3306,6 @@ dependencies = [
  "hyper",
  "janitor",
  "num_cpus",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
  "redis 1.7.0",
  "serde",
  "serde_json",
@@ -3322,8 +3319,6 @@ dependencies = [
  "tower 0.4.13",
  "tower-http 0.6.11",
  "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
  "xz2",
  "zstd",
 ]
@@ -3441,7 +3436,6 @@ dependencies = [
  "tower 0.5.3",
  "tower-http 0.5.2",
  "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
