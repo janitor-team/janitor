@@ -26,20 +26,4 @@ impl DatabaseManager {
                 .await?;
         Ok(exists)
     }
-
-    /// Return the worker name if `(username, password)` matches. The
-    /// password comparison runs inside Postgres via `crypt($2, ...)`
-    /// so the hash algorithm matches whatever pgcrypto is configured
-    /// to use.
-    pub async fn is_worker(&self, username: &str, password: &str) -> Result<Option<String>> {
-        debug!("is_worker: {}", username);
-        let row: Option<String> = sqlx::query_scalar(
-            "SELECT name FROM worker WHERE name = $1 AND password = crypt($2, password)",
-        )
-        .bind(username)
-        .bind(password)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row)
-    }
 }

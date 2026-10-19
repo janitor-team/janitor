@@ -68,23 +68,6 @@ impl DatabaseManager {
         Ok(exists)
     }
 
-    /// Return the worker name if `(username, password)` matches a row in the
-    /// `worker` table, otherwise `None`. Mirrors
-    /// `py/janitor/worker_creds.py::is_worker`: the password check is done
-    /// inside Postgres with `crypt($2, password)` so hash algorithm matches
-    /// whatever pgcrypto settings the Python code uses.
-    pub async fn is_worker(&self, username: &str, password: &str) -> Result<Option<String>> {
-        let row: Option<String> = sqlx::query_scalar(
-            "SELECT name FROM worker WHERE name = $1 AND password = crypt($2, password)",
-        )
-        .bind(username)
-        .bind(password)
-        .fetch_optional(self.pool())
-        .await?;
-
-        Ok(row)
-    }
-
     /// Check database health
     pub async fn health_check(&self) -> Result<()> {
         self.shared_db

@@ -13,12 +13,12 @@ use std::time::Duration;
 
 use axum::Router;
 use janitor::schema::setup_test_database;
+use janitor::web::HealthChecker;
 use janitor_git_store::{
     config::Config,
     database::DatabaseManager,
     repository::RepositoryManager,
     web::{self, AppRole, AppState},
-    web_utils::HealthChecker,
 };
 use sqlx::PgPool;
 use tempfile::TempDir;

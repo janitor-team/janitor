@@ -27,6 +27,7 @@ pub mod test_utils;
 pub mod tracing;
 pub mod utils;
 pub mod vcs;
+pub mod web;
 pub mod worker_auth;
 
 /// The type of a run ID.
