@@ -85,8 +85,7 @@ pub fn calculate_next_try_time(finish_time: DateTime<Utc>, attempt_count: usize)
 ///
 /// The classifier returns:
 ///
-/// - `RescheduleRegular`  - call `do_schedule` for this run
-/// - `RescheduleRegularRefresh` - same but with `refresh = true`
+/// - `RescheduleRegular { refresh }` - call `do_schedule` for this run
 /// - `RescheduleControl { revision, refresh }` - call
 ///   `do_schedule_control` for the given (unchanged) revision
 /// - `RewriteDescription { new_description }` - only update the
@@ -102,13 +101,8 @@ pub(crate) enum PublishFailureAction {
         description: Option<String>,
         /// Requester string for the reschedule.
         requester: &'static str,
-    },
-    /// Reschedule a regular run with the refresh flag set.
-    RescheduleRegularRefresh {
-        /// Rewritten description (always set in this branch).
-        description: String,
-        /// Requester string for the reschedule.
-        requester: &'static str,
+        /// Whether to set the refresh flag.
+        refresh: bool,
     },
     /// Reschedule a control run targeting a specific (unchanged)
     /// revision.
@@ -147,10 +141,12 @@ pub(crate) fn classify_publish_failure_action(
         "merge-conflict" => PublishFailureAction::RescheduleRegular {
             description: None,
             requester: "publisher (pre-creation merge conflict)",
+            refresh: false,
         },
         "diverged-branches" => PublishFailureAction::RescheduleRegular {
             description: None,
             requester: "publisher (diverged branches)",
+            refresh: false,
         },
         "missing-build-diff-self" => {
             if run_result_code != "success" {
@@ -158,9 +154,10 @@ pub(crate) fn classify_publish_failure_action(
                     description: "Missing build diff; run was not actually successful?".to_string(),
                 }
             } else {
-                PublishFailureAction::RescheduleRegularRefresh {
-                    description: "Missing build artifacts, rescheduling".to_string(),
+                PublishFailureAction::RescheduleRegular {
+                    description: Some("Missing build artifacts, rescheduling".to_string()),
                     requester: "publisher (missing build artifacts - self)",
+                    refresh: true,
                 }
             }
         }
@@ -243,6 +240,7 @@ pub async fn handle_publish_failure(
         PublishFailureAction::RescheduleRegular {
             description: new_description,
             requester,
+            refresh,
         } => {
             if let Some(d) = new_description {
                 description = d;
@@ -255,7 +253,7 @@ pub async fn handle_publish_failure(
                 bucket,
                 Some(&run.change_set),
                 None,
-                false,
+                refresh,
                 Some(requester),
                 None,
                 None,
@@ -263,28 +261,6 @@ pub async fn handle_publish_failure(
             .await
             {
                 log::warn!("Failed to reschedule {}: {}", run.id, err);
-            }
-        }
-        PublishFailureAction::RescheduleRegularRefresh {
-            description: new_description,
-            requester,
-        } => {
-            description = new_description;
-            if let Err(err) = janitor::schedule::do_schedule(
-                conn,
-                &run.suite,
-                &run.codebase,
-                bucket,
-                Some(&run.change_set),
-                None,
-                true,
-                Some(requester),
-                None,
-                None,
-            )
-            .await
-            {
-                log::warn!("Failed to reschedule (refresh) {}: {}", run.id, err);
             }
         }
         PublishFailureAction::RescheduleControl {
@@ -1600,9 +1576,11 @@ mod tests {
             PublishFailureAction::RescheduleRegular {
                 description,
                 requester,
+                refresh,
             } => {
                 assert!(description.is_none());
                 assert!(requester.contains("merge conflict"));
+                assert!(!refresh);
             }
             other => panic!("expected RescheduleRegular, got {:?}", other),
         }
@@ -1615,9 +1593,11 @@ mod tests {
             PublishFailureAction::RescheduleRegular {
                 description,
                 requester,
+                refresh,
             } => {
                 assert!(description.is_none());
                 assert!(requester.contains("diverged"));
+                assert!(!refresh);
             }
             other => panic!("expected RescheduleRegular, got {:?}", other),
         }
@@ -1627,14 +1607,19 @@ mod tests {
     fn test_classify_missing_build_diff_self_success_reschedules_refresh() {
         let action = classify_publish_failure_action("missing-build-diff-self", "success", None);
         match action {
-            PublishFailureAction::RescheduleRegularRefresh {
+            PublishFailureAction::RescheduleRegular {
                 description,
                 requester,
+                refresh,
             } => {
-                assert_eq!(description, "Missing build artifacts, rescheduling");
+                assert_eq!(
+                    description.as_deref(),
+                    Some("Missing build artifacts, rescheduling")
+                );
                 assert!(requester.contains("self"));
+                assert!(refresh);
             }
-            other => panic!("expected RescheduleRegularRefresh, got {:?}", other),
+            other => panic!("expected RescheduleRegular, got {:?}", other),
         }
     }
 
