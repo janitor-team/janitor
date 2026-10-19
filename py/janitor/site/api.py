@@ -823,29 +823,25 @@ async def handle_publish_id(request):
             return web.Response(text="timeout contacting runner", status=502)
 
 
-class QueueAssignmentItemSchema(Schema):
-    id = fields.Int()
-    context = fields.Raw(allow_none=True)  # type: ignore
-    command = fields.Str()
-    estimated_duration = fields.Float(allow_none=True)
+class AssignmentSchema(Schema):
+    id = fields.Str(metadata={"description": "Run identifier"})
+    description = fields.Str()
+    queue_id = fields.Int()
     campaign = fields.Str()
-    refresh = fields.Bool()
-    requester = fields.Str(allow_none=True)
-    change_set = fields.Str(allow_none=True)
     codebase = fields.Str()
-
-
-class PeekSchema(Schema):
-    queue_item = fields.Nested(QueueAssignmentItemSchema)
-    vcs_info = fields.Dict()
-    build_config = fields.Dict(keys=fields.Str(), values=fields.Str())
-    estimated_duration = fields.Int(
-        allow_none=True, metadata={"description": "in seconds"}
-    )
+    force_build = fields.Bool(data_key="force-build")
+    branch = fields.Dict()
+    resume = fields.Dict(allow_none=True)
+    target_repository = fields.Dict()
+    skip_setup_validation = fields.Bool(data_key="skip-setup-validation")
+    command = fields.Str()
+    codemod = fields.Dict()
+    env = fields.Dict(keys=fields.Str(), values=fields.Str())
+    build = fields.Dict()
 
 
 @docs(summary="Show the item that would be assigned next")
-@response_schema(PeekSchema(), 201)
+@response_schema(AssignmentSchema(), 201)
 @routes.get("/active-runs/+peek")
 async def handle_run_peek(request):
     check_admin(request)

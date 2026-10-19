@@ -1576,23 +1576,6 @@ pub struct QueueItem {
     pub codebase: CodebaseName,
 }
 
-impl QueueItem {
-    /// Representation of this queue item in API responses.
-    pub fn to_response(&self) -> api_types::QueueItemResponse {
-        api_types::QueueItemResponse {
-            id: self.id,
-            context: self.context.clone(),
-            command: self.command.clone(),
-            estimated_duration: self.estimated_duration.map(|d| d.as_secs_f64()),
-            campaign: self.campaign.clone(),
-            refresh: self.refresh,
-            requester: self.requester.clone(),
-            change_set: self.change_set.clone(),
-            codebase: self.codebase.clone(),
-        }
-    }
-}
-
 /// Queue assignment result.
 #[derive(Debug)]
 pub struct QueueAssignment {
