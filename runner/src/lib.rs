@@ -47,7 +47,6 @@ pub mod backchannel;
 pub mod builder;
 /// Database operations.
 pub mod database;
-/// Error tracking and logging.
 pub use janitor::logs;
 /// Module for Prometheus metrics collection.
 pub mod metrics;

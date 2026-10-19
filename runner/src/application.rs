@@ -3,10 +3,7 @@
 use crate::{database::RunnerDatabase, vcs::RunnerVcsManager, AppState};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::signal;
-
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Application builder for configuring and initializing the runner.
 pub struct ApplicationBuilder {
@@ -501,26 +498,10 @@ impl Application {
                 }
             }
             _ = &mut shutdown_rx => {
-                log::info!("Initiating graceful shutdown...");
-                self.shutdown().await?;
+                log::info!("Shutting down");
                 Ok(())
             }
         }
-    }
-
-    /// Perform graceful shutdown of all systems.
-    async fn shutdown(&self) -> Result<(), ApplicationError> {
-        log::info!("Starting graceful shutdown sequence...");
-
-        let shutdown_future = async {
-            log::info!("Graceful shutdown completed successfully");
-            Ok::<(), ApplicationError>(())
-        };
-
-        // Apply timeout to shutdown process
-        tokio::time::timeout(SHUTDOWN_TIMEOUT, shutdown_future)
-            .await
-            .map_err(|_| ApplicationError::ShutdownTimeout)?
     }
 }
 
@@ -546,10 +527,6 @@ pub enum ApplicationError {
     /// Runtime errors.
     #[error("Runtime error: {0}")]
     Runtime(String),
-
-    /// Shutdown timeout error.
-    #[error("Shutdown timeout")]
-    ShutdownTimeout,
 }
 
 #[cfg(test)]
