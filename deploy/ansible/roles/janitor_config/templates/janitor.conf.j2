@@ -57,5 +57,11 @@ oauth2_provider {
   client_id: "{{ oauth_client_id }}"
   client_secret: "{{ oauth_client_secret }}"
   base_url: "{{ oauth_base_url }}"
+{% if oauth_qa_reviewer_group is defined %}
+  qa_reviewer_group: "{{ oauth_qa_reviewer_group }}"
+{% endif %}
+{% if oauth_admin_group is defined %}
+  admin_group: "{{ oauth_admin_group }}"
+{% endif %}
 }
 {% endif %}

@@ -14,4 +14,12 @@ Volume={{ janitor_home }}/janitor.conf:/mnt/janitor/janitor.conf:ro
 Volume={{ janitor_breezy_dir }}/publish:/root/.config/breezy:ro
 # Only the bot's SSH key and pinned host keys (roles/janitor_config).
 Volume={{ janitor_ssh_dir }}:/root/.ssh:ro
+{% if enable_gitea | bool %}
+# Gitea's SSH server listens only on 127.0.0.1 (roles/gitea).
+AddHost={{ gitea_domain }}:127.0.0.1
+{% endif %}
+{% if caddy_self_signed | default(false) | bool %}
+# The host's CA bundle, which holds the self-signed certificate (Gitea's too).
+Volume=/etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro
+{% endif %}
 {% include 'common.j2' %}

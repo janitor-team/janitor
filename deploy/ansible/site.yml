@@ -18,7 +18,6 @@
         quiet: true
       loop:
         - janitor_db_password
-        - worker_password
         - breezy_github_token
         - oauth_client_id
         - oauth_client_secret
@@ -41,6 +40,19 @@
         fail_msg: janitor_worker_concurrency must be a whole number of at least 1.
         quiet: true
 
+    - name: Check every worker has its own password
+      ansible.builtin.assert:
+        that:
+          - passwords | select('equalto', '') | list | length == 0
+          - passwords | select('search', "[@:/%'\"\\s]") | list | length == 0
+          - passwords | unique | length == passwords | length
+        fail_msg: >-
+          Every janitor_workers entry needs a password of its own, without
+          @ : / % ' " or whitespace.
+        quiet: true
+      vars:
+        passwords: "{{ janitor_workers | map(attribute='password') | map('string') | list }}"
+
 - name: Deploy the janitor control services
   hosts: control
   become: true
@@ -52,6 +64,7 @@
     - redis
     - caddy
     - { role: archive_signing_key, when: "'archive' in janitor_services" }
+    - { role: gitea, when: enable_gitea | bool }
     - janitor_config
     - janitor_quadlet
 

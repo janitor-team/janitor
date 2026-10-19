@@ -38,7 +38,7 @@
     - caddy_self_signed | default(false) | bool
     - "'control' not in group_names"
 
-# Test hosts only (caddy_self_signed): the worker host trusts whatever
+# Test hosts only (caddy_self_signed): every host trusts whatever
 # certificate the control host's HTTPS port shows when the playbook runs.
 - name: Fetch the control host's self-signed certificate
   ansible.builtin.shell: >-
@@ -49,9 +49,7 @@
     executable: /bin/bash
   register: control_cert
   changed_when: false
-  when:
-    - caddy_self_signed | default(false) | bool
-    - "'worker' in janitor_services"
+  when: caddy_self_signed | default(false) | bool
 
 - name: Trust the control host's self-signed certificate
   ansible.builtin.copy:
@@ -62,9 +60,7 @@
     mode: "0644"
   register: control_cert_trust
   notify: Update the host's CA bundle
-  when:
-    - caddy_self_signed | default(false) | bool
-    - "'worker' in janitor_services"
+  when: caddy_self_signed | default(false) | bool
 
 - name: Update the CA bundle before the services start
   ansible.builtin.meta: flush_handlers
@@ -162,6 +158,43 @@
     - "'publish' in janitor_services"
     - breezy_github_token is defined
 
+- name: Give the bot's SSH key to its Gitea account
+  # As the admin, so the bot's token needs no write:user scope.
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ gitea_http_port }}/api/v1/admin/users/{{ gitea_bot_user }}/keys"
+    method: POST
+    url_username: "{{ gitea_admin_user }}"
+    url_password: "{{ gitea_secrets[gitea_admin_user + '.password'] }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      title: janitor-publish
+      key: "{{ bot_ssh_pubkey.content | b64decode | trim }}"
+    status_code: [201, 422]
+  register: gitea_bot_key
+  changed_when: gitea_bot_key.status == 201
+  when:
+    - "'publish' in janitor_services"
+    - enable_gitea | bool
+  no_log: true
+
+- name: Read Gitea's SSH host key
+  ansible.builtin.slurp:
+    src: "{{ gitea_home }}/data/data/ssh/gitea.ed25519.pub"
+  register: gitea_host_key
+  when:
+    - "'publish' in janitor_services"
+    - enable_gitea | bool
+
+- name: Pin Gitea's SSH host key
+  ansible.builtin.known_hosts:
+    path: "{{ janitor_ssh_dir }}/known_hosts"
+    name: "[{{ gitea_domain }}]:{{ gitea_ssh_port }}"
+    key: "[{{ gitea_domain }}]:{{ gitea_ssh_port }} {{ gitea_host_key.content | b64decode | trim }}"
+  when:
+    - "'publish' in janitor_services"
+    - enable_gitea | bool
+
 - name: Hand the bot's known_hosts to the deploy user
   ansible.builtin.file:
     path: "{{ janitor_ssh_dir }}/known_hosts"
@@ -169,4 +202,4 @@
     mode: "0644"
   when:
     - "'publish' in janitor_services"
-    - breezy_github_token is defined
+    - breezy_github_token is defined or enable_gitea | bool

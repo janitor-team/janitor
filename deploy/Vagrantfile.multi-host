@@ -12,6 +12,10 @@
 #   VAGRANT_VAGRANTFILE=Vagrantfile.multi-host vagrant ssh control
 #   VAGRANT_VAGRANTFILE=Vagrantfile.multi-host vagrant destroy
 
+require "fileutils"
+require "json"
+require "securerandom"
+
 USE_PREBUILT = ENV.fetch("JANITOR_USE_PREBUILT", "false") == "true"
 # A local janitor checkout to deploy (rsynced into each VM), or empty to
 # clone JANITOR_REPO.
@@ -28,6 +32,18 @@ MACHINES = {
   "worker2" => [["worker"], 22, 6, 12288, 150],
 }
 CONTROL_IP = "#{NETWORK}.11"
+WORKERS = MACHINES.select { |_, (machine_groups, *)| machine_groups.include?("worker") }.keys
+
+# A password per worker, made once and kept outside the synced folder:
+# control gets every worker's, each worker only its own.
+PASSWORDS_FILE = File.join(__dir__, ".vagrant", "worker-passwords.json")
+passwords = File.exist?(PASSWORDS_FILE) ? JSON.parse(File.read(PASSWORDS_FILE)) : {}
+unless (WORKERS - passwords.keys).empty?
+  WORKERS.each { |w| passwords[w] ||= SecureRandom.alphanumeric(32) }
+  FileUtils.mkdir_p(File.dirname(PASSWORDS_FILE))
+  File.write(PASSWORDS_FILE, JSON.generate(passwords), perm: 0o600)
+end
+WORKER_ENTRIES = WORKERS.to_h { |w| [w, { name: w, password: passwords[w] }] }
 
 Vagrant.configure("2") do |config|
   # trixie, the release the playbook targets.
@@ -50,7 +66,7 @@ Vagrant.configure("2") do |config|
     machine_groups.each { |g| (groups[g] ||= []) << name }
   end
 
-  MACHINES.each do |name, (_, octet, cpus, memory, disk)|
+  MACHINES.each do |name, (machine_groups, octet, cpus, memory, disk)|
     config.vm.define name do |machine|
       ip = "#{NETWORK}.#{octet}"
       machine.vm.hostname = "janitor-#{name}"
@@ -77,6 +93,7 @@ Vagrant.configure("2") do |config|
           janitor_branch: JANITOR_BRANCH,
           janitor_domain: CONTROL_IP,
           janitor_worker_address: ip,
+          janitor_workers: machine_groups.include?("control") ? WORKER_ENTRIES.values : [WORKER_ENTRIES[name]].compact,
         }
       end
     end
