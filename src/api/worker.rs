@@ -130,6 +130,35 @@ pub struct WorkerFailure {
     pub transient: Option<bool>,
 }
 
+impl WorkerFailure {
+    /// A failure without details whose transience is unknown.
+    pub fn new(
+        code: impl Into<String>,
+        description: impl Into<String>,
+        stage: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        Self {
+            code: code.into(),
+            description: description.into(),
+            details: None,
+            stage: stage.into_iter().map(Into::into).collect(),
+            transient: None,
+        }
+    }
+
+    /// Record whether retrying the run may succeed.
+    pub fn with_transient(mut self, transient: bool) -> Self {
+        self.transient = Some(transient);
+        self
+    }
+
+    /// Attach machine-readable details.
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
+    }
+}
+
 impl std::fmt::Display for WorkerFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}: {}", self.code, self.description)
