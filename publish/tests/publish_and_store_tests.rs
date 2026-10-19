@@ -14,7 +14,7 @@ use sqlx::PgPool;
 fn make_run(role: &str, revision: Option<&str>) -> janitor::state::Run {
     janitor::state::Run {
         id: RunId::new("run-1").unwrap(),
-        command: "noop".to_string(),
+        command: Some("noop".to_string()),
         description: None,
         result_code: "success".to_string(),
         main_branch_revision: None,
@@ -23,13 +23,13 @@ fn make_run(role: &str, revision: Option<&str>) -> janitor::state::Run {
         result: None,
         suite: Campaign::new("lintian-fixes").unwrap(),
         instigated_context: None,
-        vcs_type: "git".to_string(),
-        branch_url: "https://example.invalid/cb-1".to_string(),
+        vcs_type: Some("git".to_string()),
+        branch_url: Some("https://example.invalid/cb-1".to_string()),
         logfilenames: None,
         worker_name: None,
         result_branches: Some(vec![(
             role.to_string(),
-            role.to_string(),
+            Some(role.to_string()),
             None,
             revision.map(|r| RevisionId::from(r.as_bytes().to_vec())),
         )]),
@@ -80,6 +80,70 @@ async fn publish_main_role(
         None,
     )
     .await
+}
+
+test_with_database! {
+    schema = Core;
+    async fn publish_from_policy_names_the_old_command_in_the_requester(test_db: TestDatabase) {
+        let pool = test_db.pool();
+        sqlx::raw_sql(
+            "INSERT INTO codebase (name, branch_url, url, vcs_type)
+                 VALUES ('cb-1', 'https://example.invalid/cb-1', 'https://example.invalid/cb-1', 'git');
+             INSERT INTO change_set (id, campaign) VALUES ('cs-1', 'lintian-fixes');",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        let campaign: janitor::config::Campaign =
+            protobuf::text_format::parse_from_str(r#"name: "lintian-fixes" command: "new""#)
+                .unwrap();
+        let publish_worker = PublishWorker::new(
+            None,
+            None,
+            url::Url::parse("http://differ.invalid").unwrap(),
+            None,
+            None,
+            None,
+        )
+        .await;
+        let bucket_rate_limiter: Mutex<Box<dyn RateLimiter>> =
+            Mutex::new(Box::new(NonRateLimiter));
+        let target = url::Url::parse("https://example.invalid/cb-1").unwrap();
+        for (old, requester) in [
+            (Some("old"), r#"publisher (changed policy: "old" -> "new")"#),
+            (None, r#"publisher (changed policy: "" -> "new")"#),
+        ] {
+            let mut run = make_run("main", Some("rev-tip"));
+            run.command = old.map(str::to_string);
+            let mode = janitor_publish::publish_from_policy(
+                pool,
+                None,
+                &campaign,
+                &publish_worker,
+                &bucket_rate_limiter,
+                &HashMap::new(),
+                &run,
+                "main",
+                None,
+                &target,
+                Mode::Propose,
+                None,
+                "new",
+                false,
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+            assert!(mode.is_none());
+            let queued: String =
+                sqlx::query_scalar("SELECT requester FROM queue WHERE codebase = 'cb-1'")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap();
+            assert_eq!(queued, requester);
+        }
+    }
 }
 
 // These checks happen before the database is touched, so a lazy pool
