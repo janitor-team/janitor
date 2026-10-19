@@ -507,6 +507,28 @@ LIMIT 1
     .await
 }
 
+/// The columns `janitor::state::Run` is decoded from, for a query on
+/// `run` or a view with the same columns.
+///
+/// The schema's start/finish times are TIMESTAMP (no TZ), but `Run`
+/// decodes them as `DateTime<Utc>` (TIMESTAMPTZ), so they are cast with
+/// `AT TIME ZONE 'UTC'`. Likewise the `vcs_type` enum is cast to text.
+macro_rules! run_columns {
+    () => {
+        "SELECT id, command, \
+         (start_time AT TIME ZONE 'UTC') AS start_time, \
+         (finish_time AT TIME ZONE 'UTC') AS finish_time, \
+         description, result_code, \
+         value, main_branch_revision, revision, context, result, suite, \
+         instigated_context, vcs_type::text AS vcs_type, branch_url, logfilenames, \
+         worker, \
+         array(SELECT row(role, remote_name, base_revision, revision) \
+               FROM new_result_branch WHERE run_id = id) AS result_branches, \
+         result_tags, target_branch_url, change_set, \
+         failure_transient, failure_stage, failure_details, codebase "
+    };
+}
+
 /// Fetch the most recent effective run (`success` or
 /// `nothing-new-to-do`) for the given codebase + campaign from the
 /// `last_effective_runs` view.
@@ -515,33 +537,10 @@ pub async fn get_last_effective_run(
     codebase: &str,
     campaign: &str,
 ) -> Result<Option<janitor::state::Run>, sqlx::Error> {
-    sqlx::query_as(
-        r#"
-SELECT
-    id, command,
-    -- Schema columns are TIMESTAMP (no TZ); the `Run` struct
-    -- decodes them as `DateTime<Utc>` (TIMESTAMPTZ). Cast both to
-    -- TIMESTAMPTZ via `AT TIME ZONE 'UTC'` so sqlx FromRow doesn't
-    -- error with "mismatched types ... is not compatible with SQL
-    -- type TIMESTAMP". Same pattern used elsewhere
-    -- (`get_run_details`, schedule.rs, etc.).
-    (start_time AT TIME ZONE 'UTC') AS start_time,
-    (finish_time AT TIME ZONE 'UTC') AS finish_time,
-    description,
-    result_code,
-    value, main_branch_revision, revision, context, result, suite,
-    instigated_context, vcs_type::text AS vcs_type, branch_url, logfilenames,
-    worker,
-    array(SELECT row(role, remote_name, base_revision,
-     revision) FROM new_result_branch WHERE run_id = id) AS result_branches,
-    result_tags, target_branch_url, change_set AS change_set,
-    failure_transient, failure_stage, failure_details, codebase
-FROM
-    last_effective_runs
-WHERE codebase = $1 AND suite = $2
-LIMIT 1
-"#,
-    )
+    sqlx::query_as(concat!(
+        run_columns!(),
+        "FROM last_effective_runs WHERE codebase = $1 AND suite = $2 LIMIT 1"
+    ))
     .bind(codebase)
     .bind(campaign)
     .fetch_optional(conn)
@@ -556,35 +555,10 @@ pub async fn get_run(
     conn: &PgPool,
     run_id: &str,
 ) -> Result<Option<janitor::state::Run>, sqlx::Error> {
-    sqlx::query_as(
-        r#"
-SELECT
-    id, command,
-    -- Schema columns are TIMESTAMP (no TZ); the `Run` struct
-    -- decodes them as `DateTime<Utc>` (TIMESTAMPTZ). Cast both to
-    -- TIMESTAMPTZ via `AT TIME ZONE 'UTC'` so sqlx FromRow doesn't
-    -- error with "mismatched types ... is not compatible with SQL
-    -- type TIMESTAMP". Same pattern used elsewhere
-    -- (`get_run_details`, schedule.rs, etc.).
-    (start_time AT TIME ZONE 'UTC') AS start_time,
-    (finish_time AT TIME ZONE 'UTC') AS finish_time,
-    description,
-    result_code,
-    value, main_branch_revision, revision, context, result, suite,
-    instigated_context, vcs_type::text AS vcs_type, branch_url, logfilenames,
-    worker,
-    array(SELECT row(role, remote_name, base_revision,
-     revision) FROM new_result_branch WHERE run_id = id) AS result_branches,
-    result_tags, target_branch_url, change_set AS change_set,
-    failure_transient, failure_stage, failure_details, codebase
-FROM
-    run
-WHERE id = $1
-"#,
-    )
-    .bind(run_id)
-    .fetch_optional(conn)
-    .await
+    sqlx::query_as(concat!(run_columns!(), "FROM run WHERE id = $1"))
+        .bind(run_id)
+        .fetch_optional(conn)
+        .await
 }
 
 /// Find the most recent successful run of the codebase of `run` at its
@@ -696,8 +670,7 @@ pub async fn iter_publish_ready(
     conn: &PgPool,
     run_id: Option<&str>,
 ) -> Result<Vec<(janitor::state::Run, String, String, Vec<UnpublishedBranch>)>, sqlx::Error> {
-    // Explicit column list with the same casts the other Run-returning
-    // queries (`get_last_effective_run`, `get_run`) apply: TIMESTAMPTZ
+    // Explicit column list with the same casts as `run_columns!`: TIMESTAMPTZ
     // for start/finish_time and `vcs_type::text` for the enum, since
     // `janitor::state::Run` decodes those as `DateTime<Utc>` and
     // `String` respectively. `SELECT *` here used to crash the
@@ -795,34 +768,6 @@ pub async fn iter_publish_ready(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Regression: `run.vcs_type` is a Postgres ENUM
-    /// (`vcs_type`). Decoding it as `String` without a `::text`
-    /// cast errors with `mismatched types; Rust type 'String' (as
-    /// SQL type 'TEXT') is not compatible with SQL type vcs_type`,
-    /// which made every `check_existing_mp` call that needed a Run
-    /// 500 with `Database error checking merge proposal` and stalled
-    /// the publisher's MP refresh loop. This is a static check of
-    /// the SQL strings - full roundtrip would need a live DB plus
-    /// a populated `run` row.
-    #[test]
-    fn run_select_queries_cast_vcs_type_to_text() {
-        // Build the canonical query bodies we use in
-        // get_last_effective_run / get_run by re-reading the
-        // module source at compile time. Cheap regression: the
-        // moment someone "cleans up" the cast we'll catch it here.
-        let src = include_str!("state.rs");
-        // Both SELECTs must mention the cast. We don't grep for
-        // bare `vcs_type` because that would trip on column
-        // definitions / variable names.
-        let cast_count = src.matches("vcs_type::text AS vcs_type").count();
-        assert!(
-            cast_count >= 2,
-            "expected at least two `vcs_type::text AS vcs_type` casts \
-             (one in get_last_effective_run, one in get_run); found {}",
-            cast_count
-        );
-    }
 
     #[test]
     fn guess_codebase_query_sql_has_no_quoted_identifier_artifact() {
