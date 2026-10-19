@@ -11,6 +11,7 @@ from breezy.revision import NULL_REVISION
 from yarl import URL
 
 from janitor import state
+from janitor.vcs import VcsStoreError
 
 from ..common import render_template_for_request
 from . import iter_needs_review
@@ -148,7 +149,7 @@ async def generate_evaluate(
                 ).decode("utf-8", "replace")
         except NotImplementedError as e:
             return str(e)
-        except RuntimeError as e:
+        except VcsStoreError as e:
             logging.warning("Unable to retrieve diff: %s", e)
             return "Unable to retrieve diff"
         except TimeoutError:

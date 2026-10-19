@@ -20,6 +20,7 @@ __all__ = [
     "BranchOpenFailure",
     "open_branch_ext",
     "UnsupportedVcs",
+    "VcsStoreError",
     "VcsManager",
     "LocalGitVcsManager",
     "LocalBzrVcsManager",
@@ -65,6 +66,7 @@ get_vcs_managers = _vcs_rs.get_vcs_managers
 BranchOpenFailure = _vcs_rs.BranchOpenFailure
 open_branch_ext = _vcs_rs.open_branch_ext
 UnsupportedVcs = _vcs_rs.UnsupportedVcs
+VcsStoreError = _vcs_rs.VcsStoreError
 
 
 def get_run_diff(vcs_manager: VcsManager, run, role) -> bytes:  # type: ignore
