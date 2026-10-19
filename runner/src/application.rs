@@ -1,11 +1,6 @@
 //! Application initialization and orchestration for the runner.
 
-use crate::{
-    database::RunnerDatabase,
-    error_tracking::{ErrorSeverity, ErrorTracker, ErrorTrackingConfig},
-    vcs::RunnerVcsManager,
-    AppState,
-};
+use crate::{database::RunnerDatabase, vcs::RunnerVcsManager, AppState};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -135,17 +130,6 @@ impl ApplicationBuilder {
         Ok(())
     }
 
-    fn error_tracking_config() -> ErrorTrackingConfig {
-        ErrorTrackingConfig {
-            max_errors_in_memory: 1000,
-            log_to_file: false,
-            error_log_path: None,
-            enable_stack_traces: true,
-            min_severity: ErrorSeverity::Warning,
-            enable_correlation: true,
-        }
-    }
-
     /// Build and initialize the application.
     pub async fn build(self) -> Result<Application, ApplicationError> {
         // Initialize tracing and logging first. Like Python, spans are
@@ -190,11 +174,6 @@ impl ApplicationBuilder {
         log::info!("Initializing metrics collection...");
         crate::metrics::init_metrics();
 
-        // Initialize error tracking
-        log::info!("Initializing error tracking...");
-        let error_tracking_config = Self::error_tracking_config();
-        let error_tracker = Arc::new(ErrorTracker::new(error_tracking_config));
-
         log::info!("Initializing database connection...");
         let janitor_config = self.config;
         let database_pool = match janitor::state::create_pool(&janitor_config).await {
@@ -202,14 +181,10 @@ impl ApplicationBuilder {
             Err(e) => {
                 let error =
                     ApplicationError::Database(format!("Failed to create database pool: {}", e));
-                error_tracker
-                    .track_error(error_tracker.create_tracked_error(
-                        &error,
-                        crate::error_tracking::ErrorCategory::Database,
-                        "application",
-                        "initialization",
-                    ))
-                    .await;
+                log::error!("[database:application] initialization - {}", error);
+                crate::metrics::ERROR_OCCURRENCES_TOTAL
+                    .with_label_values(&["database", "application", "ERROR"])
+                    .inc();
                 return Err(error);
             }
         };
@@ -340,7 +315,6 @@ impl ApplicationBuilder {
             artifact_manager,
             backup_log_manager,
             backup_artifact_manager,
-            error_tracker,
             config: Arc::new(janitor_config),
             upload_processor,
             auth_service,
@@ -544,12 +518,6 @@ impl Application {
             if let Err(e) = self.wait_for_active_runs().await {
                 log::warn!("Error waiting for active runs: {}", e);
             }
-
-            log::info!("Cleaning up error tracking...");
-            self.state
-                .error_tracker
-                .cleanup_old_errors(chrono::Duration::hours(24))
-                .await;
 
             log::info!("Graceful shutdown completed successfully");
             Ok::<(), ApplicationError>(())
