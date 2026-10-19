@@ -113,6 +113,27 @@ struct FinishResponse {
     result: serde_json::Value,
 }
 
+/// Look up an active run, or build the 404 response for a missing one.
+async fn current_run(
+    state: &AppState,
+    id: &RunId,
+) -> Result<ActiveRun, (StatusCode, Json<serde_json::Value>)> {
+    state.active_runs.get(id).await.ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({"reason": format!("No such current run: {}", id)})),
+        )
+    })
+}
+
+/// Response for a failed database operation; the caller logs the cause.
+fn db_error() -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({"error": "Database error"})),
+    )
+}
+
 /// Extract avoided hosts from configuration: any archive mirror URI
 /// that looks restricted/internal has its host added to the block
 /// list, so the assignment loop skips codebases hosted there.
@@ -233,10 +254,7 @@ async fn queue_position(
                 query.campaign,
                 e
             );
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Database error"})),
-            );
+            return db_error();
         }
     };
 
@@ -278,10 +296,7 @@ async fn schedule_control(
                 Ok(row) => row,
                 Err(e) => {
                     log::error!("Failed to find run {}: {}", run_id, e);
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({"error": "Database error"})),
-                    );
+                    return db_error();
                 }
             };
         match row {
@@ -348,8 +363,7 @@ async fn schedule_control(
                 "bucket": bucket,
                 "codebase": codebase,
                 "queue_id": queue_id,
-                "estimated_duration_seconds": duration.num_seconds() as f64
-                    + (duration.subsec_nanos() as f64) / 1e9,
+                "estimated_duration_seconds": duration.as_seconds_f64(),
             })),
         ),
         Err(janitor::schedule::Error::CandidateUnavailable { .. }) => (
@@ -388,10 +402,7 @@ async fn schedule(
             Ok(row) => row,
             Err(e) => {
                 log::error!("Failed to find run {}: {}", run_id, e);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": "Database error"})),
-                );
+                return db_error();
             }
         };
         match row {
@@ -444,10 +455,7 @@ async fn schedule(
                 campaign,
                 e
             );
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Database error"})),
-            );
+            return db_error();
         }
     };
     let command = candidate_command
@@ -507,8 +515,7 @@ async fn schedule(
                     "bucket": bucket,
                     "codebase": codebase,
                     "queue_id": queue_id,
-                    "estimated_duration_seconds": duration.num_seconds() as f64
-                        + (duration.subsec_nanos() as f64) / 1e9,
+                    "estimated_duration_seconds": duration.as_seconds_f64(),
                     "queue_position": queue_position,
                     "queue_wait_time": queue_wait_time,
                 })),
@@ -572,14 +579,9 @@ async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 /// `backchannel.list_log_files()`, and returns the bare list.
 /// 404s if the run isn't active.
 async fn log_index(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> impl IntoResponse {
-    let active_run = match state.active_runs.get(&id).await {
-        Some(run) => run,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"reason": format!("No such current run: {}", id)})),
-            );
-        }
+    let active_run = match current_run(&state, &id).await {
+        Ok(run) => run,
+        Err(response) => return response,
     };
     match active_run.backchannel.list_log_files().await {
         Ok(files) => (StatusCode::OK, Json(json!(files))),
@@ -606,14 +608,9 @@ async fn current_stage(
     State(state): State<Arc<AppState>>,
     Path(id): Path<RunId>,
 ) -> impl IntoResponse {
-    let active_run = match state.active_runs.get(&id).await {
-        Some(run) => run,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"reason": format!("No such current run: {}", id)})),
-            );
-        }
+    let active_run = match current_run(&state, &id).await {
+        Ok(run) => run,
+        Err(response) => return response,
     };
     match active_run.backchannel.get_current_stage().await {
         Ok(stage) => (StatusCode::OK, Json(json!({"current_stage": stage}))),
@@ -675,14 +672,9 @@ async fn log(
 /// 404 when the run isn't active; 501 when the worker doesn't
 /// support kill.
 async fn kill(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> impl IntoResponse {
-    let active_run = match state.active_runs.get(&id).await {
-        Some(run) => run,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"reason": format!("No such current run: {}", id)})),
-            );
-        }
+    let active_run = match current_run(&state, &id).await {
+        Ok(run) => run,
+        Err(response) => return response,
     };
     let snapshot = active_run.to_json();
     match active_run.backchannel.kill().await {
@@ -718,16 +710,11 @@ async fn get_codebases(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         Ok(codebases) => (StatusCode::OK, Json(codebases)).into_response(),
         Err(e) => {
             log::error!("Failed to get codebases: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Database error"})),
-            )
-                .into_response()
+            db_error().into_response()
         }
     }
 }
 
-/// `POST /codebases` -- bulk upsert codebase rows. Mirrors
 /// Best-effort name of the codebase's main branch, for deciding which
 /// colocated branches a build needs.
 ///
@@ -773,10 +760,7 @@ async fn update_codebases(
         Ok(()) => (StatusCode::OK, Json(json!({}))),
         Err(e) => {
             log::error!("Failed to upload codebases: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Database error"})),
-            )
+            db_error()
         }
     }
 }
@@ -807,10 +791,7 @@ async fn delete_candidate(
         ),
         Err(e) => {
             log::error!("Failed to delete candidate {}: {}", candidate_id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Database error"})),
-            )
+            db_error()
         }
     }
 }
@@ -821,52 +802,11 @@ async fn get_candidates(State(state): State<Arc<AppState>>) -> impl IntoResponse
         Ok(candidates) => (StatusCode::OK, Json(candidates)).into_response(),
         Err(e) => {
             log::error!("Failed to get candidates: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Database error"})),
-            )
-                .into_response()
+            db_error().into_response()
         }
     }
 }
 
-/// `POST /candidates` -- bulk upsert candidates.
-///
-/// Each entry is validated against the runner config and then
-/// inserted (via `ON CONFLICT DO UPDATE`), with per-candidate
-/// fallback behavior:
-///
-/// - Missing `codebase` or `campaign` -> 400.
-/// - Unknown campaign -> collected in `unknown_campaigns`, skipped.
-/// - No `command` in entry -> fall back to the campaign config's
-///   `command`; if neither is present the entry is rejected into
-///   `invalid_command`.
-/// - `value == 0` -> rejected into `invalid_value`.
-/// - FK violation on `candidate_codebase_fkey` ->
-///   `unknown_codebases`. FK violation on
-///   `candidate_publish_policy_fkey` -> `unknown_publish_policies`.
-///
-/// After a successful candidate INSERT we look for an open merge
-/// proposal on the same codebase+campaign with a *different*
-/// command. If one exists we reschedule with
-/// `bucket="update-existing-mp"` and `refresh=true` so the next
-/// run refreshes the existing proposal; otherwise we use the
-/// caller-supplied bucket.
-///
-/// `followup_for` entries are inserted into the `followup` table
-/// before scheduling.
-///
-/// Response shape:
-/// ```json
-/// {
-///   "success": [...],
-///   "invalid_command": [...],
-///   "invalid_value": [...],
-///   "unknown_campaigns": [...],
-///   "unknown_codebases": [...],
-///   "unknown_publish_policies": [...]
-/// }
-/// ```
 /// Outcome of validating a queue assignment in `assign_work_internal`.
 /// Abort branches: unknown campaign -> "unknown-campaign",
 /// non-default_empty campaign with no branch_url -> "not-in-vcs".
@@ -1052,6 +992,43 @@ pub(crate) fn candidate_preflight(
     }
 }
 
+/// `POST /candidates` -- bulk upsert candidates.
+///
+/// Each entry is validated against the runner config and then
+/// inserted (via `ON CONFLICT DO UPDATE`), with per-candidate
+/// fallback behavior:
+///
+/// - Missing `codebase` or `campaign` -> 400.
+/// - Unknown campaign -> collected in `unknown_campaigns`, skipped.
+/// - No `command` in entry -> fall back to the campaign config's
+///   `command`; if neither is present the entry is rejected into
+///   `invalid_command`.
+/// - `value == 0` -> rejected into `invalid_value`.
+/// - FK violation on `candidate_codebase_fkey` ->
+///   `unknown_codebases`. FK violation on
+///   `candidate_publish_policy_fkey` -> `unknown_publish_policies`.
+///
+/// After a successful candidate INSERT we look for an open merge
+/// proposal on the same codebase+campaign with a *different*
+/// command. If one exists we reschedule with
+/// `bucket="update-existing-mp"` and `refresh=true` so the next
+/// run refreshes the existing proposal; otherwise we use the
+/// caller-supplied bucket.
+///
+/// `followup_for` entries are inserted into the `followup` table
+/// before scheduling.
+///
+/// Response shape:
+/// ```json
+/// {
+///   "success": [...],
+///   "invalid_command": [...],
+///   "invalid_value": [...],
+///   "unknown_campaigns": [...],
+///   "unknown_codebases": [...],
+///   "unknown_publish_policies": [...]
+/// }
+/// ```
 async fn upload_candidates(
     State(state): State<Arc<AppState>>,
     Json(candidates): Json<Vec<serde_json::Value>>,
@@ -1122,11 +1099,7 @@ async fn upload_candidates(
             Ok(tx) => tx,
             Err(e) => {
                 log::error!("Failed to begin transaction: {}", e);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": "Database error"})),
-                )
-                    .into_response();
+                return db_error().into_response();
             }
         };
 
@@ -1195,11 +1168,7 @@ async fn upload_candidates(
                     e
                 );
                 let _ = tx.rollback().await;
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": "Database error"})),
-                )
-                    .into_response();
+                return db_error().into_response();
             }
         };
 
@@ -1257,11 +1226,7 @@ async fn upload_candidates(
                 Err(e) => {
                     log::error!("Failed to look up existing MPs: {}", e);
                     let _ = tx.rollback().await;
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({"error": "Database error"})),
-                    )
-                        .into_response();
+                    return db_error().into_response();
                 }
             };
 
@@ -1290,11 +1255,7 @@ async fn upload_candidates(
 
         if let Err(e) = tx.commit().await {
             log::error!("Failed to commit candidate insert: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Database error"})),
-            )
-                .into_response();
+            return db_error().into_response();
         }
 
         // Schedule on the pool (do_schedule_regular uses its own
@@ -1388,10 +1349,7 @@ async fn get_run(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> i
         ),
         Err(e) => {
             log::error!("Failed to get run {}: {}", id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Database error"})),
-            )
+            db_error()
         }
     }
 }
@@ -1434,10 +1392,7 @@ async fn update_run(
         ),
         Err(e) => {
             log::error!("Failed to update run {}: {}", id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Database error"})),
-            )
+            db_error()
         }
     }
 }
@@ -1515,10 +1470,7 @@ async fn peek_active_run(State(state): State<Arc<AppState>>) -> impl IntoRespons
         }
         Err(e) => {
             log::error!("Failed to peek queue item: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Database error"})),
-            )
+            db_error()
         }
     }
 }
@@ -1554,10 +1506,7 @@ async fn get_queue(
         }
         Err(e) => {
             log::error!("Failed to iterate queue: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Database error"})),
-            )
+            db_error()
         }
     }
 }
@@ -1582,150 +1531,96 @@ async fn metrics() -> impl IntoResponse {
 
 /// Public endpoint to list workers with basic information.
 async fn list_workers(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.auth_service.list_workers().await {
-        Ok(workers) => {
-            let active_runs = state.active_runs.list().await;
-            let active_workers: std::collections::HashSet<&str> =
-                active_runs.iter().map(|r| r.worker_name.as_str()).collect();
-
-            let last_seen_times = state
-                .database
-                .get_workers_last_seen()
-                .await
-                .unwrap_or_default();
-
-            let worker_infos: Vec<serde_json::Value> = workers
-                .iter()
-                .map(|worker| {
-                    let status = if active_workers.contains(worker.name.as_str()) {
-                        "active"
-                    } else {
-                        "idle"
-                    };
-
-                    let last_seen = last_seen_times.get(&worker.name).copied();
-
-                    let mut worker_info = json!({
-                        "name": worker.name,
-                        "status": status,
-                        // Don't expose worker link in public endpoint
-                    });
-
-                    // Only include last_seen if we have the data
-                    if let Some(last_seen_time) = last_seen {
-                        worker_info["last_seen"] = json!(last_seen_time);
-                    }
-
-                    worker_info
-                })
-                .collect();
-
-            let active_count = active_workers.len();
-            let total_count = workers.len();
-            let idle_count = total_count - active_count;
-
-            Json(json!({
-                "workers": worker_infos,
-                "total_workers": total_count,
-                "active_workers": active_count,
-                "idle_workers": idle_count,
-                "summary": {
-                    "total": total_count,
-                    "active": active_count,
-                    "idle": idle_count,
-                },
-                "timestamp": chrono::Utc::now()
-            }))
-        }
-        Err(e) => {
-            log::error!("Failed to list workers: {}", e);
-            Json(json!({
-                "error": "Failed to list workers",
-                "workers": [],
-                "total_workers": 0,
-                "active_workers": 0,
-                "idle_workers": 0
-            }))
-        }
-    }
+    worker_list(&state, false).await
 }
 
-/// Admin endpoint to list workers.
+/// Admin endpoint to list workers, including their links and which
+/// ones have failed.
 async fn admin_list_workers(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.auth_service.list_workers().await {
-        Ok(workers) => {
-            let active_runs = state.active_runs.list().await;
-            let active_workers: std::collections::HashSet<&str> =
-                active_runs.iter().map(|r| r.worker_name.as_str()).collect();
+    worker_list(&state, true).await
+}
 
-            let last_seen_times = state
-                .database
-                .get_workers_last_seen()
-                .await
-                .unwrap_or_default();
-
-            // Workers not seen in the last 30 minutes are considered failed.
-            let failed_workers = state
-                .database
-                .get_failed_workers(30)
-                .await
-                .unwrap_or_default();
-            let failed_count = failed_workers.len();
-
-            let worker_infos: Vec<serde_json::Value> = workers
-                .iter()
-                .map(|worker| {
-                    let status = if failed_workers.contains(&worker.name) {
-                        "failed"
-                    } else if active_workers.contains(worker.name.as_str()) {
-                        "active"
-                    } else {
-                        "idle"
-                    };
-
-                    let last_seen = last_seen_times
-                        .get(&worker.name)
-                        .copied()
-                        .unwrap_or_else(chrono::Utc::now);
-
-                    json!({
-                        "name": worker.name,
-                        "link": worker.link,
-                        "status": status,
-                        "last_seen": last_seen,
-                    })
-                })
-                .collect();
-
-            let active_count = active_workers.len();
-            let total_count = workers.len();
-            let idle_count = total_count - active_count - failed_count;
-
-            Json(json!({
-                "workers": worker_infos,
-                "total_workers": total_count,
-                "active_workers": active_count,
-                "idle_workers": idle_count,
-                "summary": {
-                    "total": total_count,
-                    "active": active_count,
-                    "idle": idle_count,
-                    "failed": failed_count
-                },
-                "timestamp": chrono::Utc::now()
-            }))
-        }
+async fn worker_list(state: &AppState, admin: bool) -> Json<serde_json::Value> {
+    let workers = match state.auth_service.list_workers().await {
+        Ok(workers) => workers,
         Err(e) => {
             log::error!("Failed to list workers: {}", e);
-            Json(json!({
+            return Json(json!({
                 "error": "Failed to list workers",
                 "workers": [],
                 "total_workers": 0,
                 "active_workers": 0,
                 "idle_workers": 0
-            }))
+            }));
         }
+    };
+    let active_runs = state.active_runs.list().await;
+    let active_workers: std::collections::HashSet<&str> =
+        active_runs.iter().map(|r| r.worker_name.as_str()).collect();
+
+    let last_seen_times = state
+        .database
+        .get_workers_last_seen()
+        .await
+        .unwrap_or_default();
+
+    // Workers not seen in the last 30 minutes are considered failed.
+    let failed_workers = if admin {
+        state
+            .database
+            .get_failed_workers(30)
+            .await
+            .unwrap_or_default()
+    } else {
+        vec![]
+    };
+
+    let worker_infos: Vec<serde_json::Value> = workers
+        .iter()
+        .map(|worker| {
+            let status = if failed_workers.contains(&worker.name) {
+                "failed"
+            } else if active_workers.contains(worker.name.as_str()) {
+                "active"
+            } else {
+                "idle"
+            };
+            let last_seen = last_seen_times.get(&worker.name).copied();
+            let mut worker_info = json!({
+                "name": worker.name,
+                "status": status,
+            });
+            if admin {
+                worker_info["link"] = json!(worker.link);
+                worker_info["last_seen"] = json!(last_seen.unwrap_or_else(chrono::Utc::now));
+            } else if let Some(last_seen) = last_seen {
+                worker_info["last_seen"] = json!(last_seen);
+            }
+            worker_info
+        })
+        .collect();
+
+    let active_count = active_workers.len();
+    let total_count = workers.len();
+    let failed_count = failed_workers.len();
+    let idle_count = total_count - active_count - failed_count;
+
+    let mut summary = json!({
+        "total": total_count,
+        "active": active_count,
+        "idle": idle_count,
+    });
+    if admin {
+        summary["failed"] = json!(failed_count);
     }
+    Json(json!({
+        "workers": worker_infos,
+        "total_workers": total_count,
+        "active_workers": active_count,
+        "idle_workers": idle_count,
+        "summary": summary,
+        "timestamp": chrono::Utc::now()
+    }))
 }
 
 /// Admin endpoint to create a worker.
@@ -2890,6 +2785,7 @@ async fn abort_assignment(
 /// Outcome of `compute_resume_from`. Carries the resume metadata (if
 /// any) and a forge rate-limit signal so the caller can record it in
 /// Redis via `rate_limit_host`.
+#[derive(Default)]
 struct ResumeOutcome {
     /// Full resume metadata for the worker (run_id, previous result,
     /// per-role branches, resume-branch URL). Populated only when a
@@ -2928,22 +2824,17 @@ async fn compute_resume_from(
     state: &Arc<AppState>,
     assignment: &crate::QueueAssignment,
 ) -> ResumeOutcome {
-    let empty = || ResumeOutcome {
-        resume: None,
-        rate_limit: None,
-        main_branch_url: None,
-    };
     let Some(branch_url) = assignment.vcs_info.branch_url.as_deref() else {
-        return empty();
+        return ResumeOutcome::default();
     };
     if branch_url.is_empty() {
-        return empty();
+        return ResumeOutcome::default();
     }
     let url = match url::Url::parse(branch_url) {
         Ok(u) => u,
         Err(e) => {
             log::warn!("Invalid branch_url {}: {}", branch_url, e);
-            return empty();
+            return ResumeOutcome::default();
         }
     };
 
@@ -3050,9 +2941,8 @@ async fn compute_resume_from(
             }
         };
     let no_resume = || ResumeOutcome {
-        resume: None,
-        rate_limit: None,
         main_branch_url: main_branch_url.clone(),
+        ..Default::default()
     };
     // If the forge rate-limited us, short-circuit: don't bother with
     // the VCS-manager fallback (same codebase, same rate limit) and
@@ -3060,9 +2950,9 @@ async fn compute_resume_from(
     // can hit rate_limit_host and abort the assignment.
     if let Some(rl) = rate_limit {
         return ResumeOutcome {
-            resume: None,
             rate_limit: Some(rl),
             main_branch_url,
+            ..Default::default()
         };
     }
 
@@ -3093,7 +2983,7 @@ async fn compute_resume_from(
                 .open_branch_with_metrics(vcs_type, &codebase, &vcs_branch_name);
         let branch = match tokio::time::timeout(std::time::Duration::from_secs(30), open).await {
             Ok(Ok(Some(b))) => b,
-            Ok(Ok(None)) => return empty(),
+            Ok(Ok(None)) => return ResumeOutcome::default(),
             Ok(Err(e)) => {
                 log::debug!(
                     "VCS-manager resume fallback failed for {}/{}: {}",
@@ -3235,11 +3125,7 @@ async fn assign_work_internal(
             }
             Err(e) => {
                 log::error!("Failed to get next queue item: {}", e);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": "Database error"})),
-                )
-                    .into_response();
+                return db_error().into_response();
             }
         };
 
@@ -3365,11 +3251,7 @@ async fn assign_work_internal(
     // failure) are swallowed as "no resume". Rate-limit errors are
     // surfaced so we can record the host and refuse the assignment.
     let resume_outcome = if assignment.queue_item.refresh {
-        ResumeOutcome {
-            resume: None,
-            rate_limit: None,
-            main_branch_url: None,
-        }
+        ResumeOutcome::default()
     } else {
         compute_resume_from(&state, &assignment).await
     };
@@ -3688,61 +3570,6 @@ async fn public_finish(
     finish_run_multipart_internal(state, id, multipart, true).await
 }
 
-async fn public_finish_multipart(
-    State(state): State<Arc<AppState>>,
-    Extension(worker_name): Extension<String>,
-    Path(id): Path<RunId>,
-    multipart: Multipart,
-) -> impl IntoResponse {
-    // Worker credentials are verified by authentication middleware
-    // Verify that this worker is authorized to finish this specific run
-    match state.active_runs.get(&id).await {
-        Some(active_run) => {
-            if active_run.worker_name != worker_name {
-                log::warn!(
-                    "Worker {} attempted to finish run {} assigned to worker {}",
-                    worker_name,
-                    id,
-                    active_run.worker_name
-                );
-                return (
-                    StatusCode::FORBIDDEN,
-                    Json(json!({"error": "Not authorized to finish this run"})),
-                );
-            }
-        }
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": "Run not found"})),
-            );
-        }
-    }
-
-    log::info!(
-        "Worker {} finishing run {} with multipart upload",
-        worker_name,
-        id
-    );
-    finish_run_multipart_internal(state, id, multipart, true).await
-}
-
-async fn public_get_active_run(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<RunId>,
-) -> impl IntoResponse {
-    // Returns the full ActiveRun.json() shape (same as the private
-    // endpoint) and 404s on missing -- there's no "public view"
-    // stripping.
-    match state.active_runs.get(&id).await {
-        Some(active_run) => (StatusCode::OK, Json(active_run.to_json())),
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(json!({"reason": format!("no such run {}", id)})),
-        ),
-    }
-}
-
 /// Get watchdog health information for all active runs.
 async fn public_watchdog_health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let watchdog_config = crate::WatchdogConfig::default();
@@ -3822,7 +3649,7 @@ async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
 /// `GET /health/live` -- cheap liveness probe: the process is
 /// responsive if we can service the request at all.
-async fn liveness(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn liveness() -> impl IntoResponse {
     (StatusCode::OK, "alive")
 }
 
@@ -3893,9 +3720,9 @@ pub fn public_app(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route(
             "/active-runs/{id}/finish-multipart",
-            post(public_finish_multipart).layer(DefaultBodyLimit::disable()),
+            post(public_finish).layer(DefaultBodyLimit::disable()),
         )
-        .route("/active-runs/{id}", get(public_get_active_run))
+        .route("/active-runs/{id}", get(get_active_run))
         .layer(middleware::from_fn_with_state(
             Arc::clone(&state),
             authenticate_worker,
@@ -4620,9 +4447,6 @@ distribution {
     /// `update or delete on table "run" violates foreign key
     /// constraint "debian_build_run_id_fkey"`. Pin that the handler
     /// now wipes those children too.
-    ///
-    /// Reproduces the SQL block exactly; not a handler-level smoke
-    /// test (those need a full AppState).
     #[tokio::test]
     async fn test_admin_cleanup_runs_deletes_run_children() {
         use chrono::{TimeZone, Utc};
