@@ -1161,50 +1161,7 @@ pub fn get_merged_by_user_url(url: &url::Url, user: &str) -> Result<Option<url::
     Ok(Some(forge.get_user_url(user)?))
 }
 
-/// Process the publish queue in a loop.
-///
-/// # Arguments
-/// * `state` - The application state
-/// * `interval` - The interval at which to process the queue
-/// * `auto_publish` - Whether to automatically publish changes
-/// * `push_limit` - Optional limit on the number of pushes
-/// * `modify_mp_limit` - Optional limit on the number of merge proposals to modify
-/// * `require_binary_diff` - Whether to require binary diffs
-pub async fn process_queue_loop(
-    state: Arc<AppState>,
-    interval: chrono::Duration,
-    auto_publish: bool,
-    push_limit: Option<usize>,
-    modify_mp_limit: Option<i32>,
-    require_binary_diff: bool,
-) {
-    queue::process_queue_loop(
-        state,
-        interval,
-        auto_publish,
-        push_limit,
-        modify_mp_limit,
-        require_binary_diff,
-    )
-    .await;
-}
-
-/// Publish all pending ready changes.
-///
-/// # Arguments
-/// * `state` - The application state
-/// * `push_limit` - Optional limit on the number of pushes
-/// * `require_binary_diff` - Whether to require binary diffs
-///
-/// # Returns
-/// Ok(()) if successful, or a PublishError
-pub async fn publish_pending_ready(
-    state: Arc<AppState>,
-    push_limit: Option<usize>,
-    require_binary_diff: bool,
-) -> Result<(), PublishError> {
-    queue::publish_pending_ready(state, push_limit, require_binary_diff).await
-}
+pub use queue::{process_queue_loop, publish_pending_ready};
 
 /// Refresh the counts of merge proposals per bucket.
 ///
@@ -3880,17 +3837,16 @@ pub fn iter_all_mps(
     })
 }
 
-async fn check_existing(
-    conn: sqlx::PgPool,
-    redis: Option<RedisConnectionManager>,
-    config: &janitor::config::Config,
-    publish_worker: &crate::PublishWorker,
-    bucket_rate_limiter: &Mutex<Box<dyn crate::rate_limiter::RateLimiter>>,
-    forge_rate_limiter: Arc<RwLock<HashMap<String, chrono::DateTime<Utc>>>>,
-    vcs_managers: &HashMap<VcsType, Box<dyn VcsManager>>,
-    modify_limit: Option<i32>,
-    unexpected_limit: Option<i32>,
-) -> bool {
+async fn check_existing(state: &AppState) -> bool {
+    let conn = state.conn.clone();
+    let redis = state.redis.clone();
+    let config = state.config;
+    let publish_worker = &state.publish_worker;
+    let bucket_rate_limiter = &*state.bucket_rate_limiter;
+    let forge_rate_limiter = state.forge_rate_limiter.clone();
+    let vcs_managers = &*state.vcs_managers;
+    let modify_limit = state.modify_mp_limit;
+    let unexpected_limit = state.unexpected_mp_limit;
     let mut mps_per_bucket = maplit::hashmap! {
         MergeProposalStatus::Open => maplit::hashmap! {},
         MergeProposalStatus::Closed => maplit::hashmap! {},
@@ -4260,20 +4216,16 @@ pub(crate) enum Consideration {
 
 /// Decide whether to publish a single publish-ready run, then dispatch
 /// one `publish_from_policy` call per role.
-#[allow(clippy::too_many_arguments)]
 async fn consider_publish_run(
-    conn: &sqlx::PgPool,
-    config: &janitor::config::Config,
-    publish_worker: &crate::PublishWorker,
-    vcs_managers: &HashMap<VcsType, Box<dyn VcsManager>>,
-    bucket_rate_limiter: &Mutex<Box<dyn crate::rate_limiter::RateLimiter>>,
+    state: &AppState,
     run: &janitor::state::Run,
     rate_limit_bucket: &str,
     unpublished_branches: &[crate::state::UnpublishedBranch],
     command: &str,
     push_limit: Option<usize>,
-    require_binary_diff: bool,
 ) -> Result<Consideration, PublishError> {
+    let conn = &state.conn;
+    let publish_worker = &state.publish_worker;
     log::info!(
         "Considering publish for run {} (campaign: {}, codebase: {})",
         run.id,
@@ -4289,7 +4241,7 @@ async fn consider_publish_run(
         return Ok(Consideration::Skipped("no_revision"));
     };
 
-    let campaign_config = match config.get_campaign(&run.suite) {
+    let campaign_config = match state.config.get_campaign(&run.suite) {
         Some(c) => c,
         None => {
             log::warn!("No campaign configuration found for suite {}", run.suite);
@@ -4416,8 +4368,8 @@ async fn consider_publish_run(
             publish_worker.redis_manager.as_ref(),
             campaign_config,
             publish_worker,
-            bucket_rate_limiter,
-            vcs_managers,
+            &state.bucket_rate_limiter,
+            &state.vcs_managers,
             run,
             role,
             Some(rate_limit_bucket),
@@ -4425,7 +4377,7 @@ async fn consider_publish_run(
             policy_mode,
             branch.max_frequency_days,
             command,
-            require_binary_diff,
+            state.require_binary_diff,
             false, // force: main queue loop is not an override
             Some("publisher (publish pending)"),
         )
