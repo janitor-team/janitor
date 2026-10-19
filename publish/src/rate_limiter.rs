@@ -115,22 +115,6 @@ pub trait RateLimiter: Send + Sync {
 /// Rate limiter that always allows operations.
 pub struct NonRateLimiter;
 
-impl Default for NonRateLimiter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl NonRateLimiter {
-    /// Create a new NonRateLimiter.
-    ///
-    /// # Returns
-    /// A new NonRateLimiter instance
-    pub fn new() -> Self {
-        NonRateLimiter
-    }
-}
-
 impl RateLimiter for NonRateLimiter {
     fn set_mps_per_bucket(
         &mut self,
