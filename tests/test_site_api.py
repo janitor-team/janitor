@@ -33,9 +33,9 @@ def _user_middleware(user):
 
 
 async def create_client(
-    aiohttp_client, db, *, runner_url=None, publisher_url=None, user=None
+    aiohttp_client, db, *, runner_url=None, publisher_url=None, user=None, config=""
 ):
-    config = read_config_string("")
+    config = read_config_string(config)
     app = create_app(
         publisher_url=publisher_url,
         runner_url=runner_url,
@@ -117,6 +117,30 @@ async def test_handle_queue_bad_limit(aiohttp_client, db, limit):
     assert resp.status == 400
     assert await resp.text() == "limit must be an integer"
     assert runner_calls == []
+
+
+async def test_publish_mode_needs_admin(aiohttp_client, db):
+    publisher_calls: list[str] = []
+    publisher_app = web.Application()
+
+    async def _handle_publish(request):
+        publisher_calls.append(request.path)
+        return web.json_response({}, status=202)
+
+    publisher_app.router.add_post("/{campaign}/{codebase}/publish", _handle_publish)
+    publisher_client = await aiohttp_client(publisher_app)
+
+    client = await create_client(
+        aiohttp_client,
+        db,
+        publisher_url=str(publisher_client.make_url("/")),
+        user={"email": "alice@example.com", "groups": ["users"]},
+        config='oauth2_provider { client_id: "site" admin_group: "admins" }',
+    )
+
+    resp = await client.post("/lintian-fixes/c/foo/publish", data={"mode": "push"})
+    assert resp.status == 401
+    assert publisher_calls == []
 
 
 async def _publisher_client(aiohttp_client, proposals, seen_paths):
