@@ -1,18 +1,14 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use flate2::read::GzDecoder;
-use flate2::write::GzEncoder;
-use flate2::Compression;
 use reqwest::{Client, StatusCode};
-use std::io::{self, Cursor, Read};
-use std::path::Path;
+use std::io::{Cursor, Read};
 use std::time::Duration;
 
 use crate::logs::{Error, LogFileManager};
 
 pub struct S3LogFileManager {
     base_url: String,
-    _bucket_name: String,
     client: Client,
 }
 
@@ -26,11 +22,7 @@ impl S3LogFileManager {
             .build()
             .map_err(|e| Error::Other(e.to_string()))?;
 
-        Ok(Self {
-            base_url,
-            _bucket_name: bucket_name.to_string(),
-            client,
-        })
+        Ok(Self { base_url, client })
     }
 
     fn get_key(&self, codebase: &str, run_id: &str, name: &str) -> String {
@@ -101,18 +93,8 @@ impl LogFileManager for S3LogFileManager {
         _mtime: Option<DateTime<Utc>>,
         basename: Option<&str>,
     ) -> Result<(), Error> {
-        let data = tokio::fs::read(orig_path).await?;
-
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        io::copy(&mut Cursor::new(&data), &mut encoder)?;
-        let compressed_data = encoder.finish()?;
-
-        let basename = basename.unwrap_or_else(|| {
-            Path::new(orig_path)
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown")
-        });
+        let compressed_data = crate::logs::read_compressed(orig_path).await?;
+        let basename = crate::logs::log_basename(orig_path, basename)?;
 
         let key = self.get_key(codebase, run_id, basename);
         let url = format!("{}{}", self.base_url, key);

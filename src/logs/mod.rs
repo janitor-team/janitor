@@ -80,6 +80,31 @@ fn increment_upload_success() {
     }
 }
 
+/// Name to store `orig_path` under when no explicit basename is given.
+fn log_basename<'a>(orig_path: &'a str, basename: Option<&'a str>) -> Result<&'a str, Error> {
+    match basename {
+        Some(basename) => Ok(basename),
+        None => std::path::Path::new(orig_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| Error::Other(format!("Cannot extract basename from {}", orig_path))),
+    }
+}
+
+/// Read `path` and return its gzip-compressed contents.
+async fn read_compressed(path: &str) -> Result<Vec<u8>, Error> {
+    let data = tokio::fs::read(path).await?;
+    // Compress in a blocking task to avoid blocking the executor
+    let compressed = tokio::task::spawn_blocking(move || -> io::Result<Vec<u8>> {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        io::Write::write_all(&mut encoder, &data)?;
+        encoder.finish()
+    })
+    .await
+    .map_err(|e| Error::Other(e.to_string()))??;
+    Ok(compressed)
+}
+
 /// A trait for managing logs.
 ///
 /// This trait is implemented by various log file managers, which

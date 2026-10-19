@@ -2,15 +2,10 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use flate2::read::GzDecoder;
-use flate2::write::GzEncoder;
-use flate2::Compression;
 use google_cloud_gax::paginator::ItemPaginator;
 use google_cloud_storage::client::{Storage, StorageControl};
 use std::collections::HashMap;
-use std::io::{self, Cursor, Read};
-use std::path::PathBuf;
-use tokio::fs::File;
-use tokio::io::AsyncReadExt;
+use std::io::{Cursor, Read};
 
 use crate::logs::{Error, LogFileManager};
 
@@ -129,40 +124,10 @@ impl LogFileManager for GCSLogFileManager {
         _mtime: Option<DateTime<Utc>>,
         basename: Option<&str>,
     ) -> Result<(), Error> {
-        // Extract basename from the path if not provided
-        let basename_owned: Option<String> = if basename.is_none() {
-            let path = PathBuf::from(orig_path);
-            if let Some(filename) = path.file_name() {
-                if let Some(name_str) = filename.to_str() {
-                    Some(name_str.to_string())
-                } else {
-                    return Err(Error::Other("Invalid filename".to_string()));
-                }
-            } else {
-                return Err(Error::Other(
-                    "Cannot extract basename from path".to_string(),
-                ));
-            }
-        } else {
-            None
-        };
-
-        // Use either the provided basename or the extracted one
-        let basename_ref = basename.unwrap_or_else(|| basename_owned.as_ref().unwrap());
-
-        // Generate the final object name
+        let basename = crate::logs::log_basename(orig_path, basename)?;
         let bucket = self.bucket_path();
-        let object_name = self.get_object_name(codebase, run_id, basename_ref);
-
-        let mut file = File::open(orig_path).await?;
-        let mut plain_data = Vec::new();
-        file.read_to_end(&mut plain_data).await?;
-
-        // Compress the data
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        io::copy(&mut Cursor::new(&plain_data), &mut encoder)
-            .map_err(|e| Error::Other(e.to_string()))?;
-        let compressed_data = encoder.finish().map_err(|e| Error::Other(e.to_string()))?;
+        let object_name = self.get_object_name(codebase, run_id, basename);
+        let compressed_data = crate::logs::read_compressed(orig_path).await?;
 
         // Upload to GCS using the new API
         self.storage
@@ -305,31 +270,4 @@ impl GCSLogFileManager {
             .map(|((codebase, log_id), log_files)| (codebase, log_id, log_files))
             .collect())
     }
-}
-
-#[cfg(test)]
-mod tests {
-
-    /// A simplified test for get_object_name that doesn't require actual GCS connections
-    #[test]
-    fn test_get_object_name() {
-        // Create a struct with just the methods we need for testing
-        struct TestGCSLogFileManager;
-
-        impl TestGCSLogFileManager {
-            fn get_object_name(&self, codebase: &str, run_id: &str, name: &str) -> String {
-                format!("{}/{}/{}.gz", codebase, run_id, name)
-            }
-        }
-
-        let manager = TestGCSLogFileManager {};
-
-        assert_eq!(
-            manager.get_object_name("my-codebase", "run123", "build.log"),
-            "my-codebase/run123/build.log.gz"
-        );
-    }
-
-    // Integration tests that would connect to actual GCS would go here
-    // We'd need to use environment variables or mocks for those tests
 }
