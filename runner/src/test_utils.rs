@@ -1,11 +1,6 @@
-//! Test utilities for the runner crate.
-//!
-//! The runner needs a small amount of shared testing infrastructure
-//! (an ephemeral test database, mock artifact/log managers, a helper
-//! for building a wired-up `AppState`). Frigg exposes these from the
-//! parent janitor crate as `janitor::test_utils`; this checkout does
-//! not, so the runner keeps its own copy -- narrower in scope than
-//! frigg's, containing only what the runner tests actually reach for.
+//! Test utilities for the runner crate: mock artifact/log managers and
+//! helpers for building a wired-up `AppState`. Throwaway databases come
+//! from `janitor::test_utils`.
 
 use crate::database::RunnerDatabase;
 use crate::{
@@ -17,148 +12,21 @@ use crate::{
     AppState,
 };
 use janitor::database::{Database, DatabaseConfig};
+pub use janitor::test_utils::TestDatabase;
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
-use uuid::Uuid;
 
-/// Configuration for `TestDatabase`.
-#[derive(Debug, Clone)]
-pub struct TestDatabaseConfig {
-    /// Base database URL (without database name).
-    pub base_url: String,
-    /// Create a unique database per test.
-    pub unique_per_test: bool,
-    /// Run migrations after creating the database.
-    pub run_migrations: bool,
-}
-
-impl Default for TestDatabaseConfig {
-    fn default() -> Self {
-        Self {
-            base_url: std::env::var("TEST_DATABASE_URL")
-                .unwrap_or_else(|_| "postgresql://localhost/postgres".to_string()),
-            unique_per_test: true,
-            run_migrations: false,
-        }
-    }
-}
-
-/// Ephemeral PostgreSQL database for a single test.
-///
-/// Dropping the value schedules deletion of the underlying database.
-pub struct TestDatabase {
-    /// Pool connected to the test database.
-    pub pool: PgPool,
-    /// Name of the created database.
-    pub database_name: String,
-    admin_pool: PgPool,
-    should_cleanup: bool,
-}
-
-impl TestDatabase {
-    /// Create a new test database using default configuration.
-    pub async fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        Self::with_config(TestDatabaseConfig::default()).await
-    }
-
-    /// Create a test database, or return `Ok(None)` if none is available.
-    ///
-    /// Handy for tests that should skip cleanly in CI without a
-    /// database instead of failing.
-    pub async fn new_optional() -> Result<Option<Self>, Box<dyn std::error::Error + Send + Sync>> {
-        match Self::with_config(TestDatabaseConfig::default()).await {
-            Ok(db) => Ok(Some(db)),
-            Err(e) => {
-                eprintln!(
-                    "test database unavailable, skipping db-dependent test: {}",
-                    e
-                );
-                Ok(None)
-            }
-        }
-    }
-
-    /// Create a new test database with the given configuration.
-    pub async fn with_config(
-        config: TestDatabaseConfig,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let admin_pool = PgPool::connect(&config.base_url).await?;
-
-        let database_name = if config.unique_per_test {
-            format!("janitor_test_{}", Uuid::new_v4().simple())
-        } else {
-            "janitor_test".to_string()
-        };
-
-        let create_sql = format!("CREATE DATABASE \"{}\"", database_name);
-        sqlx::query(sqlx::AssertSqlSafe(&*create_sql))
-            .execute(&admin_pool)
-            .await?;
-
-        let test_db_url = if config.base_url.contains('/') {
-            let base = config.base_url.rsplit_once('/').unwrap().0;
-            format!("{}/{}", base, database_name)
-        } else {
-            format!("{}/{}", config.base_url, database_name)
-        };
-
-        let pool = PgPool::connect(&test_db_url).await?;
-
-        if config.run_migrations {
-            // TODO: load schema.sql once the runner has a migration entry point.
-        }
-
-        Ok(Self {
-            pool,
-            database_name,
-            admin_pool,
-            should_cleanup: config.unique_per_test,
-        })
-    }
-
-    /// Get the connection pool.
-    pub fn pool(&self) -> &PgPool {
-        &self.pool
-    }
-
-    /// Turn this test database into a janitor `Database`.
-    pub fn into_janitor_database(mut self) -> Database {
-        // The pool outlives `self`; a DROP DATABASE now would block its new connections.
-        self.should_cleanup = false;
-        let config = DatabaseConfig {
-            url: format!("postgresql://localhost/{}", self.database_name),
-            max_connections: 5,
-            connect_timeout: Duration::from_secs(10),
-            idle_timeout: Some(Duration::from_secs(600)),
-            max_lifetime: Some(Duration::from_secs(3600)),
-        };
-        Database::from_pool_and_config(self.pool.clone(), config)
-    }
-
-    /// Execute a SQL statement against the test database.
-    pub async fn execute(&self, query: &str) -> Result<(), sqlx::Error> {
-        sqlx::query(sqlx::AssertSqlSafe(query))
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-}
-
-impl Drop for TestDatabase {
-    fn drop(&mut self) {
-        if !self.should_cleanup {
-            return;
-        }
-        let admin_pool = self.admin_pool.clone();
-        let database_name = self.database_name.clone();
-        tokio::spawn(async move {
-            let sql = format!("DROP DATABASE IF EXISTS \"{}\"", database_name);
-            let _ = sqlx::query(sqlx::AssertSqlSafe(&*sql))
-                .execute(&admin_pool)
-                .await;
-        });
-    }
+/// Turn a test database into a janitor `Database`.
+pub fn into_janitor_database(test_db: TestDatabase) -> Database {
+    let config = DatabaseConfig {
+        url: format!("postgresql://localhost/{}", test_db.database_name),
+        max_connections: 5,
+        connect_timeout: Duration::from_secs(10),
+        idle_timeout: Some(Duration::from_secs(600)),
+        max_lifetime: Some(Duration::from_secs(3600)),
+    };
+    Database::from_pool_and_config(test_db.pool.clone(), config)
 }
 
 /// Build a test-flavoured `janitor::config::Config` with sensible
@@ -236,46 +104,9 @@ impl TestConfigBuilder {
     }
 }
 
-/// Helper macro for database-dependent tests: builds a
-/// `TestDatabase`, hands it to the test body, and skips cleanly if no
-/// database is reachable.
-#[macro_export]
-macro_rules! test_with_database {
-    (async fn $name:ident($db:ident: TestDatabase) $body:block) => {
-        #[tokio::test]
-        #[serial_test::serial]
-        async fn $name() {
-            use $crate::test_utils::{TestDatabase, TestDatabaseConfig};
-            if std::env::var("SKIP_DATABASE_TESTS").is_ok() {
-                eprintln!("SKIP_DATABASE_TESTS set, skipping {}", stringify!($name));
-                return;
-            }
-            let config = TestDatabaseConfig {
-                run_migrations: true,
-                ..Default::default()
-            };
-            match TestDatabase::with_config(config).await {
-                Ok($db) => $body,
-                Err(e) => {
-                    eprintln!("skipping {}: {}", stringify!($name), e);
-                }
-            }
-        }
-    };
-}
-
-/// Create a wired-up test `AppState`.
-///
-/// Errors if no database or Redis is available; use
-/// `create_test_app_state_if_available` for the skip-on-missing form.
-pub async fn create_test_app_state(
-) -> Result<Arc<AppState>, Box<dyn std::error::Error + Send + Sync>> {
-    create_test_app_state_with_config(TestConfigBuilder::new()).await
-}
-
-/// Like [`create_test_app_state`] but with a caller-provided
-/// [`TestConfigBuilder`], so tests can register campaigns and other
-/// config knobs the handlers read.
+/// Create a wired-up test `AppState` from a [`TestConfigBuilder`], so
+/// tests can register campaigns and other config knobs the handlers
+/// read. Errors if no database or Redis is available.
 pub async fn create_test_app_state_with_config(
     config_builder: TestConfigBuilder,
 ) -> Result<Arc<AppState>, Box<dyn std::error::Error + Send + Sync>> {
@@ -283,7 +114,7 @@ pub async fn create_test_app_state_with_config(
     // Load the production schema so write-path tests hit the same
     // tables (with the same constraints and types) as production.
     janitor::schema::setup_test_database(test_db.pool()).await?;
-    let janitor_db = test_db.into_janitor_database();
+    let janitor_db = into_janitor_database(test_db);
     let runner_db = RunnerDatabase::from_database(janitor_db);
     let runner_db_arc = Arc::new(runner_db);
 
@@ -415,21 +246,6 @@ pub async fn create_test_app_state_with_config_if_available(
     }
 }
 
-/// Build a test router around a real `AppState`.
-pub async fn create_test_app() -> Result<axum::Router, Box<dyn std::error::Error + Send + Sync>> {
-    let state = create_test_app_state().await?;
-    Ok(crate::web::app(state))
-}
-
-/// Build a test router, returning `Ok(None)` when app state is unavailable.
-pub async fn create_test_app_if_available(
-) -> Result<Option<axum::Router>, Box<dyn std::error::Error + Send + Sync>> {
-    match create_test_app_state_if_available().await? {
-        Some(state) => Ok(Some(crate::web::app(state))),
-        None => Ok(None),
-    }
-}
-
 /// Router + `AppState` pair for tests that need to seed the database
 /// through the same pool the handlers use. Returns `Ok(None)` when
 /// no test resources are available.
@@ -487,7 +303,7 @@ mod redis_container {
     ///
     /// Idempotent: only the first call spins up a container.
     /// Respects `TEST_REDIS_URL` if the environment already sets it.
-    /// If Docker is unavailable, returns quietly so `create_test_app`
+    /// If Docker is unavailable, returns quietly so `create_test_app_state_with_config`
     /// can skip cleanly -- unless `TEST_REQUIRE_REDIS=1` is set, in
     /// which case a failed container start panics so CI signals loud.
     pub async fn ensure_redis() {

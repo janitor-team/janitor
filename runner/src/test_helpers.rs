@@ -116,7 +116,7 @@ pub async fn insert_test_result_branch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_with_database;
+    use janitor::test_with_database;
 
     test_with_database! {
         async fn test_check_resume_result_finds_matching_revision(test_db: TestDatabase) {
