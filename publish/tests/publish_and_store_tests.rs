@@ -58,9 +58,7 @@ async fn publish_main_role(
         url::Url::parse("http://differ.invalid").unwrap(),
         None,
         None,
-        None,
-    )
-    .await;
+    );
     let vcs_managers: HashMap<VcsType, Box<dyn VcsManager>> = HashMap::new();
     let bucket_rate_limiter: Mutex<Box<dyn RateLimiter>> = Mutex::new(Box::new(NonRateLimiter));
     publish_and_store(
