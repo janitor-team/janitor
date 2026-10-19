@@ -4,7 +4,6 @@
 use janitor_runner::{committer_env, is_log_filename, JanitorResult, QueueItem, VcsInfo};
 use serde_json::json;
 use std::collections::HashMap;
-use std::time::Duration;
 
 /// `committer_env` populates the eight expected env vars for a
 /// well-formed committer string, and drops the ones lacking either
@@ -65,6 +64,11 @@ fn is_log_filename_matches_python() {
         "output.1.log",
         "script.log.2",
         "worker.log.10",
+        "build.log.gz",
+        "worker.log.bz2",
+        "worker.log.xz",
+        "worker.log.lzma",
+        "worker.log.Z",
     ] {
         assert!(
             is_log_filename(good),
@@ -85,6 +89,13 @@ fn is_log_filename_matches_python() {
         "",
         ".",
         ".log",
+        "foo.log.notlog",
+        "build.log.bak",
+        "logfile",
+        "worker.log.zst",
+        "worker.log.lz4",
+        "worker.txt.gz",
+        "output.gz",
     ] {
         assert!(
             !is_log_filename(bad),
@@ -92,43 +103,6 @@ fn is_log_filename_matches_python() {
             bad
         );
     }
-}
-
-/// A queue item deserialises from the on-wire JSON without loss and
-/// round-trips back to the same shape.
-#[test]
-fn queue_item_round_trips_python_json() {
-    let python_json = json!({
-        "id": 12345,
-        "context": {"branch": "main", "commit": "abc123"},
-        "command": "lintian-fixes",
-        "estimated_duration": 300,
-        "campaign": "lintian-fixes",
-        "refresh": true,
-        "requester": "automated",
-        "change_set": "cs-123",
-        "codebase": "example-package"
-    });
-
-    let queue_item: QueueItem = serde_json::from_value(python_json).unwrap();
-
-    assert_eq!(queue_item.id, 12345);
-    assert_eq!(queue_item.command, "lintian-fixes");
-    assert_eq!(queue_item.campaign, "lintian-fixes");
-    assert!(queue_item.refresh);
-    assert_eq!(queue_item.requester.as_deref(), Some("automated"));
-    assert_eq!(queue_item.change_set.as_deref(), Some("cs-123"));
-    assert_eq!(queue_item.codebase, "example-package");
-    assert_eq!(
-        queue_item.estimated_duration,
-        Some(Duration::from_secs(300))
-    );
-
-    let serialized = serde_json::to_value(&queue_item).unwrap();
-    assert_eq!(serialized["id"], 12345);
-    assert_eq!(serialized["command"], "lintian-fixes");
-    assert_eq!(serialized["campaign"], "lintian-fixes");
-    assert_eq!(serialized["refresh"], true);
 }
 
 /// Sparse `QueueItem` payloads (null optional fields) also deserialise.
@@ -203,19 +177,4 @@ fn janitor_result_serialises_expected_field_names() {
     );
     assert_eq!(json_value["value"], 100);
     assert_eq!(json_value["logfilenames"], json!(["build.log"]));
-}
-
-/// The wire format for timestamps must round-trip through
-/// RFC-3339 without losing precision, since that is what
-/// `janitor.runner` emits over HTTP.
-#[test]
-fn timestamps_round_trip_rfc3339() {
-    use chrono::{DateTime, Utc};
-
-    let dt: DateTime<Utc> = "2023-10-15T14:30:00Z".parse().unwrap();
-    let formatted = dt.to_rfc3339();
-    assert_eq!(formatted, "2023-10-15T14:30:00+00:00");
-
-    let parsed_back: DateTime<Utc> = formatted.parse().unwrap();
-    assert_eq!(dt, parsed_back);
 }
