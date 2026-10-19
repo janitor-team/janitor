@@ -5,17 +5,16 @@
 //! under `/bzr/` and gates writes on HTTP Basic worker credentials.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     body::Bytes,
-    extract::{DefaultBodyLimit, Path, Query, State},
+    extract::{Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine;
 use janitor::{Campaign, CodebaseName};
 use serde::{Deserialize, Serialize};
 use tera::{Context, Tera};
@@ -34,9 +33,7 @@ use crate::smart_protocol::{
     smart_protocol_campaign_handler, smart_protocol_codebase_handler, smart_protocol_dispatch,
     smart_protocol_role_handler,
 };
-use crate::web_utils::{
-    apply_standard_middleware, health_handler, metrics_handler, ready_handler, HealthChecker,
-};
+use janitor::web::{apply_standard_middleware, health_router, HealthChecker};
 
 /// Which app this `AppState` belongs to. Governs write policy: `Admin`
 /// always writes, `Public` requires HTTP Basic worker auth. Matches
@@ -85,43 +82,14 @@ impl AppState {
     pub async fn resolve_allow_writes(&self, headers: &HeaderMap) -> Result<bool> {
         match self.role {
             AppRole::Admin => Ok(true),
-            AppRole::Public => Ok(is_worker_request(&self.database, headers).await?.is_some()),
+            AppRole::Public => Ok(janitor::web::authenticated_worker(
+                self.database.pool(),
+                headers,
+            )
+            .await?
+            .is_some()),
         }
     }
-}
-
-/// Decode the HTTP Basic `Authorization` header and, if present, call
-/// `DatabaseManager::is_worker`. Returns the worker name on success.
-/// Mirrors `py/janitor/worker_creds.py::is_worker`.
-pub(crate) async fn is_worker_request(
-    database: &DatabaseManager,
-    headers: &HeaderMap,
-) -> Result<Option<String>> {
-    let auth_header = match headers.get(header::AUTHORIZATION) {
-        Some(h) => h,
-        None => return Ok(None),
-    };
-    let auth_str = match auth_header.to_str() {
-        Ok(s) => s,
-        Err(_) => return Ok(None),
-    };
-    let encoded = match auth_str.strip_prefix("Basic ") {
-        Some(e) => e,
-        None => return Ok(None),
-    };
-    let decoded = match BASE64.decode(encoded) {
-        Ok(d) => d,
-        Err(_) => return Ok(None),
-    };
-    let creds = match std::str::from_utf8(&decoded) {
-        Ok(s) => s,
-        Err(_) => return Ok(None),
-    };
-    let (username, password) = match creds.split_once(':') {
-        Some(pair) => pair,
-        None => return Ok(None),
-    };
-    database.is_worker(username, password).await
 }
 
 /// Query parameters for the diff endpoint.
@@ -250,38 +218,9 @@ fn default_loggerhead_static_dir() -> Option<std::path::PathBuf> {
     None
 }
 
-fn web_config(client_max_size: usize) -> janitor::shared_config::WebConfig {
-    janitor::shared_config::WebConfig {
-        enable_compression: true,
-        enable_request_logging: true,
-        enable_cors: false,
-        // Bzr smart-protocol pushes can run long on big fetches.
-        request_timeout_seconds: 600,
-        max_request_size_bytes: if client_max_size == 0 {
-            usize::MAX
-        } else {
-            client_max_size
-        },
-        ..janitor::shared_config::WebConfig::default()
-    }
-}
-
-fn body_limit_layer(client_max_size: usize) -> DefaultBodyLimit {
-    if client_max_size == 0 {
-        DefaultBodyLimit::disable()
-    } else {
-        DefaultBodyLimit::max(client_max_size)
-    }
-}
-
-/// Sub-router carrying the health / ready / metrics endpoints under
-/// their own `Arc<HealthChecker>` state.
-fn health_router(checker: Arc<HealthChecker>) -> Router {
-    Router::new()
-        .route("/health", get(health_handler))
-        .route("/ready", get(ready_handler))
-        .route("/metrics", get(metrics_handler))
-        .with_state(checker)
+fn standard_middleware(router: Router, client_max_size: usize) -> Router {
+    // Bzr smart-protocol pushes can run long on big fetches.
+    apply_standard_middleware(router, client_max_size, Duration::from_secs(600), false)
 }
 
 /// Create the admin application with full access.
@@ -318,10 +257,9 @@ pub fn create_admin_app(state: AppState, client_max_size: usize) -> Router {
             post(smart_protocol_role_handler),
         )
         .with_state(state)
-        .merge(health)
-        .layer(body_limit_layer(client_max_size));
+        .merge(health);
 
-    apply_standard_middleware(router, &web_config(client_max_size))
+    standard_middleware(router, client_max_size)
 }
 
 /// Create the public application.
@@ -357,10 +295,9 @@ pub fn create_public_app(state: AppState, client_max_size: usize) -> Router {
             "/bzr/{codebase}/{*sub_path}",
             get(crate::bzr_browse::bzr_browse_handler).post(bzr_smart_sub_dispatcher),
         )
-        .with_state(state)
-        .layer(body_limit_layer(client_max_size));
+        .with_state(state);
 
-    apply_standard_middleware(router, &web_config(client_max_size))
+    standard_middleware(router, client_max_size)
 }
 
 /// `POST /bzr/{codebase}/{*sub_path}` — route smart protocol requests
