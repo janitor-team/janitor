@@ -45,7 +45,7 @@ from yarl import URL
 from janitor import version_string
 from janitor.config import Config
 
-from ..vcs import VcsManager
+from ..vcs import VcsManager, VcsStoreError
 from . import (
     BuildDiffUnavailable,
     DebdiffRetrievalError,
@@ -439,7 +439,7 @@ async def serve_run_diff(request, run_id):
             raise web.HTTPBadRequest(
                 text="unsupported vcs {}".format(run["vcs_type"])
             ) from e
-        except RuntimeError as e:
+        except VcsStoreError as e:
             logging.warning("Unable to retrieve diff: %s", e)
             return web.Response(status=502, text="Unable to retrieve diff")
 

@@ -20,6 +20,7 @@ from janitor.site import (
     get_archive_diff,
     update_vars_from_request,
 )
+from janitor.vcs import VcsStoreError
 
 
 async def get_previous_runs(client, runner_url: str, codebase: str, campaign: str):
@@ -367,7 +368,7 @@ WHERE codebase.name = $1""",
                     revid.encode("utf-8"),
                 )
                 return diff.decode("utf-8", "replace")
-        except RuntimeError as e:
+        except VcsStoreError as e:
             logging.warning("Unable to retrieve diff: %s", e)
             return "Unable to retrieve diff"
 

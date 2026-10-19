@@ -39,7 +39,7 @@ from janitor.site import (
 )
 
 from ..config import get_campaign_config
-from ..vcs import VcsManager
+from ..vcs import VcsManager, VcsStoreError
 from .common import get_unchanged_run
 
 FAIL_BUILD_LOG_LEN = 15
@@ -198,7 +198,7 @@ WHERE followup.origin = $1""",
                 )
         except NotImplementedError:
             return "Unable to retrieve diff; unsupported vcs"
-        except RuntimeError as e:
+        except VcsStoreError as e:
             logging.warning("Unable to retrieve diff: %s", e)
             return "Unable to retrieve diff"
         return diff.decode("utf-8", "replace")

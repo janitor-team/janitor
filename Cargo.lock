@@ -3175,6 +3175,7 @@ dependencies = [
  "fancy-regex 0.19.2",
  "flate2",
  "futures",
+ "git2",
  "janitor",
  "janitor-types",
  "lazy-regex",
