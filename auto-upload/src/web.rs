@@ -1,7 +1,7 @@
 //! Minimal web server for the auto-upload service.
 //!
-//! An axum server with a single `/metrics` route that renders the Prometheus
-//! registry.
+//! An axum server with `/health`, `/ready` and a `/metrics` route that
+//! renders the Prometheus registry.
 
 use axum::{
     http::StatusCode,
@@ -21,6 +21,7 @@ struct AutoUploadApi;
 
 fn routes() -> OpenApiRouter {
     OpenApiRouter::with_openapi(<AutoUploadApi as utoipa::OpenApi>::openapi())
+        .routes(routes!(health_handler))
         .routes(routes!(metrics_handler))
 }
 
@@ -35,10 +36,21 @@ pub fn create_app() -> Router {
     let spec = openapi
         .to_json()
         .expect("OpenAPI document can be serialized");
-    router.route(
-        "/openapi.json",
-        get(move || async move { ([("content-type", "application/json")], spec) }),
-    )
+    router
+        .route(
+            "/openapi.json",
+            get(move || async move { ([("content-type", "application/json")], spec) }),
+        )
+        .route("/ready", get(health_handler))
+}
+
+#[utoipa::path(
+    get,
+    path = "/health",
+    responses((status = 200, description = "Service is alive", body = String, content_type = "text/plain"))
+)]
+async fn health_handler() -> &'static str {
+    "ok"
 }
 
 #[utoipa::path(
@@ -104,7 +116,7 @@ mod tests {
         let doc: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(doc["info"]["title"], "janitor-auto-upload");
         let paths: Vec<&String> = doc["paths"].as_object().unwrap().keys().collect();
-        assert_eq!(paths, vec!["/metrics"]);
+        assert_eq!(paths, vec!["/health", "/metrics"]);
     }
 
     #[tokio::test]
@@ -152,5 +164,18 @@ mod tests {
             text.contains("debsign_failed"),
             "metrics output missing debsign_failed:\n{text}"
         );
+    }
+
+    #[tokio::test]
+    async fn health_and_ready_respond_ok() {
+        for path in ["/health", "/ready"] {
+            let response = create_app()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(&body[..], b"ok");
+        }
     }
 }
