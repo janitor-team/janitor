@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
+use janitor::web::HealthChecker;
 use janitor_git_store::{
     config::Config, database::DatabaseManager, repository::RepositoryManager, web,
-    web_utils::HealthChecker,
 };
 use tokio::net::TcpListener;
 use tracing::info;
