@@ -2294,11 +2294,8 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/publish/{id}", get(get_publish_by_id))
         .route("/{campaign}/{codebase}/publish", post(publish))
         .route("/credentials", get(get_credentials))
-        .route(
-            "/health",
-            get(health::health_check_handler::<Arc<AppState>>),
-        )
-        .route("/ready", get(health::readiness_handler::<Arc<AppState>>))
+        .route("/health", get(health::health_check_handler))
+        .route("/ready", get(health::readiness_handler))
         .route("/scan", post(scan))
         .route("/check-stragglers", post(check_stragglers))
         .route("/refresh-status", post(refresh_status))
