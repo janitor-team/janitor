@@ -45,7 +45,6 @@ prometheus = { version = "0.14.0", features = ["reqwest"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 redis = { workspace = true }
-axum = { workspace = true }
 pyo3 = { workspace = true, features = ["auto-initialize"] }
 opentelemetry = { version = "0.33", optional = true }
 opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"], optional = true }
