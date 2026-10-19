@@ -9,7 +9,6 @@ use std::time::Duration;
 pub enum DatabaseError {
     Connection(sqlx::Error),
     Config(String),
-    Migration(String),
     Timeout,
 }
 
@@ -18,7 +17,6 @@ impl std::fmt::Display for DatabaseError {
         match self {
             Self::Connection(e) => write!(f, "Database connection error: {}", e),
             Self::Config(msg) => write!(f, "Configuration error: {}", msg),
-            Self::Migration(msg) => write!(f, "Migration error: {}", msg),
             Self::Timeout => write!(f, "timed out"),
         }
     }
@@ -85,24 +83,6 @@ impl DatabaseConfig {
         self.max_connections = max_connections;
         self
     }
-
-    /// Set connection timeout
-    pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
-        self.connect_timeout = timeout;
-        self
-    }
-
-    /// Set idle timeout
-    pub fn with_idle_timeout(mut self, timeout: Option<Duration>) -> Self {
-        self.idle_timeout = timeout;
-        self
-    }
-
-    /// Set max lifetime
-    pub fn with_max_lifetime(mut self, lifetime: Option<Duration>) -> Self {
-        self.max_lifetime = lifetime;
-        self
-    }
 }
 
 /// Database connection manager with optional Redis support
@@ -135,21 +115,6 @@ impl Database {
     pub fn from_pool_and_config(pool: PgPool, _config: DatabaseConfig) -> Self {
         // For now, we don't need to store the config, just use the pool
         Self { pool, redis: None }
-    }
-
-    /// Create a new database connection from URL
-    pub async fn connect(url: &str) -> Result<Self, DatabaseError> {
-        let config = DatabaseConfig::new(url);
-        Self::connect_with_config(config).await
-    }
-
-    /// Create a new database connection with Redis from URLs
-    pub async fn connect_with_redis(
-        db_url: &str,
-        redis_url: Option<&str>,
-    ) -> Result<Self, DatabaseError> {
-        let config = DatabaseConfig::new(db_url);
-        Self::connect_with_config_and_redis(config, redis_url).await
     }
 
     /// Create a new database connection with custom configuration
@@ -207,45 +172,6 @@ impl Database {
     /// Execute a health check query
     pub async fn health_check(&self) -> Result<(), DatabaseError> {
         health_check(&self.pool).await
-    }
-
-    /// Close the database connection pool
-    pub async fn close(&self) {
-        self.pool.close().await;
-    }
-
-    /// Get pool statistics
-    pub fn pool_stats(&self) -> PoolStats {
-        PoolStats {
-            size: self.pool.size(),
-            idle: self.pool.num_idle(),
-        }
-    }
-}
-
-/// Database pool statistics
-#[derive(Debug, Clone)]
-pub struct PoolStats {
-    /// Current pool size
-    pub size: u32,
-    /// Number of idle connections
-    pub idle: usize,
-}
-
-/// Common database operations
-impl Database {
-    /// Execute a simple count query without parameters
-    pub async fn count_simple(&self, query: &str) -> Result<i64, DatabaseError> {
-        let count = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(query))
-            .fetch_one(&self.pool)
-            .await?;
-        Ok(count)
-    }
-
-    /// Check if a record exists with simple query
-    pub async fn exists_simple(&self, query: &str) -> Result<bool, DatabaseError> {
-        let count = self.count_simple(query).await?;
-        Ok(count > 0)
     }
 }
 
