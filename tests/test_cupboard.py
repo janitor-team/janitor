@@ -142,6 +142,17 @@ async def test_history(aiohttp_client, db):
     client = await create_client(aiohttp_client, db)
     resp = await client.get("/cupboard/history")
     assert resp.status == 200
+    resp = await client.get(
+        "/cupboard/history", params={"limit": "", "offset": "99999999999999999999"}
+    )
+    assert resp.status == 400
+    assert await resp.json() == {
+        "limit": ["Not a valid integer."],
+        "offset": [
+            "Must be greater than or equal to 0 and less than or equal to "
+            "9223372036854775807."
+        ],
+    }
 
 
 async def test_queue(aiohttp_client, db):
