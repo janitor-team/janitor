@@ -31,6 +31,30 @@ fn is_remote_git_branch(branch: &dyn Branch) -> bool {
     vcs_type == breezyshim::foreign::VcsType::Git && url.scheme() != "file"
 }
 
+/// Map the transient or missing-branch errors from opening a branch to a
+/// failure coded `{prefix}rate-limited`, `{prefix}missing` etc. Any other
+/// error is passed to `other`.
+fn branch_open_failure(
+    e: BranchOpenError,
+    label: &str,
+    prefix: &str,
+    other: impl FnOnce(BranchOpenError) -> PublishError,
+) -> PublishError {
+    let (kind, description) = match e {
+        BranchOpenError::RateLimited { description, .. } => ("rate-limited", description),
+        BranchOpenError::TemporarilyUnavailable { description, .. } => {
+            ("temporarily-unavailable", description)
+        }
+        BranchOpenError::Unavailable { description, .. } => ("unavailable", description),
+        BranchOpenError::Missing { description, .. } => ("missing", description),
+        e => return other(e),
+    };
+    PublishError::failure(
+        format!("{}{}", prefix, kind),
+        format!("{} {}: {}", label, kind.replace('-', " "), description),
+    )
+}
+
 /// Open the source and target branches for `request` and call the
 /// underlying publish function.
 pub fn publish_one(
@@ -41,52 +65,25 @@ pub fn publish_one(
     let mut args = match shlex::split(&request.command) {
         Some(args) => args,
         None => {
-            return Err(PublishError::Failure {
-                description: format!("Invalid command syntax: {}", request.command),
-                code: "invalid-command-syntax".to_string(),
-            });
+            return Err(PublishError::failure(
+                "invalid-command-syntax",
+                format!("Invalid command syntax: {}", request.command),
+            ));
         }
     };
     drop_env(&mut args);
 
-    let mut source_branch = match open_branch(
+    let mut source_branch = open_branch(
         &request.source_branch_url,
         possible_transports.as_mut(),
         None,
         None,
-    ) {
-        Ok(branch) => branch,
-        Err(BranchOpenError::RateLimited { description, .. }) => {
-            return Err(PublishError::Failure {
-                description: format!("Local branch rate limited: {}", description),
-                code: "local-branch-rate-limited".to_string(),
-            });
-        }
-        Err(BranchOpenError::TemporarilyUnavailable { description, .. }) => {
-            return Err(PublishError::Failure {
-                description: format!("Local branch temporarily unavailable: {}", description),
-                code: "local-branch-temporarily-unavailable".to_string(),
-            });
-        }
-        Err(BranchOpenError::Unavailable { description, .. }) => {
-            return Err(PublishError::Failure {
-                description: format!("Local branch unavailable: {}", description),
-                code: "local-branch-unavailable".to_string(),
-            });
-        }
-        Err(BranchOpenError::Missing { description, .. }) => {
-            return Err(PublishError::Failure {
-                description: format!("Local branch missing: {}", description),
-                code: "local-branch-missing".to_string(),
-            });
-        }
-        Err(e) => {
-            return Err(PublishError::Failure {
-                description: format!("Local branch error: {}", e),
-                code: "local-branch-error".to_string(),
-            });
-        }
-    };
+    )
+    .map_err(|e| {
+        branch_open_failure(e, "Local branch", "local-branch-", |e| {
+            PublishError::failure("local-branch-error", format!("Local branch error: {}", e))
+        })
+    })?;
 
     let temp_sprout = if is_remote_git_branch(&source_branch) {
         match silver_platter::utils::TempSprout::new(&source_branch, None) {
@@ -95,60 +92,31 @@ pub fn publish_one(
                 Some(sprout)
             }
             Err(e) => {
-                return Err(PublishError::Failure {
-                    description: format!("Failed to create temporary branch sprout: {}", e),
-                    code: "temp-sprout-failed".to_string(),
-                });
+                return Err(PublishError::failure(
+                    "temp-sprout-failed",
+                    format!("Failed to create temporary branch sprout: {}", e),
+                ));
             }
         }
     } else {
         None
     };
 
-    let target_branch = match open_branch(
+    let target_branch = open_branch(
         &request.target_branch_url,
         possible_transports.as_mut(),
         None,
         None,
-    ) {
-        Ok(branch) => branch,
-        Err(BranchOpenError::RateLimited { description, .. }) => {
-            return Err(PublishError::Failure {
-                description: format!("Target branch rate limited: {}", description),
-                code: "branch-rate-limited".to_string(),
-            });
-        }
-        Err(BranchOpenError::TemporarilyUnavailable { description, .. }) => {
-            return Err(PublishError::Failure {
-                description: format!("Target branch temporarily unavailable: {}", description),
-                code: "branch-temporarily-unavailable".to_string(),
-            });
-        }
-        Err(BranchOpenError::Unavailable { description, .. }) => {
-            return Err(PublishError::Failure {
-                description: format!("Target branch unavailable: {}", description),
-                code: "branch-unavailable".to_string(),
-            });
-        }
-        Err(BranchOpenError::Missing { description, .. }) => {
-            return Err(PublishError::Failure {
-                description: format!("Target branch missing: {}", description),
-                code: "branch-missing".to_string(),
-            });
-        }
-        Err(BranchOpenError::Unsupported { description, .. }) => {
-            return Err(PublishError::Failure {
-                description: format!("Target branch unsupported: {}", description),
-                code: "branch-unsupported".to_string(),
-            });
-        }
-        Err(e) => {
-            return Err(PublishError::Failure {
-                description: format!("Target branch error: {}", e),
-                code: "branch-error".to_string(),
-            });
-        }
-    };
+    )
+    .map_err(|e| {
+        branch_open_failure(e, "Target branch", "branch-", |e| match e {
+            BranchOpenError::Unsupported { description, .. } => PublishError::failure(
+                "branch-unsupported",
+                format!("Target branch unsupported: {}", description),
+            ),
+            e => PublishError::failure("branch-error", format!("Target branch error: {}", e)),
+        })
+    })?;
 
     assert_ne!(request.mode, Mode::Bts);
 
@@ -157,10 +125,10 @@ pub fn publish_one(
             if ![Mode::Push, Mode::BuildOnly].contains(&request.mode) {
                 let url = target_branch.get_user_url();
                 let netloc = url.host_str().unwrap_or("unknown");
-                return Err(PublishError::Failure {
-                    description: format!("Forge unsupported: {}.", netloc),
-                    code: "hoster-unsupported".to_string(),
-                });
+                return Err(PublishError::failure(
+                    "hoster-unsupported",
+                    format!("Forge unsupported: {}.", netloc),
+                ));
             }
             // We can't figure out what branch to resume from when there's no forge that can tell us.
             if request.mode == Mode::Push {
@@ -176,10 +144,10 @@ pub fn publish_one(
             if ![Mode::Push, Mode::BuildOnly].contains(&request.mode) {
                 let url = target_branch.get_user_url();
                 let netloc = url.host_str().unwrap_or("unknown");
-                return Err(PublishError::Failure {
-                    description: format!("Forge {} supported but no login known.", netloc),
-                    code: "hoster-no-login".to_string(),
-                });
+                return Err(PublishError::failure(
+                    "hoster-no-login",
+                    format!("Forge {} supported but no login known.", netloc),
+                ));
             }
             // We can't figure out what branch to resume from when there's no forge that can tell us.
             if request.mode == Mode::Push {
@@ -193,37 +161,37 @@ pub fn publish_one(
         }
         Err(BrzError::UnexpectedHttpStatus { code, extra, .. }) => match code {
             502 => {
-                return Err(PublishError::Failure {
-                    description: if let Some(extra) = extra {
+                return Err(PublishError::failure(
+                    "bad-gateway",
+                    if let Some(extra) = extra {
                         format!("Bad gateway: {}", extra)
                     } else {
                         "Bad gateway.".to_string()
                     },
-                    code: "bad-gateway".to_string(),
-                });
+                ));
             }
             429 => {
-                return Err(PublishError::Failure {
-                    description: if let Some(extra) = extra {
+                return Err(PublishError::failure(
+                    "too-many-requests",
+                    if let Some(extra) = extra {
                         format!("Too many requests: {}", extra)
                     } else {
                         "Too many requests.".to_string()
                     },
-                    code: "too-many-requests".to_string(),
-                });
+                ));
             }
             _ => {
-                return Err(PublishError::Failure {
-                    description: format!("HTTP error: {}", code),
-                    code: format!("http-{}", code),
-                });
+                return Err(PublishError::failure(
+                    format!("http-{}", code),
+                    format!("HTTP error: {}", code),
+                ));
             }
         },
         Err(_) => {
-            return Err(PublishError::Failure {
-                description: "Unexpected error.".to_string(),
-                code: "unexpected-error".to_string(),
-            });
+            return Err(PublishError::failure(
+                "unexpected-error",
+                "Unexpected error.",
+            ));
         }
         Ok(forge) => Some(forge),
     };
@@ -233,70 +201,41 @@ pub fn publish_one(
             let existing_proposal = match forge.get_proposal_by_url(existing_mp_url) {
                 Ok(proposal) => proposal,
                 Err(BrzError::UnsupportedForge(..)) => {
-                    return Err(PublishError::Failure {
-                        description: format!("Forge unsupported: {}.", forge.base_url()),
-                        code: "forge-mp-url-mismatch".to_string(),
-                    });
+                    return Err(PublishError::failure(
+                        "forge-mp-url-mismatch",
+                        format!("Forge unsupported: {}.", forge.base_url()),
+                    ));
                 }
                 Err(e) => {
-                    return Err(PublishError::Failure {
-                        description: format!("Unable to retrieve merge proposal: {}", e),
-                        code: "merge-proposal-retrieval-failed".to_string(),
-                    });
+                    return Err(PublishError::failure(
+                        "merge-proposal-retrieval-failed",
+                        format!("Unable to retrieve merge proposal: {}", e),
+                    ));
                 }
             };
             let source_branch_url = match existing_proposal.get_source_branch_url() {
                 Ok(Some(url)) => url,
                 Ok(None) => {
-                    return Err(PublishError::Failure {
-                        description: "Merge proposal has no source branch URL".to_string(),
-                        code: "merge-proposal-no-source-url".to_string(),
-                    });
+                    return Err(PublishError::failure(
+                        "merge-proposal-no-source-url",
+                        "Merge proposal has no source branch URL",
+                    ));
                 }
                 Err(e) => {
-                    return Err(PublishError::Failure {
-                        description: format!("Unable to get source branch URL: {}", e),
-                        code: "merge-proposal-source-url-failed".to_string(),
-                    });
+                    return Err(PublishError::failure(
+                        "merge-proposal-source-url-failed",
+                        format!("Unable to get source branch URL: {}", e),
+                    ));
                 }
             };
             let resume_branch =
-                match open_branch(&source_branch_url, possible_transports.as_mut(), None, None) {
-                    Ok(branch) => branch,
-                    Err(BranchOpenError::RateLimited { description, .. }) => {
-                        return Err(PublishError::Failure {
-                            description: format!("Resume branch rate limited: {}", description),
-                            code: "resume-branch-rate-limited".to_string(),
-                        });
-                    }
-                    Err(BranchOpenError::TemporarilyUnavailable { description, .. }) => {
-                        return Err(PublishError::Failure {
-                            description: format!(
-                                "Resume branch temporarily unavailable: {}",
-                                description
-                            ),
-                            code: "resume-branch-temporarily-unavailable".to_string(),
-                        });
-                    }
-                    Err(BranchOpenError::Unavailable { description, .. }) => {
-                        return Err(PublishError::Failure {
-                            description: format!("Resume branch unavailable: {}", description),
-                            code: "resume-branch-unavailable".to_string(),
-                        });
-                    }
-                    Err(BranchOpenError::Missing { description, .. }) => {
-                        return Err(PublishError::Failure {
-                            description: format!("Resume branch missing: {}", description),
-                            code: "resume-branch-missing".to_string(),
-                        });
-                    }
-                    Err(e) => {
-                        return Err(PublishError::Failure {
-                            description: e.to_string(),
-                            code: "unexpected-error".to_string(),
-                        });
-                    }
-                };
+                open_branch(&source_branch_url, possible_transports.as_mut(), None, None).map_err(
+                    |e| {
+                        branch_open_failure(e, "Resume branch", "resume-branch-", |e| {
+                            PublishError::failure("unexpected-error", e.to_string())
+                        })
+                    },
+                )?;
             (Some(resume_branch), Some(true), Some(existing_proposal))
         } else {
             match silver_platter::publish::find_existing_proposed(
@@ -327,34 +266,31 @@ pub fn publish_one(
                 }
                 Err(BrzError::NoSuchProject(project)) => {
                     if ![Mode::Push, Mode::BuildOnly].contains(&request.mode) {
-                        return Err(PublishError::Failure {
-                            description: format!("Project {} not found.", project),
-                            code: "project-not-found".to_string(),
-                        });
+                        return Err(PublishError::failure(
+                            "project-not-found",
+                            format!("Project {} not found.", project),
+                        ));
                     }
                     (None, Some(false), None)
                 }
                 Err(BrzError::ForgeLoginRequired) => {
-                    return Err(PublishError::Failure {
-                        description: format!("Forge {} supported but no login known.", forge),
-                        code: "hoster-no-login".to_string(),
-                    });
+                    return Err(PublishError::failure(
+                        "hoster-no-login",
+                        format!("Forge {} supported but no login known.", forge),
+                    ));
                 }
                 Err(BrzError::PermissionDenied(_, e)) => {
-                    return Err(PublishError::Failure {
-                        description: if let Some(e) = e {
+                    return Err(PublishError::failure(
+                        "permission-denied",
+                        if let Some(e) = e {
                             format!("Permission denied: {}", e)
                         } else {
                             "Permission denied.".to_string()
                         },
-                        code: "permission-denied".to_string(),
-                    });
+                    ));
                 }
                 Err(e) => {
-                    return Err(PublishError::Failure {
-                        description: e.to_string(),
-                        code: "unexpected-error".to_string(),
-                    });
+                    return Err(PublishError::failure("unexpected-error", e.to_string()));
                 }
             }
         }
@@ -369,31 +305,31 @@ pub fn publish_one(
     ) {
         Ok(debdiff) => Some(debdiff),
         Err(crate::DebdiffError::Unavailable(e)) => {
-            return Err(PublishError::Failure {
-                description: format!("Unable to contact differ for build diff: {}", e),
-                code: "differ-unreachable".to_string(),
-            });
+            return Err(PublishError::failure(
+                "differ-unreachable",
+                format!("Unable to contact differ for build diff: {}", e),
+            ));
         }
         Err(crate::DebdiffError::MissingRun(missing_run_id)) => {
             if [Mode::Propose, Mode::AttemptPush].contains(&request.mode)
                 && request.require_binary_diff
             {
                 if missing_run_id == request.log_id {
-                    return Err(PublishError::Failure {
-                        description: format!(
+                    return Err(PublishError::failure(
+                        "missing-build-diff-self",
+                        format!(
                             "Build diff is not available. Run ({}) not yet published?",
                             request.log_id
                         ),
-                        code: "missing-build-diff-self".to_string(),
-                    });
+                    ));
                 } else {
-                    return Err(PublishError::Failure {
-                        description: format!(
+                    return Err(PublishError::failure(
+                        "missing-build-diff-control",
+                        format!(
                             "Binary debdiff is not available. Control run ({}) not published?",
                             missing_run_id
                         ),
-                        code: "missing-build-diff-control".to_string(),
-                    });
+                    ));
                 }
             }
             None
@@ -406,20 +342,19 @@ pub fn publish_one(
             if [Mode::Propose, Mode::AttemptPush].contains(&request.mode)
                 && request.require_binary_diff
             {
-                return Err(PublishError::Failure {
-                    description: "Binary debdiff is not available: no earlier run exists yet \
-                             to compare against."
-                        .to_string(),
-                    code: "missing-build-diff-control".to_string(),
-                });
+                return Err(PublishError::failure(
+                    "missing-build-diff-control",
+                    "Binary debdiff is not available: no earlier run exists yet \
+                             to compare against.",
+                ));
             }
             None
         }
         Err(crate::DebdiffError::Http(e)) => {
-            return Err(PublishError::Failure {
-                description: format!("Error from differ for build diff: HTTP {}", e),
-                code: "differ-http-error".to_string(),
-            });
+            return Err(PublishError::failure(
+                "differ-http-error",
+                format!("Error from differ for build diff: HTTP {}", e),
+            ));
         }
     };
 
@@ -593,23 +528,23 @@ pub fn publish(
 
     match merge_conflicts(&target_branch, &source_branch, stop_revision) {
         Ok(true) => {
-            return Err(PublishError::Failure {
-                code: "merge-conflict".to_string(),
-                description: "merge would conflict (upstream changes?)".to_string(),
-            });
+            return Err(PublishError::failure(
+                "merge-conflict",
+                "merge would conflict (upstream changes?)",
+            ));
         }
         Ok(false) => {}
         Err(BrzError::NoSuchRevision(revision)) => {
-            return Err(PublishError::Failure {
-                description: format!("Revision missing: {}", revision),
-                code: "revision-missing".to_string(),
-            });
+            return Err(PublishError::failure(
+                "revision-missing",
+                format!("Revision missing: {}", revision),
+            ));
         }
         Err(e) => {
-            return Err(PublishError::Failure {
-                description: format!("Merge conflict check failed: {}", e),
-                code: "merge-conflict-check-failed".to_string(),
-            });
+            return Err(PublishError::failure(
+                "merge-conflict-check-failed",
+                format!("Merge conflict check failed: {}", e),
+            ));
         }
     }
 
@@ -627,10 +562,8 @@ pub fn publish(
         &source_branch,
         &target_branch,
         resume_branch.as_ref(),
-        mode.try_into().map_err(|_| PublishError::Failure {
-            description: "Invalid publish mode".to_string(),
-            code: "invalid-mode".to_string(),
-        })?,
+        mode.try_into()
+            .map_err(|_| PublishError::failure("invalid-mode", "Invalid publish mode"))?,
         derived_branch_name,
         get_proposal_description,
         Some(get_proposal_commit_message),
@@ -648,85 +581,81 @@ pub fn publish(
         auto_merge,
         None, // work_in_progress
     ) {
-        Err(SvpPublishError::Other(BrzError::DivergedBranches)) => Err(PublishError::Failure {
-            description: "Upstream branch has diverged from local changes.".to_string(),
-            code: "diverged-branches".to_string(),
-        }),
-        Err(SvpPublishError::UnsupportedForge(_)) => Err(PublishError::Failure {
-            description: format!(
+        Err(SvpPublishError::Other(BrzError::DivergedBranches)) => Err(PublishError::failure(
+            "diverged-branches",
+            "Upstream branch has diverged from local changes.",
+        )),
+        Err(SvpPublishError::UnsupportedForge(_)) => Err(PublishError::failure(
+            "hoster-unsupported",
+            format!(
                 "Forge unsupported: {}",
                 target_branch.repository().get_user_url()
             ),
-            code: "hoster-unsupported".to_string(),
-        }),
-        Err(SvpPublishError::Other(BrzError::NoSuchProject(_))) => Err(PublishError::Failure {
-            description: format!(
+        )),
+        Err(SvpPublishError::Other(BrzError::NoSuchProject(_))) => Err(PublishError::failure(
+            "project-not-found",
+            format!(
                 "Project not found: {}",
                 target_branch.repository().get_user_url()
             ),
-            code: "project-not-found".to_string(),
-        }),
-        Err(SvpPublishError::Other(BrzError::ForkingDisabled(_))) => Err(PublishError::Failure {
-            description: format!(
+        )),
+        Err(SvpPublishError::Other(BrzError::ForkingDisabled(_))) => Err(PublishError::failure(
+            "forking-disabled",
+            format!(
                 "Forking disabled: {}",
                 target_branch.repository().get_user_url()
             ),
-            code: "forking-disabled".to_string(),
-        }),
-        Err(SvpPublishError::PermissionDenied) => Err(PublishError::Failure {
-            description: "Permission denied.".to_string(),
-            code: "permission-denied".to_string(),
-        }),
-        Err(SvpPublishError::Other(BrzError::MergeProposalExists(e, _))) => {
-            Err(PublishError::Failure {
-                description: e.to_string(),
-                code: "merge-proposal-exists".to_string(),
-            })
-        }
-        Err(SvpPublishError::Other(BrzError::GitLabConflict(..))) => Err(PublishError::Failure {
-            description: "Conflict during GitLab operation. Reached repository limit?".to_string(),
-            code: "gitlab-conflict".to_string(),
-        }),
+        )),
+        Err(SvpPublishError::PermissionDenied) => Err(PublishError::failure(
+            "permission-denied",
+            "Permission denied.",
+        )),
+        Err(SvpPublishError::Other(BrzError::MergeProposalExists(e, _))) => Err(
+            PublishError::failure("merge-proposal-exists", e.to_string()),
+        ),
+        Err(SvpPublishError::Other(BrzError::GitLabConflict(..))) => Err(PublishError::failure(
+            "gitlab-conflict",
+            "Conflict during GitLab operation. Reached repository limit?",
+        )),
         Err(SvpPublishError::Other(BrzError::SourceNotDerivedFromTarget)) => {
-            Err(PublishError::Failure {
-                description: "The source repository is not a fork of the target repository."
-                    .to_string(),
-                code: "source-not-derived-from-target".to_string(),
-            })
+            Err(PublishError::failure(
+                "source-not-derived-from-target",
+                "The source repository is not a fork of the target repository.",
+            ))
         }
         Err(SvpPublishError::Other(BrzError::ProjectCreationTimeout(project, timeout))) => {
-            Err(PublishError::Failure {
-                description: format!(
+            Err(PublishError::failure(
+                "project-creation-timeout",
+                format!(
                     "Forking the project (to {}) timed out ({}s)",
                     project, timeout
                 ),
-                code: "project-creation-timeout".to_string(),
-            })
+            ))
         }
-        Err(SvpPublishError::Other(BrzError::RemoteGitError(e))) => Err(PublishError::Failure {
-            description: format!("Remote git error: {}", e),
-            code: "remote-git-error".to_string(),
-        }),
+        Err(SvpPublishError::Other(BrzError::RemoteGitError(e))) => Err(PublishError::failure(
+            "remote-git-error",
+            format!("Remote git error: {}", e),
+        )),
         Err(SvpPublishError::InsufficientChangesForNewProposal) => Err(PublishError::NothingToDo(
             "not enough changes for a new merge proposal".to_string(),
         )),
         Err(SvpPublishError::BranchOpenError(BranchOpenError::TemporarilyUnavailable {
             description,
             ..
-        })) => Err(PublishError::Failure {
-            description: format!("Branch temporarily unavailable: {}", description),
-            code: "branch-temporarily-unavailable".to_string(),
-        }),
+        })) => Err(PublishError::failure(
+            "branch-temporarily-unavailable",
+            format!("Branch temporarily unavailable: {}", description),
+        )),
         Err(SvpPublishError::BranchOpenError(BranchOpenError::Unavailable {
             description, ..
-        })) => Err(PublishError::Failure {
-            description: format!("Branch unavailable: {}", description),
-            code: "branch-unavailable".to_string(),
-        }),
-        Err(SvpPublishError::EmptyMergeProposal) => Err(PublishError::Failure {
-            code: "empty-merge-proposal".to_string(),
-            description: "No changes to propose; changes made independently upstream?".to_string(),
-        }),
+        })) => Err(PublishError::failure(
+            "branch-unavailable",
+            format!("Branch unavailable: {}", description),
+        )),
+        Err(SvpPublishError::EmptyMergeProposal) => Err(PublishError::failure(
+            "empty-merge-proposal",
+            "No changes to propose; changes made independently upstream?",
+        )),
         Ok(publish_result) => {
             std::mem::drop(target_lock);
             std::mem::drop(source_lock);
@@ -741,10 +670,10 @@ pub fn publish(
                 derived_branch_name.to_string(),
             ))
         }
-        Err(e) => Err(PublishError::Failure {
-            description: format!("Publish error: {}", e),
-            code: "publish-error".to_string(),
-        }),
+        Err(e) => Err(PublishError::failure(
+            "publish-error",
+            format!("Publish error: {}", e),
+        )),
     }
 }
 
