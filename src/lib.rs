@@ -1,7 +1,5 @@
-pub mod analyze_log;
 pub mod api;
 pub mod artifacts;
-pub mod auth;
 pub mod config;
 pub mod database;
 pub mod debdiff;
@@ -11,23 +9,17 @@ pub mod logging;
 pub mod logs;
 #[cfg(feature = "otlp")]
 pub mod otlp;
-pub mod pagination;
 pub mod prometheus;
 pub mod publish;
 pub mod queue;
 pub mod redis;
-pub mod reprocess_logs;
-pub mod review;
 pub mod schedule;
 pub mod schema;
-pub mod security;
 pub mod shared_config;
 pub mod state;
 #[cfg(feature = "testing")]
 pub mod test_utils;
-pub mod tracing;
 pub mod utils;
 pub mod vcs;
-pub mod worker_auth;
 
 pub use identifiers::{Campaign, ChangeSetId, CodebaseName, InvalidIdentifier, PublishId, RunId};
