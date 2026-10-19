@@ -24,7 +24,6 @@ use crate::config::ArchiveConfig;
 use crate::database::BuildManager;
 use crate::error::{ArchiveError, ArchiveResult};
 use crate::manager::GeneratorManager;
-use crate::repository::RepositoryGenerator;
 use crate::scanner::PackageScanner;
 
 mod shared;
@@ -53,7 +52,6 @@ pub fn new_last_publish_times() -> LastPublishTimes {
 #[allow(missing_docs)]
 pub struct AppState {
     pub config: Arc<ArchiveConfig>,
-    pub generator: Arc<RepositoryGenerator>,
     pub scanner: Arc<PackageScanner>,
     pub database: Arc<BuildManager>,
     pub generator_manager: Option<Arc<GeneratorManager>>,
@@ -83,64 +81,46 @@ impl ArchiveWebService {
     /// Create a new archive web service. No generator manager and an
     /// empty last-publish map; suited for standalone tooling that
     /// only serves files.
-    pub async fn new(
-        config: ArchiveConfig,
-        generator: RepositoryGenerator,
-        scanner: PackageScanner,
-        database: BuildManager,
-    ) -> ArchiveResult<Self> {
-        Self::build(
-            config,
-            generator,
-            scanner,
-            database,
-            None,
-            new_last_publish_times(),
-        )
-        .await
+    pub fn new(config: ArchiveConfig, scanner: PackageScanner, database: BuildManager) -> Self {
+        Self::build(config, scanner, database, None, new_last_publish_times())
     }
 
     /// Create a web service wired to a shared generator manager and
     /// the shared [`LastPublishTimes`] map. Used by the main server
     /// entry point so `/publish`, `/ready`, `/last-publish` all
     /// observe the same publish state.
-    pub async fn with_publish_observer(
+    pub fn with_publish_observer(
         config: ArchiveConfig,
-        generator: RepositoryGenerator,
         scanner: PackageScanner,
         database: BuildManager,
         generator_manager: Arc<GeneratorManager>,
         last_publish_times: LastPublishTimes,
-    ) -> ArchiveResult<Self> {
+    ) -> Self {
         Self::build(
             config,
-            generator,
             scanner,
             database,
             Some(generator_manager),
             last_publish_times,
         )
-        .await
     }
 
-    async fn build(
+    fn build(
         config: ArchiveConfig,
-        generator: RepositoryGenerator,
         scanner: PackageScanner,
         database: BuildManager,
         generator_manager: Option<Arc<GeneratorManager>>,
         last_publish_times: LastPublishTimes,
-    ) -> ArchiveResult<Self> {
+    ) -> Self {
         let state = AppState {
             config: Arc::new(config),
-            generator: Arc::new(generator),
             scanner: Arc::new(scanner),
             database: Arc::new(database),
             generator_manager,
             last_publish_times,
         };
 
-        Ok(Self { state })
+        Self { state }
     }
 
     /// Create the Axum router with all routes.
@@ -384,17 +364,12 @@ async fn publish_repository(
     let fallback: Vec<String> = if state.config.runtime_config.is_some() {
         Vec::new()
     } else {
-        manager.get_campaign_mapping().await.into_keys().collect()
+        manager.campaign_names()
     };
     let candidates = publish_campaign_candidates(state.config.runtime_config.as_deref(), fallback);
 
     for campaign_name in publish_apply_filter(&candidates, request.campaign.as_deref()) {
-        if let Err(e) = manager.trigger_campaign(campaign_name).await {
-            warn!(
-                "trigger_campaign({}) failed during /publish: {}",
-                campaign_name, e
-            );
-        }
+        manager.trigger_campaign(campaign_name).await;
     }
 
     Ok(Json(PublishResponse::default()))

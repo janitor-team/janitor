@@ -46,12 +46,9 @@ async fn build_app(pool: sqlx::PgPool) -> (axum::Router, TempDir) {
 
     let service = ArchiveWebService::new(
         config,
-        generator(&pool, tmp.path()).await,
         PackageScanner::new(&location).await.unwrap(),
         ArchiveDatabase::new(pool),
-    )
-    .await
-    .unwrap();
+    );
     (service.router(), tmp)
 }
 
