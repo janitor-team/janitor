@@ -62,6 +62,9 @@ async def handle_publish(request):
     campaign = request.match_info["campaign"]
     post = await request.post()
     mode = post.get("mode")
+    if mode is not None:
+        # A chosen mode overrides the publish policy, so it is for admins only.
+        check_admin(request)
     if mode not in (None, "push-derived", "push", "propose", "attempt-push"):
         return web.json_response({"error": "Invalid mode", "mode": mode}, status=400)
     url = URL(publisher_url) / campaign / codebase / "publish"
