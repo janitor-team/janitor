@@ -1,7 +1,7 @@
 use crate::api_types::MessageResponse;
 use crate::{
-    get_builder, metrics::MetricsCollector, ActiveRun, AppState, Backchannel, BuilderResult,
-    CampaignConfig, QueueItem,
+    metrics::MetricsCollector, ActiveRun, AppState, Backchannel, BuilderResult, CampaignConfig,
+    QueueItem,
 };
 use axum::{
     extract::{DefaultBodyLimit, Multipart, Path, Query, State},
@@ -171,21 +171,7 @@ fn create_campaign_config(
             None
         };
 
-        let generic_build = if config.has_generic_build() {
-            let gb_config = config.generic_build();
-            Some(crate::GenericBuildConfig {
-                chroot: if gb_config.chroot().is_empty() {
-                    None
-                } else {
-                    Some(gb_config.chroot().to_string())
-                },
-            })
-        } else {
-            None
-        };
-
         CampaignConfig {
-            generic_build,
             debian_build,
             force_build: config.force_build(),
             default_empty: config.default_empty(),
@@ -197,7 +183,6 @@ fn create_campaign_config(
             queue_item.campaign
         );
         CampaignConfig {
-            generic_build: Some(crate::GenericBuildConfig { chroot: None }),
             debian_build: None,
             force_build: false,
             default_empty: false,
@@ -1484,14 +1469,10 @@ async fn peek_active_run(State(state): State<Arc<AppState>>) -> impl IntoRespons
     {
         Ok(Some(assignment)) => {
             let campaign_config = create_campaign_config(&assignment.queue_item, &state.config);
-            let build_config = match get_builder(&campaign_config, None, None) {
-                Ok(builder) => {
-                    let mut config = HashMap::new();
-                    config.insert("builder_kind".to_string(), builder.kind().to_string());
-                    config
-                }
-                Err(_) => HashMap::new(),
-            };
+            let build_config = HashMap::from([(
+                "builder_kind".to_string(),
+                campaign_config.builder_kind().to_string(),
+            )]);
 
             (
                 StatusCode::CREATED,
@@ -3477,33 +3458,10 @@ async fn assign_work_internal(
     );
 
     // Colocated branches the worker must fetch alongside the main
-    // branch (`upstream`, `pristine-tar`, … for Debian packaging).
-    // Python's `runner.py::next_item` asks the builder for these and
-    // normalises the result to a list before serialising, because the
-    // worker's `Branch::additional_colocated_branches` is a
-    // `Vec<String>`, not a map (upstream 6594167a3). The Rust builder
-    // likewise returns a `HashMap<name, branch>`, so send its keys.
-    let additional_colocated_branches: Option<Vec<String>> =
-        match get_builder(&campaign_config, None, None) {
-            Ok(builder) => {
-                let main_branch = main_branch_name(assignment.vcs_info.branch_url.as_deref());
-                let mut names: Vec<String> = builder
-                    .additional_colocated_branches(&main_branch)
-                    .into_keys()
-                    .collect();
-                // Stable order so the assignment JSON doesn't churn
-                // between requests (HashMap iteration is unordered).
-                names.sort();
-                Some(names)
-            }
-            Err(e) => {
-                log::warn!(
-                    "Failed to create builder for colocated branches: {}; sending none",
-                    e
-                );
-                None
-            }
-        };
+    // branch (`upstream`, `pristine-tar`, ... for Debian packaging).
+    let additional_colocated_branches = campaign_config.additional_colocated_branches(
+        &main_branch_name(assignment.vcs_info.branch_url.as_deref()),
+    );
 
     let branch = json!({
         "cached_url": cached_url,
@@ -4084,7 +4042,6 @@ distribution {
         )
         .unwrap();
         let generic = CampaignConfig {
-            generic_build: None,
             debian_build: None,
             force_build: false,
             default_empty: false,
