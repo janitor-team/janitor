@@ -97,6 +97,43 @@ pub enum FinishOutcome {
     AlreadyStored,
 }
 
+/// Which runs `/admin/runs/cleanup` operates on.
+pub struct CleanupRunsFilter<'a> {
+    /// Result code the runs must have.
+    pub result_code: &'a str,
+    /// Only runs of this campaign.
+    pub campaign: Option<&'a Campaign>,
+    /// `ILIKE` pattern the run description must match.
+    pub description_like: Option<&'a str>,
+    /// Inclusive lower bound on the finish time.
+    pub min_finish_time: Option<DateTime<Utc>>,
+    /// Exclusive upper bound on the finish time.
+    pub max_finish_time: Option<DateTime<Utc>>,
+    /// Maximum number of runs to return.
+    pub limit: i64,
+}
+
+/// A run selected for cleanup, with what is needed to reschedule it.
+#[derive(Debug, sqlx::FromRow)]
+pub struct CleanupCandidate {
+    /// Run ID.
+    pub id: RunId,
+    /// Codebase the run was for.
+    pub codebase: CodebaseName,
+    /// Campaign the run was for.
+    pub suite: Campaign,
+    /// Command the run used.
+    pub command: String,
+}
+
+/// A failed step of [`RunnerDatabase::cleanup_runs`].
+#[derive(Debug, thiserror::Error)]
+#[error("{what}: {source}")]
+pub struct CleanupError {
+    what: String,
+    source: sqlx::Error,
+}
+
 /// Database manager for runner operations using shared infrastructure.
 #[derive(Clone)]
 pub struct RunnerDatabase {
@@ -1044,6 +1081,156 @@ INSERT INTO run (
         .await?;
 
         Ok(resume_run_id.map(|run_id| crate::ResultResume { run_id }))
+    }
+
+    /// Find the runs matching `filter`, oldest first.
+    pub async fn find_runs_for_cleanup(
+        &self,
+        filter: &CleanupRunsFilter<'_>,
+    ) -> Result<Vec<CleanupCandidate>, sqlx::Error> {
+        // `run.finish_time` is TIMESTAMP (no TZ); compare it as UTC so
+        // the bounds we received in UTC match the stored value's intent.
+        sqlx::query_as(
+            "SELECT id, codebase, suite::text AS suite, command \
+             FROM run \
+             WHERE result_code = $1 \
+               AND ($2::text IS NULL OR suite::text = $2) \
+               AND ($3::text IS NULL OR description ILIKE $3) \
+               AND ($4::timestamptz IS NULL OR (finish_time AT TIME ZONE 'UTC') >= $4) \
+               AND ($5::timestamptz IS NULL OR (finish_time AT TIME ZONE 'UTC') < $5) \
+             ORDER BY finish_time ASC LIMIT $6",
+        )
+        .bind(filter.result_code)
+        .bind(filter.campaign)
+        .bind(filter.description_like)
+        .bind(filter.min_finish_time)
+        .bind(filter.max_finish_time)
+        .bind(filter.limit)
+        .fetch_all(self.pool())
+        .await
+    }
+
+    /// Reschedule `runs` and, when `delete` is set, delete them along
+    /// with the rows that reference them, in a single transaction.
+    ///
+    /// Returns the number of queue rows written and of runs deleted.
+    pub async fn cleanup_runs(
+        &self,
+        runs: &[CleanupCandidate],
+        requester: &str,
+        delete: bool,
+    ) -> Result<(i64, i64), CleanupError> {
+        let fail = |what: String| move |source| CleanupError { what, source };
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .inspect_err(|e| log::error!("cleanup-runs begin tx failed: {}", e))
+            .map_err(fail("tx begin failed".to_string()))?;
+
+        // The queue table has a unique index on `(codebase, suite,
+        // coalesce(change_set, ''))`. Use ON CONFLICT so a re-run is
+        // idempotent: bump priority on an existing queue row instead
+        // of failing.
+        let mut rescheduled = 0i64;
+        for run in runs {
+            let res = sqlx::query(
+                "INSERT INTO queue (codebase, suite, command, priority, bucket, requester) \
+                 VALUES ($1, $2::suite_name, $3, 0, 'reschedule', $4) \
+                 ON CONFLICT (codebase, suite, coalesce(change_set, '')) DO UPDATE \
+                 SET priority = LEAST(queue.priority, 0), \
+                     bucket = 'reschedule', \
+                     requester = EXCLUDED.requester",
+            )
+            .bind(&run.codebase)
+            .bind(&run.suite)
+            .bind(&run.command)
+            .bind(requester)
+            .execute(&mut *tx)
+            .await
+            .inspect_err(|e| {
+                log::warn!(
+                    "cleanup-runs: failed to reschedule {} ({}/{}): {}",
+                    run.codebase,
+                    run.suite,
+                    run.command,
+                    e
+                )
+            })
+            .map_err(fail(format!("reschedule failed for {}", run.codebase)))?;
+            rescheduled += res.rows_affected() as i64;
+        }
+
+        let mut deleted = 0;
+        if delete {
+            let run_ids: Vec<RunId> = runs.iter().map(|r| r.id.clone()).collect();
+            // None of the FKs on `last_run` declare ON DELETE behaviour.
+            // We're re-queuing the codebases anyway, so dropping the
+            // last_run pointers is the right semantic -- a fresh run
+            // will repopulate them. `debian_build`, `review` and
+            // `followup` reference `run.id` without `ON DELETE CASCADE`,
+            // so delete their rows by hand.
+            let statements = [
+                (
+                    "clear last_run_id failed",
+                    "cleanup-runs: clear last_run.last_run_id failed",
+                    "UPDATE last_run SET last_run_id = NULL WHERE last_run_id = ANY($1)",
+                ),
+                (
+                    "clear last_effective_run_id failed",
+                    "cleanup-runs: clear last_run.last_effective_run_id failed",
+                    "UPDATE last_run SET last_effective_run_id = NULL \
+                     WHERE last_effective_run_id = ANY($1)",
+                ),
+                (
+                    "clear last_unabsorbed_run_id failed",
+                    "cleanup-runs: clear last_run.last_unabsorbed_run_id failed",
+                    "UPDATE last_run SET last_unabsorbed_run_id = NULL \
+                     WHERE last_unabsorbed_run_id = ANY($1)",
+                ),
+                (
+                    "clear resume_from failed",
+                    "cleanup-runs: clear run.resume_from failed",
+                    "UPDATE run SET resume_from = NULL WHERE resume_from = ANY($1)",
+                ),
+                (
+                    "delete debian_build children failed",
+                    "cleanup-runs: delete debian_build children failed",
+                    "DELETE FROM debian_build WHERE run_id = ANY($1)",
+                ),
+                (
+                    "delete review children failed",
+                    "cleanup-runs: delete review children failed",
+                    "DELETE FROM review WHERE run_id = ANY($1)",
+                ),
+                (
+                    "delete followup children failed",
+                    "cleanup-runs: delete followup children failed",
+                    "DELETE FROM followup WHERE origin = ANY($1)",
+                ),
+            ];
+            for (what, log_message, statement) in statements {
+                sqlx::query(statement)
+                    .bind(&run_ids)
+                    .execute(&mut *tx)
+                    .await
+                    .inspect_err(|e| log::error!("{}: {}", log_message, e))
+                    .map_err(fail(what.to_string()))?;
+            }
+            deleted = sqlx::query("DELETE FROM run WHERE id = ANY($1)")
+                .bind(&run_ids)
+                .execute(&mut *tx)
+                .await
+                .inspect_err(|e| log::error!("cleanup-runs DELETE failed: {}", e))
+                .map_err(fail("delete failed".to_string()))?
+                .rows_affected() as i64;
+        }
+
+        tx.commit()
+            .await
+            .inspect_err(|e| log::error!("cleanup-runs commit failed: {}", e))
+            .map_err(fail("commit failed".to_string()))?;
+        Ok((rescheduled, deleted))
     }
 
     /// Get the debian_build row for a run, if any.
