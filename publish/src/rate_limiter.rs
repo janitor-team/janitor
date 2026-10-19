@@ -37,10 +37,7 @@ impl RateLimitStatus {
     /// # Returns
     /// `true` if the operation is allowed, `false` otherwise
     pub fn is_allowed(&self) -> bool {
-        match self {
-            RateLimitStatus::Allowed => true,
-            _ => false,
-        }
+        matches!(self, RateLimitStatus::Allowed)
     }
 }
 
@@ -107,7 +104,7 @@ pub trait RateLimiter: Send + Sync {
     ///
     /// # Returns
     /// The maximum number of open merge proposals, if available
-    fn get_max_open(&self, bucket: &str) -> Option<usize> {
+    fn get_max_open(&self, _bucket: &str) -> Option<usize> {
         None
     }
 }
@@ -184,21 +181,27 @@ impl RateLimiter for FixedRateLimiter {
     }
 
     fn inc(&mut self, bucket: &str) {
-        if let Some(open_mps_per_bucket) = self.open_mps_per_bucket.as_mut() {
-            open_mps_per_bucket
-                .entry(bucket.to_string())
-                .and_modify(|e| *e += 1)
-                .or_insert(1);
-        }
+        inc_open(&mut self.open_mps_per_bucket, bucket);
     }
 
     fn get_stats(&self) -> Option<RateLimitStats> {
-        self.open_mps_per_bucket
-            .as_ref()
-            .map(|open_mps_per_bucket| RateLimitStats {
-                per_bucket: open_mps_per_bucket.clone(),
-            })
+        open_stats(&self.open_mps_per_bucket)
     }
+}
+
+/// Count a newly opened merge proposal, once the open counts are known.
+fn inc_open(open_mps_per_bucket: &mut Option<HashMap<String, usize>>, bucket: &str) {
+    if let Some(open_mps_per_bucket) = open_mps_per_bucket.as_mut() {
+        *open_mps_per_bucket.entry(bucket.to_string()).or_insert(0) += 1;
+    }
+}
+
+fn open_stats(open_mps_per_bucket: &Option<HashMap<String, usize>>) -> Option<RateLimitStats> {
+    open_mps_per_bucket
+        .as_ref()
+        .map(|per_bucket| RateLimitStats {
+            per_bucket: per_bucket.clone(),
+        })
 }
 
 /// Rate limiter that gradually increases the limit based on absorbed merge proposals.
@@ -272,12 +275,7 @@ impl RateLimiter for SlowStartRateLimiter {
     }
 
     fn inc(&mut self, bucket: &str) {
-        if let Some(open_mps_per_bucket) = self.open_mps_per_bucket.as_mut() {
-            open_mps_per_bucket
-                .entry(bucket.to_string())
-                .and_modify(|e| *e += 1)
-                .or_insert(1);
-        }
+        inc_open(&mut self.open_mps_per_bucket, bucket);
     }
 
     fn set_mps_per_bucket(
@@ -303,10 +301,6 @@ impl RateLimiter for SlowStartRateLimiter {
     }
 
     fn get_stats(&self) -> Option<RateLimitStats> {
-        self.open_mps_per_bucket
-            .as_ref()
-            .map(|open_mps_per_bucket| RateLimitStats {
-                per_bucket: open_mps_per_bucket.clone(),
-            })
+        open_stats(&self.open_mps_per_bucket)
     }
 }
