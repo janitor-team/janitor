@@ -4,9 +4,6 @@
 //! app is mounted under `/git/` and requires HTTP Basic worker
 //! credentials for writes.
 
-use crate::web_utils::{
-    apply_standard_middleware, health_handler, metrics_handler, ready_handler, HealthChecker,
-};
 use crate::{
     database::DatabaseManager,
     error::{GitStoreError, Result},
@@ -15,16 +12,16 @@ use crate::{
     Config,
 };
 use axum::{
-    extract::{DefaultBodyLimit, Path, State},
-    http::{header, HeaderMap, StatusCode},
+    extract::{Path, State},
+    http::{header, StatusCode},
     response::{Html, IntoResponse, Json, Response},
     routing::{get, post},
     Router,
 };
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine;
+use janitor::web::{apply_standard_middleware, health_router, HealthChecker};
 use janitor::CodebaseName;
 use std::sync::Arc;
+use std::time::Duration;
 use tera::Tera;
 
 /// Governs write policy: `Admin` always writes, `Public` requires
@@ -43,49 +40,6 @@ pub struct AppState {
     pub db_manager: Arc<DatabaseManager>,
     pub health_checker: Arc<HealthChecker>,
     pub role: AppRole,
-}
-
-/// Sub-router carrying the health / ready / metrics endpoints under
-/// their own `Arc<HealthChecker>` state.
-fn health_router(checker: Arc<HealthChecker>) -> Router {
-    Router::new()
-        .route("/health", get(health_handler))
-        .route("/ready", get(ready_handler))
-        .route("/metrics", get(metrics_handler))
-        .with_state(checker)
-}
-
-/// Decode HTTP Basic auth and check it against the `worker` table.
-/// `None` for missing/malformed/invalid credentials.
-pub(crate) async fn is_worker_request(
-    database: &DatabaseManager,
-    headers: &HeaderMap,
-) -> Result<Option<String>> {
-    let auth_header = match headers.get(header::AUTHORIZATION) {
-        Some(h) => h,
-        None => return Ok(None),
-    };
-    let auth_str = match auth_header.to_str() {
-        Ok(s) => s,
-        Err(_) => return Ok(None),
-    };
-    let encoded = match auth_str.strip_prefix("Basic ") {
-        Some(e) => e,
-        None => return Ok(None),
-    };
-    let decoded = match BASE64.decode(encoded) {
-        Ok(d) => d,
-        Err(_) => return Ok(None),
-    };
-    let creds = match std::str::from_utf8(&decoded) {
-        Ok(s) => s,
-        Err(_) => return Ok(None),
-    };
-    let (username, password) = match creds.split_once(':') {
-        Some(pair) => pair,
-        None => return Ok(None),
-    };
-    database.is_worker(username, password).await
 }
 
 /// Admin app: unauthenticated, mounted at the repo root.
@@ -109,38 +63,9 @@ pub fn create_admin_app(state: AppState, client_max_size: usize) -> Router {
         .route("/{codebase}/HEAD", get(git_backend))
         .route("/{codebase}/{*path}", get(git_backend))
         .with_state(state)
-        .merge(health)
-        .layer(body_limit_layer(client_max_size));
+        .merge(health);
 
-    apply_standard_middleware(router, &web_config(client_max_size))
-}
-
-/// `client_max_size == 0` matches Python's "unlimited" convention.
-fn body_limit_layer(client_max_size: usize) -> DefaultBodyLimit {
-    if client_max_size == 0 {
-        DefaultBodyLimit::disable()
-    } else {
-        DefaultBodyLimit::max(client_max_size)
-    }
-}
-
-fn web_config(client_max_size: usize) -> janitor::shared_config::WebConfig {
-    janitor::shared_config::WebConfig {
-        enable_compression: true,
-        enable_request_logging: true,
-        enable_cors: true,
-        // git-receive-pack on a large repo routinely runs longer than
-        // the 30s default while pack-receive parses incoming packs.
-        request_timeout_seconds: 600,
-        // 0 (unlimited in Python) -> usize::MAX so RequestBodyLimitLayer
-        // is effectively a no-op.
-        max_request_size_bytes: if client_max_size == 0 {
-            usize::MAX
-        } else {
-            client_max_size
-        },
-        ..janitor::shared_config::WebConfig::default()
-    }
+    standard_middleware(router, client_max_size)
 }
 
 /// Public app: mounted under `/git/`, writes gated by worker auth.
@@ -195,9 +120,13 @@ pub fn create_public_app(state: AppState, client_max_size: usize) -> Router {
             router
         }
     };
-    let router = router.layer(body_limit_layer(client_max_size));
+    standard_middleware(router, client_max_size)
+}
 
-    apply_standard_middleware(router, &web_config(client_max_size))
+fn standard_middleware(router: Router, client_max_size: usize) -> Router {
+    // git-receive-pack on a large repo routinely runs longer than the
+    // 30s default while pack-receive parses incoming packs.
+    apply_standard_middleware(router, client_max_size, Duration::from_secs(600), true)
 }
 
 async fn home_handler() -> Response {
