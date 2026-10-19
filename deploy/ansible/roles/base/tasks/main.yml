@@ -1,0 +1,51 @@
+---
+- name: Install base packages
+  ansible.builtin.apt:
+    name:
+      - podman
+      - buildah
+      - git
+      - make
+      - curl
+      - ca-certificates
+      - gnupg
+      - jq
+      # become_user needs setfacl for its temporary files.
+      - acl
+    state: present
+    update_cache: true
+
+- name: Pull in network-online.target at boot
+  # Rootless quadlets wait up to 90 s for it, and on a worker nothing else starts it.
+  ansible.builtin.file:
+    src: /usr/lib/systemd/system/network-online.target
+    dest: /etc/systemd/system/multi-user.target.wants/network-online.target
+    state: link
+
+- name: Start network-online.target
+  ansible.builtin.systemd:
+    name: network-online.target
+    state: started
+
+- name: Enable lingering for the deploy user
+  # Keeps the user's systemd units running with nobody logged in.
+  ansible.builtin.command:
+    cmd: loginctl enable-linger {{ ansible_user }}
+    creates: "/var/lib/systemd/linger/{{ ansible_user }}"
+
+- name: Get the deploy user's uid
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ ansible_user }}"
+
+- name: Start the deploy user's D-Bus session bus
+  # Without it podman cannot reach systemd and podman exec fails on cgroups.
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  ansible.builtin.systemd:
+    name: dbus.socket
+    scope: user
+    enabled: true
+    state: started

@@ -1,0 +1,15 @@
+#!/usr/sbin/nft -f
+# Managed by ansible (roles/worker_firewall). Only this table is replaced.
+table inet janitor_worker
+delete table inet janitor_worker
+
+table inet janitor_worker {
+	chain input {
+		type filter hook input priority filter; policy accept;
+		tcp dport 9821 iifname "lo" accept
+{% for family, addresses in [('ip', worker_firewall_addresses | reject('search', ':') | list), ('ip6', worker_firewall_addresses | select('search', ':') | list)] if addresses %}
+		tcp dport 9821 {{ family }} saddr { {{ addresses | join(', ') }} } accept
+{% endfor %}
+		tcp dport 9821 reject with tcp reset
+	}
+}

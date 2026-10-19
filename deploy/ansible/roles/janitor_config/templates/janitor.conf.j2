@@ -1,0 +1,61 @@
+# Managed by ansible (roles/janitor_config). Paths are inside the containers.
+logs_location: "/mnt/janitor/data/logs"
+artifact_location: "/mnt/janitor/data/artifacts"
+database_location: "postgresql://janitor:{{ janitor_db_password }}@127.0.0.1:5432/janitor"
+redis_location: "redis://127.0.0.1:6379"
+git_location: "http://127.0.0.1:9923/"
+bzr_location: "http://127.0.0.1:9929/"
+committer: "Janitor Bot <noreply@{{ janitor_domain }}>"
+origin: "{{ janitor_github_org }}"
+
+distribution {
+  name: "unstable"
+  archive_mirror_uri: "http://deb.debian.org/debian"
+  component: "main"
+  chroot: "unshare:{{ janitor_worker_session_suite }}"
+  lintian_profile: "debian"
+  build_command: "sbuild -Asv --no-clean-source"
+  vendor: "debian"
+}
+
+campaign {
+  name: "lintian-fixes"
+  command: "lintian-brush"
+  branch_name: "lintian-fixes"
+  debian_build {
+    build_distribution: "{{ janitor_lintian_fixes_build_distribution }}"
+    build_suffix: "jan+lint"
+    base_distribution: "unstable"
+    build_command: "sbuild -Asv --no-clean-source"
+  }
+}
+
+# The runner queues a "control" run (the unchanged branch) after each successful run.
+campaign {
+  name: "control"
+  command: "true"
+  branch_name: "master"
+  force_build: true
+  debian_build {
+    build_distribution: "unchanged"
+    build_suffix: "jan+unchanged"
+    base_distribution: "unstable"
+  }
+}
+
+apt_repository {
+  name: "lintian-fixes"
+  description: "Builds of lintian fixes"
+  base: "unstable"
+  select {
+    campaign: "lintian-fixes"
+  }
+}
+{% if oauth_client_id | default('') | string | length > 0 %}
+
+oauth2_provider {
+  client_id: "{{ oauth_client_id }}"
+  client_secret: "{{ oauth_client_secret }}"
+  base_url: "{{ oauth_base_url }}"
+}
+{% endif %}

@@ -1,0 +1,94 @@
+---
+# Only the control host and this host may reach janitor-worker's port 9821.
+- name: Set up the worker firewall
+  when: enable_worker_firewall | bool
+  block:
+    - name: Install nftables
+      ansible.builtin.apt:
+        name: nftables
+        state: present
+
+    - name: Resolve the addresses allowed to reach port 9821
+      ansible.builtin.command:
+        cmd: getent ahosts {{ item }}
+      loop: "{{ worker_firewall_sources }}"
+      register: worker_firewall_resolved
+      changed_when: false
+      check_mode: false
+
+    - name: Write the worker firewall's nftables table
+      ansible.builtin.template:
+        src: janitor-worker-firewall.nft.j2
+        dest: /etc/janitor-worker-firewall.nft
+        mode: "0644"
+        validate: nft -c -f %s
+      vars:
+        worker_firewall_addresses: >-
+          {{ worker_firewall_resolved.results | map(attribute='stdout_lines') | flatten
+             | map('split') | map('first') | unique | sort }}
+      register: worker_firewall_rules
+
+    - name: Install the worker firewall's unit
+      ansible.builtin.copy:
+        src: janitor-worker-firewall.service
+        dest: /etc/systemd/system/janitor-worker-firewall.service
+        mode: "0644"
+      register: worker_firewall_unit
+
+    - name: Make the directory for nftables.service's drop-ins
+      ansible.builtin.file:
+        path: /etc/systemd/system/nftables.service.d
+        state: directory
+        mode: "0755"
+
+    - name: Load the table again whenever nftables.service starts
+      ansible.builtin.copy:
+        src: nftables-janitor-worker.conf
+        dest: /etc/systemd/system/nftables.service.d/janitor-worker-firewall.conf
+        mode: "0644"
+      register: worker_firewall_dropin
+
+    - name: Check that the worker firewall's table is loaded
+      ansible.builtin.command:
+        cmd: nft list table inet janitor_worker
+      register: worker_firewall_table
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Load the worker firewall, now and at boot
+      ansible.builtin.systemd:
+        name: janitor-worker-firewall.service
+        daemon_reload: "{{ worker_firewall_unit is changed or worker_firewall_dropin is changed }}"
+        enabled: true
+        # Reloading replaces the table in one step.
+        state: "{{ 'reloaded' if worker_firewall_rules is changed or worker_firewall_unit is changed or worker_firewall_table.rc != 0 else 'started' }}"
+
+- name: Remove the worker firewall
+  when: not enable_worker_firewall | bool
+  block:
+    - name: Check for the worker firewall's unit
+      ansible.builtin.stat:
+        path: /etc/systemd/system/janitor-worker-firewall.service
+      register: worker_firewall_unit_file
+
+    - name: Stop the worker firewall, which deletes its table
+      ansible.builtin.systemd:
+        name: janitor-worker-firewall.service
+        enabled: false
+        state: stopped
+      when: worker_firewall_unit_file.stat.exists
+
+    - name: Remove the worker firewall's files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/janitor-worker-firewall.service
+        - /etc/systemd/system/nftables.service.d/janitor-worker-firewall.conf
+        - /etc/janitor-worker-firewall.nft
+      register: worker_firewall_removed
+
+    - name: Make systemd forget the removed unit and drop-in
+      ansible.builtin.systemd:
+        daemon_reload: "{{ worker_firewall_removed is changed }}"

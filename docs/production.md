@@ -106,6 +106,9 @@ codemods your campaigns need installed.
 See "Custom worker tooling" in [Dockerfiles_.md](Dockerfiles_.md) for the
 Dockerfile to start from, then run your image in place of the published one.
 
+[deploy/](../deploy/README.md) has an Ansible playbook that deploys an
+instance onto one host or several.
+
 ## sbuild chroots
 
 Workers build Debian packages with `sbuild` in unshare mode. For each build,

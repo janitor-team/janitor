@@ -1,0 +1,17 @@
+# Managed by ansible (roles/janitor_quadlet).
+[Unit]
+Description=janitor publisher
+After=janitor-runner.service janitor-differ.service
+
+[Container]
+Image=ghcr.io/jelmer/janitor/publish:latest
+ContainerName=janitor-publish
+Network=host
+# The whole command line is given here.
+Entrypoint=janitor-publish
+Exec=--listen-address 127.0.0.1 --port 9912 --config /mnt/janitor/janitor.conf --differ-url http://127.0.0.1:9920/ --external-url {{ janitor_external_url }}
+Volume={{ janitor_home }}/janitor.conf:/mnt/janitor/janitor.conf:ro
+Volume={{ janitor_breezy_dir }}/publish:/root/.config/breezy:ro
+# Only the bot's SSH key and pinned host keys (roles/janitor_config).
+Volume={{ janitor_ssh_dir }}:/root/.ssh:ro
+{% include 'common.j2' %}

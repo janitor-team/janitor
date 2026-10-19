@@ -1,0 +1,66 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+#
+# One local VM running the whole playbook (every inventory group on one
+# host), to try a change before deploying it. See
+# README.md; Vagrantfile.multi-host splits the same playbook over
+# several VMs.
+
+USE_PREBUILT = ENV.fetch("JANITOR_USE_PREBUILT", "false") == "true"
+VM_CPUS = ENV.fetch("JANITOR_VM_CPUS", "8").to_i
+VM_MEMORY = ENV.fetch("JANITOR_VM_MEMORY", "24576").to_i
+VM_DISK = ENV.fetch("JANITOR_VM_DISK", "200").to_i
+VM_IP = ENV.fetch("JANITOR_VM_IP", "192.168.56.10")
+# A local janitor checkout to deploy (rsynced into the VM), or empty to
+# clone JANITOR_REPO.
+JANITOR_SOURCE = ENV.fetch("JANITOR_SOURCE", "")
+JANITOR_REPO = ENV.fetch("JANITOR_REPO", "https://github.com/janitor-team/janitor.git")
+JANITOR_BRANCH = ENV.fetch("JANITOR_BRANCH", "main")
+
+Vagrant.configure("2") do |config|
+  # trixie, the release the playbook targets.
+  config.vm.box = "debian/trixie64"
+  config.vm.hostname = "janitor-vagrant"
+  # vagrant-libvirt has no forwarded ports; reach the site at http://VM_IP/.
+  config.vm.network "private_network", ip: VM_IP
+  config.vm.synced_folder ".", "/vagrant", type: "rsync", rsync__exclude: [".vagrant/"]
+  unless JANITOR_SOURCE.empty?
+    config.vm.synced_folder JANITOR_SOURCE, "/srv/janitor-src", type: "rsync",
+      rsync__exclude: ["target/", ".tox/", "*.pyc", "__pycache__/"]
+  end
+
+  config.vm.provider "libvirt" do |lv|
+    lv.cpus = VM_CPUS
+    lv.memory = VM_MEMORY
+    lv.machine_virtual_size = VM_DISK
+  end
+
+  # Grow the root filesystem to the disk size.
+  config.vm.provision "grow-root", type: "shell",
+    inline: 'resize2fs "$(findmnt -no SOURCE /)"'
+  # trixie's Python is externally managed, so take ansible-core from apt.
+  config.vm.provision "ansible-core", type: "shell",
+    inline: "apt-get update -qq && apt-get install -y -qq ansible-core"
+
+  config.vm.provision "ansible_local" do |ansible|
+    ansible.playbook = "ansible/site.yml"
+    ansible.galaxy_role_file = "ansible/requirements.yml"
+    # Install the collections from requirements.yml.
+    ansible.galaxy_command = "ansible-galaxy collection install --requirements-file=%{role_file}"
+    ansible.compatibility_mode = "2.0"
+    # One host in every group, as inventory.ini describes for a single host.
+    ansible.groups = {
+      "janitor" => ["default"],
+      "vagrant" => ["default"],
+      "control" => ["default"],
+      "worker" => ["default"],
+    }
+    ansible.extra_vars = {
+      ansible_user: "vagrant",
+      use_prebuilt_images: USE_PREBUILT,
+      janitor_repo: JANITOR_SOURCE.empty? ? JANITOR_REPO : "/srv/janitor-src",
+      janitor_branch: JANITOR_BRANCH,
+      janitor_domain: VM_IP,
+    }
+  end
+end

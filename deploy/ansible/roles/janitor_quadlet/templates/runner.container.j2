@@ -1,0 +1,17 @@
+# Managed by ansible (roles/janitor_quadlet).
+[Unit]
+Description=janitor runner
+After=janitor-git_store.service janitor-bzr_store.service
+
+[Container]
+Image=ghcr.io/jelmer/janitor/runner:latest
+ContainerName=janitor-runner
+Network=host
+# The whole command line is given here.
+Entrypoint=janitor-runner
+Exec=--listen-address 127.0.0.1 --port 9911 --public-port 9919 --config /mnt/janitor/janitor.conf --public-vcs-location {{ janitor_external_url }} --public-apt-archive-location {{ janitor_external_url }}
+Volume={{ janitor_home }}/janitor.conf:/mnt/janitor/janitor.conf:ro
+Volume={{ janitor_home }}/data/logs:/mnt/janitor/data/logs:rw
+Volume={{ janitor_home }}/data/artifacts:/mnt/janitor/data/artifacts:rw
+Volume={{ janitor_breezy_dir }}/runner:/root/.config/breezy:ro
+{% include 'common.j2' %}

@@ -1,0 +1,47 @@
+# Managed by ansible (roles/caddy).
+{# Headers on every public site; Strict-Transport-Security only on HTTPS. #}
+{% macro security_headers(https, frame_options='DENY', csp="frame-ancestors 'none'; object-src 'none'; base-uri 'self'") %}
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options {{ frame_options }}
+		# Only when the service sends no policy of its own.
+		?Content-Security-Policy "{{ csp }}"
+		Referrer-Policy strict-origin-when-cross-origin
+{% if https %}
+		Strict-Transport-Security "max-age={{ caddy_hsts_max_age }}"
+{% endif %}
+		-Server
+		# Also replace the headers the services send.
+		defer
+	}
+{%- endmacro %}
+{% macro janitor_routes() %}
+	# Workers reach the runner's public API under /runner/, without the prefix.
+	handle_path /runner/* {
+		reverse_proxy 127.0.0.1:9919
+	}
+	handle /git/* {
+		reverse_proxy 127.0.0.1:9924
+	}
+	handle /bzr/* {
+		reverse_proxy 127.0.0.1:9930
+	}
+	# The apt repository metadata; the site serves the pool files itself.
+	handle /dists/* {
+		reverse_proxy 127.0.0.1:9914
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8090
+	}
+{% endmacro %}
+{# A bare port serves plain HTTP for any host name, with no ACME attempt. #}
+{{ ':80' if janitor_scheme == 'http' else janitor_domain }} {
+{{ security_headers(janitor_scheme != 'http') }}
+{{ janitor_routes() }}}
+{% if caddy_self_signed | default(false) | bool %}
+
+:443 {
+	tls /etc/caddy/self-signed.crt /etc/caddy/self-signed.key
+{{ security_headers(true) }}
+{{ janitor_routes() }}}
+{% endif %}

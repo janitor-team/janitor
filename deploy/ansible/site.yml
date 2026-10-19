@@ -1,0 +1,60 @@
+---
+# One play per inventory group. A single host in every group gets all of
+# them; see inventory.ini.
+- name: Validate secret vars
+  hosts: janitor
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check secret vars hold no characters that break their use
+      # breezy_whoami is left out:
+      # "Name <email>" needs @ and spaces.
+      ansible.builtin.assert:
+        that:
+          - not (lookup('vars', item, default='') | string | regex_search("[@:/%'\"\\s]"))
+        fail_msg: >-
+          {{ item }} contains one of @ : / % ' " or whitespace, which break
+          the PostgreSQL URI or the config files it is written into.
+        quiet: true
+      loop:
+        - janitor_db_password
+        - worker_password
+        - breezy_github_token
+        - oauth_client_id
+        - oauth_client_secret
+      when: (lookup('vars', item, default='') | string | length) > 0
+
+    - name: Check a site login has an OpenID Connect provider
+      ansible.builtin.assert:
+        that:
+          - oauth_base_url | default('') | length > 0
+        fail_msg: >-
+          oauth_client_id needs oauth_base_url, an OpenID Connect provider
+          that serves /.well-known/openid-configuration (GitHub does not).
+        quiet: true
+      when: (oauth_client_id | default('') | string | length) > 0
+
+- name: Deploy the janitor control services
+  hosts: control
+  become: true
+  roles:
+    - base
+    # Clones the source; roles/postgres loads schema/*.sql from it.
+    - janitor_source
+    - postgres
+    - redis
+    - caddy
+    - { role: archive_signing_key, when: "'archive' in janitor_services" }
+    - janitor_config
+    - janitor_quadlet
+
+- name: Deploy the janitor workers (the control play already covers a host in both groups)
+  hosts: worker:!control
+  become: true
+  roles:
+    - base
+    # Before janitor-worker starts listening.
+    - worker_firewall
+    - janitor_source
+    - janitor_config
+    - janitor_quadlet

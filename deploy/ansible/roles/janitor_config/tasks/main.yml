@@ -1,0 +1,131 @@
+---
+- name: Create the data directories
+  # Only the control host reads janitor.conf and the data directories.
+  ansible.builtin.file:
+    path: "{{ janitor_home }}/data/{{ item }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0755"
+  loop:
+    - logs
+    - artifacts
+    - cache
+    - cache/archive
+    - cache/differ
+    - dists
+    - git
+    - bzr
+  when: "'control' in group_names"
+
+- name: Deploy janitor.conf
+  # Holds the database password and OAuth secret in plain text.
+  ansible.builtin.template:
+    src: janitor.conf.j2
+    dest: "{{ janitor_home }}/janitor.conf"
+    owner: "{{ ansible_user }}"
+    mode: "0600"
+  register: janitor_conf
+  no_log: true
+  when: "'control' in group_names"
+
+- name: Create a breezy config directory per service
+  # The worker runs untrusted code as root; :ro does not stop it reading.
+  ansible.builtin.file:
+    path: "{{ janitor_breezy_dir }}/{{ item }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0700"
+  loop: "{{ janitor_breezy_services }}"
+
+- name: Deploy each service's breezy authentication.conf
+  # runner and publish get the forge token; the worker logs in with --credentials.
+  ansible.builtin.template:
+    src: authentication.conf.j2
+    dest: "{{ janitor_breezy_dir }}/{{ breezy_service }}/authentication.conf"
+    owner: "{{ ansible_user }}"
+    mode: "0600"
+  loop: "{{ janitor_breezy_services }}"
+  loop_control:
+    loop_var: breezy_service
+  no_log: true
+
+- name: Deploy breezy's ignore file for the services that make working trees
+  # Mounted read-only, and breezy writes this file on first use if missing.
+  ansible.builtin.copy:
+    src: breezy-ignore
+    dest: "{{ janitor_breezy_dir }}/{{ item }}/ignore"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  loop: "{{ janitor_breezy_services | intersect(['publish', 'worker']) }}"
+
+- name: Deploy breezy's whoami for the services that make working trees
+  ansible.builtin.template:
+    src: breezy.conf.j2
+    dest: "{{ janitor_breezy_dir }}/{{ item }}/breezy.conf"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  loop: "{{ janitor_breezy_services | intersect(['publish', 'worker']) }}"
+
+# publish pushes over git+ssh with a key of its own, not the deploy user's.
+- name: Create the bot's SSH directory
+  ansible.builtin.file:
+    path: "{{ janitor_ssh_dir }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0700"
+  when: "'publish' in janitor_services"
+
+- name: Generate the bot's SSH key
+  become: true
+  become_user: "{{ ansible_user }}"
+  ansible.builtin.command:
+    cmd: >-
+      ssh-keygen -t ed25519 -f {{ janitor_ssh_dir }}/id_ed25519
+      -N "" -C "{{ janitor_github_org }}-publish"
+    creates: "{{ janitor_ssh_dir }}/id_ed25519"
+  when: "'publish' in janitor_services"
+
+- name: Read the bot's SSH public key
+  ansible.builtin.slurp:
+    src: "{{ janitor_ssh_dir }}/id_ed25519.pub"
+  register: bot_ssh_pubkey
+  when: "'publish' in janitor_services"
+
+- name: Fetch GitHub's SSH host keys
+  # From GitHub's API over HTTPS rather than trusting ssh-keyscan.
+  ansible.builtin.uri:
+    url: https://api.github.com/meta
+    return_content: true
+  register: github_meta
+  when:
+    - "'publish' in janitor_services"
+    - breezy_github_token is defined
+
+- name: Pin GitHub's SSH host keys
+  ansible.builtin.known_hosts:
+    path: "{{ janitor_ssh_dir }}/known_hosts"
+    name: github.com
+    key: "{{ github_meta.json.ssh_keys | map('regex_replace', '^', 'github.com ') | join('\n') }}"
+  when:
+    - "'publish' in janitor_services"
+    - breezy_github_token is defined
+
+- name: Remind the operator to register the bot's SSH key with GitHub
+  # Not automated: it needs a wider token scope, and a person should look first.
+  ansible.builtin.debug:
+    msg: >-
+      Add this key to the {{ janitor_github_org }} account
+      (https://github.com/settings/keys) so publish can push merge
+      proposal branches: {{ bot_ssh_pubkey.content | b64decode | trim }}
+  when:
+    - "'publish' in janitor_services"
+    - breezy_github_token is defined
+
+- name: Hand the bot's known_hosts to the deploy user
+  ansible.builtin.file:
+    path: "{{ janitor_ssh_dir }}/known_hosts"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  when:
+    - "'publish' in janitor_services"
+    - breezy_github_token is defined

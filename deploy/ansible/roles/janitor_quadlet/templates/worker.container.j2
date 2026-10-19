@@ -1,0 +1,27 @@
+# Managed by ansible (roles/janitor_quadlet).
+[Unit]
+Description=janitor worker
+
+[Container]
+Image={{ janitor_worker_image }}
+ContainerName=janitor-worker
+Network=host
+# sbuild's and ognibuild's unshare sessions need these beyond podman's
+# rootless defaults; mounting a new /proc needs /proc unmasked.
+AddCapability=SYS_ADMIN
+AddCapability=SYS_CHROOT
+AddCapability=SETUID
+AddCapability=SETGID
+Unmask=/proc/*
+# The login is read from a file, so it is not in the environment of builds.
+Volume={{ janitor_home }}/worker-credentials.json:/etc/janitor/worker-credentials.json:ro
+Volume={{ janitor_breezy_dir }}/worker:/root/.config/breezy:ro
+# The build images survive a container restart.
+Volume={{ janitor_home }}/data/sbuild:/root/.cache/sbuild:rw
+Volume={{ janitor_home }}/data/ognibuild:/root/.cache/ognibuild:rw
+# The whole command line is given here. tini-static is PID 1 and reaps
+# what janitor-worker's children leave behind.
+{% set has_init = true %}
+Entrypoint=tini-static
+Exec=-- janitor-worker --credentials /etc/janitor/worker-credentials.json --port 9821 --listen-address {{ janitor_worker_address }} --external-address {{ janitor_worker_address }} --base-url {{ janitor_external_url }}runner/ --loop
+{% include 'common.j2' %}

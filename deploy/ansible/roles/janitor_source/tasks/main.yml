@@ -1,0 +1,134 @@
+---
+# The checkout is needed on every path: roles/postgres loads its schema
+# and the image builds run from it.
+- name: Create the janitor checkout directory
+  ansible.builtin.file:
+    path: "{{ janitor_home }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0755"
+
+- name: Clone janitor
+  # As the deploy user, or git calls the checkout dubiously owned.
+  become: true
+  become_user: "{{ ansible_user }}"
+  ansible.builtin.git:
+    repo: "{{ janitor_repo }}"
+    dest: "{{ janitor_home }}"
+    version: "{{ janitor_branch }}"
+    force: false
+
+- name: Get the checkout's commit
+  become: true
+  become_user: "{{ ansible_user }}"
+  ansible.builtin.command: git rev-parse HEAD
+  args:
+    chdir: "{{ janitor_home }}"
+  register: janitor_head
+  changed_when: false
+
+- name: Create the image build log directory
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/janitor-build-logs"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0755"
+  when: not use_prebuilt_images
+
+- name: Check which images are already built for this commit
+  # make build-<name> tags each image with the commit too (see Makefile).
+  become: true
+  become_user: "{{ ansible_user }}"
+  ansible.builtin.command: podman image exists ghcr.io/jelmer/janitor/{{ item }}:{{ janitor_head.stdout }}
+  register: janitor_image_exists
+  changed_when: false
+  failed_when: janitor_image_exists.rc not in [0, 1]
+  loop: "{{ janitor_images }}"
+  when: not use_prebuilt_images
+
+- name: Build the images this host needs from source
+  # Rootless: the images must land in the deploy user's store, which the
+  # quadlet units run from. Each build takes minutes to an hour; the log
+  # is kept next to the checkout.
+  become: true
+  become_user: "{{ ansible_user }}"
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    make build-{{ item.item }} 2>&1 | tee /home/{{ ansible_user }}/janitor-build-logs/{{ item.item }}.log | tail -n 40
+  args:
+    chdir: "{{ janitor_home }}"
+    executable: /bin/bash
+  loop: "{{ janitor_image_exists.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  changed_when: true
+  when: not use_prebuilt_images and item.rc == 1
+
+- name: Pull the pre-built images
+  # Only a different image id counts as a change.
+  become: true
+  become_user: "{{ ansible_user }}"
+  ansible.builtin.shell: |
+    set -eu
+    ref=ghcr.io/jelmer/janitor/{{ item }}:latest
+    before=$(podman images --quiet --no-trunc "$ref")
+    podman pull --quiet "$ref" >/dev/null
+    after=$(podman images --quiet --no-trunc "$ref")
+    test "$before" = "$after" || echo IMAGE_UPDATED
+  args:
+    executable: /bin/bash
+  register: janitor_image_pull
+  changed_when: "'IMAGE_UPDATED' in janitor_image_pull.stdout"
+  loop: "{{ janitor_images }}"
+  when: use_prebuilt_images
+
+- name: Check every image this host needs is present
+  become: true
+  become_user: "{{ ansible_user }}"
+  ansible.builtin.command: podman image exists ghcr.io/jelmer/janitor/{{ item }}:latest
+  changed_when: false
+  loop: "{{ janitor_images }}"
+
+- name: Create the derived worker image's directory
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/janitor-worker-image"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0755"
+  when: "'worker' in janitor_services and janitor_worker_extra_packages | length > 0"
+
+- name: Write the derived worker image's Containerfile
+  # As docs/Dockerfiles_.md, "Custom worker tooling", describes.
+  ansible.builtin.copy:
+    dest: "/home/{{ ansible_user }}/janitor-worker-image/Containerfile"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+    content: |
+      FROM ghcr.io/jelmer/janitor/worker:latest
+      RUN apt-get update && apt-get install -y --no-install-recommends {{ janitor_worker_extra_packages | join(' ') }} && apt-get clean
+  register: worker_containerfile
+  when: "'worker' in janitor_services and janitor_worker_extra_packages | length > 0"
+
+- name: Check whether the derived worker image exists
+  become: true
+  become_user: "{{ ansible_user }}"
+  ansible.builtin.command: podman image exists localhost/janitor-worker-custom:latest
+  register: worker_custom_exists
+  changed_when: false
+  failed_when: worker_custom_exists.rc not in [0, 1]
+  when: "'worker' in janitor_services and janitor_worker_extra_packages | length > 0"
+
+- name: Build the derived worker image
+  become: true
+  become_user: "{{ ansible_user }}"
+  ansible.builtin.command: >-
+    podman build --pull=never -t localhost/janitor-worker-custom:latest
+    /home/{{ ansible_user }}/janitor-worker-image
+  changed_when: true
+  vars:
+    worker_base_rebuilt: >-
+      {{ janitor_image_exists.results | default([]) | selectattr('item', 'equalto', 'worker')
+         | selectattr('rc', 'equalto', 1) | list | length > 0 }}
+  when:
+    - "'worker' in janitor_services and janitor_worker_extra_packages | length > 0"
+    - worker_containerfile.changed or worker_custom_exists.rc == 1 or worker_base_rebuilt | bool

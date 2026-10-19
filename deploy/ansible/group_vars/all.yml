@@ -1,0 +1,106 @@
+---
+# Deployment variables. Secret values are never written here: pass them
+# with ansible-vault or -e, for example:
+#   ansible-playbook site.yml --ask-vault-pass -e @secrets/instance.vault.yml
+#
+# Required secrets:
+#   janitor_db_password  password of the "janitor" PostgreSQL role
+#   worker_password      password of the worker in janitor_workers below
+#   breezy_whoami        "Name <email>", the commit author the worker uses
+# Optional secrets:
+#   breezy_github_token  GitHub token publish pushes and opens pull
+#                        requests with (repo and workflow scopes); the
+#                        runner lists proposals with it; never the worker
+#   oauth_client_id      OAuth2 client for the site login; omit both
+#   oauth_client_secret  to run the site without login
+# With a login, also set oauth_base_url: an OpenID Connect provider
+# (GitHub is not one).
+# Secrets may not contain @ : / % quotes or whitespace (checked by
+# site.yml).
+
+janitor_repo: https://github.com/janitor-team/janitor.git
+janitor_branch: main
+janitor_home: "/home/{{ ansible_user }}/janitor"
+janitor_domain: CHANGEME        # e.g. janitor.example.com
+janitor_github_org: CHANGEME    # GitHub user or org the bot works as
+# http only for a test VM without a real domain; Caddy then serves plain HTTP.
+janitor_scheme: https
+# HSTS max-age in seconds; browsers keep it that long, so start low on a new domain.
+caddy_hsts_max_age: 31536000
+# Workers reach the runner, git_store and bzr_store through Caddy here.
+janitor_external_url: "{{ janitor_scheme }}://{{ janitor_domain }}/"
+
+# Address this worker listens on and that the runner reaches it on.
+janitor_worker_address: 127.0.0.1
+# On hosts only in [worker], an nftables table lets only the control
+# host and the host itself reach port 9821.
+enable_worker_firewall: true
+# Names or addresses, resolved on the worker: each [control] host's
+# ansible_host, or janitor_domain for one without.
+worker_firewall_sources: "{{ groups['control'] | map('extract', hostvars) | map(attribute='ansible_host', default=janitor_domain) | list }}"
+
+# Every worker gets a row in the worker table on the control host.
+worker_name: worker-1
+janitor_workers:
+  - name: "{{ worker_name }}"
+    password: "{{ worker_password }}"
+
+# The lintian-fixes campaign's build distribution, also in the worker's sbuild chroot name.
+janitor_lintian_fixes_build_distribution: lintian-fixes
+
+# Enough connections for every service's pool.
+postgres_max_connections: 300
+
+# Services on a [control] host, in start order.
+janitor_control_services:
+  - git_store
+  - bzr_store
+  - differ
+  - archive
+  - runner
+  - publish
+  - site
+# Long-running services on this host, from its groups.
+janitor_services: >-
+  {{ (janitor_control_services if 'control' in group_names else [])
+     + (['worker'] if 'worker' in group_names else []) }}
+# Services that use breezy each get their own config dir under here.
+janitor_breezy_dir: "/home/{{ ansible_user }}/.config/janitor-breezy"
+janitor_breezy_services: "{{ janitor_services | intersect(['runner', 'publish', 'worker']) }}"
+# The bot's SSH key and pinned host keys; publish mounts only this directory.
+janitor_ssh_dir: "/home/{{ ansible_user }}/.config/janitor-ssh"
+# Images this host needs (Dockerfile_<name>).
+janitor_images: "{{ janitor_services }}"
+
+# false: build janitor_images from this host's checkout (make build-<name>).
+# true: pull ghcr.io/jelmer/janitor/<name>:latest instead of building
+# janitor_branch.
+use_prebuilt_images: false
+
+# The worker's build session: an unshare session in the image that
+# "ogni cache-env <suite>" makes (janitor.conf's distribution chroot).
+janitor_worker_session_suite: sid
+# sbuild's own unshare-mode tarball; keep in step with janitor.conf's distribution.
+janitor_sbuild_chroot: unstable-amd64-sbuild
+# sbuild finds a campaign's chroot by <build_distribution>-amd64-sbuild.
+janitor_sbuild_chroot_aliases:
+  - "{{ janitor_lintian_fixes_build_distribution }}-amd64-sbuild"
+  - unchanged-amd64-sbuild
+# The published worker image has no codemods (docs/production.md, "Worker
+# images"); list the packages your campaigns need and the playbook builds
+# a derived image with them.
+janitor_worker_extra_packages: []
+janitor_worker_image: >-
+  {{ 'localhost/janitor-worker-custom:latest' if janitor_worker_extra_packages | length > 0
+     else 'ghcr.io/jelmer/janitor/worker:latest' }}
+
+# Health routes the playbook waits for after starting each service.
+janitor_health_urls:
+  git_store: http://127.0.0.1:9923/health
+  bzr_store: http://127.0.0.1:9929/health
+  differ: http://127.0.0.1:9920/health
+  archive: http://127.0.0.1:9914/health
+  runner: http://127.0.0.1:9911/health
+  publish: http://127.0.0.1:9912/health
+  site: http://127.0.0.1:8080/health
+  worker: "http://{{ janitor_worker_address }}:9821/health"

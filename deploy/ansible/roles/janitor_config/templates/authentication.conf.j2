@@ -1,0 +1,11 @@
+# Managed by ansible (roles/janitor_config), for janitor-{{ breezy_service }}.
+{% if breezy_service in ['runner', 'publish'] and breezy_github_token is defined %}
+[github]
+scheme = https
+host = github.com
+url = https://api.github.com
+user = {{ janitor_github_org }}
+password = {{ breezy_github_token }}
+private_token = {{ breezy_github_token }}
+
+{% endif %}

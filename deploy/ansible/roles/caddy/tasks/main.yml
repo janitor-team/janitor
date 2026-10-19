@@ -1,0 +1,48 @@
+---
+- name: Install Caddy
+  ansible.builtin.apt:
+    name:
+      - caddy
+      - openssl
+    state: present
+
+- name: Generate a self-signed certificate for the HTTPS test listener
+  # Only for a test host without a real domain (caddy_self_signed); the
+  # site's login cookies are secure-only, so they need HTTPS.
+  ansible.builtin.command: >
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650
+    -keyout /etc/caddy/self-signed.key
+    -out /etc/caddy/self-signed.crt
+    -subj "/CN={{ janitor_domain }}"
+  args:
+    creates: /etc/caddy/self-signed.crt
+  when: caddy_self_signed | default(false) | bool
+  notify: Restart caddy
+
+- name: Let caddy read the self-signed key
+  ansible.builtin.file:
+    path: /etc/caddy/self-signed.key
+    owner: root
+    group: caddy
+    mode: "0640"
+  when: caddy_self_signed | default(false) | bool
+  notify: Restart caddy
+
+- name: Deploy the Caddyfile
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: /etc/caddy/Caddyfile
+    owner: root
+    group: root
+    mode: "0644"
+    validate: caddy validate --adapter caddyfile --config %s
+  notify: Restart caddy
+
+- name: Start caddy
+  ansible.builtin.service:
+    name: caddy
+    state: started
+    enabled: true
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers
