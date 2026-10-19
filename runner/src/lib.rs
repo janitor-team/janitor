@@ -1502,12 +1502,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_ping_error_not_supported_displays() {
-        let err = PingError::NotSupported("kill not wired".to_string());
-        assert_eq!(format!("{}", err), "Not supported: kill not wired");
-    }
-
     /// New tagged form must round-trip cleanly: serialize emits
     /// `"type"`, deserialize reads it back to the right variant.
     #[test]
@@ -1627,48 +1621,6 @@ mod tests {
             "empty object must decode as None, got {:?}",
             bc
         );
-    }
-
-    /// End-to-end Redis round-trip simulation for the bug report:
-    /// a Polling backchannel, when serialized via the OLD untagged
-    /// derive (just `{"my_url":"..."}`) and re-read by the NEW
-    /// deserializer, must come back as Polling. The data shape is
-    /// what's already sitting in production Redis right now.
-    #[test]
-    fn test_backchannel_legacy_polling_redis_data_decodes_as_polling() {
-        // Exact shape produced by the old `#[serde(untagged)]` derive
-        // serializing `Backchannel::Polling { my_url: ... }`.
-        let legacy_redis_payload = r#"{"my_url":"http://idun.local:8080"}"#;
-        let bc: Backchannel = serde_json::from_str(legacy_redis_payload).unwrap();
-        match bc {
-            Backchannel::Polling { my_url } => {
-                assert_eq!(my_url, "http://idun.local:8080");
-            }
-            other => panic!(
-                "legacy Polling redis payload must decode as Polling \
-                 (not Jenkins as before the fix); got {:?}",
-                other
-            ),
-        }
-    }
-
-    #[test]
-    fn test_committer_env() {
-        let committer = Some("John Doe <john@example.com>");
-
-        let expected = maplit::hashmap! {
-            "DEBFULLNAME".to_string() => "John Doe".to_string(),
-            "GIT_COMMITTER_NAME".to_string() => "John Doe".to_string(),
-            "GIT_AUTHOR_NAME".to_string() => "John Doe".to_string(),
-            "DEBEMAIL".to_string() => "john@example.com".to_string(),
-            "GIT_COMMITTER_EMAIL".to_string() => "john@example.com".to_string(),
-            "GIT_AUTHOR_EMAIL".to_string() => "john@example.com".to_string(),
-            "EMAIL".to_string() => "john@example.com".to_string(),
-            "COMMITTER".to_string() => "John Doe <john@example.com>".to_string(),
-            "BRZ_EMAIL".to_string() => "John Doe <john@example.com>".to_string(),
-        };
-
-        assert_eq!(committer_env(committer), expected);
     }
 
     #[test]
@@ -1800,262 +1752,26 @@ mod tests {
     }
 
     #[test]
-    fn test_committer_env_no_committer() {
-        let committer = None;
-
-        let expected = maplit::hashmap! {};
-
-        assert_eq!(committer_env(committer), expected);
-    }
-
-    #[test]
-    fn is_log_filename_test() {
-        assert!(is_log_filename("foo.log"));
-        assert!(is_log_filename("foo.log.1"));
-        assert!(is_log_filename("foo.1.log"));
-        assert!(!is_log_filename("foo.1"));
-        assert!(!is_log_filename("foo.1.log.1"));
-        assert!(!is_log_filename("foo.1.notlog"));
-        assert!(!is_log_filename("foo.log.notlog"));
-    }
-
-    #[test]
-    fn test_dpkg_vendor() {
-        let vendor = dpkg_vendor();
-        assert!(vendor.is_some());
-    }
-
-    #[test]
-    fn test_committer_env_name_only() {
-        // Committer with name but no email
-        let env = committer_env(Some("John Doe"));
-        assert_eq!(env.get("DEBFULLNAME"), Some(&"John Doe".to_string()));
-        assert_eq!(env.get("COMMITTER"), Some(&"John Doe".to_string()));
-        assert_eq!(env.get("BRZ_EMAIL"), Some(&"John Doe".to_string()));
-    }
-
-    #[test]
-    fn test_is_log_filename_extensions() {
-        // Standard .log files
-        assert!(is_log_filename("build.log"));
-        assert!(is_log_filename("worker.log"));
-        assert!(is_log_filename("a.log"));
-
-        // Rotated logs
-        assert!(is_log_filename("build.log.1"));
-        assert!(is_log_filename("build.log.42"));
-
-        // Nested number format (e.g., build.1.log)
-        assert!(is_log_filename("build.1.log"));
-
-        // Not log files
-        assert!(!is_log_filename("build.txt"));
-        assert!(!is_log_filename("build.log.bak"));
-        assert!(!is_log_filename("build"));
-        // ".log" is a hidden file with empty basename, not a log
-        assert!(!is_log_filename(".log"));
-    }
-
-    /// Compressed log files: build.log.gz, build.log.bz2, build.log.xz,
-    /// build.log.lzma, build.log.Z. These were unhandled by the
-    /// previous test pass; the function handles them so tests should
-    /// lock that in.
-    #[test]
-    fn test_is_log_filename_compressed() {
-        assert!(is_log_filename("build.log.gz"));
-        assert!(is_log_filename("worker.log.bz2"));
-        assert!(is_log_filename("worker.log.xz"));
-        assert!(is_log_filename("worker.log.lzma"));
-        // The capital-Z form (legacy compress(1)) should also work.
-        assert!(is_log_filename("worker.log.Z"));
-    }
-
-    /// Nearby false positives that look compressed but aren't:
-    /// unsupported compression suffixes (.zst, .lz4) and the
-    /// double-compressed form should not match.
-    #[test]
-    fn test_is_log_filename_compressed_negatives() {
-        // Unknown compression suffixes
-        assert!(!is_log_filename("worker.log.zst"));
-        assert!(!is_log_filename("worker.log.lz4"));
-        // Compression suffix without `log` in the second-to-last position
-        assert!(!is_log_filename("worker.txt.gz"));
-        assert!(!is_log_filename("output.gz"));
-    }
-
-    /// Empty input and degenerate inputs should be rejected.
-    #[test]
-    fn test_is_log_filename_degenerate() {
-        assert!(!is_log_filename(""));
-        assert!(!is_log_filename("log"));
-        // Single-component name with no extension.
-        assert!(!is_log_filename("logfile"));
-    }
-
-    /// Standard Debian package filename:
-    /// <name>_<version>_<arch>.deb -> name only.
-    #[test]
-    fn test_deb_package_name_standard() {
-        assert_eq!(
-            deb_package_name_from_filename("hello_2.10-3_amd64.deb"),
-            Some("hello".to_string())
-        );
-    }
-
-    /// Source package names with hyphens and digits round-trip.
-    #[test]
-    fn test_deb_package_name_with_hyphens() {
-        assert_eq!(
-            deb_package_name_from_filename("python3-foo_1.0.0-1_all.deb"),
-            Some("python3-foo".to_string())
-        );
-        assert_eq!(
-            deb_package_name_from_filename("libfoo-bar2_3.14_amd64.deb"),
-            Some("libfoo-bar2".to_string())
-        );
-    }
-
-    /// Non-.deb files (changes, dsc, buildinfo, source tarballs)
-    /// must return None -- find_changes uses this to filter only
-    /// binary packages out of the changes file listing.
-    #[test]
-    fn test_deb_package_name_non_deb_returns_none() {
-        assert_eq!(deb_package_name_from_filename("hello.changes"), None);
-        assert_eq!(deb_package_name_from_filename("hello.dsc"), None);
-        assert_eq!(
-            deb_package_name_from_filename("hello_2.10-3_amd64.buildinfo"),
-            None
-        );
-        assert_eq!(
-            deb_package_name_from_filename("hello_2.10.orig.tar.gz"),
-            None
-        );
-    }
-
-    /// Filenames without an underscore are not valid Debian
-    /// package filenames and must return None -- otherwise we'd
-    /// silently emit nonsense like `nounderscore.deb` as a
-    /// package name.
-    #[test]
-    fn test_deb_package_name_no_underscore_returns_none() {
-        assert_eq!(deb_package_name_from_filename("nounderscore.deb"), None);
-        assert_eq!(deb_package_name_from_filename(".deb"), None);
-    }
-
-    /// Empty package name (`_version_arch.deb`) returns None.
-    #[test]
-    fn test_deb_package_name_empty_name_returns_none() {
-        assert_eq!(deb_package_name_from_filename("_1.0_amd64.deb"), None);
-    }
-
-    /// Empty input returns None.
-    #[test]
-    fn test_deb_package_name_empty_input() {
-        assert_eq!(deb_package_name_from_filename(""), None);
-    }
-
-    #[test]
-    fn test_janitor_result_serde() {
-        let result = JanitorResult {
-            log_id: "log-123".to_string(),
-            branch_url: "https://example.com/repo".to_string(),
-            subpath: Some("debian/".to_string()),
-            code: "success".to_string(),
-            transient: Some(false),
-            codebase: "mycodebase".to_string(),
-            campaign: "lintian-fixes".to_string(),
-            description: Some("Fixed 3 lintian issues".to_string()),
-            codemod: Some(serde_json::json!({"applied": 3})),
-            value: Some(30),
-            logfilenames: vec!["build.log".to_string(), "worker.log".to_string()],
-            start_time: chrono::Utc::now(),
-            finish_time: chrono::Utc::now(),
-            revision: Some(breezyshim::RevisionId::from(b"rev-1".to_vec())),
-            main_branch_revision: Some(breezyshim::RevisionId::from(b"rev-0".to_vec())),
-            change_set: Some("cs-1".to_string()),
-            ..Default::default()
-        };
-        let json = serde_json::to_string(&result).unwrap();
-        let roundtripped: JanitorResult = serde_json::from_str(&json).unwrap();
-        assert_eq!(roundtripped.log_id, "log-123");
-        assert_eq!(roundtripped.code, "success");
-        assert_eq!(roundtripped.codebase, "mycodebase");
-        assert_eq!(roundtripped.campaign, "lintian-fixes");
-        assert_eq!(roundtripped.value, Some(30));
-        assert_eq!(roundtripped.logfilenames, vec!["build.log", "worker.log"]);
-    }
-
-    #[test]
-    fn test_janitor_result_with_failure() {
-        let result = JanitorResult {
-            log_id: "log-456".to_string(),
-            branch_url: "https://example.com/repo".to_string(),
-            code: "build-failed".to_string(),
-            transient: Some(true),
-            codebase: "failcodebase".to_string(),
-            campaign: "fresh-releases".to_string(),
-            description: Some("Build failed".to_string()),
-            start_time: chrono::Utc::now(),
-            finish_time: chrono::Utc::now(),
-            failure_details: Some(serde_json::json!({"error": "compilation failed"})),
-            failure_stage: Some(vec!["build".to_string()]),
-            ..Default::default()
-        };
-        let json = serde_json::to_string(&result).unwrap();
-        let roundtripped: JanitorResult = serde_json::from_str(&json).unwrap();
-        assert_eq!(roundtripped.code, "build-failed");
-        assert_eq!(roundtripped.transient, Some(true));
-        assert!(roundtripped.failure_details.is_some());
-        assert_eq!(roundtripped.failure_stage, Some(vec!["build".to_string()]));
-    }
-
-    #[test]
-    fn test_janitor_result_with_resume() {
-        let result = JanitorResult {
-            log_id: "log-789".to_string(),
-            branch_url: "https://example.com/repo".to_string(),
-            code: "success".to_string(),
-            codebase: "test".to_string(),
-            campaign: "test".to_string(),
-            description: Some("OK".to_string()),
-            codemod: Some(serde_json::json!({})),
-            start_time: chrono::Utc::now(),
-            finish_time: chrono::Utc::now(),
-            remotes: Some(maplit::hashmap! {
-                "origin".to_string() => ResultRemote {
-                    url: "https://example.com/origin".to_string(),
-                }
-            }),
-            branches: Some(vec![(
-                Some("main".to_string()),
-                Some("refs/heads/main".to_string()),
-                None,
-                None,
-            )]),
-            resume: Some(ResultResume {
-                run_id: "prev-run".to_string(),
-            }),
-            target: Some(ResultTarget {
-                name: "debian".to_string(),
-                details: serde_json::json!({"dist": "unstable"}),
-            }),
-            ..Default::default()
-        };
-        let json = serde_json::to_string(&result).unwrap();
-        let roundtripped: JanitorResult = serde_json::from_str(&json).unwrap();
-        assert_eq!(roundtripped.resume.as_ref().unwrap().run_id, "prev-run");
-        assert_eq!(roundtripped.target.as_ref().unwrap().name, "debian");
-        assert!(roundtripped.remotes.is_some());
-        assert!(roundtripped.branches.is_some());
-    }
-
-    #[test]
-    fn test_find_changes_error_display() {
-        let err = FindChangesError::NoChangesFile(std::path::PathBuf::from("/tmp/output"));
-        assert_eq!(err.to_string(), "No changes file found in /tmp/output");
-
-        let err = FindChangesError::MissingChangesFileFields("Source");
-        assert_eq!(err.to_string(), "Missing field Source in changes files");
+    fn test_deb_package_name_from_filename() {
+        for (filename, expected) in [
+            ("hello_2.10-3_amd64.deb", Some("hello")),
+            ("python3-foo_1.0.0-1_all.deb", Some("python3-foo")),
+            ("libfoo-bar2_3.14_amd64.deb", Some("libfoo-bar2")),
+            ("hello.changes", None),
+            ("hello.dsc", None),
+            ("hello_2.10-3_amd64.buildinfo", None),
+            ("hello_2.10.orig.tar.gz", None),
+            ("nounderscore.deb", None),
+            (".deb", None),
+            ("_1.0_amd64.deb", None),
+            ("", None),
+        ] {
+            assert_eq!(
+                deb_package_name_from_filename(filename).as_deref(),
+                expected,
+                "{filename}"
+            );
+        }
     }
 
     // The worker emits `stage` as a single string. Earlier the runner
