@@ -1,6 +1,6 @@
 //! Request and response bodies of the publisher's HTTP API.
 
-use janitor_types::{Campaign, CodebaseName, PublishId, RunId};
+use janitor_types::{PublishId, RunId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use utoipa::ToSchema;
@@ -32,18 +32,9 @@ pub struct NotFoundResponse {
     /// ID of the resource that was not found
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// Bucket name if relevant to the not found error
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bucket: Option<String>,
     /// Run ID if relevant to the not found error
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_id: Option<RunId>,
-    /// Campaign name if relevant to the not found error
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub campaign: Option<Campaign>,
-    /// Codebase name if relevant to the not found error
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub codebase: Option<CodebaseName>,
 }
 
 /// Response for `POST /{campaign}/{codebase}/publish` with an unknown
@@ -94,9 +85,6 @@ pub struct AutopublishResponse {
 pub struct ErrorResponse {
     /// Human-readable error message.
     pub error: String,
-    /// Optional additional details.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub details: Option<String>,
     /// Optional machine-readable error code.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
@@ -107,15 +95,8 @@ impl ErrorResponse {
     pub fn new(error: impl Into<String>) -> Self {
         Self {
             error: error.into(),
-            details: None,
             code: None,
         }
-    }
-
-    /// Attach additional details.
-    pub fn with_details(mut self, details: impl Into<String>) -> Self {
-        self.details = Some(details.into());
-        self
     }
 
     /// Attach a machine-readable code.
