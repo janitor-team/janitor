@@ -103,7 +103,7 @@ The published worker image carries Debian's build tooling, but it carries no
 codemods. Build your own worker image based on the published one with the
 codemods your campaigns need installed.
 
-See "Custom worker tooling" in [containers.md](containers.md) for the
+See [Custom worker tooling](containers.md#custom-worker-tooling) for the
 Dockerfile to start from, then run your image in place of the published one.
 
 ## sbuild chroots
