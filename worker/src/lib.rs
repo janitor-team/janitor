@@ -113,27 +113,17 @@ pub fn get_build_arch() -> Result<String, DpkgArchitectureError> {
 
 pub fn convert_codemod_script_failed(i: i32, command: &str) -> WorkerFailure {
     match i {
-        127 => WorkerFailure {
-            code: "command-not-found".to_string(),
-            description: format!("Command {} not found", command),
-            details: None,
-            stage: vec!["codemod".to_string()],
-            transient: None,
-        },
-        137 => WorkerFailure {
-            code: "killed".to_string(),
-            description: "Process was killed (by OOM killer?)".to_string(),
-            details: None,
-            stage: vec!["codemod".to_string()],
-            transient: None,
-        },
-        _ => WorkerFailure {
-            code: "command-failed".to_string(),
-            description: format!("Script {} failed to run with code {}", command, i),
-            details: None,
-            stage: vec!["codemod".to_string()],
-            transient: None,
-        },
+        127 => WorkerFailure::new(
+            "command-not-found",
+            format!("Command {} not found", command),
+            ["codemod"],
+        ),
+        137 => WorkerFailure::new("killed", "Process was killed (by OOM killer?)", ["codemod"]),
+        _ => WorkerFailure::new(
+            "command-failed",
+            format!("Script {} failed to run with code {}", command, i),
+            ["codemod"],
+        ),
     }
 }
 
@@ -208,13 +198,12 @@ pub fn run_worker(
         "debian" => Box::new(crate::debian::DebianTarget::new(env)),
         "generic" => Box::new(crate::generic::GenericTarget::new(env)),
         n => {
-            return Err(WorkerFailure {
-                code: "target-unsupported".to_owned(),
-                description: format!("The target {} is not supported", n),
-                transient: Some(false),
-                stage: vec!["setup".to_owned()],
-                details: None,
-            });
+            return Err(WorkerFailure::new(
+                "target-unsupported",
+                format!("The target {} is not supported", n),
+                ["setup"],
+            )
+            .with_transient(false));
         }
     };
 
@@ -234,28 +223,23 @@ pub fn run_worker(
                 description,
                 retry_after,
             }) => {
-                return Err(WorkerFailure {
-                    code: code.clone(),
-                    description,
-                    stage: vec!["setup".to_owned()],
-                    transient: Some(code.contains("temporarily")),
-                    details: Some(serde_json::json!({
+                return Err(WorkerFailure::new(code.clone(), description, ["setup"])
+                    .with_transient(code.contains("temporarily"))
+                    .with_details(serde_json::json!({
                         "url": main_branch_url,
                         "retry_after": retry_after.map(|r| r.num_seconds()),
-                    })),
-                })
+                    })))
             }
         };
         metadata.branch_url = Some(main_branch.as_ref().unwrap().get_user_url());
         metadata.vcs_type = Some(
             janitor::vcs::get_branch_vcs_type(main_branch.as_ref().unwrap()).map_err(|e| {
-                WorkerFailure {
-                    code: "vcs-type-unsupported".to_owned(),
-                    description: format!("Unable to determine VCS type: {}", e),
-                    stage: vec!["setup".to_owned()],
-                    transient: Some(false),
-                    details: None,
-                }
+                WorkerFailure::new(
+                    "vcs-type-unsupported",
+                    format!("Unable to determine VCS type: {}", e),
+                    ["setup"],
+                )
+                .with_transient(false)
             })?,
         );
         metadata.subpath = Some(subpath.to_string_lossy().to_string());
@@ -271,13 +255,13 @@ pub fn run_worker(
         {
             Some(f)
         } else {
-            return Err(WorkerFailure {
-                code: "vcs-type-unsupported".to_string(),
-                description: format!("Unable to find format for vcs type {}", vcs_type.unwrap()),
-                stage: vec!["setup".to_owned()],
-                transient: Some(false),
-                details: Some(serde_json::json!({"vcs_type": vcs_type})),
-            });
+            return Err(WorkerFailure::new(
+                "vcs-type-unsupported",
+                format!("Unable to find format for vcs type {}", vcs_type.unwrap()),
+                ["setup"],
+            )
+            .with_transient(false)
+            .with_details(serde_json::json!({"vcs_type": vcs_type})));
         };
     }
 
@@ -350,15 +334,15 @@ pub fn run_worker(
                     url,
                     description
                 );
-                return Err(WorkerFailure {
-                    code: "worker-resume-branch-temporarily-unavailable".to_owned(),
+                return Err(WorkerFailure::new(
+                    "worker-resume-branch-temporarily-unavailable",
                     description,
-                    stage: vec!["setup".to_owned()],
-                    transient: Some(true),
-                    details: Some(serde_json::json!({
-                        "url": url,
-                    })),
-                });
+                    ["setup"],
+                )
+                .with_transient(true)
+                .with_details(serde_json::json!({
+                    "url": url,
+                })));
             }
             Err(silver_platter::vcs::BranchOpenError::RateLimited {
                 url,
@@ -366,58 +350,56 @@ pub fn run_worker(
                 retry_after,
             }) => {
                 log::info!("Resume branch URL {} rate limited: {}", url, description);
-                return Err(WorkerFailure {
-                    code: "worker-resume-branch-rate-limited".to_owned(),
+                return Err(WorkerFailure::new(
+                    "worker-resume-branch-rate-limited",
                     description,
-                    stage: vec!["setup".to_owned()],
-                    transient: Some(true),
-                    details: Some(serde_json::json!({
-                        "url": url,
-                        "retry_after": retry_after,
-                    })),
-                });
+                    ["setup"],
+                )
+                .with_transient(true)
+                .with_details(serde_json::json!({
+                    "url": url,
+                    "retry_after": retry_after,
+                })));
             }
             Err(silver_platter::vcs::BranchOpenError::Unavailable { url, description }) => {
                 log::info!("Resume branch URL {} unavailable: {}", url, description);
-                return Err(WorkerFailure {
-                    code: "worker-resume-branch-unavailable".to_owned(),
+                return Err(WorkerFailure::new(
+                    "worker-resume-branch-unavailable",
                     description,
-                    stage: vec!["setup".to_owned()],
-                    transient: Some(false),
-                    details: Some(serde_json::json!({
-                        "url": url
-                    })),
-                });
+                    ["setup"],
+                )
+                .with_transient(false)
+                .with_details(serde_json::json!({
+                    "url": url
+                })));
             }
             Err(silver_platter::vcs::BranchOpenError::Missing { url, description }) => {
                 log::info!("Resume branch URL {} missing: {}", url, description);
-                return Err(WorkerFailure {
-                    code: "worker-resume-branch-missing".to_owned(),
+                return Err(WorkerFailure::new(
+                    "worker-resume-branch-missing",
                     description,
-                    stage: vec!["setup".to_owned()],
-                    transient: Some(false),
-                    details: Some(serde_json::json!({
-                        "url": url
-                    })),
-                });
+                    ["setup"],
+                )
+                .with_transient(false)
+                .with_details(serde_json::json!({
+                    "url": url
+                })));
             }
             Err(silver_platter::vcs::BranchOpenError::Unsupported { .. }) => {
-                return Err(WorkerFailure {
-                    code: "worker-resume-branch-unsupported".to_owned(),
-                    description: "Unsupported resume branch URL".to_owned(),
-                    stage: vec!["setup".to_owned()],
-                    transient: Some(false),
-                    details: None,
-                });
+                return Err(WorkerFailure::new(
+                    "worker-resume-branch-unsupported",
+                    "Unsupported resume branch URL",
+                    ["setup"],
+                )
+                .with_transient(false));
             }
             Err(silver_platter::vcs::BranchOpenError::Other(..)) => {
-                return Err(WorkerFailure {
-                    code: "worker-resume-branch-error".to_owned(),
-                    description: "Error opening resume branch".to_owned(),
-                    stage: vec!["setup".to_owned()],
-                    transient: Some(false),
-                    details: None,
-                });
+                return Err(WorkerFailure::new(
+                    "worker-resume-branch-error",
+                    "Error opening resume branch",
+                    ["setup"],
+                )
+                .with_transient(false));
             }
             Ok(b) => Some(b),
         }
@@ -477,42 +459,36 @@ pub fn run_worker(
     let ws = match ws_builder.build() {
         Ok(ws) => ws,
         Err(silver_platter::workspace::Error::BrzError(e @ BrzError::IncompleteRead(..))) => {
-            return Err(WorkerFailure {
-                code: "incomplete-read".to_owned(),
-                description: e.to_string(),
-                stage: vec!["setup".to_owned(), "clone".to_owned()],
-                transient: Some(true),
-                details: None,
-            });
+            return Err(
+                WorkerFailure::new("incomplete-read", e.to_string(), ["setup", "clone"])
+                    .with_transient(true),
+            );
         }
         Err(silver_platter::workspace::Error::BrzError(BrzError::MalformedTransform(msg))) => {
-            return Err(WorkerFailure {
-                code: "malformed-transform".to_owned(),
-                description: format!("Malformed transform: {:?}", msg),
-                stage: vec!["setup".to_owned(), "clone".to_owned()],
-                transient: Some(false),
-                details: None,
-            });
+            return Err(WorkerFailure::new(
+                "malformed-transform",
+                format!("Malformed transform: {:?}", msg),
+                ["setup", "clone"],
+            )
+            .with_transient(false));
         }
         Err(silver_platter::workspace::Error::BrzError(
             e @ BrzError::TransformRenameFailed(..),
         )) => {
-            return Err(WorkerFailure {
-                code: "transform-rename-failed".to_owned(),
-                description: e.to_string(),
-                stage: vec!["setup".to_owned(), "clone".to_owned()],
-                transient: Some(false),
-                details: None,
-            });
+            return Err(WorkerFailure::new(
+                "transform-rename-failed",
+                e.to_string(),
+                ["setup", "clone"],
+            )
+            .with_transient(false));
         }
         Err(silver_platter::workspace::Error::BrzError(e @ BrzError::ImmortalLimbo(..))) => {
-            return Err(WorkerFailure {
-                code: "transform-immortal-limbo".to_owned(),
-                description: e.to_string(),
-                stage: vec!["setup".to_owned(), "clone".to_owned()],
-                transient: Some(false),
-                details: None,
-            });
+            return Err(WorkerFailure::new(
+                "transform-immortal-limbo",
+                e.to_string(),
+                ["setup", "clone"],
+            )
+            .with_transient(false));
         }
         Err(silver_platter::workspace::Error::BrzError(BrzError::UnexpectedHttpStatus {
             url,
@@ -521,21 +497,20 @@ pub fn run_worker(
             headers,
         })) => {
             if code == 502 {
-                return Err(WorkerFailure {
-                    code: "bad-gateway".to_owned(),
-                    description: if let Some(ref extra) = extra {
+                return Err(WorkerFailure::new(
+                    "bad-gateway",
+                    if let Some(ref extra) = extra {
                         format!("Bad gateway from {}: {}", url, extra)
                     } else {
                         format!("Bad gateway from {}", url)
                     },
-                    stage: vec!["setup".to_owned(), "clone".to_owned()],
-                    transient: Some(true),
-                    details: None,
-                });
+                    ["setup", "clone"],
+                )
+                .with_transient(true));
             } else {
-                return Err(WorkerFailure {
-                    code: format!("http-{}", code),
-                    description: if let Some(ref extra) = extra {
+                return Err(WorkerFailure::new(
+                    format!("http-{}", code),
+                    if let Some(ref extra) = extra {
                         format!(
                             "Unexpected HTTP status code {} from {}: {}",
                             code, url, extra
@@ -543,101 +518,79 @@ pub fn run_worker(
                     } else {
                         format!("Unexpected HTTP status code {} from {}", code, url)
                     },
-                    stage: vec!["setup".to_owned(), "clone".to_owned()],
-                    details: Some(serde_json::json!({
-                        "status-code": code,
-                        "url": url,
-                        "extra": extra,
-                        "headers": headers,
-                    })),
-                    transient: None,
-                });
+                    ["setup", "clone"],
+                )
+                .with_details(serde_json::json!({
+                    "status-code": code,
+                    "url": url,
+                    "extra": extra,
+                    "headers": headers,
+                })));
             }
         }
         Err(silver_platter::workspace::Error::BrzError(BrzError::TransportError(msg))) => {
             if msg.contains("No space left on device") {
-                return Err(WorkerFailure {
-                    code: "no-space-on-device".to_owned(),
-                    description: msg,
-                    stage: vec!["setup".to_owned(), "clone".to_owned()],
-                    transient: Some(true),
-                    details: None,
-                });
+                return Err(
+                    WorkerFailure::new("no-space-on-device", msg, ["setup", "clone"])
+                        .with_transient(true),
+                );
             }
             if msg.contains("Too many open files") {
-                return Err(WorkerFailure {
-                    code: "too-many-open-files".to_owned(),
-                    description: msg,
-                    stage: vec!["setup".to_owned(), "clone".to_owned()],
-                    transient: Some(true),
-                    details: None,
-                });
+                return Err(
+                    WorkerFailure::new("too-many-open-files", msg, ["setup", "clone"])
+                        .with_transient(true),
+                );
             }
             if msg.contains("Temporary failure in name resolution") {
-                return Err(WorkerFailure {
-                    code: "temporary-transport-error".to_owned(),
-                    description: msg,
-                    stage: vec!["setup".to_owned(), "clone".to_owned()],
-                    transient: Some(true),
-                    details: None,
-                });
+                return Err(WorkerFailure::new(
+                    "temporary-transport-error",
+                    msg,
+                    ["setup", "clone"],
+                )
+                .with_transient(true));
             }
-            return Err(WorkerFailure {
-                code: "transport-error".to_owned(),
-                description: msg,
-                stage: vec!["setup".to_owned(), "clone".to_owned()],
-                transient: Some(false),
-                details: None,
-            });
+            return Err(
+                WorkerFailure::new("transport-error", msg, ["setup", "clone"])
+                    .with_transient(false),
+            );
         }
         Err(silver_platter::workspace::Error::BrzError(BrzError::RemoteGitError(ref msg))) => {
-            return Err(WorkerFailure {
-                code: "git-error".to_owned(),
-                description: msg.clone(),
-                stage: vec!["setup".to_owned(), "clone".to_owned()],
-                transient: Some(false),
-                details: None,
-            });
+            return Err(
+                WorkerFailure::new("git-error", msg.clone(), ["setup", "clone"])
+                    .with_transient(false),
+            );
         }
         Err(silver_platter::workspace::Error::BrzError(e @ BrzError::Timeout)) => {
-            return Err(WorkerFailure {
-                code: "timeout".to_owned(),
-                description: e.to_string(),
-                stage: vec!["setup".to_owned(), "clone".to_owned()],
-                transient: Some(true),
-                details: None,
-            });
+            return Err(
+                WorkerFailure::new("timeout", e.to_string(), ["setup", "clone"])
+                    .with_transient(true),
+            );
         }
         Err(silver_platter::workspace::Error::BrzError(BrzError::MissingNestedTree(ref msg))) => {
-            return Err(WorkerFailure {
-                code: "requires-nested-tree-support".to_owned(),
-                description: msg.display().to_string(),
-                stage: vec!["setup".to_owned(), "clone".to_owned()],
-                transient: Some(false),
-                details: None,
-            });
+            return Err(WorkerFailure::new(
+                "requires-nested-tree-support",
+                msg.display().to_string(),
+                ["setup", "clone"],
+            )
+            .with_transient(false));
         }
         Err(e) => {
-            return Err(WorkerFailure {
-                code: "unexpected-error".to_owned(),
-                description: e.to_string(),
-                stage: vec!["setup".to_owned(), "clone".to_owned()],
-                transient: Some(false),
-                details: None,
-            });
+            return Err(
+                WorkerFailure::new("unexpected-error", e.to_string(), ["setup", "clone"])
+                    .with_transient(false),
+            );
         }
     };
 
     log::info!("Workspace ready - starting.");
 
     if ws.local_tree().has_changes().unwrap() {
-        return Err(WorkerFailure {
-            code: "unexpected-changes-in-tree".to_owned(),
-            description: "The working tree has unexpected changes after initial clone".to_owned(),
-            stage: vec!["setup".to_owned(), "clone".to_owned()],
-            details: None,
-            transient: Some(false),
-        });
+        return Err(WorkerFailure::new(
+            "unexpected-changes-in-tree",
+            "The working tree has unexpected changes after initial clone",
+            ["setup", "clone"],
+        )
+        .with_transient(false));
     }
 
     if !skip_setup_validation {
@@ -675,13 +628,10 @@ pub fn run_worker(
     let changer_result = match r {
         Ok(r) => {
             if !ws.any_branch_changes() {
-                return Err(WorkerFailure {
-                    code: "nothing-to-do".to_owned(),
-                    description: "Nothing to do.".to_owned(),
-                    stage: vec!["codemod".to_owned()],
-                    transient: Some(false),
-                    details: None,
-                });
+                return Err(
+                    WorkerFailure::new("nothing-to-do", "Nothing to do.", ["codemod"])
+                        .with_transient(false),
+                );
             }
             r
         }
@@ -700,13 +650,12 @@ pub fn run_worker(
                     ws.main_branch().unwrap().last_revision(),
                     ws.local_tree().branch().last_revision()
                 );
-                return Err(WorkerFailure {
-                    code: "nothing-new-to-do".to_owned(),
-                    description: description.clone(),
-                    stage: vec!["codemod".to_owned()],
-                    transient: Some(false),
-                    details: None,
-                });
+                return Err(WorkerFailure::new(
+                    "nothing-new-to-do",
+                    description.clone(),
+                    ["codemod"],
+                )
+                .with_transient(false));
             } else if force_build {
                 Box::new(silver_platter::codemod::CommandResult {
                     description: Some("No change build".to_owned()),
@@ -771,29 +720,27 @@ pub fn run_worker(
 
     let actual_vcs_type =
         janitor::vcs::get_branch_vcs_type(&ws.local_tree().branch()).map_err(|e| {
-            WorkerFailure {
-                code: "vcs-type-unsupported".to_owned(),
-                description: format!("Unable to determine VCS type: {}", e),
-                stage: vec!["result-push".to_owned()],
-                transient: Some(false),
-                details: None,
-            }
+            WorkerFailure::new(
+                "vcs-type-unsupported",
+                format!("Unable to determine VCS type: {}", e),
+                ["result-push"],
+            )
+            .with_transient(false)
         })?;
 
     let vcs_type = if vcs_type.is_none() {
         actual_vcs_type
     } else if Some(actual_vcs_type) != vcs_type {
-        return Err(WorkerFailure {
-            code: "vcs-type-mismatch".to_owned(),
-            description: format!(
+        return Err(WorkerFailure::new(
+            "vcs-type-mismatch",
+            format!(
                 "Expected VCS {}, got {}",
                 vcs_type.unwrap(),
                 actual_vcs_type
             ),
-            stage: vec!["result-push".to_owned()],
-            transient: Some(false),
-            details: None,
-        });
+            ["result-push"],
+        )
+        .with_transient(false));
     } else {
         vcs_type.unwrap()
     };
@@ -1117,93 +1064,67 @@ fn push_error_to_worker_failure(e: BrzError, stage: Vec<String>) -> WorkerFailur
             url,
             extra,
             ..
-        } => WorkerFailure {
-            code: "bad-gateway".to_string(),
-            description: if let Some(extra) = extra.as_ref() {
+        } => WorkerFailure::new(
+            "bad-gateway",
+            if let Some(extra) = extra.as_ref() {
                 format!("Bad gateway from {}: {}", url, extra)
             } else {
                 format!("Bad gateway from {}", url)
             },
             stage,
-            transient: Some(true),
-            details: Some(serde_json::json!({
-                "url": url,
-                "extra":  extra,
-            })),
-        },
+        )
+        .with_transient(true)
+        .with_details(serde_json::json!({
+            "url": url,
+            "extra":  extra,
+        })),
         BrzError::UnexpectedHttpStatus {
             code, url, extra, ..
-        } => WorkerFailure {
-            code: format!("http-{}", code),
-            description: if let Some(extra) = extra.as_ref() {
+        } => WorkerFailure::new(
+            format!("http-{}", code),
+            if let Some(extra) = extra.as_ref() {
                 format!("Unexpected HTTP status {} from {}: {}", code, url, extra)
             } else {
                 format!("Unexpected HTTP status {} from {}", code, url)
             },
             stage,
-            details: Some(serde_json::json!({
-                "status-code": code,
-                "url": url,
-                "extra": extra,
-            })),
-            transient: None,
-        },
+        )
+        .with_details(serde_json::json!({
+            "status-code": code,
+            "url": url,
+            "extra": extra,
+        })),
         BrzError::ConnectionError(msg) => {
             if msg.contains("Temporary failure in name resolution") {
-                WorkerFailure {
-                    code: "failed-temporarily".to_string(),
-                    description: format!("Failed to push result branch: {}", msg),
+                WorkerFailure::new(
+                    "failed-temporarily",
+                    format!("Failed to push result branch: {}", msg),
                     stage,
-                    transient: Some(true),
-                    details: None,
-                }
+                )
+                .with_transient(true)
             } else {
-                WorkerFailure {
-                    code: "push-failed".to_string(),
-                    description: format!("Failed to push result branch: {}", msg),
+                WorkerFailure::new(
+                    "push-failed",
+                    format!("Failed to push result branch: {}", msg),
                     stage,
-                    details: None,
-                    transient: None,
-                }
+                )
             }
         }
         BrzError::InvalidHttpResponse(..)
         | BrzError::IncompleteRead(..)
-        | BrzError::TransportError(..) => WorkerFailure {
-            code: "push-failed".to_string(),
-            description: format!("Failed to push result branch: {}", e),
+        | BrzError::TransportError(..) => WorkerFailure::new(
+            "push-failed",
+            format!("Failed to push result branch: {}", e),
             stage,
-            details: None,
-            transient: None,
-        },
-        BrzError::RemoteGitError(msg) if msg == "missing necessary objects" => WorkerFailure {
-            code: "git-missing-necessary-objects".to_string(),
-            description: msg,
-            stage,
-            details: None,
-            transient: None,
-        },
-        BrzError::RemoteGitError(msg) if msg == "failed to updated ref" => WorkerFailure {
-            code: "git-ref-update-failed".to_string(),
-            description: msg,
-            stage,
-            details: None,
-            transient: None,
-        },
-        BrzError::RemoteGitError(msg) => WorkerFailure {
-            code: "git-error".to_string(),
-            description: msg,
-            stage,
-            details: None,
-            transient: None,
-        },
-        e => WorkerFailure {
-            code: "unexpected-error".to_string(),
-            description: e.to_string(),
-            stage,
-            details: None,
-            transient: None,
-        },
+        ),
+        BrzError::RemoteGitError(msg) if msg == "missing necessary objects" => {
+            WorkerFailure::new("git-missing-necessary-objects", msg, stage)
+        }
+        BrzError::RemoteGitError(msg) if msg == "failed to updated ref" => {
+            WorkerFailure::new("git-ref-update-failed", msg, stage)
+        }
+        BrzError::RemoteGitError(msg) => WorkerFailure::new("git-error", msg, stage),
+        e => WorkerFailure::new("unexpected-error", e.to_string(), stage),
     }
 }
 
@@ -1238,34 +1159,19 @@ mod tests {
     fn test_convert_codemod_script_failed() {
         assert_eq!(
             convert_codemod_script_failed(127, "foobar"),
-            WorkerFailure {
-                code: "command-not-found".to_string(),
-                description: "Command foobar not found".to_string(),
-                stage: vec!["codemod".to_string()],
-                details: None,
-                transient: None,
-            }
+            WorkerFailure::new("command-not-found", "Command foobar not found", ["codemod"])
         );
         assert_eq!(
             convert_codemod_script_failed(137, "foobar"),
-            WorkerFailure {
-                code: "killed".to_string(),
-                description: "Process was killed (by OOM killer?)".to_string(),
-                stage: vec!["codemod".to_string()],
-
-                details: None,
-                transient: None,
-            }
+            WorkerFailure::new("killed", "Process was killed (by OOM killer?)", ["codemod"])
         );
         assert_eq!(
             convert_codemod_script_failed(1, "foobar"),
-            WorkerFailure {
-                code: "command-failed".to_string(),
-                description: "Script foobar failed to run with code 1".to_string(),
-                stage: vec!["codemod".to_string()],
-                details: None,
-                transient: None,
-            }
+            WorkerFailure::new(
+                "command-failed",
+                "Script foobar failed to run with code 1",
+                ["codemod"]
+            )
         );
     }
 
