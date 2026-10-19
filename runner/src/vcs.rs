@@ -68,7 +68,6 @@ impl RunnerVcsManager {
             })
         };
 
-        // Record metrics
         let duration = start_time.elapsed();
         let status = if result.is_ok() { "success" } else { "error" };
 

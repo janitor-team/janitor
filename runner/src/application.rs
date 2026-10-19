@@ -1,6 +1,6 @@
 //! Application initialization and orchestration for the runner.
 
-use crate::{database::RunnerDatabase, metrics::MetricsCollector, vcs::RunnerVcsManager, AppState};
+use crate::{database::RunnerDatabase, vcs::RunnerVcsManager, AppState};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -182,7 +182,6 @@ impl ApplicationBuilder {
 
         // Initialize metrics first so other systems can use them
         log::info!("Initializing metrics collection...");
-        let metrics = Arc::new(MetricsCollector {});
         crate::metrics::init_metrics();
 
         log::info!("Initializing database connection...");
@@ -314,7 +313,6 @@ impl ApplicationBuilder {
             artifact_manager,
             backup_log_manager,
             backup_artifact_manager,
-            metrics,
             config: Arc::new(janitor_config),
             upload_processor,
             auth_service,
