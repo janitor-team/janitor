@@ -14,7 +14,6 @@ path = "src/main.rs"
 axum = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tower = { workspace = true }
-tower-http = { version = "0.5", features = ["fs", "compression-gzip", "trace", "cors", "limit", "timeout"] }
 
 # Database
 sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "tls-rustls-aws-lc-rs", "uuid", "chrono"] }
@@ -46,9 +45,6 @@ breezyshim = { workspace = true }
 # URL-encoded form bodies for POST /{codebase}/remotes/{remote}
 serde_urlencoded = "0.7"
 
-# Prometheus metrics (http_requests_total etc.)
-prometheus = "0.14"
-
 # Error handling
 thiserror = "1.0"
 anyhow = "1.0"
@@ -62,11 +58,8 @@ tempfile = { workspace = true }
 # CLI flag parsing
 clap = { workspace = true, features = ["derive", "env"] }
 
-# HTTP Basic auth decoding
-base64 = "0.22"
-
-
 [dev-dependencies]
+base64 = "0.22"
 # Redeclare janitor with the `testing` feature so integration tests
 # can use janitor::schema::setup_test_database to load schema/state.sql
 # into a real PostgreSQL.
