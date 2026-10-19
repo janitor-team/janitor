@@ -43,13 +43,6 @@ from janitor.site.cupboard.publish import iter_publish_history
 from .conftest import _insert_codebase, _insert_run
 
 
-@web.middleware
-async def dummy_user_middleware(request, handler):
-    request["user"] = None
-    resp = await handler(request)
-    return resp
-
-
 def _user_middleware(user):
     @web.middleware
     async def middleware(request, handler):
@@ -59,8 +52,8 @@ def _user_middleware(user):
     return middleware
 
 
-async def create_client(aiohttp_client, db):
-    config = read_config_string("")
+async def create_client(aiohttp_client, db, *, user=None, config=""):
+    config = read_config_string(config)
     app = create_app(
         config=config, publisher_url=None, runner_url=None, differ_url=None, db=db
     )
@@ -68,7 +61,7 @@ async def create_client(aiohttp_client, db):
     # create_app leaves the jinja globals to its caller, and the production
     # caller is py/janitor/site/simple.py.
     aiohttp_jinja2.get_env(app).globals.update(TEMPLATE_ENV)
-    app.middlewares.insert(0, dummy_user_middleware)
+    app.middlewares.insert(0, _user_middleware(user))
     return await aiohttp_client(app)
 
 
@@ -142,6 +135,29 @@ async def test_queue(aiohttp_client, db):
 async def test_publish_history(aiohttp_client, db):
     client = await create_client(aiohttp_client, db)
     resp = await client.get("/cupboard/publish")
+    assert resp.status == 200
+
+
+ADMIN_GROUP_CONFIG = 'oauth2_provider { admin_group: "admins" }\n'
+
+
+@pytest.mark.parametrize("user", [None, {"email": "user@example.com", "groups": []}])
+async def test_reprocess_logs_requires_admin(aiohttp_client, db, user):
+    client = await create_client(
+        aiohttp_client, db, user=user, config=ADMIN_GROUP_CONFIG
+    )
+    resp = await client.get("/cupboard/reprocess-logs")
+    assert resp.status == 401
+
+
+async def test_reprocess_logs_admin(aiohttp_client, db):
+    client = await create_client(
+        aiohttp_client,
+        db,
+        user={"email": "admin@example.com", "groups": ["admins"]},
+        config=ADMIN_GROUP_CONFIG,
+    )
+    resp = await client.get("/cupboard/reprocess-logs")
     assert resp.status == 200
 
 
