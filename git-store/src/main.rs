@@ -6,7 +6,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use clap::Parser;
 use janitor_git_store::{
-    config::Config, database::DatabaseManager, repository::RepositoryManager, tracing_setup, web,
+    config::Config, database::DatabaseManager, repository::RepositoryManager, web,
     web_utils::HealthChecker,
 };
 use tokio::net::TcpListener;
@@ -68,7 +68,7 @@ async fn main() -> Result<()> {
 
     // Hold the guard until the end of main so queued spans flush on
     // shutdown.
-    let _tracing_guard = tracing_setup::init(
+    let _tracing_guard = janitor::otlp::init(
         "git-store",
         cli.debug,
         cli.gcp_logging,
