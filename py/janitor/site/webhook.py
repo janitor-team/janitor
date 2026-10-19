@@ -206,14 +206,15 @@ def get_changes_from_gitlab_webhook(body):
     url_keys = ["git_http_url", "git_ssh_url"]
     urls = []
     for url_key in url_keys:
-        urls.append(git_url_to_bzr_url(url_key, ref=body["ref"].encode()))
+        url = body["project"][url_key]
+        urls.append(git_url_to_bzr_url(url, ref=body["ref"].encode()))
         try:
             branch_name = ref_to_branch_name(body["ref"].encode())
         except ValueError:
             pass
         else:
             if branch_name == body["project"].get("default_branch"):
-                urls.append(git_url_to_bzr_url(url_key))
+                urls.append(git_url_to_bzr_url(url))
     return [GitChange(urls, body["after"].encode())]
 
 
