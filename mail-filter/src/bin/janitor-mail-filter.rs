@@ -37,6 +37,8 @@ fn refresh_merge_proposal(api_url: &str, merge_proposal_url: &str) -> Result<(),
 }
 
 fn main() {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
     let args = Args::parse();
 
     let f = File::open(args.input).unwrap();
