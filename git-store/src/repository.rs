@@ -45,6 +45,8 @@ impl RepositoryManager {
         let mut opts = RepositoryInitOptions::new();
         opts.bare(true);
         opts.mkdir(true);
+        // The control campaign's unchanged upstream branch.
+        opts.initial_head("refs/heads/control/main");
 
         Repository::init_opts(path, &opts).map_err(GitStoreError::from)
     }
@@ -142,6 +144,8 @@ mod tests {
 
         let repo = manager.open_or_create(&codebase).unwrap();
         assert!(repo.is_bare());
+        let head = repo.find_reference("HEAD").unwrap();
+        assert_eq!(head.symbolic_target(), Some("refs/heads/control/main"));
         assert!(manager.exists(&codebase));
 
         let _repo2 = manager.open_or_create(&codebase).unwrap();
