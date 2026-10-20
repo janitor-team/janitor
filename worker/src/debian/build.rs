@@ -2,27 +2,11 @@ use breezyshim::branch::Branch;
 use breezyshim::repository::Repository;
 use breezyshim::tree::{Tree, WorkingTree};
 use breezyshim::workingtree::PyWorkingTree;
-use janitor::api::worker::DebianBuildConfig;
+use janitor::api::worker::{DebianBuildConfig, WorkerFailure};
 use ognibuild::debian::build::{BuildOnceError, BuildOnceResult};
 use ognibuild::debian::context::Phase;
 use ognibuild::debian::fix_build::IterateBuildError;
 use ognibuild::session::Session;
-
-#[derive(Debug)]
-pub struct BuildFailure {
-    pub code: String,
-    pub description: String,
-    pub details: Option<serde_json::Value>,
-    pub stage: Vec<String>,
-}
-
-impl std::fmt::Display for BuildFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}: {}", self.code, self.description)
-    }
-}
-
-impl std::error::Error for BuildFailure {}
 
 fn phase_stage(phase: Phase) -> Vec<String> {
     match phase {
@@ -36,49 +20,39 @@ fn phase_stage(phase: Phase) -> Vec<String> {
 }
 
 /// Stages are relative to the "build" stage that `build_from_config` adds.
-fn build_failure(e: IterateBuildError) -> BuildFailure {
+fn build_failure(e: IterateBuildError) -> WorkerFailure {
     match e {
-        IterateBuildError::ResetTree(e) => BuildFailure {
-            code: "reset-tree".to_string(),
-            description: format!("Error resetting tree: {}", e),
-            stage: vec![],
-            details: None,
-        },
-        IterateBuildError::Persistent(phase, e) => BuildFailure {
-            code: e.kind().to_string(),
-            description: e.to_string(),
-            stage: phase_stage(phase),
-            details: None,
-        },
-        IterateBuildError::MissingPhase => BuildFailure {
-            code: "missing-phase".to_string(),
-            description: "Missing phase".to_string(),
-            stage: vec![],
-            details: None,
-        },
-        IterateBuildError::FixerLimitReached(n) => BuildFailure {
-            code: "fixer-limit-reached".to_string(),
-            description: format!("Fixer limit reached: {}", n),
-            stage: vec![],
-            details: None,
-        },
-        IterateBuildError::Other(o) => BuildFailure {
-            code: "other".to_string(),
-            description: format!("Other error: {}", o),
-            stage: vec![],
-            details: None,
-        },
+        IterateBuildError::ResetTree(e) => WorkerFailure::new(
+            "reset-tree",
+            format!("Error resetting tree: {}", e),
+            Vec::<String>::new(),
+        ),
+        IterateBuildError::Persistent(phase, e) => {
+            WorkerFailure::new(e.kind().to_string(), e.to_string(), phase_stage(phase))
+        }
+        IterateBuildError::MissingPhase => {
+            WorkerFailure::new("missing-phase", "Missing phase", Vec::<String>::new())
+        }
+        IterateBuildError::FixerLimitReached(n) => WorkerFailure::new(
+            "fixer-limit-reached",
+            format!("Fixer limit reached: {}", n),
+            Vec::<String>::new(),
+        ),
+        IterateBuildError::Other(o) => WorkerFailure::new(
+            "other",
+            format!("Other error: {}", o),
+            Vec::<String>::new(),
+        ),
         IterateBuildError::Unidentified {
             retcode: _,
             lines,
             secondary: _,
             phase,
-        } => BuildFailure {
-            code: "unidentified".to_string(),
-            description: format!("Unidentified error: {}", lines.join("\n")),
-            stage: phase.map(phase_stage).unwrap_or_default(),
-            details: None,
-        },
+        } => WorkerFailure::new(
+            "unidentified",
+            format!("Unidentified error: {}", lines.join("\n")),
+            phase.map(phase_stage).unwrap_or_default(),
+        ),
     }
 }
 
@@ -89,14 +63,13 @@ pub(crate) fn build(
     committer: Option<&str>,
     update_changelog: crate::debian::DebUpdateChangelog,
     config: &DebianBuildConfig,
-) -> Result<DebianBuildResult, BuildFailure> {
+) -> Result<DebianBuildResult, WorkerFailure> {
     if !local_tree.has_filename(&subpath.join("debian/changelog")) {
-        return Err(BuildFailure {
-            code: "missing-changelog".to_string(),
-            description: "Missing changelog".to_string(),
-            stage: vec!["pre-check".to_string()],
-            details: None,
-        });
+        return Err(WorkerFailure::new(
+            "missing-changelog",
+            "Missing changelog",
+            ["pre-check"],
+        ));
     }
 
     #[cfg(target_os = "linux")]
@@ -104,12 +77,11 @@ pub(crate) fn build(
         Box::new(
             ognibuild::session::schroot::SchrootSession::new(chroot, Some("janitor-worker"))
                 .map_err(|e| match e {
-                    ognibuild::session::Error::SetupFailure(_n, e) => BuildFailure {
-                        code: "session-setup-failure".to_string(),
-                        description: format!("Error setting up schroot session: {}", e),
-                        details: None,
-                        stage: vec![],
-                    },
+                    ognibuild::session::Error::SetupFailure(_n, e) => WorkerFailure::new(
+                        "session-setup-failure",
+                        format!("Error setting up schroot session: {}", e),
+                        Vec::<String>::new(),
+                    ),
                     _e => unreachable!(),
                 })?,
         ) as Box<dyn Session>
@@ -119,12 +91,11 @@ pub(crate) fn build(
 
     #[cfg(not(target_os = "linux"))]
     let session: Box<dyn Session> = if config.chroot.is_some() {
-        return Err(BuildFailure {
-            code: "unsupported-schroot".to_string(),
-            description: "Schroot is not supported on this platform".to_string(),
-            stage: vec!["pre-check".to_string()],
-            details: None,
-        });
+        return Err(WorkerFailure::new(
+            "unsupported-schroot",
+            "Schroot is not supported on this platform",
+            ["pre-check"],
+        ));
     } else {
         Box::new(ognibuild::session::plain::PlainSession::new()) as Box<dyn Session>
     };
@@ -158,11 +129,12 @@ pub(crate) fn build(
                     Some(Box::new(breezyshim::commit::NullCommitReporter::new())),
                 );
                 let fixers = ognibuild::debian::fixers::default_fixers(&packaging_context, &apt)
-                    .map_err(|e| BuildFailure {
-                        code: "fixers-unavailable".to_string(),
-                        description: e.to_string(),
-                        details: None,
-                        stage: vec![],
+                    .map_err(|e| {
+                        WorkerFailure::new(
+                            "fixers-unavailable",
+                            e.to_string(),
+                            Vec::<String>::new(),
+                        )
                     })?;
 
                 ognibuild::debian::fix_build::build_incrementally(
@@ -245,11 +217,12 @@ pub(crate) fn build(
                 .as_ref()
                 .map(|tags| tags.iter().map(|tag| tag.as_str()).collect()),
         )
-        .map_err(|e| BuildFailure {
-            code: "lintian".to_string(),
-            description: format!("Error running lintian: {}", e),
-            stage: vec!["lintian".to_string()],
-            details: None,
+        .map_err(|e| {
+            WorkerFailure::new(
+                "lintian",
+                format!("Error running lintian: {}", e),
+                ["lintian"],
+            )
         })?;
         Ok(DebianBuildResult {
             lintian: lintian_result,
