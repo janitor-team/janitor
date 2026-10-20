@@ -20,7 +20,13 @@ from unittest.mock import MagicMock
 
 from yarl import URL
 
-from janitor.site import format_duration, format_timestamp, update_vars_from_request
+from janitor.site import (
+    DebdiffRetrievalError,
+    format_debdiff_error,
+    format_duration,
+    format_timestamp,
+    update_vars_from_request,
+)
 
 
 def test_duration():
@@ -33,6 +39,14 @@ def test_duration():
 
 def test_timestamp():
     assert "2022-10-01T11:10" == format_timestamp(datetime(2022, 10, 1, 11, 10, 22))
+
+
+def test_format_debdiff_error():
+    error = DebdiffRetrievalError("dpkg-deb -c a<b>.deb failed")
+    assert (
+        format_debdiff_error(error)
+        == "Error retrieving debdiff: dpkg-deb -c a&lt;b&gt;.deb failed"
+    )
 
 
 def _make_request(external_url=None, request_url="https://example.com/some/path"):
