@@ -189,6 +189,22 @@ impl BreezyOperations {
         .map_err(|e| BzrError::internal(format!("configure_remote join: {}", e)))?
     }
 
+    /// Return the `parent_location` of the branch at `path`, or `None`
+    /// if it has none or `path` is not a branch.
+    pub async fn get_parent(path: &Path) -> Result<Option<String>> {
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || -> Result<Option<String>> {
+            let url = path_to_file_url(path.as_path())?;
+            match breezyshim::branch::open_as_generic(&url) {
+                Ok(branch) => Ok(branch.get_parent()),
+                Err(breezyshim::error::Error::NotBranchError(..)) => Ok(None),
+                Err(e) => Err(map_err(e, "Branch.open")),
+            }
+        })
+        .await
+        .map_err(|e| BzrError::internal(format!("get_parent join: {}", e)))?
+    }
+
     /// Produce a unified diff between two revisions by diffing their
     /// `RevisionTree`s. Equivalent to Python's `show_diff_trees`.
     pub async fn get_diff(path: &Path, old_revid: &str, new_revid: &str) -> Result<Vec<u8>> {
