@@ -78,7 +78,8 @@ janitor_control_services:
   - site
 # Long-running services on this host, from its groups.
 janitor_services: >-
-  {{ (janitor_control_services if 'control' in group_names else [])
+  {{ (janitor_control_services + (['auto_upload'] if enable_auto_upload | bool else [])
+      if 'control' in group_names else [])
      + (['worker'] if 'worker' in group_names else []) }}
 # The systemd units of janitor_services, one per worker instance.
 janitor_units: >-
@@ -134,6 +135,20 @@ gitea_test_org: ""
 gitea_test_repos: []
 # Register the site with Gitea and log in to it there (OAuth2).
 gitea_site_login: false
+# Optional: janitor-auto-upload debsigns every successful Debian build
+# with auto_upload_debsign_keyid (a key in auto_upload_gnupg_home) and
+# dputs it to auto_upload_dput_host (a section of auto_upload_dput_cf).
+enable_auto_upload: false
+auto_upload_dput_host: ""
+auto_upload_debsign_keyid: ""
+auto_upload_gnupg_home: "{{ janitor_home }}/gnupg-auto-upload"
+auto_upload_dput_cf: "{{ janitor_home }}/dput.cf"
+# Only builds for these build distributions; empty uploads them all.
+auto_upload_distributions: []
+# Optional, for trying auto_upload: a local incoming directory and a
+# test-only signing key made on the control host (roles/auto_upload_target).
+enable_auto_upload_target: false
+auto_upload_incoming: "{{ janitor_home }}/data/upload-incoming"
 # Extra /etc/hosts entries ({name: address}) on every host.
 janitor_extra_hosts: {}
 
@@ -146,4 +161,6 @@ janitor_health_urls:
   runner: http://127.0.0.1:9911/health
   publish: http://127.0.0.1:9912/health
   site: http://127.0.0.1:8080/health
+  # auto-upload has no /health.
+  auto_upload: http://127.0.0.1:9933/metrics
   worker: "http://{{ janitor_worker_address }}:9821/health"

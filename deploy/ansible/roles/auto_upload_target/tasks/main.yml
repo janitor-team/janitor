@@ -1,0 +1,67 @@
+---
+# A local upload target for trying auto_upload: dput copies uploads into
+# an incoming directory on this host, signed with a test-only key. Point
+# auto_upload at a real archive and a real key instead (see the README).
+- name: Create the incoming directory and auto_upload's GNUPG home
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: "{{ auto_upload_incoming }}", mode: "0755"}
+    - {path: "{{ auto_upload_gnupg_home }}", mode: "0700"}
+
+- name: Check whether the test signing key exists
+  become: true
+  become_user: "{{ ansible_user }}"
+  ansible.builtin.command: gpg --homedir {{ auto_upload_gnupg_home }} --list-secret-keys --with-colons
+  register: auto_upload_gpg_list
+  changed_when: false
+  failed_when: false
+
+- name: Generate the test signing key
+  # No passphrase, so debsign signs unattended. Nothing should trust it.
+  become: true
+  become_user: "{{ ansible_user }}"
+  ansible.builtin.command: gpg --homedir {{ auto_upload_gnupg_home }} --batch --gen-key /dev/stdin
+  args:
+    stdin: |
+      Key-Type: eddsa
+      Key-Curve: ed25519
+      Name-Real: {{ janitor_github_org }} auto-upload TEST ONLY
+      Name-Comment: test key, do not trust
+      Name-Email: auto-upload@{{ janitor_domain }}
+      Expire-Date: 0
+      %no-protection
+      %commit
+  changed_when: true
+  when: "'sec:' not in auto_upload_gpg_list.stdout"
+
+- name: Get the test signing key's fingerprint
+  become: true
+  become_user: "{{ ansible_user }}"
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    gpg --homedir {{ auto_upload_gnupg_home }} --list-secret-keys --with-colons
+    | awk -F: '$1 == "fpr" { print $10; exit }'
+  args:
+    executable: /bin/bash
+  register: auto_upload_fpr
+  changed_when: false
+
+- name: Use the test key and the local target
+  ansible.builtin.set_fact:
+    auto_upload_debsign_keyid: "{{ auto_upload_fpr.stdout }}"
+
+- name: Point dput at the incoming directory
+  # Mounted over the image's /etc/dput.cf, so dput knows no other host.
+  ansible.builtin.copy:
+    dest: "{{ auto_upload_dput_cf }}"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+    content: |
+      [{{ auto_upload_dput_host }}]
+      method = local
+      incoming = /mnt/janitor/upload-incoming
+      allow_unsigned_uploads = 0

@@ -10,8 +10,8 @@ host or onto several, and comes with Vagrant VMs to try it locally.
 - `ansible/site.yml`: a play that checks the secrets, then one play per
   inventory group:
   - `control`: `base`, `janitor_source`, `postgres`, `redis`, `caddy`,
-    `archive_signing_key`, `gitea` (optional), `janitor_config`,
-    `janitor_quadlet`.
+    `archive_signing_key`, `gitea` (optional), `auto_upload_target`
+    (optional), `janitor_config`, `janitor_quadlet`.
   - `worker`: `base`, `worker_firewall`, `janitor_source`,
     `janitor_config`, `janitor_quadlet`.
 - `ansible/inventory.ini`: the hosts. One host in both groups for a single
@@ -46,6 +46,7 @@ this order and waits for each health route:
 | `janitor-runner` | `janitor-runner` | 127.0.0.1:9911 (admin), 127.0.0.1:9919 (public) |
 | `janitor-publish` | `janitor-publish` | 127.0.0.1:9912 |
 | `janitor-site` | `janitor-site` | 127.0.0.1:8080 (admin), 127.0.0.1:8090 (public) |
+| `janitor-auto_upload` (optional) | `janitor-auto-upload` | 127.0.0.1:9933 (`/metrics` only) |
 | `janitor-worker` | `janitor-worker --loop` | `janitor_worker_address`:9821 |
 
 Caddy serves `janitor_external_url` and proxies `/runner/` (without the
@@ -136,7 +137,8 @@ candidates get in is in [docs/flow.md](../docs/flow.md).
   `ansible/roles/janitor_config/templates/janitor.conf.j2`; edit it for
   your own campaigns.
 - Back up PostgreSQL, `janitor_home/data` and `janitor_home/gnupg-archive`,
-  and with Gitea `gitea_home/secrets`.
+  with Gitea `gitea_home/secrets`, and with auto-upload its key in
+  `auto_upload_gnupg_home`.
 
 ### Several hosts
 
@@ -164,6 +166,19 @@ the site as an OAuth2 application and logs in there; set
 or teams (`org:team`). Gitea's secrets and tokens are kept in
 `gitea_home/secrets`.
 
+### Auto-upload (optional)
+
+`enable_auto_upload: true` runs `janitor-auto-upload` on the control
+host. For every successful Debian build (only `auto_upload_distributions`
+if set) it signs the `.changes` with `debsign` as
+`auto_upload_debsign_keyid` and uploads it with `dput` to
+`auto_upload_dput_host`. Put that key in `auto_upload_gnupg_home`
+without a passphrase, and the host's section in `auto_upload_dput_cf`,
+which replaces the image's `/etc/dput.cf`.
+`enable_auto_upload_target: true` instead makes a test-only key and a
+dput host that copies uploads into `auto_upload_incoming` on the control
+host, to try it out.
+
 ## Vagrant
 
 Needs vagrant with the libvirt provider. The VMs run the playbook
@@ -182,8 +197,9 @@ The site is at `https://<control IP>/` (`192.168.56.10` for one VM,
 Vagrantfiles turn on Gitea, at `https://gitea.janitor.test/`: each VM
 has an /etc/hosts entry for it, and the machine your browser runs on
 needs one too (`<control IP> gitea.janitor.test`), or the site login
-cannot reach Gitea. With several VMs, each worker gets its own password,
-made once in `.vagrant/worker-passwords.json`.
+cannot reach Gitea. They also turn on auto-upload of lintian-fixes
+builds to the local test target. With several VMs, each worker gets its
+own password, made once in `.vagrant/worker-passwords.json`.
 
 Environment variables:
 

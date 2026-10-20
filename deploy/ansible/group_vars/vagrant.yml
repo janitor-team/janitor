@@ -32,3 +32,10 @@ gitea_site_login: true
 # Gitea's OpenID groups: members of the org review, its owners are admins.
 oauth_qa_reviewer_group: "{{ gitea_test_org }}"
 oauth_admin_group: "{{ gitea_test_org }}:owners"
+
+# auto_upload signs lintian-fixes builds with a test key and uploads them
+# to an incoming directory on control.
+enable_auto_upload: true
+enable_auto_upload_target: true
+auto_upload_dput_host: janitor-test
+auto_upload_distributions: ["{{ janitor_lintian_fixes_build_distribution }}"]
