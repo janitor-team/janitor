@@ -856,68 +856,22 @@ async fn update_merge_proposal(
                 }
             };
 
-            if let Some(comment) = form.comment.as_deref() {
-                log::info!("{}: {}", mp_url, comment);
-                let post_result = tokio::task::spawn_blocking({
-                    let mp = mp.clone();
-                    let comment = comment.to_string();
-                    move || mp.post_comment(&comment)
-                })
-                .await;
-                match post_result {
-                    Ok(Ok(())) => {}
-                    Ok(Err(breezyshim::error::Error::PermissionDenied(_, msg))) => {
-                        log::warn!(
-                            "Permission denied posting comment to {}: {}",
-                            mp_url,
-                            msg.unwrap_or_default()
-                        );
-                    }
-                    Ok(Err(e)) => {
-                        log::warn!("Failed to post comment to {}: {}", mp_url, e);
-                    }
-                    Err(_) => {
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            error_response("Task join error"),
-                        );
-                    }
-                }
-            }
-
-            let close_result = tokio::task::spawn_blocking({
-                let mp = mp.clone();
-                move || mp.close()
-            })
-            .await;
-            match close_result {
-                Ok(Ok(())) => {}
-                Ok(Err(breezyshim::error::Error::PermissionDenied(_, msg))) => {
-                    let msg = msg.unwrap_or_default();
-                    log::warn!(
-                        "Permission denied closing merge request {}: {}",
-                        mp_url,
-                        msg
-                    );
+            match crate::post_comment_and_close(&mp, &mp_url, form.comment.as_deref()).await {
+                Ok(()) => {}
+                Err(breezyshim::error::Error::PermissionDenied(_, msg)) => {
                     return (
                         StatusCode::FORBIDDEN,
                         error_response(&format!(
                             "Permission denied closing merge request: {}",
-                            msg
+                            msg.unwrap_or_default()
                         )),
                     );
                 }
-                Ok(Err(e)) => {
+                Err(e) => {
                     log::warn!("Failed to close merge request {}: {}", mp_url, e);
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         error_response("Failed to close merge request"),
-                    );
-                }
-                Err(_) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        error_response("Task join error"),
                     );
                 }
             }
