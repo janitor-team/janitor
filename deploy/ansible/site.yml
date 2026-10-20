@@ -53,6 +53,17 @@
       vars:
         passwords: "{{ janitor_workers | map(attribute='password') | map('string') | list }}"
 
+    - name: Check auto_upload has a dput host and a signing key
+      ansible.builtin.assert:
+        that:
+          - auto_upload_dput_host | length > 0
+          - enable_auto_upload_target | bool or auto_upload_debsign_keyid | length > 0
+        fail_msg: >-
+          enable_auto_upload needs auto_upload_dput_host and, without
+          enable_auto_upload_target, auto_upload_debsign_keyid.
+        quiet: true
+      when: enable_auto_upload | bool
+
 - name: Deploy the janitor control services
   hosts: control
   become: true
@@ -65,6 +76,7 @@
     - caddy
     - { role: archive_signing_key, when: "'archive' in janitor_services" }
     - { role: gitea, when: enable_gitea | bool }
+    - { role: auto_upload_target, when: enable_auto_upload | bool and enable_auto_upload_target | bool }
     - janitor_config
     - janitor_quadlet
 
