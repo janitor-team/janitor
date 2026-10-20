@@ -300,3 +300,31 @@ test_with_database! {
         handle.abort();
     }
 }
+
+test_with_database! {
+    schema = Core;
+    async fn test_public_smart_protocol_open_branch(test_db: TestDatabase) {
+        seed_codebase(test_db.pool(), "foo").await;
+
+        let tmp = TempDir::new().unwrap();
+        let (_rev1, rev2) = build_two_commit_branch(&tmp.path().join("foo"));
+
+        let cfg = build_config(tmp.path(), test_db_url(&test_db));
+        let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
+            .await
+            .unwrap();
+        let (addr, handle) = spawn(public).await;
+
+        // The client blocks, so run it off the runtime that serves its requests.
+        let url: url::Url = format!("bzr+http://{}/bzr/foo", addr).parse().unwrap();
+        let last_revision = tokio::task::spawn_blocking(move || {
+            let branch = breezyshim::branch::open_as_generic(&url).unwrap();
+            branch.last_revision().as_str().to_string()
+        })
+        .await
+        .unwrap();
+        assert_eq!(last_revision, rev2);
+
+        handle.abort();
+    }
+}
