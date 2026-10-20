@@ -16,108 +16,13 @@
 //! * Smart protocol `POST /bzr/{codebase}/notcampaign/.bzr/smart`
 //!   for a campaign not in `janitor.conf` — asserts a 404.
 
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::Duration;
+mod common;
 
-use axum::Router;
-use janitor::{schema::setup_test_database, test_utils::TestDatabase, test_with_database};
-use janitor_bzr_store::{
-    config::{BzrConfig, BzrStoreConfig, Config},
-    web::create_applications,
-};
-use sqlx::PgPool;
+use common::*;
+
+use janitor::{schema::setup_test_database, test_with_database};
+use janitor_bzr_store::web::create_applications;
 use tempfile::TempDir;
-
-/// Build a libpq-style URL for the `TestDatabase`. `TestDatabase` doesn't
-/// expose the original base_url it was constructed from, so reuse the
-/// `TEST_DATABASE_URL` env var (same one the `test_with_database!` macro
-/// uses to find the admin database) and swap in the per-test database
-/// name. Falls back to `postgresql://localhost/<name>` when the env var
-/// is absent, matching `TestDatabase::into_janitor_database`.
-fn test_db_url(test_db: &TestDatabase) -> String {
-    let base = std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgresql://localhost/postgres".to_string());
-    // Replace the last path segment (the admin database name) with the
-    // per-test database we just created.
-    match base.rsplit_once('/') {
-        Some((prefix, _)) => format!("{}/{}", prefix, test_db.database_name),
-        None => format!("{}/{}", base, test_db.database_name),
-    }
-}
-
-/// Build a `Config` for the test: point `repository_path` at `tmp_dir`,
-/// disable the in-struct admin/public bind (we don't serve from the
-/// struct's values — we bind to `:0` manually), and stash the test pool's
-/// URL in the shared `base` config slot.
-fn build_config(tmp_dir: &std::path::Path, database_url: String) -> Config {
-    let mut cfg = BzrStoreConfig::default();
-    cfg.bzr = BzrConfig {
-        repository_path: tmp_dir.to_path_buf(),
-        admin_bind: "127.0.0.1:0".parse().unwrap(),
-        public_bind: "127.0.0.1:0".parse().unwrap(),
-        python_path: None,
-        request_timeout: cfg.bzr.request_timeout,
-    };
-    cfg.base.database = Some(janitor::shared_config::DatabaseConfig {
-        url: database_url,
-        ..janitor::shared_config::DatabaseConfig::default()
-    });
-    cfg
-}
-
-/// Build a minimal `janitor::config::Config` with one campaign named
-/// `campaign`. Parsed via the same text-format parser the service uses.
-fn janitor_config_with_campaign() -> Arc<janitor::config::Config> {
-    let text = r#"
-campaign {
-    name: "campaign"
-}
-"#;
-    Arc::new(janitor::config::read_string(text).expect("parse test janitor.conf"))
-}
-
-/// Bind the public Router on an ephemeral port, spawn an axum server,
-/// and return both the server's bound address and a JoinHandle.
-async fn spawn_public(public_app: Router) -> (SocketAddr, tokio::task::JoinHandle<()>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, public_app).await.ok();
-    });
-    // Give the server a beat to be ready.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    (addr, handle)
-}
-
-async fn seed_worker(pool: &PgPool, name: &str, password: &str) {
-    sqlx::query(
-        "INSERT INTO worker (name, password, link)
-         VALUES ($1, crypt($2, gen_salt('bf')), NULL)
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(name)
-    .bind(password)
-    .execute(pool)
-    .await
-    .unwrap();
-}
-
-async fn seed_codebase(pool: &PgPool, name: &str) {
-    // `codebase` has `check((branch_url is null) = (url is null))`
-    // (see schema/state.sql) — both must be set, or both NULL.
-    let url = format!("https://example.invalid/{}", name);
-    sqlx::query(
-        "INSERT INTO codebase (name, branch_url, url, vcs_type)
-         VALUES ($1, $2, $2, 'bzr')
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(name)
-    .bind(&url)
-    .execute(pool)
-    .await
-    .unwrap();
-}
 
 test_with_database! {
     async fn test_public_repo_list_json(test_db: TestDatabase) {
@@ -131,7 +36,7 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn_public(public).await;
+        let (addr, handle) = spawn(public).await;
 
         let client = reqwest::Client::new();
         let resp = client
@@ -159,7 +64,7 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn_public(public).await;
+        let (addr, handle) = spawn(public).await;
 
         let client = reqwest::Client::new();
         let resp = client
@@ -187,7 +92,7 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn_public(public).await;
+        let (addr, handle) = spawn(public).await;
 
         let client = reqwest::Client::new();
         // Default Accept */* should pick HTML, matching Python mimeparse.
@@ -235,7 +140,7 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn_public(public).await;
+        let (addr, handle) = spawn(public).await;
 
         let client = reqwest::Client::new();
         let resp = client
@@ -260,7 +165,7 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn_public(public).await;
+        let (addr, handle) = spawn(public).await;
 
         let client = reqwest::Client::new();
         // `notcampaign` is not in janitor.conf — expect 404.
@@ -294,7 +199,7 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn_public(public).await;
+        let (addr, handle) = spawn(public).await;
 
         let client = reqwest::Client::new();
         let resp = client
@@ -338,7 +243,7 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn_public(public).await;
+        let (addr, handle) = spawn(public).await;
 
         let client = reqwest::Client::new();
         let resp = client
@@ -376,7 +281,7 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn_public(public).await;
+        let (addr, handle) = spawn(public).await;
 
         let client = reqwest::Client::new();
         for path in [
