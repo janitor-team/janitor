@@ -30,7 +30,13 @@ pub enum Error {
 
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Self {
-        Error::Io(err.to_string())
+        // Python's managers raised PermissionError for these, which
+        // import_log handles separately.
+        if err.kind() == io::ErrorKind::PermissionDenied {
+            Error::PermissionDenied
+        } else {
+            Error::Io(err.to_string())
+        }
     }
 }
 
@@ -225,9 +231,9 @@ pub async fn get_log_manager(location: Option<&str>) -> Result<Box<dyn LogFileMa
 
 /// Import a log with primary and backup log managers
 ///
-/// This function provides sophisticated error handling and fallback mechanisms
-/// matching the Python implementation. It will attempt to use the primary manager
-/// first, then fall back to the backup manager on service unavailability.
+/// Like the Python implementation, this falls back to the backup manager
+/// when the primary manager is unavailable, times out or denies
+/// permission (after retrying under a different name).
 pub async fn import_log(
     primary_log_manager: &dyn LogFileManager,
     backup_log_manager: Option<&dyn LogFileManager>,
@@ -255,102 +261,66 @@ pub async fn import_log(
             .map(DateTime::<Utc>::from)
     };
 
-    // Attempt with primary log manager
-    match primary_log_manager
+    let err = match primary_log_manager
         .import_log(codebase, run_id, path, mtime_dt, basename)
         .await
     {
         Ok(()) => {
-            log::info!("Successfully imported log {} to primary manager", path);
             increment_upload_success();
             return Ok(());
         }
-        Err(Error::ServiceUnavailable) => {
-            log::warn!("Unable to upload logfile {}: service unavailable", path);
-            increment_upload_failed();
-            if let Some(backup) = backup_log_manager {
-                match backup
-                    .import_log(codebase, run_id, path, mtime_dt, basename)
-                    .await
-                {
-                    Ok(()) => {
-                        increment_upload_success();
-                        return Ok(());
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-        }
-        Err(Error::Timeout) => {
-            log::warn!("Timeout uploading logfile {}", path);
-            increment_upload_failed();
-            if let Some(backup) = backup_log_manager {
-                match backup
-                    .import_log(codebase, run_id, path, mtime_dt, basename)
-                    .await
-                {
-                    Ok(()) => {
-                        increment_upload_success();
-                        return Ok(());
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-        }
-        Err(Error::PermissionDenied) => {
-            log::warn!("Permission denied error while uploading logfile {}", path);
-            // Try with timestamp-based alternative basename
-            let suffix = chrono::Utc::now().format("%Y%m%dT%H%M%S").to_string();
-            let alt_basename = basename.map(|b| format!("{}.{}", b, suffix));
+        Err(e) => e,
+    };
 
+    // Like Python, only unavailability, timeouts and permission errors
+    // fall back to the backup manager; anything else is returned as is.
+    match err {
+        Error::ServiceUnavailable | Error::Timeout => {
+            log::warn!("Unable to upload logfile {}: {}", path, err);
+            increment_upload_failed();
+        }
+        Error::PermissionDenied => {
+            log::warn!("Permission denied error while uploading logfile {}", path);
+            // It may just be that the file already exists.
+            let name = match basename {
+                Some(basename) => basename.to_string(),
+                None => std::path::Path::new(path)
+                    .file_name()
+                    .ok_or_else(|| Error::Other(format!("No file name in {}", path)))?
+                    .to_string_lossy()
+                    .into_owned(),
+            };
+            let alternative_basename =
+                format!("{}.{}", name, Utc::now().format("%Y-%m-%dT%H:%M:%S"));
             match primary_log_manager
-                .import_log(codebase, run_id, path, mtime_dt, alt_basename.as_deref())
+                .import_log(
+                    codebase,
+                    run_id,
+                    path,
+                    mtime_dt,
+                    Some(&alternative_basename),
+                )
                 .await
             {
                 Ok(()) => {
                     increment_upload_success();
                     return Ok(());
                 }
-                Err(_) => {
-                    increment_upload_failed();
-                    // If alternative basename fails, try backup manager
-                    if let Some(backup) = backup_log_manager {
-                        match backup
-                            .import_log(codebase, run_id, path, mtime_dt, basename)
-                            .await
-                        {
-                            Ok(()) => {
-                                increment_upload_success();
-                                return Ok(());
-                            }
-                            Err(e) => return Err(e),
-                        }
-                    }
-                }
+                Err(Error::ServiceUnavailable | Error::Timeout | Error::PermissionDenied) => {}
+                Err(e) => return Err(e),
             }
-        }
-        Err(e) => {
-            log::error!("Primary log manager failed: {}", e);
             increment_upload_failed();
-            // For other errors, try backup if available
-            if let Some(backup) = backup_log_manager {
-                log::info!("Trying backup log manager");
-                match backup
-                    .import_log(codebase, run_id, path, mtime_dt, basename)
-                    .await
-                {
-                    Ok(()) => {
-                        increment_upload_success();
-                        return Ok(());
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-            return Err(e);
         }
+        e => return Err(e),
     }
 
-    Err(Error::Other("All log managers failed".to_string()))
+    // Without a backup manager Python only logged the failure above.
+    if let Some(backup) = backup_log_manager {
+        backup
+            .import_log(codebase, run_id, path, mtime_dt, basename)
+            .await?;
+    }
+    Ok(())
 }
 
 /// Import multiple logs concurrently
@@ -415,4 +385,165 @@ pub async fn import_logs_from_entries(
     });
 
     join_all(import_futures).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// Log manager that fails imports with queued errors and records
+    /// the basenames it was asked to import.
+    #[derive(Default)]
+    struct FakeLogManager {
+        errors: Mutex<Vec<Error>>,
+        imported: Mutex<Vec<Option<String>>>,
+    }
+
+    impl FakeLogManager {
+        fn failing(errors: Vec<Error>) -> Self {
+            Self {
+                errors: Mutex::new(errors),
+                imported: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn imported(&self) -> Vec<Option<String>> {
+            self.imported.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl LogFileManager for FakeLogManager {
+        async fn has_log(&self, _: &str, _: &str, _: &str) -> Result<bool, Error> {
+            unimplemented!()
+        }
+
+        async fn get_log(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<Box<dyn Read + Send + Sync>, Error> {
+            unimplemented!()
+        }
+
+        async fn import_log(
+            &self,
+            _codebase: &str,
+            _run_id: &str,
+            _orig_path: &str,
+            _mtime: Option<DateTime<Utc>>,
+            basename: Option<&str>,
+        ) -> Result<(), Error> {
+            self.imported
+                .lock()
+                .unwrap()
+                .push(basename.map(str::to_owned));
+            let mut errors = self.errors.lock().unwrap();
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(errors.remove(0))
+            }
+        }
+
+        async fn delete_log(&self, _: &str, _: &str, _: &str) -> Result<(), Error> {
+            unimplemented!()
+        }
+
+        async fn iter_logs(&self) -> Box<dyn Iterator<Item = (String, String, Vec<String>)>> {
+            unimplemented!()
+        }
+
+        async fn get_ctime(&self, _: &str, _: &str, _: &str) -> Result<DateTime<Utc>, Error> {
+            unimplemented!()
+        }
+
+        async fn health_check(&self) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    async fn run_import(
+        primary: &FakeLogManager,
+        backup: Option<&FakeLogManager>,
+    ) -> Result<(), Error> {
+        import_log(
+            primary,
+            backup.map(|b| b as &dyn LogFileManager),
+            "codebase",
+            "run-id",
+            "/nonexistent/build.log",
+            Some("build.log"),
+            Some(0),
+        )
+        .await
+    }
+
+    #[test]
+    fn test_io_permission_denied() {
+        let err = Error::from(io::Error::from(io::ErrorKind::PermissionDenied));
+        assert!(matches!(err, Error::PermissionDenied));
+        let err = Error::from(io::Error::other("disk full"));
+        assert_eq!(err.to_string(), "I/O error: disk full");
+    }
+
+    #[tokio::test]
+    async fn test_import_log_unexpected_error_does_not_use_backup() {
+        let primary = FakeLogManager::failing(vec![Error::Io("disk full".to_string())]);
+        let backup = FakeLogManager::default();
+        let err = run_import(&primary, Some(&backup)).await.unwrap_err();
+        assert_eq!(err.to_string(), "I/O error: disk full");
+        assert_eq!(backup.imported(), Vec::<Option<String>>::new());
+    }
+
+    #[tokio::test]
+    async fn test_import_log_unavailable_uses_backup() {
+        let primary = FakeLogManager::failing(vec![Error::ServiceUnavailable]);
+        let backup = FakeLogManager::default();
+        run_import(&primary, Some(&backup)).await.unwrap();
+        assert_eq!(backup.imported(), vec![Some("build.log".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn test_import_log_unavailable_without_backup() {
+        // Python only logged a warning in this case.
+        let primary = FakeLogManager::failing(vec![Error::Timeout]);
+        run_import(&primary, None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_import_log_permission_denied_retries_with_new_name() {
+        let primary = FakeLogManager::failing(vec![Error::PermissionDenied]);
+        let backup = FakeLogManager::default();
+        run_import(&primary, Some(&backup)).await.unwrap();
+        let imported = primary.imported();
+        assert_eq!(imported.len(), 2);
+        let retried = imported[1].as_deref().unwrap();
+        let suffix = retried.strip_prefix("build.log.").unwrap();
+        chrono::NaiveDateTime::parse_from_str(suffix, "%Y-%m-%dT%H:%M:%S").unwrap();
+        assert_eq!(backup.imported(), Vec::<Option<String>>::new());
+    }
+
+    #[tokio::test]
+    async fn test_import_log_permission_denied_retry_unexpected_error() {
+        let primary = FakeLogManager::failing(vec![
+            Error::PermissionDenied,
+            Error::Other("boom".to_string()),
+        ]);
+        let backup = FakeLogManager::default();
+        let err = run_import(&primary, Some(&backup)).await.unwrap_err();
+        assert_eq!(err.to_string(), "boom");
+        assert_eq!(backup.imported(), Vec::<Option<String>>::new());
+    }
+
+    #[tokio::test]
+    async fn test_import_log_permission_denied_retry_unavailable_uses_backup() {
+        let primary =
+            FakeLogManager::failing(vec![Error::PermissionDenied, Error::ServiceUnavailable]);
+        let backup = FakeLogManager::default();
+        run_import(&primary, Some(&backup)).await.unwrap();
+        assert_eq!(backup.imported(), vec![Some("build.log".to_string())]);
+    }
 }
