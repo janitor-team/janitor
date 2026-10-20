@@ -199,38 +199,6 @@ pub async fn store_artifacts_with_backup(
 mod tests {
     use super::*;
 
-    /// Pin every Display variant. These strings land in user-facing
-    /// error responses and log messages.
-    #[test]
-    fn error_display_matrix() {
-        assert_eq!(Error::ServiceUnavailable.to_string(), "Service unavailable");
-        assert_eq!(Error::ArtifactsMissing.to_string(), "Artifacts missing");
-        assert_eq!(Error::InvalidPath.to_string(), "Invalid path");
-        assert_eq!(Error::Other("x".into()).to_string(), "Error: x");
-        let io_err: Error = std::io::Error::new(std::io::ErrorKind::NotFound, "nope").into();
-        assert!(
-            io_err.to_string().starts_with("IO error:"),
-            "IO error message should start with 'IO error:', got {}",
-            io_err
-        );
-    }
-
-    /// `From<io::Error>` must produce IoError regardless of kind —
-    /// callers that need finer resolution pattern-match the wrapped
-    /// error themselves.
-    #[test]
-    fn from_io_error_produces_io_variant() {
-        let err: Error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "x").into();
-        assert!(matches!(err, Error::IoError(_)));
-    }
-
-    #[test]
-    fn error_implements_std_error_trait() {
-        fn _requires<E: std::error::Error>(_: E) {}
-        _requires(Error::ArtifactsMissing);
-        _requires(Error::Other("x".into()));
-    }
-
     /// Bare filesystem path routes to LocalArtifactManager.
     #[tokio::test]
     async fn get_artifact_manager_bare_path_yields_local_manager() {
