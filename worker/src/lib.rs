@@ -123,6 +123,38 @@ pub fn get_build_arch() -> Result<String, DpkgArchitectureError> {
     Ok(String::from_utf8(output.stdout).unwrap().trim().to_owned())
 }
 
+/// Parse a build configuration, failing the run in `stage` if it is
+/// malformed.
+pub(crate) fn parse_build_config<T: serde::de::DeserializeOwned>(
+    config: &serde_json::Value,
+    stage: &str,
+) -> Result<T, WorkerFailure> {
+    serde_json::from_value(config.clone()).map_err(|e| {
+        WorkerFailure::new(
+            "build-config-parse-failure",
+            format!("Failed to parse config: {}", e),
+            [stage],
+        )
+        .with_transient(false)
+    })
+}
+
+/// Convert a failure reported by a codemod script itself.
+pub(crate) fn detailed_codemod_failure(
+    result_code: String,
+    description: Option<String>,
+    stage: Option<Vec<String>>,
+    details: Option<serde_json::Value>,
+) -> WorkerFailure {
+    let mut failure = WorkerFailure::new(
+        result_code,
+        description.unwrap_or_else(|| "Codemod failed".to_string()),
+        std::iter::once("codemod".to_string()).chain(stage.into_iter().flatten()),
+    );
+    failure.details = details;
+    failure
+}
+
 pub fn convert_codemod_script_failed(i: i32, command: &str) -> WorkerFailure {
     match i {
         127 => WorkerFailure::new(
