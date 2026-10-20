@@ -1,19 +1,18 @@
+use crate::QueueItem;
 use async_trait::async_trait;
 use breezyshim::branch::GenericBranch;
 use debversion::Version;
-use janitor::api::worker::LintianConfig;
 use janitor::config::{Campaign, Distribution};
-use janitor::queue::QueueItem;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::LazyLock;
-use url::Url;
 
-static DEFAULT_DEP_SERVER_URL: LazyLock<Url> = LazyLock::new(|| {
-    Url::parse("http://dep-server:8080").expect("hardcoded default dep-server URL parses")
-});
+/// Python treats unset and empty proto strings alike; so do we.
+fn non_empty(s: &Option<String>) -> Option<&str> {
+    s.as_deref().filter(|s| !s.is_empty())
+}
 
 #[async_trait]
 /// Result type for configuration generators.
@@ -62,7 +61,10 @@ impl std::error::Error for Error {}
 
 #[async_trait]
 /// Interface for generating configurations for worker runs.
-pub trait ConfigGenerator {
+pub trait ConfigGenerator: Send + Sync {
+    /// Kind of build, sent to the worker as `build.target`.
+    fn kind(&self) -> &'static str;
+
     /// Generate a configuration for a worker run.
     async fn config(
         &self,
@@ -105,33 +107,34 @@ impl ConfigGeneratorResult for GenericResult {
 
 /// Configuration generator for generic builds.
 pub struct GenericConfigGenerator {
-    dep_server_url: url::Url,
+    dep_server_url: Option<String>,
 }
 
 impl GenericConfigGenerator {
     /// Create a new generic configuration generator.
-    pub fn new(dep_server_url: Option<url::Url>) -> Self {
-        Self {
-            dep_server_url: dep_server_url.unwrap_or_else(|| DEFAULT_DEP_SERVER_URL.clone()),
-        }
+    pub fn new(dep_server_url: Option<String>) -> Self {
+        Self { dep_server_url }
     }
 }
 
 #[async_trait]
 impl ConfigGenerator for GenericConfigGenerator {
+    fn kind(&self) -> &'static str {
+        "generic"
+    }
+
     async fn config(
         &self,
         _conn: &PgPool,
         campaign_config: &Campaign,
         _queue_item: &QueueItem,
-    ) -> Result<serde_json::Value, Error> {
-        let mut config = janitor::api::worker::GenericBuildConfig::default();
-        if let Some(chroot) = &campaign_config.generic_build().chroot {
-            config.chroot = Some(chroot.to_string());
+    ) -> Result<Value, Error> {
+        let mut config = Map::new();
+        if let Some(chroot) = non_empty(&campaign_config.generic_build().chroot) {
+            config.insert("chroot".to_string(), json!(chroot));
         }
-        config.dep_server_url = Some(self.dep_server_url.clone());
-        serde_json::to_value(config)
-            .map_err(|e| Error::Other(format!("Failed to serialize config: {}", e)))
+        config.insert("dep_server_url".to_string(), json!(self.dep_server_url));
+        Ok(Value::Object(config))
     }
 
     async fn build_env(
@@ -233,7 +236,7 @@ impl ConfigGeneratorResult for DebianResult {
 pub struct DebianConfigGenerator {
     distro_config: Distribution,
     apt_location: Option<String>,
-    dep_server_url: Option<url::Url>,
+    dep_server_url: Option<String>,
 }
 
 impl DebianConfigGenerator {
@@ -241,7 +244,7 @@ impl DebianConfigGenerator {
     pub fn new(
         distro_config: Distribution,
         apt_location: Option<String>,
-        dep_server_url: Option<url::Url>,
+        dep_server_url: Option<String>,
     ) -> Self {
         Self {
             distro_config,
@@ -249,121 +252,121 @@ impl DebianConfigGenerator {
             dep_server_url,
         }
     }
+
+    /// The distribution's base apt repository line, if it has a mirror
+    /// and components.
+    fn base_apt_repository(&self) -> Option<String> {
+        let mirror = non_empty(&self.distro_config.archive_mirror_uri)?;
+        if self.distro_config.component.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "{} {} {}",
+            mirror,
+            self.distro_config.name(),
+            self.distro_config.component.join(" ")
+        ))
+    }
+
+    fn chroot<'a>(&'a self, campaign_config: &'a Campaign) -> Option<&'a str> {
+        non_empty(&campaign_config.debian_build().chroot)
+            .or_else(|| non_empty(&self.distro_config.chroot))
+    }
 }
 
 #[async_trait]
 impl ConfigGenerator for DebianConfigGenerator {
+    fn kind(&self) -> &'static str {
+        "debian"
+    }
+
     async fn config(
         &self,
         conn: &PgPool,
         campaign_config: &Campaign,
         queue_item: &QueueItem,
-    ) -> Result<serde_json::Value, Error> {
-        let mut config = janitor::api::worker::DebianBuildConfig {
-            lintian: LintianConfig {
-                profile: self.distro_config.lintian_profile.clone(),
-                suppress_tags: Some(self.distro_config.lintian_suppress_tag.clone()),
-            },
-            ..Default::default()
-        };
+    ) -> Result<Value, Error> {
+        let debian_build = campaign_config.debian_build();
+        let mut config = Map::new();
 
-        let mut extra_janitor_distributions = Vec::new();
-        extra_janitor_distributions.extend(
-            campaign_config
-                .debian_build()
-                .extra_build_distribution
-                .iter()
-                .cloned(),
+        let mut lintian = Map::new();
+        lintian.insert(
+            "profile".to_string(),
+            json!(self.distro_config.lintian_profile()),
         );
+        if !self.distro_config.lintian_suppress_tag.is_empty() {
+            lintian.insert(
+                "suppress-tags".to_string(),
+                json!(self.distro_config.lintian_suppress_tag),
+            );
+        }
+        config.insert("lintian".to_string(), Value::Object(lintian));
+
+        let mut extra_janitor_distributions = debian_build.extra_build_distribution.clone();
         if let Some(change_set) = &queue_item.change_set {
             extra_janitor_distributions.push(format!("cs/{}", change_set));
         }
 
-        // Use signed repositories instead of trusted=yes
-        let build_extra_repositories = extra_janitor_distributions
-            .iter()
-            .filter_map(|suite| {
-                // Use the Debian Janitor signing key for extra repositories
-                match self.apt_location.as_ref() {
-                    Some(apt_location) => Some(format!(
-                        "deb [arch=amd64 signed-by=/etc/apt/keyrings/debian-janitor.gpg] {} {} main",
-                        apt_location,
-                        suite
-                    )),
-                    None => {
-                        log::warn!("APT location not configured, skipping extra repository for suite: {}", suite);
-                        None
-                    }
-                }
-            })
-            .collect::<Vec<_>>();
-        config.extra_repositories = Some(build_extra_repositories);
-
-        // Add the Debian Janitor repository key for extra repositories
-        if !extra_janitor_distributions.is_empty() {
-            config.apt_repository_key = Some("/etc/apt/keyrings/debian-janitor.gpg".to_string());
-        }
-
-        let build_distribution = campaign_config
-            .debian_build()
-            .build_distribution
-            .as_deref()
-            .unwrap_or(campaign_config.name());
-        config.build_distribution = Some(build_distribution.to_string());
-
-        let build_suffix = campaign_config
-            .debian_build()
-            .build_suffix
-            .as_deref()
-            .unwrap_or("");
-        config.build_suffix = Some(build_suffix.to_string());
-
-        config.build_command =
-            if let Some(build_command) = &campaign_config.debian_build().build_command {
-                Some(build_command.to_string())
-            } else {
-                self.distro_config
-                    .build_command
-                    .as_ref()
-                    .map(|build_command| build_command.to_string())
-            };
-
-        let last_build_version: Option<(debversion::Version, )> = sqlx::query_as("SELECT MAX(debian_build.version) FROM run LEFT JOIN debian_build ON debian_build.run_id = run.id WHERE debian_build.version IS NOT NULL AND run.codebase = $1 AND debian_build.distribution = $2")
-            .bind(&queue_item.codebase)
-            .bind(&config.build_distribution)
-            .fetch_optional(conn)
-            .await?;
-
-        if let Some((last_build_version,)) = last_build_version {
-            config.last_build_version = Some(last_build_version);
-        }
-
-        config.chroot = if let Some(chroot) = &campaign_config.debian_build().chroot {
-            Some(chroot.to_string())
-        } else {
-            self.distro_config
-                .chroot
-                .as_ref()
-                .map(|chroot| chroot.to_string())
+        // TODO(jelmer): Ship build-extra-repositories-keys, and specify [signed-by] here
+        let extra_repositories: Vec<String> = match &self.apt_location {
+            Some(apt_location) => extra_janitor_distributions
+                .iter()
+                .map(|suite| format!("deb [trusted=yes] {} {} main", apt_location, suite))
+                .collect(),
+            None => Vec::new(),
         };
+        config.insert(
+            "build-extra-repositories".to_string(),
+            json!(extra_repositories),
+        );
 
-        if let (Some(archive_mirror_uri), Some(distro_name)) = (
-            &self.distro_config.archive_mirror_uri,
-            &self.distro_config.name,
-        ) {
-            config.apt_repository = Some(format!(
-                "{} {} {}",
-                archive_mirror_uri,
-                distro_name,
-                self.distro_config.component.join(" ")
-            ));
-            config.apt_repository_key = self.distro_config.signed_by.clone();
+        let build_distribution =
+            non_empty(&debian_build.build_distribution).unwrap_or(campaign_config.name());
+        config.insert("build-distribution".to_string(), json!(build_distribution));
+
+        config.insert(
+            "build-suffix".to_string(),
+            json!(non_empty(&debian_build.build_suffix).unwrap_or("")),
+        );
+
+        if let Some(build_command) = non_empty(&debian_build.build_command)
+            .or_else(|| non_empty(&self.distro_config.build_command))
+        {
+            config.insert("build-command".to_string(), json!(build_command));
         }
 
-        config.dep_server_url = self.dep_server_url.as_ref().map(|u| u.to_string());
+        let last_build_version: Option<String> = sqlx::query_scalar(
+            "SELECT MAX(debian_build.version)::text FROM run \
+             LEFT JOIN debian_build ON debian_build.run_id = run.id \
+             WHERE debian_build.version IS NOT NULL AND run.codebase = $1 AND \
+             debian_build.distribution = $2",
+        )
+        .bind(&queue_item.codebase)
+        .bind(build_distribution)
+        .fetch_one(conn)
+        .await?;
+        if let Some(last_build_version) = last_build_version {
+            config.insert("last-build-version".to_string(), json!(last_build_version));
+        }
 
-        serde_json::to_value(config)
-            .map_err(|e| Error::Other(format!("Failed to serialize config: {}", e)))
+        if let Some(chroot) = self.chroot(campaign_config) {
+            config.insert("chroot".to_string(), json!(chroot));
+        }
+
+        if let Some(base_apt_repository) = self.base_apt_repository() {
+            config.insert(
+                "base-apt-repository".to_string(),
+                json!(base_apt_repository),
+            );
+            config.insert(
+                "base-apt-repository-signed-by".to_string(),
+                json!(non_empty(&self.distro_config.signed_by)),
+            );
+        }
+
+        config.insert("dep_server_url".to_string(), json!(self.dep_server_url));
+
+        Ok(Value::Object(config))
     }
 
     async fn build_env(
@@ -373,43 +376,25 @@ impl ConfigGenerator for DebianConfigGenerator {
         _queue_item: &QueueItem,
     ) -> Result<HashMap<String, String>, Error> {
         let mut env = HashMap::new();
-        if let Some(distro_name) = &self.distro_config.name {
+        if let Some(distro_name) = non_empty(&self.distro_config.name) {
             env.insert("DISTRIBUTION".to_string(), distro_name.to_string());
         }
 
-        if let Some(vendor) = self
-            .distro_config
-            .vendor
-            .clone()
-            .or_else(crate::dpkg_vendor)
-        {
-            env.insert("DEB_VENDOR".to_owned(), vendor);
-        }
+        let vendor = match non_empty(&self.distro_config.vendor) {
+            Some(vendor) => vendor.to_string(),
+            None => crate::dpkg_vendor()
+                .ok_or_else(|| Error::Other("Unable to determine dpkg vendor".to_string()))?,
+        };
+        env.insert("DEB_VENDOR".to_owned(), vendor);
 
-        if let Some(chroot) = &campaign_config.debian_build().chroot {
-            env.insert("CHROOT".to_owned(), chroot.to_string());
-        } else if let Some(chroot) = &self.distro_config.chroot {
+        if let Some(chroot) = self.chroot(campaign_config) {
             env.insert("CHROOT".to_owned(), chroot.to_string());
         }
 
-        if let (Some(archive_mirror_uri), Some(distro_name)) = (
-            &self.distro_config.archive_mirror_uri,
-            &self.distro_config.name,
-        ) {
-            env.insert(
-                "APT_REPOSITORY".to_owned(),
-                format!(
-                    "{} {} {}",
-                    archive_mirror_uri,
-                    distro_name,
-                    self.distro_config.component.join(" ")
-                ),
-            );
+        if let Some(base_apt_repository) = self.base_apt_repository() {
+            env.insert("APT_REPOSITORY".to_owned(), base_apt_repository);
         }
-
-        if let Some(signed_by) = &self.distro_config.signed_by {
-            env.insert("APT_REPOSITORY_KEY".to_owned(), signed_by.clone());
-        }
+        // TODO(jelmer): Set APT_REPOSITORY_KEY
 
         Ok(env)
     }
@@ -426,34 +411,23 @@ impl ConfigGenerator for DebianConfigGenerator {
 pub fn get_config_generator(
     config: &janitor::config::Config,
     campaign_config: &Campaign,
-    apt_archive_url: Option<&Url>,
-    dep_server_url: Option<&Url>,
+    apt_archive_url: Option<&str>,
+    dep_server_url: Option<&str>,
 ) -> Result<Box<dyn ConfigGenerator>, Error> {
     if campaign_config.has_debian_build() {
-        let base_distribution =
-            if let Some(d) = campaign_config.debian_build().base_distribution.as_deref() {
-                d
-            } else {
-                return Err(Error::ConfigError(
-                    "No base distribution specified".to_string(),
-                ));
-            };
-        match config.get_distribution(base_distribution) {
-            Some(distribution) => Ok(Box::new(DebianConfigGenerator::new(
-                distribution.clone(),
-                apt_archive_url.map(|u| u.to_string()),
-                dep_server_url.cloned(),
-            )) as Box<dyn ConfigGenerator>),
-            None => Err(Error::ConfigError(format!(
-                "Unsupported distribution: {}",
-                base_distribution
-            ))),
-        }
+        let base_distribution = campaign_config.debian_build().base_distribution();
+        let distribution = config.get_distribution(base_distribution).ok_or_else(|| {
+            Error::ConfigError(format!("Unsupported distribution: {}", base_distribution))
+        })?;
+        Ok(Box::new(DebianConfigGenerator::new(
+            distribution.clone(),
+            apt_archive_url.map(str::to_string),
+            dep_server_url.map(str::to_string),
+        )))
     } else if campaign_config.has_generic_build() {
-        Ok(
-            Box::new(GenericConfigGenerator::new(dep_server_url.cloned()))
-                as Box<dyn ConfigGenerator>,
-        )
+        Ok(Box::new(GenericConfigGenerator::new(
+            dep_server_url.map(str::to_string),
+        )))
     } else {
         Err(Error::ConfigError("no supported build type".to_string()))
     }
