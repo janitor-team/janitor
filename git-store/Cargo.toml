@@ -36,7 +36,6 @@ tracing = "0.1"
 # Redeclare janitor with the `testing` feature so integration tests can
 # use janitor::schema::CORE_SCHEMA.
 janitor = { path = "..", features = ["testing"] }
-libc = "0.2"
 reqwest = { version = "0.12", features = ["json"] }
 serial_test = "3"
 tempfile = "3.19"
