@@ -36,20 +36,17 @@ pub fn splitout_env(command: &str) -> (HashMap<String, String>, String) {
         }
     };
 
-    let mut env = HashMap::new();
-    let mut remaining_args = args;
-
-    // Process arguments from the beginning, collecting environment variables
-    while !remaining_args.is_empty() && remaining_args[0].contains('=') {
-        let arg = remaining_args.remove(0);
-        if let Some((key, value)) = arg.split_once('=') {
-            env.insert(key.to_string(), value.to_string());
-        } else {
-            // If split failed, this isn't a valid env var, put it back and break
-            remaining_args.insert(0, arg);
-            break;
-        }
-    }
+    let split = args
+        .iter()
+        .position(|arg| !arg.contains('='))
+        .unwrap_or(args.len());
+    let mut env_args = args;
+    let remaining_args = env_args.split_off(split);
+    let env = env_args
+        .iter()
+        .filter_map(|arg| arg.split_once('='))
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect::<HashMap<_, _>>();
 
     // Reconstruct the remaining command
     let remaining_command = if remaining_args.is_empty() {
@@ -65,11 +62,6 @@ pub fn splitout_env(command: &str) -> (HashMap<String, String>, String) {
 /// Get the default user agent string for HTTP requests
 pub fn default_user_agent() -> String {
     format!("janitor/{}", VERSION)
-}
-
-/// Get a service-specific user agent string
-pub fn service_user_agent(service_name: &str) -> String {
-    format!("janitor-{}/{}", service_name, VERSION)
 }
 
 /// Override the User-Agent used by Python-backed HTTP clients.
@@ -180,17 +172,6 @@ mod tests {
         assert_eq!(env.get("FOO"), Some(&"bar".to_string()));
         // The shlex library quotes arguments containing = which is correct behavior
         assert!(cmd == "echo a=b" || cmd == "echo 'a=b'");
-    }
-
-    #[test]
-    fn test_user_agent_functions() {
-        let default_ua = default_user_agent();
-        assert!(default_ua.starts_with("janitor/"));
-        assert!(default_ua.contains(VERSION));
-
-        let service_ua = service_user_agent("runner");
-        assert!(service_ua.starts_with("janitor-runner/"));
-        assert!(service_ua.contains(VERSION));
     }
 
     #[test]
