@@ -64,21 +64,12 @@ pub fn generic_make_changes(
             ),
             ["codemod"],
         )),
-        Err(GenericCodemodError::Detailed(f)) => {
-            let mut stage = vec!["codemod".to_string()];
-            if let Some(extra_stage) = f.stage {
-                stage.extend(extra_stage);
-            }
-            Err(WorkerFailure {
-                code: f.result_code,
-                description: f
-                    .description
-                    .unwrap_or_else(|| "Codemod failed".to_string()),
-                details: f.details,
-                stage,
-                transient: None,
-            })
-        }
+        Err(GenericCodemodError::Detailed(f)) => Err(crate::detailed_codemod_failure(
+            f.result_code,
+            f.description,
+            f.stage,
+            f.details,
+        )),
         Err(GenericCodemodError::Io(e)) => Err(WorkerFailure::new(
             "io-error",
             format!("IO error: {}", e),
@@ -397,14 +388,7 @@ impl crate::Target for GenericTarget {
         output_directory: &std::path::Path,
         config: &crate::BuildConfig,
     ) -> Result<serde_json::Value, WorkerFailure> {
-        let config: GenericBuildConfig = serde_json::from_value(config.clone()).map_err(|e| {
-            WorkerFailure::new(
-                "build-config-parse-failure",
-                format!("Failed to parse config: {}", e),
-                ["build"],
-            )
-            .with_transient(false)
-        })?;
+        let config: GenericBuildConfig = crate::parse_build_config(config, "build")?;
         build_from_config(local_tree, subpath, output_directory, &config, &self.env)
     }
 
