@@ -43,8 +43,6 @@ pub mod state;
 /// Axum router and HTTP handlers.
 pub mod web;
 
-use rate_limiter::RateLimiter;
-
 // Re-export from redis module to avoid import issues
 pub use crate::redis::RedisConnectionManager;
 // Import pyo3 for PyErr
@@ -832,20 +830,14 @@ impl PublishWorker {
         log_id: &str,
         unchanged_id: Option<&str>,
         derived_branch_name: &str,
-        rate_limit_bucket: Option<&str>,
         vcs_manager: &dyn VcsManager,
-        mut bucket_rate_limiter: Option<&mut dyn RateLimiter>,
         require_binary_diff: bool,
         allow_create_proposal: bool,
-        reviewers: Option<Vec<&str>>,
         tags: Option<Vec<(String, RevisionId)>>,
         commit_message_template: Option<&str>,
         title_template: Option<&str>,
         codemod_result: &serde_json::Value,
         existing_mp_url: Option<&url::Url>,
-        extra_context: Option<&serde_json::Value>,
-        derived_owner: Option<&str>,
-        auto_merge: Option<bool>,
     ) -> Result<PublishOneResult, PublishError> {
         let local_branch_url =
             vcs_manager.get_branch_url(codebase, &format!("{}/{}", campaign, role));
@@ -867,13 +859,13 @@ impl PublishWorker {
             external_url: self.external_url.clone(),
             differ_url: self.differ_url.clone(),
             revision_id: revision.clone(),
-            reviewers: reviewers.map(|r| r.iter().map(|s| s.to_string()).collect()),
+            reviewers: None,
             commit_message_template: commit_message_template.map(|s| s.to_string()),
             title_template: title_template.map(|s| s.to_string()),
-            extra_context: extra_context.cloned(),
+            extra_context: None,
             tags: tags.map(|t| t.into_iter().collect()),
-            derived_owner: derived_owner.map(|s| s.to_string()),
-            auto_merge,
+            derived_owner: None,
+            auto_merge: None,
         };
 
         let mut args = vec!["janitor-publish-one".to_string()];
@@ -956,12 +948,6 @@ impl PublishWorker {
                     let publisher = crate::redis::RedisPublisher::new(redis_manager.clone());
                     if let Err(e) = publisher.publish_merge_proposal(&event).await {
                         log::warn!("Failed to publish merge proposal event to Redis: {}", e);
-                    }
-                }
-
-                if let Some(bucket) = rate_limit_bucket {
-                    if let Some(rate_limiter) = bucket_rate_limiter.as_mut() {
-                        rate_limiter.inc(bucket);
                     }
                 }
             }
@@ -2541,8 +2527,6 @@ pub async fn publish_from_policy(
             .collect()
     });
     let codemod_result = run.result.clone().unwrap_or(serde_json::Value::Null);
-    let extra_context = serde_json::json!({});
-
     log::info!(
         "Publishing {} / {:?} / {} (mode: {})",
         run.codebase,
@@ -2563,20 +2547,14 @@ pub async fn publish_from_policy(
             &run.id,
             unchanged_run.as_ref().map(|(id, _)| id.as_str()),
             &derived_name,
-            rate_limit_bucket,
             vcs_manager,
-            None, // bucket_rate_limiter: !Send guard would poison the future
             require_binary_diff,
             run_sufficient_for_proposal(campaign_config, run.value),
-            None, // reviewers
             tags,
             campaign_config.merge_proposal.commit_message.as_deref(),
             campaign_config.merge_proposal.title.as_deref(),
             &codemod_result,
             None, // existing_mp_url
-            Some(&extra_context),
-            None, // derived_owner
-            None, // auto_merge
         )
         .await;
 
@@ -2816,13 +2794,10 @@ pub async fn publish_and_store(
     });
 
     let codemod_result = run.result.clone().unwrap_or(serde_json::Value::Null);
-    let extra_context = serde_json::json!({});
-
-    // Don't pass the bucket_rate_limiter through publish_one: its
+    // On a successful publish that created a new proposal, the bucket
+    // counter is incremented below in a tight sync scope: its
     // std::sync::Mutex guard is !Send and can't be held across the
-    // publish_one .await without poisoning the surrounding future.
-    // Instead, on a successful publish that created a new proposal,
-    // increment the bucket counter below in a tight sync scope.
+    // publish_one .await.
     let publish_outcome = publish_worker
         .publish_one(
             &run.suite,
@@ -2835,20 +2810,14 @@ pub async fn publish_and_store(
             &run.id,
             unchanged_run_id.as_deref(),
             &derived_name,
-            rate_limit_bucket,
             vcs_manager,
-            None, // bucket_rate_limiter: bumped below on success
             require_binary_diff,
             allow_create_proposal,
-            None, // reviewers
             tags,
             campaign_config.merge_proposal.commit_message.as_deref(),
             campaign_config.merge_proposal.title.as_deref(),
             &codemod_result,
             None, // existing_mp_url
-            Some(&extra_context),
-            None, // derived_owner
-            None, // auto_merge
         )
         .await;
 
@@ -3857,19 +3826,10 @@ async fn check_existing_mp(
             });
 
         let codemod_result = last_run.result.clone().unwrap_or(serde_json::Value::Null);
-        let extra_context = serde_json::json!({});
-
-        // Don't pass the bucket_rate_limiter through publish_one
-        // here: the std::sync::Mutex guard around it is !Send and
-        // can't be held across the publish_one .await without making
-        // the entire check_existing_mp future !Send. publish_one
-        // only ever increments the rate limiter when it creates a
-        // brand-new proposal (is_new=true), which in the
-        // check_existing_mp republish path is the rare "default
-        // branch changed" edge case rather than the common path.
-        // Skipping the increment here means that one edge case
-        // doesn't count toward the rate-limit budget; the regular
-        // open-new-proposal path elsewhere still does.
+        // The bucket rate limiter isn't incremented here even if this
+        // creates a brand-new proposal (the rare "default branch
+        // changed" case); the regular open-new-proposal path still
+        // counts toward the rate-limit budget.
         let publish_outcome = publish_worker
             .publish_one(
                 &last_run.suite,
@@ -3882,20 +3842,14 @@ async fn check_existing_mp(
                 &last_run.id,
                 unchanged_run_id.as_deref(),
                 &derived_name,
-                rate_limit_bucket.as_deref(),
                 vcs_manager_for_publish,
-                None,  // bucket_rate_limiter: see comment above
                 false, // require_binary_diff
                 true,  // allow_create_proposal
-                None,  // reviewers
                 tags_for_publish,
                 campaign_config.merge_proposal.commit_message.as_deref(),
                 campaign_config.merge_proposal.title.as_deref(),
                 &codemod_result,
                 Some(&mp_url),
-                Some(&extra_context),
-                None, // derived_owner
-                None, // auto_merge
             )
             .await;
 
