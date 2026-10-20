@@ -509,6 +509,14 @@ pub enum PublishError {
 }
 
 impl PublishError {
+    /// Construct a [`PublishError::Failure`].
+    pub fn failure(code: impl Into<String>, description: impl Into<String>) -> Self {
+        PublishError::Failure {
+            code: code.into(),
+            description: description.into(),
+        }
+    }
+
     /// Get the error code.
     ///
     /// # Returns
@@ -543,38 +551,15 @@ impl serde::Serialize for PublishError {
     where
         S: serde::Serializer,
     {
-        match self {
-            PublishError::Failure { code, description } => {
-                let mut state = serializer.serialize_struct("PublishError", 2)?;
-                state.serialize_field("code", code)?;
-                state.serialize_field("description", description)?;
-                state.end()
-            }
-            PublishError::NothingToDo(description) => {
-                let mut state = serializer.serialize_struct("PublishError", 2)?;
-                state.serialize_field("code", "nothing-to-do")?;
-                state.serialize_field("description", description)?;
-                state.end()
-            }
-            PublishError::BranchBusy(url) => {
-                let mut state = serializer.serialize_struct("PublishError", 2)?;
-                state.serialize_field("code", "branch-busy")?;
-                state.serialize_field("description", &format!("Branch is busy: {}", url))?;
-                state.end()
-            }
-            PublishError::DatabaseError(e) => {
-                let mut state = serializer.serialize_struct("PublishError", 2)?;
-                state.serialize_field("code", "database-error")?;
-                state.serialize_field("description", &e.to_string())?;
-                state.end()
-            }
-            PublishError::ServiceUnavailable(msg) => {
-                let mut state = serializer.serialize_struct("PublishError", 2)?;
-                state.serialize_field("code", "service-unavailable")?;
-                state.serialize_field("description", msg)?;
-                state.end()
-            }
-        }
+        let description = match self {
+            PublishError::BranchBusy(url) => format!("Branch is busy: {}", url),
+            PublishError::DatabaseError(e) => e.to_string(),
+            _ => self.description().to_string(),
+        };
+        let mut state = serializer.serialize_struct("PublishError", 2)?;
+        state.serialize_field("code", self.code())?;
+        state.serialize_field("description", &description)?;
+        state.end()
     }
 }
 
@@ -912,10 +897,10 @@ impl PublishWorker {
                     let (returncode, response) = match run_worker_process(args, request).await {
                         Ok((returncode, response)) => (returncode, response),
                         Err(e) => {
-                            return Err(PublishError::Failure {
-                                code: "publisher-invalid-response".to_string(),
-                                description: e.to_string(),
-                            });
+                            return Err(PublishError::failure(
+                                "publisher-invalid-response",
+                                e.to_string(),
+                            ));
                         }
                     };
                     lock_manager.unlock(&rl).await;
@@ -929,32 +914,23 @@ impl PublishWorker {
             match run_worker_process(args, request).await {
                 Ok((returncode, response)) => (returncode, response),
                 Err(e) => {
-                    return Err(PublishError::Failure {
-                        code: "publisher-invalid-response".to_string(),
-                        description: e.to_string(),
-                    });
+                    return Err(PublishError::failure(
+                        "publisher-invalid-response",
+                        e.to_string(),
+                    ));
                 }
             }
         };
 
         if returncode == 1 {
-            let error: PublishOneError =
-                serde_json::from_value(response).map_err(|e| PublishError::Failure {
-                    code: "publisher-invalid-response".to_string(),
-                    description: e.to_string(),
-                })?;
-            return Err(PublishError::Failure {
-                code: error.code,
-                description: error.description,
-            });
+            let error: PublishOneError = serde_json::from_value(response)
+                .map_err(|e| PublishError::failure("publisher-invalid-response", e.to_string()))?;
+            return Err(PublishError::failure(error.code, error.description));
         }
 
         if returncode == 0 {
-            let result: PublishOneResult =
-                serde_json::from_value(response).map_err(|e| PublishError::Failure {
-                    code: "publisher-invalid-response".to_string(),
-                    description: e.to_string(),
-                })?;
+            let result: PublishOneResult = serde_json::from_value(response)
+                .map_err(|e| PublishError::failure("publisher-invalid-response", e.to_string()))?;
 
             if result.proposal_url.is_some() && result.is_new.unwrap_or(false) {
                 // Publish merge proposal event to Redis
@@ -1483,10 +1459,7 @@ mod tests {
 
     #[test]
     fn test_publish_error_failure_code() {
-        let err = PublishError::Failure {
-            code: "merge-conflict".to_string(),
-            description: "Could not merge".to_string(),
-        };
+        let err = PublishError::failure("merge-conflict", "Could not merge");
         assert_eq!(err.code(), "merge-conflict");
         assert_eq!(err.description(), "Could not merge");
     }
@@ -1508,10 +1481,7 @@ mod tests {
 
     #[test]
     fn test_publish_error_display() {
-        let err = PublishError::Failure {
-            code: "merge-conflict".to_string(),
-            description: "Could not merge".to_string(),
-        };
+        let err = PublishError::failure("merge-conflict", "Could not merge");
         assert_eq!(
             err.to_string(),
             "PublishError::Failure: merge-conflict: Could not merge"
@@ -1533,10 +1503,7 @@ mod tests {
 
     #[test]
     fn test_publish_error_serialize() {
-        let err = PublishError::Failure {
-            code: "merge-conflict".to_string(),
-            description: "Could not merge".to_string(),
-        };
+        let err = PublishError::failure("merge-conflict", "Could not merge");
         let json = serde_json::to_value(&err).unwrap();
         assert_eq!(json["code"], "merge-conflict");
         assert_eq!(json["description"], "Could not merge");
