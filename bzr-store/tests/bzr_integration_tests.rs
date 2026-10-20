@@ -5,94 +5,20 @@
 //! with a couple of commits via breezyshim and then drive the
 //! admin app via HTTP.
 
-use std::sync::Arc;
+mod common;
 
-use axum::body::{Body, Bytes};
+use axum::body::Body;
 use axum::http::Request;
-use axum::response::Response;
-use axum::Router;
 use breezyshim::branch::Branch;
 use breezyshim::tree::{MutableTree, WorkingTree};
-use janitor::{test_utils::TestDatabase, test_with_database};
+use common::*;
+use janitor::test_with_database;
 use janitor_bzr_store::{
     api_types::RemoteConfiguredResponse,
-    config::{BzrConfig, BzrStoreConfig, Config},
     repository::{RepositoryInfo, RevisionInfo},
     web::create_applications,
 };
-use sqlx::PgPool;
 use tempfile::TempDir;
-use tower::ServiceExt;
-
-fn test_db_url(test_db: &TestDatabase) -> String {
-    let base = std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgresql://localhost/postgres".to_string());
-    match base.rsplit_once('/') {
-        Some((prefix, _)) => format!("{}/{}", prefix, test_db.database_name),
-        None => format!("{}/{}", base, test_db.database_name),
-    }
-}
-
-fn build_config(tmp_dir: &std::path::Path, database_url: String) -> Config {
-    let mut cfg = BzrStoreConfig::default();
-    cfg.bzr = BzrConfig {
-        repository_path: tmp_dir.to_path_buf(),
-        admin_bind: "127.0.0.1:0".parse().unwrap(),
-        public_bind: "127.0.0.1:0".parse().unwrap(),
-        python_path: None,
-        request_timeout: cfg.bzr.request_timeout,
-    };
-    cfg.base.database = Some(janitor::shared_config::DatabaseConfig {
-        url: database_url,
-        ..janitor::shared_config::DatabaseConfig::default()
-    });
-    cfg
-}
-
-fn janitor_config_with_campaign() -> Arc<janitor::config::Config> {
-    let text = r#"
-campaign {
-    name: "campaign"
-}
-"#;
-    Arc::new(janitor::config::read_string(text).expect("parse test janitor.conf"))
-}
-
-async fn send(app: &Router, req: Request<Body>) -> Response {
-    app.clone().oneshot(req).await.unwrap()
-}
-
-fn get(uri: &str) -> Request<Body> {
-    Request::get(uri).body(Body::empty()).unwrap()
-}
-
-async fn body_bytes(resp: Response) -> Bytes {
-    axum::body::to_bytes(resp.into_body(), usize::MAX)
-        .await
-        .unwrap()
-}
-
-async fn body_text(resp: Response) -> String {
-    String::from_utf8(body_bytes(resp).await.to_vec()).unwrap()
-}
-
-async fn body_json<T: serde::de::DeserializeOwned>(resp: Response) -> T {
-    serde_json::from_slice(&body_bytes(resp).await).unwrap()
-}
-
-async fn seed_codebase(pool: &PgPool, name: &str) {
-    let url = format!("https://example.invalid/{}", name);
-    sqlx::query(
-        "INSERT INTO codebase (name, branch_url, url, vcs_type)
-         VALUES ($1, $2, $2, 'bzr')
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(name)
-    .bind(&url)
-    .execute(pool)
-    .await
-    .unwrap();
-}
 
 /// Build a bzr branch with two commits at `branch_path` and return
 /// their revision ids.
