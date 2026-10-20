@@ -888,17 +888,12 @@ async fn consider(State(state): State<Arc<AppState>>, Path(id): Path<String>) ->
         // push_limit so operators can bypass the global push budget.
         // The bulk /autopublish path still respects it.
         if let Err(e) = crate::consider_publish_run(
-            &state.conn,
-            state.config,
-            &state.publish_worker,
-            &state.vcs_managers,
-            &state.bucket_rate_limiter,
+            &state,
             &run,
             &rate_limit_bucket,
             unpublished_branches.as_slice(),
             &command,
             None,
-            state.require_binary_diff,
         )
         .await
         {
@@ -1437,18 +1432,7 @@ async fn check_stragglers(
 /// known merge proposal. Returns 202 immediately.
 async fn scan(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     async fn scan(state: Arc<AppState>) {
-        crate::check_existing(
-            state.conn.clone(),
-            state.redis.clone(),
-            state.config,
-            &state.publish_worker,
-            &state.bucket_rate_limiter,
-            state.forge_rate_limiter.clone(),
-            &state.vcs_managers,
-            state.modify_mp_limit,
-            state.unexpected_mp_limit,
-        )
-        .await;
+        crate::check_existing(&state).await;
     }
 
     tokio::spawn(scan(state));
@@ -1584,12 +1568,9 @@ async fn autopublish(
     axum::extract::Query(query): axum::extract::Query<AutopublishQuery>,
 ) -> impl IntoResponse {
     let push_limit = query.push_limit.or(state.push_limit);
-    let require_binary_diff = state.require_binary_diff;
     let state_for_task = state.clone();
     tokio::spawn(async move {
-        if let Err(e) =
-            crate::publish_pending_ready(state_for_task, push_limit, require_binary_diff).await
-        {
+        if let Err(e) = crate::publish_pending_ready(state_for_task, push_limit).await {
             log::warn!("publish_pending_ready failed: {}", e);
         }
     });
