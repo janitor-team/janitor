@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 
+import html
 import logging
 from asyncio import TimeoutError
 
@@ -7,6 +8,7 @@ import aiozipkin
 import asyncpg
 from aiohttp import ClientConnectorError, ClientResponseError, web
 from breezy.revision import NULL_REVISION
+from yarl import URL
 
 from janitor import state
 
@@ -77,7 +79,9 @@ async def generate_review(
         campaign,
     ) = entries.pop(0)
 
-    evaluate_url = str(request.url.join(request.app["evaluate_url"]))
+    evaluate_url = str(
+        request.app["external_url"].join(URL(request.app["evaluate_url"]))
+    )
 
     try:
         async with request.app["http_client_session"].get(
@@ -85,7 +89,7 @@ async def generate_review(
         ) as resp:
             evaluate = await resp.text()
     except (ClientConnectorError, ClientResponseError) as e:
-        evaluate = f"Unable to retrieve evaluation: {e}"
+        evaluate = html.escape(f"Unable to retrieve evaluation: {e}")
 
     kwargs = {
         "review_instructions_url": request.app.get("review_instructions_url"),
