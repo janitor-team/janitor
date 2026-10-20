@@ -7,14 +7,12 @@
 //! `revision-info` route through [`RepositoryManager`]; the Python
 //! `bzr_diff_helper` and `bzr_revision_info_request` are the reference.
 
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::path::PathBuf;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
-use tokio::process::Command;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::database::DatabaseManager;
 use crate::error::{BzrError, Result};
@@ -140,24 +138,20 @@ pub struct RevisionInfo {
     pub timestamp: String,
 }
 
-/// Default repository manager: prefers PyO3 (via `breezyshim`) for
-/// repo creation and metadata, falls back to the `brz` CLI when PyO3
-/// isn't available or raises.
+/// Default repository manager, backed by `breezyshim`.
 #[derive(Clone)]
 pub struct PyO3RepositoryManager {
     base_path: PathBuf,
     #[allow(dead_code)] // reserved for future codebase-exists checks
     database: DatabaseManager,
-    prefer_pyo3: bool,
 }
 
 impl PyO3RepositoryManager {
     /// Create a new repository manager rooted at `base_path`.
-    pub fn new(base_path: PathBuf, database: DatabaseManager, prefer_pyo3: bool) -> Self {
+    pub fn new(base_path: PathBuf, database: DatabaseManager) -> Self {
         Self {
             base_path,
             database,
-            prefer_pyo3,
         }
     }
 
@@ -179,33 +173,8 @@ impl PyO3RepositoryManager {
         );
         fs::create_dir_all(&codebase_path).await?;
 
-        if self.prefer_pyo3 {
-            if let Err(e) = BreezyOperations::init_shared_repository(&codebase_path).await {
-                warn!("PyO3 shared-repo init failed, falling back to brz: {}", e);
-            } else {
-                return Ok(());
-            }
-        }
-
-        create_shared_repository_via_brz(&codebase_path).await
+        BreezyOperations::init_shared_repository(&codebase_path).await
     }
-}
-
-async fn create_shared_repository_via_brz(path: &Path) -> Result<()> {
-    let output = Command::new("brz")
-        .args(["init-shared-repository", "--format=2a"])
-        .arg(path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await?;
-    if !output.status.success() {
-        return Err(BzrError::subprocess(format!(
-            "brz init-shared-repository failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
-    }
-    Ok(())
 }
 
 #[async_trait]
@@ -219,7 +188,7 @@ impl RepositoryManager for PyO3RepositoryManager {
         let repo_path = self.get_repository_path(path);
         let exists = repo_path.join(".bzr").exists();
 
-        let last_revision = if exists && self.prefer_pyo3 {
+        let last_revision = if exists {
             BreezyOperations::get_branch_info(&repo_path)
                 .await
                 .ok()
@@ -269,41 +238,7 @@ impl RepositoryManager for PyO3RepositoryManager {
             new_revid
         );
 
-        // Prefer the breezyshim-backed path: typed, no subprocess.
-        if self.prefer_pyo3 {
-            match BreezyOperations::get_diff(&repo_path, old_revid, new_revid).await {
-                Ok(bytes) => return Ok(bytes),
-                Err(e) => warn!("PyO3 diff failed, falling back to brz subprocess: {}", e),
-            }
-        }
-
-        // Fallback matches Python's `bzr_diff_helper` shape: shell
-        // out to brz. `brz diff` exits non-zero when differences
-        // exist, so we accept exit codes 0 (no diff) and 1 (diffs).
-        let output = Command::new("brz")
-            .args([
-                "diff",
-                "-r",
-                &format!("revid:{}..revid:{}", old_revid, new_revid),
-            ])
-            .current_dir(&repo_path)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await?;
-
-        let code = output.status.code();
-        // bzr's `diff` exit codes: 0 = no diffs, 1 = diffs present,
-        // 3 = error. Treat 0 and 1 as success.
-        if matches!(code, Some(0) | Some(1)) {
-            Ok(output.stdout)
-        } else {
-            Err(BzrError::subprocess(format!(
-                "brz diff failed ({:?}): {}",
-                code,
-                String::from_utf8_lossy(&output.stderr)
-            )))
-        }
+        BreezyOperations::get_diff(&repo_path, old_revid, new_revid).await
     }
 
     async fn get_revision_info(
@@ -313,82 +248,28 @@ impl RepositoryManager for PyO3RepositoryManager {
         new_revid: &str,
     ) -> Result<Vec<RevisionInfo>> {
         let repo_path = self.get_repository_path(path);
-        if self.prefer_pyo3 {
-            match BreezyOperations::get_revision_info(&repo_path, old_revid, new_revid).await {
-                Ok(revisions) => {
-                    return Ok(revisions
-                        .into_iter()
-                        .map(|br| RevisionInfo {
-                            revision_id: br.revision_id,
-                            message: br.message,
-                            committer: br.committer,
-                            timestamp: br.timestamp,
-                        })
-                        .collect())
-                }
-                Err(e) => warn!("PyO3 revision-info failed, falling back to brz: {}", e),
-            }
-        }
-
-        let output = Command::new("brz")
-            .args([
-                "log",
-                "-r",
-                &format!("revid:{}..revid:{}", old_revid, new_revid),
-                "--show-ids",
-            ])
-            .current_dir(&repo_path)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await?;
-
-        if !output.status.success() {
-            return Err(BzrError::subprocess(format!(
-                "brz log failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
-        }
-        Ok(parse_bzr_log(&String::from_utf8_lossy(&output.stdout)))
+        let revisions =
+            BreezyOperations::get_revision_info(&repo_path, old_revid, new_revid).await?;
+        Ok(revisions
+            .into_iter()
+            .map(|br| RevisionInfo {
+                revision_id: br.revision_id,
+                message: br.message,
+                committer: br.committer,
+                timestamp: br.timestamp,
+            })
+            .collect())
     }
 
     async fn configure_remote(&self, path: &RepositoryPath, remote_url: &str) -> Result<()> {
-        let repo_path = self.get_repository_path(path);
-        if !repo_path.exists() {
+        let branch_path = self.base_path.join(path.relative_path());
+        if !branch_path.exists() {
             return Err(BzrError::PathNotFound {
                 path: path.relative_path(),
             });
         }
 
-        if self.prefer_pyo3 {
-            if let Err(e) = BreezyOperations::configure_remote(&repo_path, remote_url).await {
-                warn!(
-                    "PyO3 configure_remote failed, falling back to brz config: {}",
-                    e
-                );
-            } else {
-                info!(
-                    "Configured remote {} = {}",
-                    path.relative_path(),
-                    remote_url
-                );
-                return Ok(());
-            }
-        }
-
-        let output = Command::new("brz")
-            .args(["config", &format!("parent_location={}", remote_url)])
-            .current_dir(&repo_path)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await?;
-        if !output.status.success() {
-            return Err(BzrError::subprocess(format!(
-                "brz config failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
-        }
+        BreezyOperations::configure_remote(&branch_path, remote_url).await?;
         info!(
             "Configured remote {} = {}",
             path.relative_path(),
@@ -396,47 +277,6 @@ impl RepositoryManager for PyO3RepositoryManager {
         );
         Ok(())
     }
-}
-
-/// Minimal parser for `brz log --show-ids` output. Extracts the
-/// `revision-id:` and `message:` fields and drops the rest. Robust
-/// enough for the admin API — the primary code path is the PyO3
-/// implementation.
-fn parse_bzr_log(text: &str) -> Vec<RevisionInfo> {
-    let mut out = Vec::new();
-    let mut current: Option<RevisionInfo> = None;
-    for line in text.lines() {
-        if let Some(revid) = line.strip_prefix("revision-id:") {
-            if let Some(prev) = current.take() {
-                out.push(prev);
-            }
-            current = Some(RevisionInfo {
-                revision_id: revid.trim().to_string(),
-                message: String::new(),
-                committer: String::new(),
-                timestamp: String::new(),
-            });
-        } else if let Some(committer) = line.strip_prefix("committer:") {
-            if let Some(c) = current.as_mut() {
-                c.committer = committer.trim().to_string();
-            }
-        } else if let Some(ts) = line.strip_prefix("timestamp:") {
-            if let Some(c) = current.as_mut() {
-                c.timestamp = ts.trim().to_string();
-            }
-        } else if let Some(msg) = line.strip_prefix("  ") {
-            if let Some(c) = current.as_mut() {
-                if !c.message.is_empty() {
-                    c.message.push('\n');
-                }
-                c.message.push_str(msg);
-            }
-        }
-    }
-    if let Some(c) = current {
-        out.push(c);
-    }
-    out
 }
 
 #[cfg(test)]
@@ -459,49 +299,5 @@ mod tests {
     fn relative_path_full() {
         let p = RepositoryPath::new("foo".into(), Some("c".into()), Some("r".into()));
         assert_eq!(p.relative_path(), "foo/c/r");
-    }
-
-    #[test]
-    fn parse_bzr_log_single_revision() {
-        let text = "\
-revno: 1
-revision-id: alice@example.com-20240101000000-aaaaaaaaaaaaaaaa
-committer: Alice <alice@example.com>
-timestamp: Mon 2024-01-01 00:00:00 +0000
-message:
-  initial import
-";
-        let revs = parse_bzr_log(text);
-        assert_eq!(revs.len(), 1);
-        assert_eq!(
-            revs[0].revision_id,
-            "alice@example.com-20240101000000-aaaaaaaaaaaaaaaa"
-        );
-        assert_eq!(revs[0].committer, "Alice <alice@example.com>");
-        assert_eq!(revs[0].timestamp, "Mon 2024-01-01 00:00:00 +0000");
-        assert_eq!(revs[0].message, "initial import");
-    }
-
-    #[test]
-    fn parse_bzr_log_multiple_revisions() {
-        let text = "\
-revno: 2
-revision-id: r2
-committer: X <x@example.com>
-timestamp: ts2
-message:
-  second
-
-revno: 1
-revision-id: r1
-committer: Y <y@example.com>
-timestamp: ts1
-message:
-  first
-";
-        let revs = parse_bzr_log(text);
-        assert_eq!(revs.len(), 2);
-        assert_eq!(revs[0].revision_id, "r2");
-        assert_eq!(revs[1].revision_id, "r1");
     }
 }
