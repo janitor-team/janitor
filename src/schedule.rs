@@ -167,7 +167,19 @@ async fn estimate_duration(
         estimate_duration_campaign_codebase(conn, Some(codebase), Some(campaign)).await?
     {
         Ok(estimated_duration)
-    } else if let Some(estimated_duration) =
+    } else {
+        estimate_duration_from_other_runs(conn, codebase, campaign).await
+    }
+}
+
+/// Estimate the duration from other campaigns for `codebase`, then from
+/// other codebases for `campaign`, falling back to a fixed default.
+async fn estimate_duration_from_other_runs(
+    conn: &PgPool,
+    codebase: &CodebaseName,
+    campaign: &Campaign,
+) -> Result<Duration, sqlx::Error> {
+    if let Some(estimated_duration) =
         estimate_duration_campaign_codebase(conn, Some(codebase), None).await?
     {
         Ok(estimated_duration)
@@ -285,17 +297,7 @@ ORDER BY start_time DESC
 
         // It's going to be hard to estimate the duration, but other campaigns
         // for the same codebase might be a good candidate.
-        if let Some(duration) =
-            estimate_duration_campaign_codebase(conn, Some(codebase), None).await?
-        {
-            duration
-        } else if let Some(duration) =
-            estimate_duration_campaign_codebase(conn, None, Some(campaign)).await?
-        {
-            duration
-        } else {
-            Duration::seconds(DEFAULT_ESTIMATED_DURATION)
-        }
+        estimate_duration_from_other_runs(conn, codebase, campaign).await?
     } else {
         duration_from_seconds(durations.iter().sum::<f64>() / durations.len() as f64)
     };
@@ -681,6 +683,59 @@ impl From<sqlx::Error> for Error {
     fn from(e: sqlx::Error) -> Self {
         Error::SqlError(e)
     }
+}
+
+pub async fn do_schedule(
+    conn: &PgPool,
+    campaign: &Campaign,
+    codebase: &CodebaseName,
+    bucket: &str,
+    change_set: Option<&ChangeSetId>,
+    offset: Option<f64>,
+    refresh: bool,
+    requester: Option<&str>,
+    estimated_duration: Option<chrono::Duration>,
+    command: Option<&str>,
+) -> Result<(f64, chrono::Duration, i32, String), Error> {
+    let offset = offset.unwrap_or(DEFAULT_SCHEDULE_OFFSET);
+    let command = if let Some(command) = command {
+        command.to_string()
+    } else {
+        let candidate: Option<(String,)> =
+            sqlx::query_as("SELECT command FROM candidate WHERE codebase = $1 AND suite = $2")
+                .bind(codebase)
+                .bind(campaign)
+                .fetch_optional(conn)
+                .await?;
+        if candidate.is_none() {
+            return Err(Error::CandidateUnavailable {
+                campaign: campaign.to_owned(),
+                codebase: codebase.to_owned(),
+            });
+        }
+        candidate.unwrap().0
+    };
+    let estimated_duration = if let Some(estimated_duration) = estimated_duration {
+        estimated_duration
+    } else {
+        estimate_duration(conn, codebase, campaign).await?
+    };
+    let queue = Queue::new(conn);
+    let (queue_id, bucket) = queue
+        .add(
+            codebase,
+            &command,
+            campaign,
+            change_set,
+            offset,
+            bucket,
+            None,
+            Some(estimated_duration),
+            refresh,
+            requester,
+        )
+        .await?;
+    Ok((offset, estimated_duration, queue_id, bucket))
 }
 
 #[cfg(test)]
@@ -1103,57 +1158,4 @@ mod tests {
         assert_eq!(duration, Duration::seconds(60));
         assert_eq!(probability, 0.5);
     }
-}
-
-pub async fn do_schedule(
-    conn: &PgPool,
-    campaign: &Campaign,
-    codebase: &CodebaseName,
-    bucket: &str,
-    change_set: Option<&ChangeSetId>,
-    offset: Option<f64>,
-    refresh: bool,
-    requester: Option<&str>,
-    estimated_duration: Option<chrono::Duration>,
-    command: Option<&str>,
-) -> Result<(f64, chrono::Duration, i32, String), Error> {
-    let offset = offset.unwrap_or(DEFAULT_SCHEDULE_OFFSET);
-    let command = if let Some(command) = command {
-        command.to_string()
-    } else {
-        let candidate: Option<(String,)> =
-            sqlx::query_as("SELECT command FROM candidate WHERE codebase = $1 AND suite = $2")
-                .bind(codebase)
-                .bind(campaign)
-                .fetch_optional(conn)
-                .await?;
-        if candidate.is_none() {
-            return Err(Error::CandidateUnavailable {
-                campaign: campaign.to_owned(),
-                codebase: codebase.to_owned(),
-            });
-        }
-        candidate.unwrap().0
-    };
-    let estimated_duration = if let Some(estimated_duration) = estimated_duration {
-        estimated_duration
-    } else {
-        estimate_duration(conn, codebase, campaign).await?
-    };
-    let queue = Queue::new(conn);
-    let (queue_id, bucket) = queue
-        .add(
-            codebase,
-            &command,
-            campaign,
-            change_set,
-            offset,
-            bucket,
-            None,
-            Some(estimated_duration),
-            refresh,
-            requester,
-        )
-        .await?;
-    Ok((offset, estimated_duration, queue_id, bucket))
 }
