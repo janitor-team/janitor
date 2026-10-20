@@ -11,76 +11,13 @@
 //! * The admin `/{codebase}/.bzr/smart` route is reachable (unlike
 //!   the public app it has no `/bzr/` prefix and no auth).
 
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::Duration;
+mod common;
 
-use axum::Router;
-use janitor::{schema::setup_test_database, test_utils::TestDatabase, test_with_database};
-use janitor_bzr_store::{
-    config::{BzrConfig, BzrStoreConfig, Config},
-    web::create_applications,
-};
-use sqlx::PgPool;
+use common::*;
+
+use janitor::{schema::setup_test_database, test_with_database};
+use janitor_bzr_store::web::create_applications;
 use tempfile::TempDir;
-
-fn test_db_url(test_db: &TestDatabase) -> String {
-    let base = std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgresql://localhost/postgres".to_string());
-    match base.rsplit_once('/') {
-        Some((prefix, _)) => format!("{}/{}", prefix, test_db.database_name),
-        None => format!("{}/{}", base, test_db.database_name),
-    }
-}
-
-fn build_config(tmp_dir: &std::path::Path, database_url: String) -> Config {
-    let mut cfg = BzrStoreConfig::default();
-    cfg.bzr = BzrConfig {
-        repository_path: tmp_dir.to_path_buf(),
-        admin_bind: "127.0.0.1:0".parse().unwrap(),
-        public_bind: "127.0.0.1:0".parse().unwrap(),
-        python_path: None,
-        request_timeout: cfg.bzr.request_timeout,
-    };
-    cfg.base.database = Some(janitor::shared_config::DatabaseConfig {
-        url: database_url,
-        ..janitor::shared_config::DatabaseConfig::default()
-    });
-    cfg
-}
-
-fn janitor_config_with_campaign() -> Arc<janitor::config::Config> {
-    let text = r#"
-campaign {
-    name: "campaign"
-}
-"#;
-    Arc::new(janitor::config::read_string(text).expect("parse test janitor.conf"))
-}
-
-async fn spawn(app: Router) -> (SocketAddr, tokio::task::JoinHandle<()>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, app).await.ok();
-    });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    (addr, handle)
-}
-
-async fn seed_codebase(pool: &PgPool, name: &str) {
-    let url = format!("https://example.invalid/{}", name);
-    sqlx::query(
-        "INSERT INTO codebase (name, branch_url, url, vcs_type)
-         VALUES ($1, $2, $2, 'bzr')
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(name)
-    .bind(&url)
-    .execute(pool)
-    .await
-    .unwrap();
-}
 
 test_with_database! {
     async fn test_admin_root_lists_repositories_json(test_db: TestDatabase) {
