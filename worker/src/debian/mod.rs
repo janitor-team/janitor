@@ -236,14 +236,10 @@ pub fn build_from_config(
         &config,
     )
     .map_err(|e| WorkerFailure {
-        code: e.code,
-        description: e.description,
-        details: e.details,
-        stage: vec!["build".to_string()]
-            .into_iter()
+        stage: std::iter::once("build".to_string())
             .chain(e.stage)
             .collect(),
-        transient: None,
+        ..e
     })
     .map(|x| serde_json::to_value(x).unwrap())
 }
