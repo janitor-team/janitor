@@ -1131,8 +1131,7 @@ async fn publish(
         let role_owned = role.clone();
         let publish_id_owned = publish_id.clone();
         tokio::spawn(async move {
-            let campaign_config = match state.config.campaign.iter().find(|c| c.name() == run.suite)
-            {
+            let campaign_config = match state.config.get_campaign(&run.suite) {
                 Some(c) => c,
                 None => {
                     log::warn!(
