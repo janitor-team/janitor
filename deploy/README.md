@@ -11,7 +11,8 @@ host or onto several, and comes with Vagrant VMs to try it locally.
   inventory group:
   - `control`: `base`, `janitor_source`, `postgres`, `redis`, `caddy`,
     `archive_signing_key`, `gitea` (optional), `auto_upload_target`
-    (optional), `janitor_config`, `janitor_quadlet`.
+    (optional), `janitor_config`, `janitor_quadlet`, `mail_filter`
+    (optional), `mta` (optional).
   - `worker`: `base`, `worker_firewall`, `janitor_source`,
     `janitor_config`, `janitor_quadlet`.
 - `ansible/inventory.ini`: the hosts. One host in both groups for a single
@@ -174,10 +175,35 @@ if set) it signs the `.changes` with `debsign` as
 `auto_upload_debsign_keyid` and uploads it with `dput` to
 `auto_upload_dput_host`. Put that key in `auto_upload_gnupg_home`
 without a passphrase, and the host's section in `auto_upload_dput_cf`,
-which replaces the image's `/etc/dput.cf`.
+which replaces the image's `/etc/dput.cf`. Use a signing-only subkey
+there, not the primary key.
 `enable_auto_upload_target: true` instead makes a test-only key and a
 dput host that copies uploads into `auto_upload_incoming` on the control
 host, to try it out.
+
+### Mail filter (optional)
+
+`enable_mail_filter: true` builds the `mail_filter` image and installs
+`mail_filter_command`, which hands one mail read from stdin to a socket
+of the deploy user's systemd; that runs `janitor-mail-filter` on it
+(an MTA's own unit may not allow rootless podman). When the mail is a
+forge's notification about a proposal, the filter has publish refresh
+that proposal's status at once, through `mail_filter_refresh_url`
+(publish's own `/refresh-status`). The filter's
+container can reach only this host (`mail_filter_network`), runs
+read-only as nobody with no capabilities, under memory and time caps.
+The command waits for the filter, and at most `mail_filter_max_instances`
+run at once.
+Pipe the forge mail for the bot's address into the command from
+your MTA, as the deploy user, with fewer deliveries at once than that
+(`sieve/README` shows a Dovecot setup).
+`enable_mta: true` instead runs Postfix on the control host for
+`mta_domains`, taking mail from that host only and sending nothing out:
+mail for `mta_mail_filter_recipients` goes into the filter, all of them
+together at most half of `mail_filter_max_instances` at once
+(`local_destination_concurrency_limit`), the rest to the deploy user's
+mailbox (up to `mta_mailbox_size_limit`). With Gitea on, Gitea sends its
+mail there.
 
 ## Vagrant
 
@@ -198,7 +224,8 @@ Vagrantfiles turn on Gitea, at `https://gitea.janitor.test/`: each VM
 has an /etc/hosts entry for it, and the machine your browser runs on
 needs one too (`<control IP> gitea.janitor.test`), or the site login
 cannot reach Gitea. They also turn on auto-upload of lintian-fixes
-builds to the local test target. With several VMs, each worker gets its
+builds to the local test target, and the mail filter with Postfix,
+which gets Gitea's mail for the bot. With several VMs, each worker gets its
 own password, made once in `.vagrant/worker-passwords.json`.
 
 Environment variables:

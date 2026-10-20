@@ -91,7 +91,9 @@ janitor_breezy_services: "{{ janitor_services | intersect(['runner', 'publish', 
 # The bot's SSH key and pinned host keys; publish mounts only this directory.
 janitor_ssh_dir: "/home/{{ ansible_user }}/.config/janitor-ssh"
 # Images this host needs (Dockerfile_<name>).
-janitor_images: "{{ janitor_services }}"
+janitor_images: >-
+  {{ janitor_services
+     + (['mail_filter'] if enable_mail_filter | bool and 'control' in group_names else []) }}
 
 # false: build janitor_images from this host's checkout (make build-<name>).
 # true: pull ghcr.io/jelmer/janitor/<name>:latest instead of building
@@ -149,6 +151,35 @@ auto_upload_distributions: []
 # test-only signing key made on the control host (roles/auto_upload_target).
 enable_auto_upload_target: false
 auto_upload_incoming: "{{ janitor_home }}/data/upload-incoming"
+# Optional: janitor-mail-filter reads a forge's notification mail on
+# stdin and has publish refresh that proposal's status at once.
+# roles/mail_filter installs mail_filter_command for an MTA to pipe mail
+# into as the deploy user; it hands the mail to the user's systemd.
+enable_mail_filter: false
+mail_filter_command: /usr/local/bin/janitor-mail-filter
+# publish's own /refresh-status route.
+mail_filter_refresh_url: http://127.0.0.1:9912/refresh-status
+# The filter parses untrusted mail: its container can reach only this
+# host (set e.g. "host" for a refresh URL elsewhere), runs read-only as
+# nobody with no capabilities, and is killed after mail_filter_timeout
+# seconds.
+mail_filter_network: >-
+  pasta:-T,{{ mail_filter_refresh_url | urlsplit('port')
+  or (443 if mail_filter_refresh_url | urlsplit('scheme') == 'https' else 80)
+  }},-o,127.0.0.1,-4,--no-udp,--no-icmp
+mail_filter_memory: 128m
+mail_filter_timeout: 60
+mail_filter_max_instances: 8
+# Optional, for trying the mail filter: Postfix on the control host
+# (roles/mta), which takes mail only from this host for mta_domains,
+# delivers it locally and sends nothing out. Mail for
+# mta_mail_filter_recipients (local parts) goes into mail_filter_command,
+# the rest to the deploy user's mailbox.
+enable_mta: false
+mta_domains: []
+mta_mail_filter_recipients: []
+# Cap on the deploy user's mailbox (bytes), which takes all other mail.
+mta_mailbox_size_limit: 268435456
 # Extra /etc/hosts entries ({name: address}) on every host.
 janitor_extra_hosts: {}
 

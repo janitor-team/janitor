@@ -1,0 +1,48 @@
+---
+# Optional (enable_mail_filter): an MTA runs mail_filter_command once per
+# mail. It hands the mail to a socket of the deploy user's systemd, which
+# runs janitor-mail-filter's image on it: the MTA's own unit may not
+# make the user namespaces rootless podman needs (Debian's postfix.service
+# has RestrictNamespaces=yes).
+- name: Install socat
+  ansible.builtin.apt:
+    name: socat
+    state: present
+
+- name: Create the deploy user's systemd unit directory
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.config/systemd/user"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0755"
+
+- name: Deploy the mail filter's socket and service units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/home/{{ ansible_user }}/.config/systemd/user/{{ item }}"
+    owner: "{{ ansible_user }}"
+    # A refresh URL may hold a password.
+    mode: "0600"
+  loop:
+    - janitor-mail-filter.socket
+    - janitor-mail-filter@.service
+  register: mail_filter_units
+
+- name: Listen on the mail filter's socket
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  ansible.builtin.systemd:
+    name: janitor-mail-filter.socket
+    scope: user
+    daemon_reload: "{{ mail_filter_units is changed }}"
+    enabled: true
+    state: "{{ 'restarted' if mail_filter_units is changed else 'started' }}"
+
+- name: Install the mail filter command
+  ansible.builtin.template:
+    src: janitor-mail-filter.j2
+    dest: "{{ mail_filter_command }}"
+    owner: root
+    mode: "0755"

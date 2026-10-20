@@ -1,0 +1,10 @@
+# Managed by ansible (roles/mail_filter). One instance per mail.
+[Unit]
+Description=janitor mail filter, on one mail
+
+[Service]
+ExecStart=/usr/bin/podman run --rm -i --pull=never --network={{ mail_filter_network }} --read-only --cap-drop=ALL --security-opt=no-new-privileges --user=65534:65534 --memory={{ mail_filter_memory }} --pids-limit=32 --timeout={{ mail_filter_timeout }} --log-driver=none ghcr.io/jelmer/janitor/mail_filter:latest --refresh-url {{ mail_filter_refresh_url | replace("%", "%%") }}
+RuntimeMaxSec={{ mail_filter_timeout | int + 30 }}
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
