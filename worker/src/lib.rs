@@ -812,11 +812,8 @@ pub fn run_worker(
         vcs_type.unwrap()
     };
 
-    match vcs_type {
-        VcsType::Git => &crate::vcs::GitVcs as &dyn crate::vcs::Vcs,
-        VcsType::Bzr => &crate::vcs::BzrVcs,
-    }
-    .import_branches(
+    crate::vcs::import_branches(
+        vcs_type,
         target_repo_url,
         &ws.local_tree().branch(),
         campaign,
@@ -851,11 +848,8 @@ pub fn run_worker(
         sanitise_url_for_log(target_repo_url)
     );
 
-    match vcs_type {
-        VcsType::Git => &crate::vcs::GitVcs as &dyn crate::vcs::Vcs,
-        VcsType::Bzr => &crate::vcs::BzrVcs,
-    }
-    .import_branches(
+    crate::vcs::import_branches(
+        vcs_type,
         target_repo_url,
         &ws.local_tree().branch(),
         campaign,
