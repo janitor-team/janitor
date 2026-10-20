@@ -117,15 +117,23 @@ impl OutputKind {
     }
 }
 
+/// A response without a content type, like the ones `Response::builder`
+/// produces.
+fn bare_response(status: StatusCode, body: String) -> Response {
+    Response::builder()
+        .status(status)
+        .body(body.into())
+        .unwrap()
+}
+
 fn directory_missing(kind: OutputKind) -> Response {
     let name = kind.name();
     let mut capitalised = name[..1].to_uppercase();
     capitalised.push_str(&name[1..]);
-    (
+    bare_response(
         StatusCode::NOT_FOUND,
         format!("{} directory not created yet", capitalised),
     )
-        .into_response()
 }
 
 fn output_index(
@@ -151,11 +159,12 @@ fn output_index(
                 })
                 .collect(),
             Err(e) => {
-                return (
+                // Artifact listings have always reported this as the
+                // log directory.
+                return bare_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Error reading {} directory: {}", kind.name(), e),
-                )
-                    .into_response();
+                    format!("Error reading log directory: {}", e),
+                );
             }
         }
     };
@@ -194,7 +203,7 @@ async fn get_log_id(State(state): State<Arc<RwLock<AppState>>>) -> Response {
 async fn serve_output_file(state: &RwLock<AppState>, filename: &str, kind: OutputKind) -> Response {
     // filenames should only contain characters that are safe to use in URLs
     if filename.contains('/') || filename.contains('\\') {
-        return (StatusCode::BAD_REQUEST, "Invalid filename").into_response();
+        return bare_response(StatusCode::BAD_REQUEST, "Invalid filename".to_string());
     }
 
     let p = match state.read().unwrap().output_directory.as_ref() {
@@ -205,18 +214,16 @@ async fn serve_output_file(state: &RwLock<AppState>, filename: &str, kind: Outpu
     let file = match tokio::fs::File::open(&p).await {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return (
+            return bare_response(
                 StatusCode::NOT_FOUND,
                 format!("No such {} file", kind.name()),
-            )
-                .into_response();
+            );
         }
         Err(e) => {
-            return (
+            return bare_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Error opening {} file: {}", kind.name(), e),
-            )
-                .into_response();
+            );
         }
     };
 
