@@ -26,14 +26,6 @@ fn json_response<T: serde::Serialize>(
     })
 }
 
-/// Helper function to serialize success responses
-fn success_json<T: serde::Serialize>(value: T) -> impl IntoResponse {
-    match json_response(value) {
-        Ok(json) => (StatusCode::OK, json),
-        Err(err) => err,
-    }
-}
-
 /// Helper function to create error responses safely
 fn error_response(msg: &str) -> Json<serde_json::Value> {
     Json(
@@ -1024,7 +1016,6 @@ async fn consider(State(state): State<Arc<AppState>>, Path(id): Path<String>) ->
         // The bulk /autopublish path still respects it.
         if let Err(e) = crate::consider_publish_run(
             &state.conn,
-            state.redis.clone(),
             state.config,
             &state.publish_worker,
             &state.vcs_managers,

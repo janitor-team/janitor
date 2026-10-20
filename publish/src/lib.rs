@@ -502,10 +502,6 @@ pub enum PublishError {
     NothingToDo(String),
     /// The branch is already being used.
     BranchBusy(url::Url),
-    /// Authentication failed.
-    AuthenticationFailed,
-    /// Network error occurred.
-    NetworkError(String),
     /// Database error occurred.
     DatabaseError(sqlx::Error),
     /// Service temporarily unavailable.
@@ -522,8 +518,6 @@ impl PublishError {
             PublishError::Failure { code, .. } => code,
             PublishError::NothingToDo(_) => "nothing-to-do",
             PublishError::BranchBusy(_) => "branch-busy",
-            PublishError::AuthenticationFailed => "authentication-failed",
-            PublishError::NetworkError(_) => "network-error",
             PublishError::DatabaseError(_) => "database-error",
             PublishError::ServiceUnavailable(_) => "service-unavailable",
         }
@@ -538,8 +532,6 @@ impl PublishError {
             PublishError::Failure { description, .. } => description,
             PublishError::NothingToDo(description) => description,
             PublishError::BranchBusy(_) => "Branch is busy",
-            PublishError::AuthenticationFailed => "Authentication failed",
-            PublishError::NetworkError(msg) => msg,
             PublishError::DatabaseError(_) => "Database error",
             PublishError::ServiceUnavailable(msg) => msg,
         }
@@ -570,18 +562,6 @@ impl serde::Serialize for PublishError {
                 state.serialize_field("description", &format!("Branch is busy: {}", url))?;
                 state.end()
             }
-            PublishError::AuthenticationFailed => {
-                let mut state = serializer.serialize_struct("PublishError", 2)?;
-                state.serialize_field("code", "authentication-failed")?;
-                state.serialize_field("description", "Authentication failed")?;
-                state.end()
-            }
-            PublishError::NetworkError(msg) => {
-                let mut state = serializer.serialize_struct("PublishError", 2)?;
-                state.serialize_field("code", "network-error")?;
-                state.serialize_field("description", msg)?;
-                state.end()
-            }
             PublishError::DatabaseError(e) => {
                 let mut state = serializer.serialize_struct("PublishError", 2)?;
                 state.serialize_field("code", "database-error")?;
@@ -609,15 +589,6 @@ impl std::fmt::Display for PublishError {
             }
             PublishError::BranchBusy(url) => {
                 write!(f, "PublishError::BranchBusy: Branch is busy: {}", url)
-            }
-            PublishError::AuthenticationFailed => {
-                write!(
-                    f,
-                    "PublishError::AuthenticationFailed: Authentication failed"
-                )
-            }
-            PublishError::NetworkError(msg) => {
-                write!(f, "PublishError::NetworkError: {}", msg)
             }
             PublishError::DatabaseError(e) => {
                 write!(f, "PublishError::DatabaseError: {}", e)
@@ -706,8 +677,6 @@ pub struct PublishWorker {
     pub external_url: Option<url::Url>,
     /// URL of the differ service.
     pub differ_url: url::Url,
-    /// Optional Redis connection manager.
-    pub redis: Option<RedisConnectionManager>,
     /// Redis manager for pub/sub operations.
     pub redis_manager: Option<Arc<janitor::redis::RedisManager>>,
     /// Optional lock manager for coordinating publish operations.
@@ -833,16 +802,14 @@ impl PublishWorker {
     /// * `template_env_path` - Optional path to the template environment
     /// * `external_url` - Optional external URL for the publish operation
     /// * `differ_url` - URL of the differ service
-    /// * `redis` - Optional Redis connection manager
     /// * `lock_manager` - Optional lock manager for coordinating publish operations
     ///
     /// # Returns
     /// A new PublishWorker instance
-    pub async fn new(
+    pub fn new(
         template_env_path: Option<PathBuf>,
         external_url: Option<url::Url>,
         differ_url: url::Url,
-        redis: Option<RedisConnectionManager>,
         redis_manager: Option<Arc<janitor::redis::RedisManager>>,
         lock_manager: Option<rslock::LockManager>,
     ) -> Self {
@@ -850,7 +817,6 @@ impl PublishWorker {
             template_env_path,
             external_url,
             differ_url,
-            redis,
             redis_manager,
             lock_manager,
         }
@@ -1348,51 +1314,16 @@ pub async fn refresh_bucket_mp_counts(state: Arc<AppState>) -> Result<(), sqlx::
 ///
 /// # Arguments
 /// * `state` - The application state
-/// * `shutdown_rx` - Channel for receiving shutdown signals
 pub async fn listen_to_runner(
     state: Arc<AppState>,
-    shutdown_rx: tokio::sync::mpsc::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let redis_manager = state
         .redis_manager
         .clone()
         .ok_or_else(|| "Redis manager not configured")?;
-    let subscriber = redis::RedisSubscriber::new(redis_manager, shutdown_rx);
+    let subscriber = redis::RedisSubscriber::new(redis_manager);
     subscriber.listen_to_runner(state).await?;
     Ok(())
-}
-
-/// Get the status of a merge proposal.
-///
-/// # Arguments
-/// * `mp` - The merge proposal to check
-///
-/// # Returns
-/// String representing the status: "merged", "closed", or "open"
-pub async fn get_mp_status(mp: &breezyshim::forge::MergeProposal) -> Result<String, BrzError> {
-    let is_merged = tokio::task::spawn_blocking({
-        let mp = mp.clone();
-        move || mp.is_merged()
-    })
-    .await
-    .map_err(|_| BrzError::Other(PyErr::new::<PyRuntimeError, _>("Task join error")))??;
-
-    if is_merged {
-        return Ok("merged".to_string());
-    }
-
-    let is_closed = tokio::task::spawn_blocking({
-        let mp = mp.clone();
-        move || mp.is_closed()
-    })
-    .await
-    .map_err(|_| BrzError::Other(PyErr::new::<PyRuntimeError, _>("Task join error")))??;
-
-    if is_closed {
-        Ok("closed".to_string())
-    } else {
-        Ok("open".to_string())
-    }
 }
 
 /// Abandon a merge proposal by updating its status and closing it.
@@ -3629,7 +3560,6 @@ async fn check_existing_mp(
                         id: String::new(),
                         campaign: campaign_name.to_string(),
                         branch_url: synth_branch_url,
-                        command: String::new(),
                         value: 0,
                         role: role.to_string(),
                         remote_branch_name: String::new(),
@@ -4934,7 +4864,6 @@ pub(crate) fn should_skip_main_after_aux_failure(
 #[allow(clippy::too_many_arguments)]
 async fn consider_publish_run(
     conn: &sqlx::PgPool,
-    _redis: Option<RedisConnectionManager>,
     config: &janitor::config::Config,
     publish_worker: &crate::PublishWorker,
     vcs_managers: &HashMap<VcsType, Box<dyn VcsManager>>,
@@ -4980,7 +4909,9 @@ async fn consider_publish_run(
     // Exponential backoff: skip the run if the previous attempt was
     // too recent. Matches py/janitor/publish.py::consider_publish_run.
     let attempt_count = match run.revision.as_ref() {
-        Some(rev) => get_publish_attempt_count(conn, rev, &["differ-unreachable"]).await?,
+        Some(rev) => {
+            crate::state::get_publish_attempt_count(conn, rev, &["differ-unreachable"]).await?
+        }
         None => 0,
     };
     let next_try_time = calculate_next_try_time(run.finish_time, attempt_count);
@@ -5137,38 +5068,6 @@ async fn consider_publish_run(
     }
 
     Ok(actual_modes)
-}
-
-/// Get the count of previous publish attempts for a revision.
-///
-/// # Arguments
-/// * `conn` - Database connection
-/// * `revision` - The revision ID to check
-/// * `exclude_codes` - Result codes to exclude from the count
-///
-/// # Returns
-/// The number of previous attempts
-async fn get_publish_attempt_count(
-    conn: &sqlx::PgPool,
-    revision: &breezyshim::RevisionId,
-    exclude_codes: &[&str],
-) -> Result<usize, sqlx::Error> {
-    let revision_str = revision.to_string();
-
-    let count = sqlx::query_scalar::<_, i64>(
-        r#"
-        SELECT COUNT(*)
-        FROM publish
-        WHERE revision = $1
-        AND (result_code IS NULL OR NOT (result_code = ANY($2)))
-        "#,
-    )
-    .bind(&revision_str)
-    .bind(exclude_codes)
-    .fetch_one(conn)
-    .await? as usize;
-
-    Ok(count)
 }
 
 /// Fetch the publish policy for a (codebase, campaign) pair: the

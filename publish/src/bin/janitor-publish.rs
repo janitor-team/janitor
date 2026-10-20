@@ -200,11 +200,9 @@ async fn main() -> Result<(), i32> {
         args.template_env_path,
         args.external_url,
         args.differ_url,
-        redis_async_connection.clone(),
         redis_manager.clone(),
         lock_manager,
-    )
-    .await;
+    );
     log::info!("publish worker built; initializing GPG context");
 
     // Set up health checker
@@ -280,11 +278,7 @@ async fn main() -> Result<(), i32> {
 
         tokio::spawn(janitor_publish::refresh_bucket_mp_counts(state.clone()));
 
-        let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel(1);
-        tokio::spawn(janitor_publish::listen_to_runner(
-            state.clone(),
-            shutdown_rx,
-        ));
+        tokio::spawn(janitor_publish::listen_to_runner(state.clone()));
 
         let app = janitor_publish::web::app(state.clone());
 

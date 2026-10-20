@@ -460,8 +460,6 @@ pub struct MergeProposalRun {
     pub campaign: String,
     /// URL of the codebase branch the run targeted.
     pub branch_url: String,
-    /// Command that produced the run.
-    pub command: String,
     /// Configured value of the candidate that scheduled this run.
     /// Matches `run.value` which is `int` (INT4) in the schema.
     pub value: i32,
@@ -490,7 +488,6 @@ SELECT
     run.id AS id,
     run.suite AS campaign,
     run.branch_url AS branch_url,
-    run.command AS command,
     run.value AS value,
     rb.role AS role,
     rb.remote_name AS remote_branch_name,

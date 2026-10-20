@@ -8,7 +8,6 @@ use std::sync::Arc;
 use janitor::redis::{PubSubMessage, RedisManager};
 use log::{debug, error, info};
 use redis::aio::ConnectionManager;
-use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 // Type alias for backward compatibility
@@ -33,29 +32,6 @@ impl RedisPublisher {
         Self { redis_manager }
     }
 
-    /// Publish a publish event.
-    ///
-    /// # Arguments
-    /// * `event` - The publish event data
-    ///
-    /// # Returns
-    /// Ok(()) if successful, or a redis::RedisError
-    pub async fn publish_event(&self, event: &PublishEvent) -> Result<(), redis::RedisError> {
-        let publisher = self.redis_manager.publisher();
-        publisher.publish(event).await.map_err(|e| {
-            redis::RedisError::from((
-                redis::ErrorKind::Io,
-                "Failed to publish event",
-                e.to_string(),
-            ))
-        })?;
-        debug!(
-            "Published publish event for codebase '{}' campaign '{}'",
-            event.codebase, event.campaign
-        );
-        Ok(())
-    }
-
     /// Publish a merge proposal event.
     ///
     /// # Arguments
@@ -77,39 +53,6 @@ impl RedisPublisher {
         })?;
         debug!("Published merge proposal event for URL '{}'", event.url);
         Ok(())
-    }
-}
-
-/// Event data for publish notifications.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PublishEvent {
-    /// The codebase that was published.
-    pub codebase: String,
-    /// The campaign/suite that was published.
-    pub campaign: String,
-    /// The publish mode used.
-    pub mode: String,
-    /// The result code of the publish operation.
-    pub result_code: String,
-    /// Optional description of the result.
-    pub description: Option<String>,
-    /// Optional URL of the merge proposal created.
-    pub proposal_url: Option<String>,
-    /// Optional web URL of the merge proposal.
-    pub proposal_web_url: Option<String>,
-    /// The target branch URL.
-    pub target_branch_url: Option<String>,
-    /// The branch name that was published.
-    pub branch_name: String,
-    /// The revision that was published.
-    pub revision: Option<String>,
-    /// Timestamp of the event.
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-}
-
-impl PubSubMessage for PublishEvent {
-    fn channel() -> &'static str {
-        "publish"
     }
 }
 
@@ -167,8 +110,6 @@ impl PubSubMessage for PublishStatusMessage {
 pub struct RedisSubscriber {
     /// Redis manager.
     redis_manager: Arc<RedisManager>,
-    /// Channel for receiving shutdown signals.
-    shutdown_rx: Option<mpsc::Receiver<()>>,
 }
 
 impl RedisSubscriber {
@@ -176,28 +117,23 @@ impl RedisSubscriber {
     ///
     /// # Arguments
     /// * `redis_manager` - Redis manager instance
-    /// * `shutdown_rx` - Channel for receiving shutdown signals
     ///
     /// # Returns
     /// A new RedisSubscriber instance
-    pub fn new(redis_manager: Arc<RedisManager>, shutdown_rx: mpsc::Receiver<()>) -> Self {
-        Self {
-            redis_manager,
-            shutdown_rx: Some(shutdown_rx),
-        }
+    pub fn new(redis_manager: Arc<RedisManager>) -> Self {
+        Self { redis_manager }
     }
 
     /// Subscribe to the `publish-status` channel and publish a run
     /// whenever the runner marks it as `approved`. Port of
     /// `py/janitor/publish.py::listen_to_runner`.
     pub async fn listen_to_runner(
-        mut self,
+        self,
         state: Arc<crate::AppState>,
     ) -> Result<JoinHandle<()>, Box<dyn std::error::Error + Send + Sync>> {
         info!("Starting Redis listener on publish-status channel");
 
         let subscriber = self.redis_manager.subscriber();
-        let _shutdown_rx = self.shutdown_rx.take();
 
         let handle = tokio::spawn(async move {
             match subscriber
@@ -360,51 +296,10 @@ fn approved_run_target(run: &janitor::state::Run) -> Result<url::Url, url::Parse
     crate::resolve_target_branch_url(run.target_branch_url.as_deref(), &run.branch_url).parse()
 }
 
-/// Health check functionality for Redis connections.
-pub struct RedisHealthChecker {
-    /// Redis manager.
-    redis_manager: Arc<RedisManager>,
-}
-
-impl RedisHealthChecker {
-    /// Create a new Redis health checker.
-    pub fn new(redis_manager: Arc<RedisManager>) -> Self {
-        Self { redis_manager }
-    }
-
-    /// Perform a health check on the Redis connection.
-    ///
-    /// # Returns
-    /// Ok(()) if healthy, or an error
-    pub async fn health_check(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.redis_manager.health_check().await.map_err(|e| {
-            Box::new(std::io::Error::new(
-                std::io::ErrorKind::ConnectionRefused,
-                format!("Redis health check failed: {}", e),
-            )) as Box<dyn std::error::Error + Send + Sync>
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use janitor::{schema::setup_test_database, test_with_database};
-
-    #[test]
-    fn test_publish_event_channel() {
-        assert_eq!(PublishEvent::channel(), "publish");
-    }
-
-    #[test]
-    fn test_merge_proposal_event_channel() {
-        assert_eq!(MergeProposalEvent::channel(), "merge-proposal");
-    }
-
-    #[test]
-    fn test_publish_status_message_channel() {
-        assert_eq!(PublishStatusMessage::channel(), "publish-status");
-    }
 
     #[test]
     fn test_publish_status_message_serialization() {
