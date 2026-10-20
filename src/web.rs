@@ -133,6 +133,7 @@ pub async fn metrics_handler() -> Response {
         tracing::error!("failed to encode prometheus metrics: {}", e);
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
+            [(header::CONTENT_TYPE, "text/plain")],
             "failed to gather metrics".to_string(),
         )
             .into_response();
