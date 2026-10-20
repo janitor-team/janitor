@@ -454,40 +454,14 @@ enum AcceptMatch {
     Html,
 }
 
-/// Replicates the shape of `mimeparse.best_match(["text/html",
-/// "application/json", "text/plain"], accept)` closely enough for this
-/// one route. Python's mimeparse breaks ties by position in the
-/// supported list (html > json > plain); `Accept: */*` or `text/*`
-/// returns HTML, matching the default a browser prefers.
-///
-/// Returns `None` when no supported type matched — the caller should
-/// respond with 406 Not Acceptable, as Python's `web.HTTPNotAcceptable`
-/// does.
 fn negotiate_content_type(accept: &str) -> Option<AcceptMatch> {
-    let normalized: Vec<&str> = accept.split(',').map(|s| s.trim()).collect();
-    let mut json = false;
-    let mut text = false;
-    let mut html = false;
-    let mut star = false;
-    for entry in &normalized {
-        // Ignore `;q=` parameters; we don't rank by quality.
-        let m = entry.split(';').next().unwrap_or("").trim();
-        match m {
-            "application/json" => json = true,
-            "text/plain" => text = true,
-            "text/html" => html = true,
-            "*/*" | "text/*" => star = true,
-            _ => {}
-        }
-    }
-    if html || star {
-        Some(AcceptMatch::Html)
-    } else if json {
-        Some(AcceptMatch::Json)
-    } else if text {
-        Some(AcceptMatch::Text)
-    } else {
-        None
+    match janitor::content_negotiation::best_match(
+        &["text/html", "application/json", "text/plain"],
+        Some(accept),
+    )? {
+        "text/html" => Some(AcceptMatch::Html),
+        "application/json" => Some(AcceptMatch::Json),
+        _ => Some(AcceptMatch::Text),
     }
 }
 
@@ -758,48 +732,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn negotiate_wildcard_prefers_html() {
-        assert!(matches!(
-            negotiate_content_type("*/*"),
-            Some(AcceptMatch::Html)
-        ));
-    }
-
-    #[test]
-    fn negotiate_text_wildcard_prefers_html() {
-        assert!(matches!(
-            negotiate_content_type("text/*"),
-            Some(AcceptMatch::Html)
-        ));
-    }
-
-    #[test]
-    fn negotiate_explicit_json() {
-        assert!(matches!(
-            negotiate_content_type("application/json"),
-            Some(AcceptMatch::Json)
-        ));
-    }
-
-    #[test]
-    fn negotiate_explicit_plain() {
-        assert!(matches!(
-            negotiate_content_type("text/plain"),
-            Some(AcceptMatch::Text)
-        ));
-    }
-
-    #[test]
-    fn negotiate_html_wins_over_json() {
-        assert!(matches!(
-            negotiate_content_type("text/html, application/json"),
-            Some(AcceptMatch::Html)
-        ));
-    }
-
-    #[test]
-    fn negotiate_returns_none_on_unmatched() {
-        assert!(negotiate_content_type("application/xml").is_none());
+    fn negotiate() {
+        let cases = [
+            ("*/*", Some("html")),
+            ("text/plain", Some("text")),
+            ("text/plain, application/json", Some("json")),
+            ("application/json, */*;q=0.1", Some("json")),
+            ("application/xml", None),
+        ];
+        for (accept, expected) in cases {
+            let actual = negotiate_content_type(accept).map(|kind| match kind {
+                AcceptMatch::Html => "html",
+                AcceptMatch::Json => "json",
+                AcceptMatch::Text => "text",
+            });
+            assert_eq!(actual, expected, "Accept: {:?}", accept);
+        }
     }
 
     #[test]

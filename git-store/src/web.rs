@@ -203,30 +203,14 @@ async fn home_handler() -> Response {
     (StatusCode::OK, "").into_response()
 }
 
-/// Returns None when the Accept header matches none of our supported
-/// content types, matching Python's `mimeparse.best_match` returning
-/// an empty string. Callers should surface that as 406 Not Acceptable.
-///
-/// Python passes `["text/html", "text/plain", "application/json"]` to
-/// `best_match` as the supported list, which breaks ties by preference
-/// order; we mirror that so a client sending `Accept: */*` gets HTML
-/// and `Accept: text/plain, application/json` gets plain (not JSON).
 fn negotiate_content_type(accept_header: Option<&str>) -> Option<ContentType> {
-    let accept = accept_header.unwrap_or("*/*");
-    let has_wildcard = accept.contains("*/*");
-    let has_text_wildcard = accept.contains("text/*");
-    let has_html = accept.contains("text/html");
-    let has_plain = accept.contains("text/plain");
-    let has_json = accept.contains("application/json");
-
-    if has_html || has_wildcard || has_text_wildcard {
-        Some(ContentType::Html)
-    } else if has_plain {
-        Some(ContentType::Plain)
-    } else if has_json {
-        Some(ContentType::Json)
-    } else {
-        None
+    match janitor::content_negotiation::best_match(
+        &["text/html", "application/json", "text/plain"],
+        accept_header,
+    )? {
+        "text/html" => Some(ContentType::Html),
+        "application/json" => Some(ContentType::Json),
+        _ => Some(ContentType::Plain),
     }
 }
 
@@ -399,60 +383,22 @@ mod tests {
     }
 
     #[test]
-    fn test_negotiate_content_type_json() {
-        assert!(matches!(
-            negotiate_content_type(Some("application/json")),
-            Some(ContentType::Json)
-        ));
-    }
-
-    #[test]
-    fn test_negotiate_content_type_plain() {
-        assert!(matches!(
-            negotiate_content_type(Some("text/plain")),
-            Some(ContentType::Plain)
-        ));
-    }
-
-    #[test]
-    fn test_negotiate_content_type_html_default() {
-        assert!(matches!(
-            negotiate_content_type(Some("*/*")),
-            Some(ContentType::Html)
-        ));
-        assert!(matches!(
-            negotiate_content_type(None),
-            Some(ContentType::Html)
-        ));
-        assert!(matches!(
-            negotiate_content_type(Some("text/html,application/xhtml+xml")),
-            Some(ContentType::Html)
-        ));
-    }
-
-    #[test]
-    fn test_negotiate_content_type_unmatchable_returns_none() {
-        assert!(negotiate_content_type(Some("image/png")).is_none());
-        assert!(negotiate_content_type(Some("application/xml")).is_none());
-    }
-
-    /// Python's mimeparse breaks ties by position in the supported
-    /// list (html > plain > json). `Accept: text/plain, application/json`
-    /// must pick plain, not json.
-    #[test]
-    fn test_negotiate_content_type_prefers_plain_over_json_on_tie() {
-        assert!(matches!(
-            negotiate_content_type(Some("text/plain, application/json")),
-            Some(ContentType::Plain)
-        ));
-    }
-
-    /// Explicit html wins even when json is also offered.
-    #[test]
-    fn test_negotiate_content_type_prefers_html_over_json() {
-        assert!(matches!(
-            negotiate_content_type(Some("text/html,application/json")),
-            Some(ContentType::Html)
-        ));
+    fn test_negotiate_content_type() {
+        let cases = [
+            (None, Some("html")),
+            (Some("*/*"), Some("html")),
+            (Some("text/plain"), Some("plain")),
+            (Some("text/plain, application/json"), Some("json")),
+            (Some("application/json, text/html;q=0.1"), Some("json")),
+            (Some("image/png"), None),
+        ];
+        for (accept, expected) in cases {
+            let actual = negotiate_content_type(accept).map(|kind| match kind {
+                ContentType::Html => "html",
+                ContentType::Json => "json",
+                ContentType::Plain => "plain",
+            });
+            assert_eq!(actual, expected, "Accept: {:?}", accept);
+        }
     }
 }

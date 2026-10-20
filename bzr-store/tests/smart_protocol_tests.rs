@@ -190,7 +190,7 @@ test_with_database! {
         let (addr, handle) = spawn_public(public).await;
 
         let client = reqwest::Client::new();
-        // Default Accept */* should pick HTML, matching Python mimeparse.
+        // Default Accept */* should pick HTML.
         let resp = client
             .get(format!("http://{}/bzr/", addr))
             .send()
