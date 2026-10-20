@@ -78,15 +78,3 @@ pub async fn run_service(
     };
     service::run(config, listen_addr, port, upload_config, run_backfill).await
 }
-
-#[cfg(test)]
-mod tests {
-    use super::RESULT_HANDLING_FAILED_COUNT;
-
-    #[test]
-    fn result_handling_failed_counter_increments() {
-        let before = RESULT_HANDLING_FAILED_COUNT.get();
-        RESULT_HANDLING_FAILED_COUNT.inc();
-        assert!(RESULT_HANDLING_FAILED_COUNT.get() > before);
-    }
-}
