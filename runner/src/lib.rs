@@ -370,21 +370,26 @@ pub fn is_log_filename(name: &str) -> bool {
 /// # Returns
 /// The vendor name, or None if it could not be determined
 pub fn dpkg_vendor() -> Option<String> {
-    std::process::Command::new("dpkg-vendor")
+    query_vendor("dpkg-vendor")
+}
+
+#[cfg(feature = "debian")]
+fn query_vendor(program: &str) -> Option<String> {
+    let output = match std::process::Command::new(program)
         .arg("--query")
         .arg("vendor")
         .output()
-        .map(|output| {
-            if output.status.success() {
-                Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|_| {
-            log::warn!("Failed to determine dpkg vendor");
-            Some(String::new())
-        })
+    {
+        Ok(output) => output,
+        Err(e) => {
+            log::warn!("Failed to run {}: {}", program, e);
+            return None;
+        }
+    };
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 #[cfg(feature = "debian")]
@@ -2243,10 +2248,10 @@ mod tests {
         assert!(!is_log_filename("foo.log.notlog"));
     }
 
+    #[cfg(feature = "debian")]
     #[test]
-    fn test_dpkg_vendor() {
-        let vendor = dpkg_vendor();
-        assert!(vendor.is_some());
+    fn test_query_vendor_missing_binary() {
+        assert_eq!(query_vendor("/nonexistent/dpkg-vendor"), None);
     }
 
     #[test]
