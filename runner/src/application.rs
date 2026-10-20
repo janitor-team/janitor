@@ -128,6 +128,12 @@ impl ApplicationBuilder {
                 "redis_location must be set".to_string(),
             ));
         }
+        // The Python runner couldn't start without one either.
+        if self.config.artifact_location.is_none() {
+            return Err(ApplicationError::Configuration(
+                "artifact_location must be set".to_string(),
+            ));
+        }
         if self.run_timeout_minutes == 0 {
             return Err(ApplicationError::Configuration(
                 "run timeout must be greater than 0".to_string(),
@@ -174,6 +180,8 @@ impl ApplicationBuilder {
         log::info!("Initializing Janitor Runner application...");
 
         self.validate()?;
+
+        set_user_agent(&self.config)?;
 
         let public_vcs_location = self.public_vcs_location.as_deref().ok_or_else(|| {
             ApplicationError::Configuration("public VCS location must be set".to_string())
@@ -249,19 +257,14 @@ impl ApplicationBuilder {
         // Initialize artifact management from textproto artifact_location.
         log::info!("Initializing artifact management...");
         let artifact_manager: Arc<dyn janitor::artifacts::ArtifactManager> = Arc::from(
-            janitor::artifacts::get_artifact_manager(
-                janitor_config
-                    .artifact_location
-                    .as_deref()
-                    .unwrap_or("/var/lib/janitor/artifacts"),
-            )
-            .await
-            .map_err(|e| {
-                ApplicationError::ArtifactManagement(format!(
-                    "Failed to initialize artifact manager: {}",
-                    e
-                ))
-            })?,
+            janitor::artifacts::get_artifact_manager(janitor_config.artifact_location())
+                .await
+                .map_err(|e| {
+                    ApplicationError::ArtifactManagement(format!(
+                        "Failed to initialize artifact manager: {}",
+                        e
+                    ))
+                })?,
         );
 
         let (backup_log_manager, backup_artifact_manager) = match &self.backup_directory {
@@ -272,28 +275,7 @@ impl ApplicationBuilder {
             None => (None, None),
         };
 
-        // Initialize upload processor. The storage dir is shared with
-        // the site pod (mounted via PV at the same path) so logs the
-        // worker uploads here can be served straight off disk by the
-        // site's FileSystemLogFileManager. Default to
-        // `/var/log/janitor` to match the FS log manager default;
-        // overridable via UPLOAD_STORAGE_DIR for unit tests / dev.
-        log::info!("Initializing upload processor...");
-        let upload_storage_dir = std::env::var("UPLOAD_STORAGE_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| std::path::PathBuf::from("/var/log/janitor"));
-        // Fail startup if we can't materialise the upload dir --
-        // continuing on a warn leaves the process healthy at
-        // /health/live but every worker /finish upload will 500 with
-        // an opaque write error.
-        std::fs::create_dir_all(&upload_storage_dir).map_err(|e| {
-            ApplicationError::Configuration(format!(
-                "Could not create upload storage dir {:?}: {}",
-                upload_storage_dir, e
-            ))
-        })?;
         let upload_processor = Arc::new(crate::upload::UploadProcessor::new(
-            upload_storage_dir,
             100 * 1024 * 1024, // 100MB max file size
             500 * 1024 * 1024, // 500MB max total size
         ));
@@ -402,6 +384,13 @@ fn open_backup_managers(dir: &std::path::Path) -> Result<BackupManagers, Applica
             ))
         })?;
     Ok((Arc::new(log_manager), Arc::new(artifact_manager)))
+}
+
+/// Set the user agent used for HTTP requests from `user_agent` in the
+/// configuration, falling back to the default one.
+fn set_user_agent(config: &janitor::config::Config) -> Result<(), ApplicationError> {
+    janitor::utils::set_user_agent(config.user_agent.as_deref())
+        .map_err(|e| ApplicationError::Configuration(format!("Failed to set user agent: {}", e)))
 }
 
 /// Main application struct that manages the runner lifecycle.
@@ -744,6 +733,7 @@ mod tests {
             r#"
 database_location: "postgresql://test/janitor"
 redis_location: "redis://localhost:6379"
+artifact_location: "/srv/artifacts"
 campaign {
   name: "lintian-fixes"
   branch_name: "lintian-fixes"
@@ -780,6 +770,7 @@ campaign {
     #[test]
     fn test_validate_requires_database_and_redis() {
         let mut config = janitor::config::Config::new();
+        config.artifact_location = Some("/srv/artifacts".to_string());
         config.redis_location = Some("redis://localhost".to_string());
         assert!(ApplicationBuilder::new(config.clone()).validate().is_err());
 
@@ -810,5 +801,41 @@ campaign {
     fn test_open_backup_managers_requires_existing_directory() {
         let dir = tempfile::tempdir().unwrap();
         assert!(open_backup_managers(&dir.path().join("missing")).is_err());
+    }
+
+    #[test]
+    fn test_validate_requires_artifact_location() {
+        let mut config = janitor::config::Config::new();
+        config.database_location = Some("postgresql://localhost/janitor".to_string());
+        config.redis_location = Some("redis://localhost".to_string());
+        assert!(matches!(
+            ApplicationBuilder::new(config.clone()).validate(),
+            Err(ApplicationError::Configuration(_))
+        ));
+
+        config.artifact_location = Some("/srv/artifacts".to_string());
+        ApplicationBuilder::new(config).validate().unwrap();
+    }
+
+    #[test]
+    fn test_set_user_agent_from_config() {
+        use pyo3::prelude::*;
+
+        let mut config = janitor::config::Config::new();
+        config.user_agent = Some("janitor-runner-test/1.0".to_string());
+        set_user_agent(&config).unwrap();
+
+        Python::attach(|py| {
+            let seen: String = py
+                .import("breezy.transport.http")
+                .unwrap()
+                .getattr("default_user_agent")
+                .unwrap()
+                .call0()
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert_eq!(seen, "janitor-runner-test/1.0");
+        });
     }
 }
