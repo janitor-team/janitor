@@ -9,94 +9,14 @@
 //! If `brz` isn't on PATH, the tests are skipped: the integration is
 //! only meaningful when a real breezy install is present.
 
-use std::net::SocketAddr;
+mod common;
+
+use common::*;
 use std::process::Command;
-use std::sync::Arc;
-use std::time::Duration;
 
-use axum::Router;
-use janitor::{schema::setup_test_database, test_utils::TestDatabase, test_with_database};
-use janitor_bzr_store::{
-    config::{BzrConfig, BzrStoreConfig, Config},
-    web::create_applications,
-};
-use sqlx::PgPool;
+use janitor::{schema::setup_test_database, test_with_database};
+use janitor_bzr_store::web::create_applications;
 use tempfile::TempDir;
-
-/// True if `brz` (Breezy) is on PATH and runs end-to-end. Some hosts
-/// have `brz` present but a broken breezy install (e.g. the
-/// `vcsgraph._graph_rs` extension missing). We require a *successful*
-/// `brz init` in a tempdir, not just `brz --version`, because the
-/// init path is what the integration tests actually need.
-fn brz_available() -> bool {
-    let Ok(tmp) = tempfile::tempdir() else {
-        return false;
-    };
-    Command::new("brz")
-        .args(["init", "--format=2a"])
-        .arg(tmp.path())
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-fn test_db_url(test_db: &TestDatabase) -> String {
-    let base = std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgresql://localhost/postgres".to_string());
-    match base.rsplit_once('/') {
-        Some((prefix, _)) => format!("{}/{}", prefix, test_db.database_name),
-        None => format!("{}/{}", base, test_db.database_name),
-    }
-}
-
-fn build_config(tmp_dir: &std::path::Path, database_url: String) -> Config {
-    let mut cfg = BzrStoreConfig::default();
-    cfg.bzr = BzrConfig {
-        repository_path: tmp_dir.to_path_buf(),
-        admin_bind: "127.0.0.1:0".parse().unwrap(),
-        public_bind: "127.0.0.1:0".parse().unwrap(),
-        python_path: None,
-        request_timeout: cfg.bzr.request_timeout,
-    };
-    cfg.base.database = Some(janitor::shared_config::DatabaseConfig {
-        url: database_url,
-        ..janitor::shared_config::DatabaseConfig::default()
-    });
-    cfg
-}
-
-fn janitor_config_with_campaign() -> Arc<janitor::config::Config> {
-    let text = r#"
-campaign {
-    name: "campaign"
-}
-"#;
-    Arc::new(janitor::config::read_string(text).expect("parse test janitor.conf"))
-}
-
-async fn spawn_public(public_app: Router) -> (SocketAddr, tokio::task::JoinHandle<()>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, public_app).await.ok();
-    });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    (addr, handle)
-}
-
-async fn seed_codebase(pool: &PgPool, name: &str) {
-    let url = format!("https://example.invalid/{}", name);
-    sqlx::query(
-        "INSERT INTO codebase (name, branch_url, url, vcs_type)
-         VALUES ($1, $2, $2, 'bzr')
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(name)
-    .bind(&url)
-    .execute(pool)
-    .await
-    .unwrap();
-}
 
 /// Create a bzr branch with one commit at `branch_path`. Returns true
 /// on success.
@@ -148,7 +68,7 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn_public(public).await;
+        let (addr, handle) = spawn(public).await;
 
         let client = reqwest::Client::new();
         let resp = client
@@ -209,7 +129,7 @@ fn test_loggerhead_browse_known_codebase_renders() {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn_public(public).await;
+        let (addr, handle) = spawn(public).await;
 
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -294,7 +214,7 @@ fn test_loggerhead_changes_endpoint_reachable() {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn_public(public).await;
+        let (addr, handle) = spawn(public).await;
 
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())

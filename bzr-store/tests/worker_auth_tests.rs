@@ -7,9 +7,12 @@
 //! pgcrypto path as `py/janitor/worker_creds.py::is_worker`, which was
 //! the divergence that motivated rewriting this module.
 
+mod common;
+
 use axum::http::{header, HeaderMap};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use common::*;
 use janitor::{schema::setup_test_database, test_with_database};
 use sqlx::PgPool;
 
@@ -23,20 +26,6 @@ async fn is_worker(pool: &PgPool, username: &str, password: &str) -> Option<Stri
     janitor::web::authenticated_worker(pool, &headers)
         .await
         .unwrap()
-}
-
-/// Insert a worker row with a pgcrypto-hashed password, matching the way
-/// Python/pgcrypto-based deployments store credentials.
-async fn seed_worker(pool: &PgPool, name: &str, password: &str) {
-    sqlx::query(
-        "INSERT INTO worker (name, password, link)
-         VALUES ($1, crypt($2, gen_salt('bf')), NULL)",
-    )
-    .bind(name)
-    .bind(password)
-    .execute(pool)
-    .await
-    .unwrap();
 }
 
 test_with_database! {
