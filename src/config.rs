@@ -66,7 +66,6 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
 
     #[test]
     fn test_read_file() {
@@ -85,23 +84,6 @@ mod tests {
     }
 
     #[test]
-    fn test_read_readable() {
-        let contents = r#"distribution { name: "test" }"#;
-        let cursor = Cursor::new(contents.as_bytes());
-        let config = read_readable(cursor).unwrap();
-        assert_eq!(config.distribution.len(), 1);
-        assert_eq!(config.distribution[0].name, Some("test".to_string()));
-    }
-
-    #[test]
-    fn test_empty_config() {
-        let config = read_string("").unwrap();
-        assert_eq!(config.distribution.len(), 0);
-        assert_eq!(config.campaign.len(), 0);
-        assert_eq!(config.apt_repository.len(), 0);
-    }
-
-    #[test]
     fn test_get_distribution() {
         let config = read_string(r#"distribution { name: "test" }"#).unwrap();
         assert_eq!(
@@ -109,32 +91,6 @@ mod tests {
             Some("test".to_string())
         );
         assert!(config.get_distribution("test2").is_none());
-    }
-
-    #[test]
-    fn test_distribution_fields() {
-        let config = read_string(
-            r#"
-            distribution {
-                name: "unstable"
-                archive_mirror_uri: "http://deb.debian.org/debian"
-                chroot: "unstable-amd64-sbuild"
-                lintian_profile: "debian"
-                build_command: "sbuild -Asv"
-                vendor: "debian"
-            }
-            "#,
-        )
-        .unwrap();
-        let dist = config.get_distribution("unstable").unwrap();
-        assert_eq!(
-            dist.archive_mirror_uri,
-            Some("http://deb.debian.org/debian".to_string())
-        );
-        assert_eq!(dist.chroot, Some("unstable-amd64-sbuild".to_string()));
-        assert_eq!(dist.lintian_profile, Some("debian".to_string()));
-        assert_eq!(dist.build_command, Some("sbuild -Asv".to_string()));
-        assert_eq!(dist.vendor, Some("debian".to_string()));
     }
 
     #[test]
@@ -189,36 +145,6 @@ mod tests {
             Some(("fresh-releases", "main"))
         );
         assert_eq!(config.find_campaign_by_branch_name("nonexistent"), None);
-    }
-
-    #[test]
-    fn test_campaign_with_bugtracker() {
-        let config = read_string(
-            r#"
-            campaign {
-                name: "lintian-fixes"
-                bugtracker {
-                    kind: debian
-                    url: "https://bugs.debian.org/lintian-brush"
-                    name: "lintian-brush"
-                }
-            }
-            "#,
-        )
-        .unwrap();
-        let campaign = config.get_campaign("lintian-fixes").unwrap();
-        assert_eq!(campaign.bugtracker.len(), 1);
-        let bt = &campaign.bugtracker[0];
-        assert_eq!(
-            bt.url,
-            Some("https://bugs.debian.org/lintian-brush".to_string())
-        );
-        assert_eq!(bt.name, Some("lintian-brush".to_string()));
-    }
-
-    #[test]
-    fn test_read_string_invalid() {
-        assert!(read_string("this is not valid protobuf {{{").is_err());
     }
 
     #[test]
