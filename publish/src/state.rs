@@ -587,6 +587,26 @@ WHERE id = $1
     .await
 }
 
+/// Find the most recent successful run of the codebase of `run` at its
+/// main branch revision, to diff the run's changes against.
+pub async fn get_unchanged_run_id(
+    conn: &PgPool,
+    run: &janitor::state::Run,
+) -> Result<Option<String>, sqlx::Error> {
+    let Some(main_rev) = run.main_branch_revision.as_ref() else {
+        return Ok(None);
+    };
+    sqlx::query_scalar::<_, String>(
+        "SELECT id FROM run \
+         WHERE codebase = $1 AND revision = $2 AND result_code = 'success' \
+         ORDER BY finish_time DESC LIMIT 1",
+    )
+    .bind(&run.codebase)
+    .bind(main_rev.to_string())
+    .fetch_optional(conn)
+    .await
+}
+
 /// Count the number of publish attempts for a specific revision, excluding those with transient result codes.
 pub async fn get_publish_attempt_count(
     conn: &PgPool,
