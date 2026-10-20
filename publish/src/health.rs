@@ -1,5 +1,6 @@
 //! Types and axum handlers for the `/health` and `/ready` endpoints.
 
+use crate::AppState;
 use async_trait::async_trait;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
@@ -47,25 +48,6 @@ pub struct ComponentHealth {
     pub details: Option<serde_json::Value>,
 }
 
-/// Trait implemented by things that can answer health / liveness / readiness
-/// questions on behalf of a service.
-#[async_trait]
-pub trait HealthCheckHandler: Send + Sync {
-    /// Return the full health report.
-    async fn check_health(&self) -> HealthCheck;
-
-    /// Liveness probe. Defaults to `true`: if the handler is still responding,
-    /// the process is at least alive.
-    async fn check_liveness(&self) -> bool {
-        true
-    }
-
-    /// Readiness probe. Defaults to "ready when healthy".
-    async fn check_readiness(&self) -> bool {
-        matches!(self.check_health().await.status, HealthStatus::Healthy)
-    }
-}
-
 /// Trait for checking an individual component.
 #[async_trait]
 pub trait ComponentChecker: Send + Sync {
@@ -93,18 +75,15 @@ impl BasicHealthChecker {
         }
     }
 
-    /// Register a component checker; results are aggregated by [`check_health`].
-    ///
-    /// [`check_health`]: HealthCheckHandler::check_health
+    /// Register a component checker; results are aggregated by
+    /// [`Self::check_health`].
     pub fn add_component_check(mut self, checker: Arc<dyn ComponentChecker>) -> Self {
         self.component_checks.push(checker);
         self
     }
-}
 
-#[async_trait]
-impl HealthCheckHandler for BasicHealthChecker {
-    async fn check_health(&self) -> HealthCheck {
+    /// Return the full health report.
+    pub async fn check_health(&self) -> HealthCheck {
         let mut checks = Vec::with_capacity(self.component_checks.len());
         let mut overall = HealthStatus::Healthy;
 
@@ -127,6 +106,11 @@ impl HealthCheckHandler for BasicHealthChecker {
             checks,
             timestamp: chrono::Utc::now(),
         }
+    }
+
+    /// Readiness probe: ready when healthy.
+    pub async fn check_readiness(&self) -> bool {
+        matches!(self.check_health().await.status, HealthStatus::Healthy)
     }
 }
 
@@ -188,63 +172,26 @@ impl ComponentChecker for RedisHealthChecker {
     }
 
     async fn check(&self) -> ComponentHealth {
-        match self.client.get_connection() {
-            Ok(mut conn) => {
-                let result: Result<String, redis::RedisError> = redis::cmd("PING").query(&mut conn);
-                match result {
-                    Ok(_) => ComponentHealth {
-                        name: self.name().to_string(),
-                        status: HealthStatus::Healthy,
-                        error: None,
-                        details: None,
-                    },
-                    Err(e) => ComponentHealth {
-                        name: self.name().to_string(),
-                        status: HealthStatus::Unhealthy,
-                        error: Some(e.to_string()),
-                        details: None,
-                    },
-                }
-            }
-            Err(e) => ComponentHealth {
-                name: self.name().to_string(),
-                status: HealthStatus::Unhealthy,
-                error: Some(e.to_string()),
-                details: None,
+        let result = self
+            .client
+            .get_connection()
+            .and_then(|mut conn| redis::cmd("PING").query::<String>(&mut conn));
+        ComponentHealth {
+            name: self.name().to_string(),
+            status: if result.is_ok() {
+                HealthStatus::Healthy
+            } else {
+                HealthStatus::Unhealthy
             },
+            error: result.err().map(|e| e.to_string()),
+            details: None,
         }
     }
 }
 
-/// The axum handlers pull the health checker off state through this trait.
-pub trait BaseAppState: Clone + Send + Sync + 'static {
-    /// Service name (used in health JSON).
-    fn service_name(&self) -> &str;
-
-    /// Service version (used in health JSON).
-    fn service_version(&self) -> &str;
-
-    /// The health checker handle.
-    fn health_checker(&self) -> Arc<dyn HealthCheckHandler>;
-}
-
-impl<T: BaseAppState> BaseAppState for Arc<T> {
-    fn service_name(&self) -> &str {
-        (**self).service_name()
-    }
-
-    fn service_version(&self) -> &str {
-        (**self).service_version()
-    }
-
-    fn health_checker(&self) -> Arc<dyn HealthCheckHandler> {
-        (**self).health_checker()
-    }
-}
-
 /// Axum handler for `GET /health`. Returns the full health JSON.
-pub async fn health_check_handler<S: BaseAppState>(State(state): State<S>) -> impl IntoResponse {
-    let health = state.health_checker().check_health().await;
+pub async fn health_check_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let health = state.health_checker.check_health().await;
     let status_code = match health.status {
         HealthStatus::Healthy | HealthStatus::Degraded => StatusCode::OK,
         HealthStatus::Unhealthy => StatusCode::SERVICE_UNAVAILABLE,
@@ -253,8 +200,8 @@ pub async fn health_check_handler<S: BaseAppState>(State(state): State<S>) -> im
 }
 
 /// Axum handler for `GET /ready`. Returns 200 when ready, 503 otherwise.
-pub async fn readiness_handler<S: BaseAppState>(State(state): State<S>) -> impl IntoResponse {
-    if state.health_checker().check_readiness().await {
+pub async fn readiness_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    if state.health_checker.check_readiness().await {
         (StatusCode::OK, "ready")
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, "not ready")
