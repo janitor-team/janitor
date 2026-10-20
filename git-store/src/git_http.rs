@@ -438,23 +438,6 @@ async fn extract_auth_context(
     })
 }
 
-fn validate_git_command(
-    service: Option<&String>,
-    path_info: &str,
-    auth_context: &AuthContext,
-) -> Result<()> {
-    if path_info.contains("..") || path_info.contains("//") || path_info.starts_with('/') {
-        warn!("Dangerous path detected: {}", path_info);
-        return Err(GitStoreError::HttpError("Invalid path".to_string()));
-    }
-
-    if let Some(service) = service {
-        validate_git_service(service, auth_context)?;
-    }
-
-    Ok(())
-}
-
 fn validate_git_service(service: &str, auth_context: &AuthContext) -> Result<()> {
     match service {
         "git-upload-pack" => Ok(()),
@@ -515,62 +498,16 @@ fn is_hop_by_hop(name: &str) -> bool {
     )
 }
 
-/// Mirror the regex set in `dulwich.web.HTTPGitApplication.services`
-/// so we don't shell out to `git http-backend` for arbitrary URLs.
-/// `method` is the request method and `subpath` is the path after the
-/// `/{codebase}/` prefix (without a leading slash).
-fn is_git_http_subpath(method: &axum::http::Method, subpath: &str) -> bool {
-    use axum::http::Method;
+/// Only the smart HTTP protocol is served: ref discovery
+/// (`info/refs?service=...`) and the two RPC endpoints. `method` is the
+/// request method and `subpath` is the path after the `/{codebase}/`
+/// prefix (without a leading slash).
+fn is_git_http_subpath(method: &axum::http::Method, subpath: &str, service: Option<&str>) -> bool {
     match (method.as_str(), subpath) {
         ("POST", "git-upload-pack") | ("POST", "git-receive-pack") => true,
-        (m, s) if m == Method::GET.as_str() => {
-            matches!(
-                s,
-                "HEAD"
-                    | "info/refs"
-                    | "objects/info/alternates"
-                    | "objects/info/http-alternates"
-                    | "objects/info/packs"
-            ) || is_loose_object_path(s)
-                || is_pack_path(s)
-        }
+        ("GET", "info/refs") => service.is_some(),
         _ => false,
     }
-}
-
-/// `objects/<2hex>/<38hex>` -- a loose git object. Pure hex check.
-fn is_loose_object_path(s: &str) -> bool {
-    let Some(rest) = s.strip_prefix("objects/") else {
-        return false;
-    };
-    let Some((prefix, suffix)) = rest.split_once('/') else {
-        return false;
-    };
-    prefix.len() == 2
-        && suffix.len() == 38
-        && prefix.chars().all(|c| c.is_ascii_hexdigit())
-        && suffix.chars().all(|c| c.is_ascii_hexdigit())
-}
-
-/// `objects/pack/pack-<40|64 hex>.pack` or `.idx`.
-fn is_pack_path(s: &str) -> bool {
-    let Some(name) = s.strip_prefix("objects/pack/") else {
-        return false;
-    };
-    let (stem, ext) = match name.rsplit_once('.') {
-        Some(parts) => parts,
-        None => return false,
-    };
-    if ext != "pack" && ext != "idx" {
-        return false;
-    }
-    // `pack-<hex>` is the convention; the leading `pack-` prefix is
-    // not strictly required by dulwich's regex (`\w+-`) but every
-    // real-world file matches it.
-    let Some(hex) = stem.rsplit_once('-').map(|(_, h)| h) else {
-        return false;
-    };
-    (hex.len() == 40 || hex.len() == 64) && hex.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Strip breezy's `,branch=<role>` segment parameter (both the
@@ -709,10 +646,12 @@ pub async fn git_backend(
         String::new()
     };
 
-    // Only accept paths that `dulwich.web.HTTPGitApplication.services`
-    // declares. Catches typos / probes before shelling out to
-    // git-http-backend. Mirrors Python's regex-mounted routes.
-    if !is_git_http_subpath(&method, &subpath) {
+    let query_string = uri.query().unwrap_or("");
+    let query_params: HashMap<String, String> =
+        serde_urlencoded::from_str(query_string).unwrap_or_default();
+    let service = query_params.get("service");
+
+    if !is_git_http_subpath(&method, &subpath, service.map(String::as_str)) {
         return Err(GitStoreError::GitPathNotFound(subpath));
     }
 
@@ -739,16 +678,9 @@ pub async fn git_backend(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    let query_string = uri.query().unwrap_or("");
-
-    // Parse query for service parameter
-    let query_params: HashMap<String, String> =
-        serde_urlencoded::from_str(query_string).unwrap_or_default();
-
-    let service = query_params.get("service");
-
-    // Validate Git command with enhanced security checks
-    validate_git_command(service, &subpath, &auth_context)?;
+    if let Some(service) = service {
+        validate_git_service(service, &auth_context)?;
+    }
 
     // Setup Git HTTP backend process
     let mut cmd = Command::new("git");
@@ -1043,48 +975,34 @@ mod tests {
     }
 
     #[test]
-    fn test_is_git_http_subpath_whitelist() {
+    fn test_is_git_http_subpath_smart_only() {
         use axum::http::Method;
         let get = Method::GET;
         let post = Method::POST;
-        // Smart protocol
-        assert!(is_git_http_subpath(&post, "git-upload-pack"));
-        assert!(is_git_http_subpath(&post, "git-receive-pack"));
-        assert!(!is_git_http_subpath(&get, "git-upload-pack"));
-        // Refs discovery / HEAD
-        assert!(is_git_http_subpath(&get, "info/refs"));
-        assert!(is_git_http_subpath(&get, "HEAD"));
-        // Dumb-HTTP metadata
-        assert!(is_git_http_subpath(&get, "objects/info/alternates"));
-        assert!(is_git_http_subpath(&get, "objects/info/http-alternates"));
-        assert!(is_git_http_subpath(&get, "objects/info/packs"));
-        // Loose object: 2 hex + '/' + 38 hex (SHA-1 object).
+        assert!(is_git_http_subpath(&post, "git-upload-pack", None));
+        assert!(is_git_http_subpath(&post, "git-receive-pack", None));
+        assert!(!is_git_http_subpath(&get, "git-upload-pack", None));
         assert!(is_git_http_subpath(
             &get,
-            "objects/ab/23456789abcdef0123456789abcdef01234567"
+            "info/refs",
+            Some("git-upload-pack")
+        ));
+        // Dumb HTTP is not served.
+        assert!(!is_git_http_subpath(&get, "info/refs", None));
+        assert!(!is_git_http_subpath(&get, "HEAD", None));
+        assert!(!is_git_http_subpath(&get, "objects/info/packs", None));
+        assert!(!is_git_http_subpath(
+            &get,
+            "objects/pack/pack-0123456789abcdef0123456789abcdef01234567.pack",
+            None
         ));
         assert!(!is_git_http_subpath(
             &get,
-            "objects/zz/23456789abcdef0123456789abcdef01234567"
+            "objects/pack/../x-0123456789abcdef0123456789abcdef01234567.pack",
+            None
         ));
-        assert!(!is_git_http_subpath(&get, "objects/ab/short"));
-        // Pack files
-        assert!(is_git_http_subpath(
-            &get,
-            "objects/pack/pack-0123456789abcdef0123456789abcdef01234567.pack"
-        ));
-        assert!(is_git_http_subpath(
-            &get,
-            "objects/pack/pack-0123456789abcdef0123456789abcdef01234567.idx"
-        ));
-        assert!(!is_git_http_subpath(
-            &get,
-            "objects/pack/pack-notvalid.pack"
-        ));
-        // Rejections
-        assert!(!is_git_http_subpath(&get, "config"));
-        assert!(!is_git_http_subpath(&get, "../etc/passwd"));
-        assert!(!is_git_http_subpath(&get, ""));
+        assert!(!is_git_http_subpath(&get, "config", None));
+        assert!(!is_git_http_subpath(&get, "", None));
     }
 
     #[test]
@@ -1128,52 +1046,6 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_git_command_rejects_dot_dot() {
-        let result = validate_git_command(
-            Some(&"git-upload-pack".to_string()),
-            "../etc",
-            &reader_ctx(),
-        );
-        assert!(matches!(result, Err(GitStoreError::HttpError(_))));
-    }
-
-    #[test]
-    fn test_validate_git_command_rejects_double_slash() {
-        let result = validate_git_command(
-            Some(&"git-upload-pack".to_string()),
-            "foo//bar",
-            &reader_ctx(),
-        );
-        assert!(matches!(result, Err(GitStoreError::HttpError(_))));
-    }
-
-    #[test]
-    fn test_validate_git_command_rejects_absolute_path() {
-        let result = validate_git_command(
-            Some(&"git-upload-pack".to_string()),
-            "/etc/passwd",
-            &reader_ctx(),
-        );
-        assert!(matches!(result, Err(GitStoreError::HttpError(_))));
-    }
-
-    #[test]
-    fn test_validate_git_command_accepts_normal_path() {
-        let result = validate_git_command(
-            Some(&"git-upload-pack".to_string()),
-            "info/refs",
-            &reader_ctx(),
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_validate_git_command_accepts_no_service() {
-        let result = validate_git_command(None, "info/refs", &reader_ctx());
-        assert!(result.is_ok());
-    }
-
-    #[test]
     fn test_validate_git_service_upload_pack_always_allowed() {
         assert!(validate_git_service("git-upload-pack", &reader_ctx()).is_ok());
         assert!(validate_git_service("git-upload-pack", &writer_ctx()).is_ok());
@@ -1197,15 +1069,5 @@ mod tests {
 
         let result = validate_git_service("", &writer_ctx());
         assert!(matches!(result, Err(GitStoreError::PermissionDenied)));
-    }
-
-    #[test]
-    fn test_validate_git_command_path_check_runs_before_service() {
-        let result = validate_git_command(
-            Some(&"git-upload-pack".to_string()),
-            "../escape",
-            &writer_ctx(),
-        );
-        assert!(matches!(result, Err(GitStoreError::HttpError(_))));
     }
 }
