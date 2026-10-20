@@ -550,7 +550,7 @@ dependencies = [
  "bytes",
  "form_urlencoded",
  "futures-util",
- "http 1.5.0",
+ "http",
  "http-body",
  "http-body-util",
  "hyper",
@@ -582,7 +582,7 @@ checksum = "08c78f31d7b1291f7ee735c1c6780ccde7785daae9a9206026862dab7d8792d1"
 dependencies = [
  "bytes",
  "futures-core",
- "http 1.5.0",
+ "http",
  "http-body",
  "http-body-util",
  "mime",
@@ -863,7 +863,7 @@ dependencies = [
  "futures-util",
  "hex",
  "home",
- "http 1.5.0",
+ "http",
  "http-body-util",
  "hyper",
  "hyper-named-pipe",
@@ -1065,15 +1065,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f3a53fac24f34a81bc9954b5d6cfce0c21e18ec6959f44f56e8e90e4bb7c346c"
 dependencies = [
  "libbz2-rs-sys",
-]
-
-[[package]]
-name = "castaway"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dec551ab6e7578819132c713a93c022a05d60159dc86e7a7050223577484c55a"
-dependencies = [
- "rustversion",
 ]
 
 [[package]]
@@ -1521,37 +1512,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d5515a3834141de9eafb9717ad39eea8247b5674e6066c404e8c4b365d2a29e"
 dependencies = [
  "cmov",
-]
-
-[[package]]
-name = "curl"
-version = "0.4.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a45ee8994e5307cb4c60cfc1c20bf7263ffb771ddc135c9f768a14bcbc15b09"
-dependencies = [
- "curl-sys",
- "libc",
- "openssl-probe 0.1.6",
- "openssl-sys",
- "schannel",
- "socket2",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "curl-sys"
-version = "0.4.90+curl-8.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97799a0d220bfb3361e0fe4936966ff8c4b24d65c3f06dfc70d7b680b44e7897"
-dependencies = [
- "cc",
- "libc",
- "libnghttp2-sys",
- "libz-sys",
- "openssl-sys",
- "pkg-config",
- "vcpkg",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2495,7 +2455,7 @@ dependencies = [
  "google-cloud-gax",
  "hex",
  "hmac",
- "http 1.5.0",
+ "http",
  "jiff",
  "jsonwebtoken",
  "reqwest 0.13.5",
@@ -2521,7 +2481,7 @@ dependencies = [
  "futures",
  "google-cloud-rpc",
  "google-cloud-wkt",
- "http 1.5.0",
+ "http",
  "pin-project",
  "rand 0.10.2",
  "serde",
@@ -2544,7 +2504,7 @@ dependencies = [
  "google-cloud-rpc",
  "google-cloud-wkt",
  "h2",
- "http 1.5.0",
+ "http",
  "http-body",
  "http-body-util",
  "hyper",
@@ -2656,7 +2616,7 @@ dependencies = [
  "google-cloud-type",
  "google-cloud-wkt",
  "hex",
- "http 1.5.0",
+ "http",
  "http-body",
  "jiff",
  "md5",
@@ -2715,7 +2675,7 @@ dependencies = [
  "fnv",
  "futures-core",
  "futures-sink",
- "http 1.5.0",
+ "http",
  "indexmap 2.14.2",
  "slab",
  "tokio",
@@ -2891,17 +2851,6 @@ dependencies = [
 
 [[package]]
 name = "http"
-version = "0.2.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "601cbb57e577e2f5ef5be8e7b83f0f63994f25aa94d673e54a92d5c516d101f1"
-dependencies = [
- "bytes",
- "fnv",
- "itoa",
-]
-
-[[package]]
-name = "http"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "918d3568bebf352712bc2ef3d46a8bcf1a75b373be6539de198e9105cbbf9ce0"
@@ -2917,7 +2866,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca2a8f2913ee65f60facd6a5905613afaa448497a0230cc41ce022d93290bc2c"
 dependencies = [
  "bytes",
- "http 1.5.0",
+ "http",
 ]
 
 [[package]]
@@ -2928,7 +2877,7 @@ checksum = "23169fe34a5fbcdd3f3862e78fb9b6fccd5f02a6dc6f732547005d45631ce71c"
 dependencies = [
  "bytes",
  "futures-core",
- "http 1.5.0",
+ "http",
  "http-body",
  "pin-project-lite",
 ]
@@ -2995,7 +2944,7 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "h2",
- "http 1.5.0",
+ "http",
  "http-body",
  "httparse",
  "httpdate",
@@ -3026,7 +2975,7 @@ version = "0.27.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33ca68d021ef39cf6463ab54c1d0f5daf03377b70561305bb89a8f83aab66e0f"
 dependencies = [
- "http 1.5.0",
+ "http",
  "hyper",
  "hyper-util",
  "rustls",
@@ -3074,7 +3023,7 @@ dependencies = [
  "bytes",
  "futures-channel",
  "futures-util",
- "http 1.5.0",
+ "http",
  "http-body",
  "hyper",
  "ipnet",
@@ -3396,32 +3345,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
-name = "isahc"
-version = "1.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fbce0b6b4f5c50b8e014e227d51ddf721558308566b4f6ba608abcea4d272cce"
-dependencies = [
- "async-channel 2.5.0",
- "castaway",
- "crossbeam-utils",
- "curl",
- "curl-sys",
- "encoding_rs",
- "event-listener 5.4.2",
- "futures-lite",
- "http 0.2.12",
- "log",
- "mime",
- "polling",
- "slab",
- "sluice",
- "tracing",
- "tracing-futures",
- "url",
- "waker-fn",
-]
-
-[[package]]
 name = "itertools"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3629,7 +3552,7 @@ dependencies = [
  "clap",
  "futures-util",
  "git2",
- "http 1.5.0",
+ "http",
  "janitor",
  "libc",
  "nix",
@@ -3658,9 +3581,7 @@ dependencies = [
 name = "janitor-mail-filter"
 version = "0.0.0"
 dependencies = [
- "async-std",
  "clap",
- "isahc",
  "log",
  "mailparse",
  "reqwest 0.13.5",
@@ -4102,16 +4023,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
-name = "libnghttp2-sys"
-version = "0.1.13+1.68.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "492e00167f1418c15648144f42bbfc63099806ecee9bf8d09a6353d6b4856b3c"
-dependencies = [
- "cc",
- "libc",
-]
-
-[[package]]
 name = "libredox"
 version = "0.1.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4525,7 +4436,7 @@ dependencies = [
  "bytes",
  "encoding_rs",
  "futures-util",
- "http 1.5.0",
+ "http",
  "httparse",
  "memchr",
  "mime",
@@ -4914,7 +4825,7 @@ checksum = "ee2c3625b8aa04209f7e01e513bc8044da9687fa38a9eacf59628ca5f3b87300"
 dependencies = [
  "async-trait",
  "bytes",
- "http 1.5.0",
+ "http",
  "opentelemetry 0.33.0",
  "reqwest 0.13.5",
 ]
@@ -4925,7 +4836,7 @@ version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "699a67345e21962a231955b9059a157e428b219fa5df8efe11f08346fb23a344"
 dependencies = [
- "http 1.5.0",
+ "http",
  "httpdate",
  "opentelemetry 0.33.0",
  "opentelemetry-http",
@@ -6075,7 +5986,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "h2",
- "http 1.5.0",
+ "http",
  "http-body",
  "http-body-util",
  "hyper",
@@ -6117,7 +6028,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "h2",
- "http 1.5.0",
+ "http",
  "http-body",
  "http-body-util",
  "hyper",
@@ -6861,17 +6772,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sluice"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "160b744a45e8261307bcfe03c98e2f8274502207d534c9a64b675c4db1b6bd58"
-dependencies = [
- "async-channel 2.5.0",
- "futures-core",
- "futures-io",
-]
-
-[[package]]
 name = "smallvec"
 version = "1.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7462,7 +7362,7 @@ dependencies = [
  "etcetera",
  "ferroid",
  "futures",
- "http 1.5.0",
+ "http",
  "itertools 0.14.0",
  "log",
  "memchr",
@@ -7823,7 +7723,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "h2",
- "http 1.5.0",
+ "http",
  "http-body",
  "http-body-util",
  "hyper",
@@ -7899,7 +7799,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-util",
- "http 1.5.0",
+ "http",
  "http-body",
  "http-body-util",
  "http-range-header",
@@ -7926,7 +7826,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-util",
- "http 1.5.0",
+ "http",
  "http-body",
  "http-body-util",
  "http-range-header",
@@ -8000,16 +7900,6 @@ checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
  "valuable",
-]
-
-[[package]]
-name = "tracing-futures"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97d095ae15e245a057c8e8451bab9b3ee1e1f68e9ba2b4fbc18d0ac5237835f2"
-dependencies = [
- "pin-project",
- "tracing",
 ]
 
 [[package]]
@@ -8211,7 +8101,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f86fd172ccca569e458f61b6bdd6220965a9ef36e672a6852953b51a0e1583be"
 dependencies = [
  "base64 0.23.1",
- "http 1.5.0",
+ "http",
  "httparse",
  "log",
 ]
@@ -8333,12 +8223,6 @@ dependencies = [
  "url",
  "xmltree",
 ]
-
-[[package]]
-name = "waker-fn"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "317211a0dc0ceedd78fb2ca9a44aed3d7b9b26f81870d485c07122b4350673b7"
 
 [[package]]
 name = "walkdir"
