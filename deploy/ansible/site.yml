@@ -64,6 +64,19 @@
         quiet: true
       when: enable_auto_upload | bool
 
+    - name: Check the MTA has a domain and pipes only into an installed mail filter
+      ansible.builtin.assert:
+        that:
+          - mta_domains | length > 0
+          - enable_mail_filter | bool or mta_mail_filter_recipients | length == 0
+          - mta_mail_filter_recipients | length <= (mail_filter_max_instances | int) // 2
+        fail_msg: >-
+          enable_mta needs mta_domains, mta_mail_filter_recipients needs
+          enable_mail_filter, and at most half of mail_filter_max_instances
+          recipients (systemd drops filter connections beyond it).
+        quiet: true
+      when: enable_mta | bool
+
 - name: Deploy the janitor control services
   hosts: control
   become: true
@@ -79,6 +92,8 @@
     - { role: auto_upload_target, when: enable_auto_upload | bool and enable_auto_upload_target | bool }
     - janitor_config
     - janitor_quadlet
+    - { role: mail_filter, when: enable_mail_filter | bool }
+    - { role: mta, when: enable_mta | bool }
 
 - name: Deploy the janitor workers (the control play already covers a host in both groups)
   hosts: worker:!control
