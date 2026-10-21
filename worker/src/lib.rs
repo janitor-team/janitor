@@ -914,15 +914,17 @@ pub fn run_worker(
                     | e @ BrzError::UnexpectedHttpStatus { .. }
                     | e @ BrzError::TransportError(..)
                     | e @ BrzError::TransportNotPossible(..)
-                    | e @ BrzError::RemoteGitError(..),
+                    | e @ BrzError::RemoteGitError(..)
+                    | e @ BrzError::ConnectionError(..)
+                    | e @ BrzError::Socket(..),
                 ) => {
                     log::warn!("unable to push to cache URL {}: {}", cached_branch_url, e);
                 }
                 Err(e) => {
-                    panic!(
-                        "Unexpected error pushing to cache URL {}: {}",
-                        cached_branch_url, e
-                    );
+                    return Err(push_error_to_worker_failure(
+                        e,
+                        vec!["result-cache".to_owned()],
+                    ));
                 }
                 Ok(_) => {
                     log::info!("Pushed packaging branch cache to {}", cached_branch_url);
@@ -1514,6 +1516,84 @@ check:
                 value: None,
                 vcs_type: Some(vcs_type),
             }
+        );
+    }
+
+    fn run_worker_with_cache(cached_branch_url: &str) -> Result<(), WorkerFailure> {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = controldir::create_standalone_workingtree(
+            &tmp.path().join("main"),
+            &controldir::FORMAT_REGISTRY.make_controldir("git").unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("main/Makefile"),
+            "all:\n\ntest:\n\ncheck:\n",
+        )
+        .unwrap();
+        wt.add(&[Path::new("Makefile")]).unwrap();
+        wt.build_commit().message("Add makefile").commit().unwrap();
+        std::fs::create_dir(tmp.path().join("target")).unwrap();
+        std::fs::create_dir(tmp.path().join("output")).unwrap();
+        run_worker(
+            "mycodebase",
+            "mycampaign",
+            Some(&wt.branch().get_user_url()),
+            "run-id",
+            &serde_json::json!({"chroot": null, "dep_server_url": null}),
+            HashMap::new(),
+            vec!["sh", "-c", "echo foo > bar"],
+            &tmp.path().join("output"),
+            &mut Metadata::default(),
+            &Url::from_directory_path(tmp.path().join("target")).unwrap(),
+            "foo",
+            "generic",
+            Some(VcsType::Git),
+            Path::new(""),
+            None,
+            Some(&cached_branch_url.parse().unwrap()),
+            None,
+            None,
+            &mut None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[serial]
+    #[test]
+    fn test_run_worker_cache_push_socket_error_only_warns() {
+        // A plain HTTP server, so the TLS handshake fails.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("https://{}/foo", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for mut conn in listener.incoming().flatten() {
+                use std::io::{Read, Write};
+                let _ = conn.read(&mut [0; 4096]);
+                let _ = conn.write_all(b"HTTP/1.0 400 Bad Request\r\n\r\n");
+            }
+        });
+        assert_eq!(run_worker_with_cache(&url), Ok(()));
+    }
+
+    #[serial]
+    #[test]
+    fn test_run_worker_cache_push_other_error_fails_the_run() {
+        // The cache cannot be created below a regular file.
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let url = Url::from_file_path(file.path().join("cache")).unwrap();
+        assert_eq!(
+            run_worker_with_cache(url.as_str()),
+            Err(WorkerFailure {
+                code: "unexpected-error".to_string(),
+                description: format!("No such file: {}", file.path().join("cache").display()),
+                details: None,
+                stage: vec!["result-cache".to_string()],
+                transient: None,
+            })
         );
     }
 
