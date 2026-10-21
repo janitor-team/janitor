@@ -455,7 +455,7 @@ async def create_app(
 
     app.cleanup_ctx.append(persistent_session)
 
-    if publisher_url and archiver_url:
+    if publisher_url or archiver_url:
         setup_gpg(app)
 
     if redis is not None:
