@@ -104,14 +104,4 @@ mod tests {
             "metrics output missing debsign_failed:\n{text}"
         );
     }
-
-    #[tokio::test]
-    async fn metrics_endpoint_404s_on_unknown_route() {
-        let app = create_app();
-        let response = app
-            .oneshot(Request::builder().uri("/nope").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
 }

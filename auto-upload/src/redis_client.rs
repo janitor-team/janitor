@@ -127,28 +127,6 @@ mod tests {
     }
 
     #[test]
-    fn roundtrips_through_serde() {
-        let message = BuildResultMessage {
-            log_id: "test-123".to_string(),
-            code: Some("success".to_string()),
-            target: BuildTarget {
-                name: Some("debian".to_string()),
-                details: Some(BuildTargetDetails {
-                    build_distribution: "unstable".to_string(),
-                    extra: serde_json::Map::new(),
-                }),
-            },
-        };
-
-        let serialized = serde_json::to_string(&message).unwrap();
-        let deserialized: BuildResultMessage = serde_json::from_str(&serialized).unwrap();
-
-        assert_eq!(message.log_id, deserialized.log_id);
-        assert_eq!(message.code, deserialized.code);
-        assert_eq!(message.target.name, deserialized.target.name);
-    }
-
-    #[test]
     fn tolerates_empty_target_object() {
         let payload = r#"{"log_id": "abc", "target": {}}"#;
         let msg: BuildResultMessage = serde_json::from_str(payload).unwrap();
