@@ -21,8 +21,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use apt_repository::{
-    AptRepositoryError, AsyncPackageProvider, AsyncRepository, AsyncSourceProvider, Compression,
-    HashAlgorithm, PackageFile, Repository, RepositoryBuilder, Result as AptResult, SourceFile,
+    AptRepositoryError, AsyncPackageProvider, AsyncSourceProvider, PackageFile, Repository,
+    RepositoryBuilder, Result as AptResult, SourceFile,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -310,24 +310,7 @@ fn on_demand_repository(
         .codename(suite_name)
         .architectures(arches.to_vec())
         .components(components)
-        .acquire_by_hash(true)
-        .compressions(vec![
-            Compression::None,
-            Compression::Gzip,
-            Compression::Bzip2,
-        ])
-        // Compute all four hashes (MD5, SHA1, SHA256, SHA512). The
-        // periodic / /publish path uses the same set -- keep them
-        // aligned so an on-demand tree looks identical to a suite
-        // tree.
-        .hash_algorithms(vec![
-            HashAlgorithm::Md5,
-            HashAlgorithm::Sha1,
-            HashAlgorithm::Sha256,
-            HashAlgorithm::Sha512,
-        ])
-        // Keep 4 generations of each compressed index, like Python.
-        .by_hash_keep(12)
+        .by_hash_keep(crate::repository::BY_HASH_KEEP)
         .description(description)
         .build()
         .map_err(|e: AptRepositoryError| ArchiveError::RepositoryGeneration(e.to_string()))
@@ -365,10 +348,6 @@ pub async fn refresh_on_demand_dists(
         return Ok(());
     }
 
-    tokio::fs::create_dir_all(&base_path)
-        .await
-        .map_err(ArchiveError::Io)?;
-
     info!("Generating on-demand dists for {}/{}", kind, id);
 
     let suite_name = format!("{}/{}", kind, id);
@@ -387,9 +366,6 @@ pub async fn refresh_on_demand_dists(
         .unwrap_or_else(|| components.to_vec());
 
     let build_infos: Vec<BuildInfo> = builds.into_iter().map(Into::into).collect();
-    let pkg_provider = PrecomputedPackageProvider::new(scanner.clone(), build_infos.clone());
-    let src_provider = PrecomputedSourceProvider::new(scanner.clone(), build_infos.clone());
-
     let repository = on_demand_repository(
         origin,
         &description,
@@ -397,22 +373,7 @@ pub async fn refresh_on_demand_dists(
         arches,
         resolved_components,
     )?;
-    let async_repo = AsyncRepository::new(repository);
-
-    async_repo
-        .generate_repository(&base_path, &pkg_provider, &src_provider)
-        .await
-        .map_err(|e| ArchiveError::RepositoryGeneration(e.to_string()))?;
-    crate::repository::generate_contents(&async_repo, &scanner, &base_path, &build_infos).await?;
-
-    if let Some(gpg_cfg) = gpg {
-        let release_bytes = tokio::fs::read(&release_path)
-            .await
-            .map_err(ArchiveError::Io)?;
-        crate::sign::sign_release(&base_path, &release_bytes, gpg_cfg).await?;
-    }
-
-    Ok(())
+    crate::repository::publish_dists(&base_path, repository, &scanner, &build_infos, gpg).await
 }
 
 /// Resolve a file path under the on-demand dists tree and read it.
@@ -519,7 +480,7 @@ mod tests {
             f.set_modified(old).unwrap();
         }
 
-        AsyncRepository::new(repository)
+        apt_repository::AsyncRepository::new(repository)
             .generate_repository(
                 tmp.path(),
                 &apt_repository::async_repository::AsyncMemoryPackageProvider::new(),

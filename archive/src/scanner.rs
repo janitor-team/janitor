@@ -69,6 +69,19 @@ pub struct PackageScanner {
     cache_directory: Option<PathBuf>,
 }
 
+/// Write a scan cache entry. Failures only cost a rescan later, so
+/// they are logged rather than returned.
+async fn write_cache(cache_path: &Path, bytes: &[u8]) {
+    if let Some(parent) = cache_path.parent() {
+        if let Err(e) = tokio::fs::create_dir_all(parent).await {
+            warn!("cache parent create failed for {:?}: {}", parent, e);
+        }
+    }
+    if let Err(e) = tokio::fs::write(cache_path, bytes).await {
+        warn!("cache write failed for {:?}: {}", cache_path, e);
+    }
+}
+
 impl PackageScanner {
     /// Create a new package scanner from an artifact-manager URL.
     ///
@@ -189,14 +202,7 @@ impl PackageScanner {
             return;
         };
         let bytes = serde_json::to_vec(contents).expect("contents listing is plain data");
-        if let Some(parent) = cache_path.parent() {
-            if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                warn!("cache parent create failed for {:?}: {}", parent, e);
-            }
-        }
-        if let Err(e) = tokio::fs::write(&cache_path, &bytes).await {
-            warn!("cache write failed for {:?}: {}", cache_path, e);
-        }
+        write_cache(&cache_path, &bytes).await;
     }
 
     /// Retrieve raw `dpkg-scanpackages` bytes for a run, using the
@@ -227,14 +233,7 @@ impl PackageScanner {
             }
         }
         if let Some(cache_path) = self.packages_cache_path(run_id, arch) {
-            if let Some(parent) = cache_path.parent() {
-                if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                    warn!("cache parent create failed for {:?}: {}", parent, e);
-                }
-            }
-            if let Err(e) = tokio::fs::write(&cache_path, &raw).await {
-                warn!("cache write failed for {:?}: {}", cache_path, e);
-            }
+            write_cache(&cache_path, &raw).await;
         }
         Ok(raw)
     }
@@ -281,14 +280,7 @@ impl PackageScanner {
         let artifact_dir = self.download_build_artifacts(run_id).await?;
         let raw = run_dpkg_scansources(artifact_dir.path()).await?;
         if let Some(cache_path) = self.sources_cache_path(run_id) {
-            if let Some(parent) = cache_path.parent() {
-                if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                    warn!("cache parent create failed for {:?}: {}", parent, e);
-                }
-            }
-            if let Err(e) = tokio::fs::write(&cache_path, &raw).await {
-                warn!("cache write failed for {:?}: {}", cache_path, e);
-            }
+            write_cache(&cache_path, &raw).await;
         }
         Ok(raw)
     }

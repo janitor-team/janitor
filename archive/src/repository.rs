@@ -8,8 +8,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use apt_repository::{AsyncRepository, Compression, HashAlgorithm, RepositoryBuilder};
-use serde::{Deserialize, Serialize};
+use apt_repository::{AsyncRepository, Compression, RepositoryBuilder};
 use tokio::fs;
 use tracing::{error, info, warn};
 
@@ -18,83 +17,18 @@ use crate::database::BuildManager;
 use crate::error::{ArchiveError, ArchiveResult};
 use crate::scanner::PackageScanner;
 
-/// Serde-friendly mirror of `apt_repository::Compression`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(missing_docs)]
-pub enum CompressionConfig {
-    None,
-    Gzip,
-    Bzip2,
-}
+/// Maximum number of repositories generated concurrently by
+/// [`RepositoryGenerator::generate_repositories`].
+const MAX_CONCURRENT: usize = 4;
 
-impl From<CompressionConfig> for Compression {
-    fn from(config: CompressionConfig) -> Self {
-        match config {
-            CompressionConfig::None => Compression::None,
-            CompressionConfig::Gzip => Compression::Gzip,
-            CompressionConfig::Bzip2 => Compression::Bzip2,
-        }
-    }
-}
-
-/// Serde-friendly mirror of `apt_repository::HashAlgorithm`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(missing_docs)]
-pub enum HashAlgorithmConfig {
-    Md5,
-    Sha1,
-    Sha256,
-    Sha512,
-}
-
-impl From<HashAlgorithmConfig> for HashAlgorithm {
-    fn from(config: HashAlgorithmConfig) -> Self {
-        match config {
-            HashAlgorithmConfig::Md5 => HashAlgorithm::Md5,
-            HashAlgorithmConfig::Sha1 => HashAlgorithm::Sha1,
-            HashAlgorithmConfig::Sha256 => HashAlgorithm::Sha256,
-            HashAlgorithmConfig::Sha512 => HashAlgorithm::Sha512,
-        }
-    }
-}
-
-/// Tuning knobs for [`RepositoryGenerator`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(missing_docs)]
-pub struct RepositoryGenerationConfig {
-    pub by_hash: bool,
-    pub compressions: Vec<CompressionConfig>,
-    pub hash_algorithms: Vec<HashAlgorithmConfig>,
-    pub max_concurrent: usize,
-    pub enable_signing: bool,
-}
-
-impl Default for RepositoryGenerationConfig {
-    fn default() -> Self {
-        Self {
-            by_hash: true,
-            compressions: vec![
-                CompressionConfig::None,
-                CompressionConfig::Gzip,
-                CompressionConfig::Bzip2,
-            ],
-            hash_algorithms: vec![
-                HashAlgorithmConfig::Md5,
-                HashAlgorithmConfig::Sha1,
-                HashAlgorithmConfig::Sha256,
-                HashAlgorithmConfig::Sha512,
-            ],
-            max_concurrent: 4,
-            enable_signing: false,
-        }
-    }
-}
+/// Number of files kept in each by-hash directory: four generations
+/// of each of the three compressed variants of an index.
+pub(crate) const BY_HASH_KEEP: usize = 12;
 
 /// Repository generation engine for the archive service.
 pub struct RepositoryGenerator {
     scanner: Arc<PackageScanner>,
     build_manager: Arc<BuildManager>,
-    config: RepositoryGenerationConfig,
     /// Optional GPG configuration. When present, every successfully
     /// generated Release file is signed into Release.gpg + InRelease
     /// via [`crate::sign::sign_release`].
@@ -108,19 +42,6 @@ pub struct RepositoryGenerator {
     runtime_config: Option<Arc<janitor::config::Config>>,
 }
 
-/// Gzip-compress `bytes` using the default compression level.
-/// Used for `Contents-<arch>.gz` sidecar files.
-fn gzip_bytes(bytes: &[u8]) -> ArchiveResult<Vec<u8>> {
-    use std::io::Write;
-    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    encoder
-        .write_all(bytes)
-        .map_err(|e| ArchiveError::RepositoryGeneration(format!("gzip write: {}", e)))?;
-    encoder
-        .finish()
-        .map_err(|e| ArchiveError::RepositoryGeneration(format!("gzip finish: {}", e)))
-}
-
 /// Write `bytes` under `<component_dir>/by-hash/<algo>/<hash>` for
 /// every algorithm in `algos`. Matches the layout apt-repository
 /// creates for Packages / Sources so `Acquire-By-Hash: yes`
@@ -129,8 +50,8 @@ async fn write_by_hash(
     component_dir: &std::path::Path,
     bytes: &[u8],
     algos: &[apt_repository::HashAlgorithm],
+    hashes: &apt_repository::HashSet,
 ) -> ArchiveResult<()> {
-    let (_, hashes) = apt_repository::hash::hash_data(bytes, algos);
     for algo in algos {
         if let Some(hex) = hashes.get(algo) {
             let dir = component_dir.join("by-hash").join(algo.as_str());
@@ -188,33 +109,17 @@ pub(crate) fn build_distributions_for(
 }
 
 impl RepositoryGenerator {
-    /// Create a new repository generator without GPG signing.
+    /// Create a new repository generator, which signs Release when
+    /// `gpg` is set.
     pub fn new(
         scanner: Arc<PackageScanner>,
         build_manager: Arc<BuildManager>,
-        config: RepositoryGenerationConfig,
+        gpg: Option<crate::config::GpgConfig>,
     ) -> Self {
         Self {
             scanner,
             build_manager,
-            config,
-            gpg: None,
-            runtime_config: None,
-        }
-    }
-
-    /// Create a new repository generator that signs Release with GPG.
-    pub fn with_gpg(
-        scanner: Arc<PackageScanner>,
-        build_manager: Arc<BuildManager>,
-        config: RepositoryGenerationConfig,
-        gpg: crate::config::GpgConfig,
-    ) -> Self {
-        Self {
-            scanner,
-            build_manager,
-            config,
-            gpg: Some(gpg),
+            gpg,
             runtime_config: None,
         }
     }
@@ -260,55 +165,22 @@ impl RepositoryGenerator {
     ) -> ArchiveResult<()> {
         info!("Generating repository: {}", repo_config.name);
 
-        // Create the repository builder. RepositoryBuilder defaults
-        // not_automatic=true and but_automatic_upgrades=true. Set
-        // Description to a fixed "Generated by the Janitor" string
-        // so apt clients see a stable Description regardless of the
-        // ArchiveConfig (the per-repo `description` is used only as
-        // Label).
-        let repo_builder = RepositoryBuilder::new()
+        // RepositoryBuilder defaults not_automatic=true and
+        // but_automatic_upgrades=true. Set Description to a fixed
+        // "Generated by the Janitor" string so apt clients see a
+        // stable Description regardless of the ArchiveConfig (the
+        // per-repo `description` is used only as Label).
+        let repository = RepositoryBuilder::new()
             .origin(&repo_config.origin)
             .label(&repo_config.label)
             .suite(&repo_config.suite)
             .codename(&repo_config.codename)
             .architectures(repo_config.architectures.clone())
             .components(repo_config.components.clone())
-            .acquire_by_hash(self.config.by_hash)
             .description("Generated by the Janitor")
-            .compressions(
-                self.config
-                    .compressions
-                    .iter()
-                    .map(|c| (*c).clone().into())
-                    .collect(),
-            )
-            .hash_algorithms(
-                self.config
-                    .hash_algorithms
-                    .iter()
-                    .map(|h| (*h).clone().into())
-                    .collect(),
-            );
-
-        // Like the Python archive, keep the newest 4 * compressions
-        // files in each by-hash directory.
-        let repo_builder = if self.config.by_hash {
-            repo_builder.by_hash_keep(4 * self.config.compressions.len().max(1))
-        } else {
-            repo_builder
-        };
-
-        let repository = repo_builder
+            .by_hash_keep(BY_HASH_KEEP)
             .build()
             .map_err(|e| ArchiveError::RepositoryGeneration(e.to_string()))?;
-
-        // Create async repository
-        let async_repo = AsyncRepository::new(repository);
-
-        // Ensure the base path exists
-        fs::create_dir_all(&repo_config.base_path)
-            .await
-            .map_err(ArchiveError::Io)?;
 
         info!(
             "Generating repository files in: {:?}",
@@ -321,56 +193,17 @@ impl RepositoryGenerator {
         let builds = self.collect_builds_for(repo_config).await?;
         let build_infos: Vec<crate::scanner::BuildInfo> =
             builds.into_iter().map(Into::into).collect();
-        let package_provider = crate::on_demand::PrecomputedPackageProvider::new(
-            Arc::clone(&self.scanner),
-            build_infos.clone(),
-        );
-        let source_provider = crate::on_demand::PrecomputedSourceProvider::new(
-            Arc::clone(&self.scanner),
-            build_infos.clone(),
-        );
 
-        let _release = async_repo
-            .generate_repository(&repo_config.base_path, &package_provider, &source_provider)
-            .await
-            .map_err(|e| ArchiveError::RepositoryGeneration(e.to_string()))?;
-
-        info!("Successfully generated repository: {}", repo_config.name);
-
-        // Generate Contents-<arch> files and splice the new entries
-        // into the Release file. Must run *before* signing so the
-        // signature covers the updated Release. Done in-process by
-        // parsing each .deb's data.tar directly, avoiding a
-        // dpkg-deb subprocess per package.
-        generate_contents(
-            &async_repo,
-            &self.scanner,
+        publish_dists(
             &repo_config.base_path,
+            repository,
+            &self.scanner,
             &build_infos,
+            self.gpg.as_ref(),
         )
         .await?;
 
-        // Sign Release so periodic and /publish flows produce
-        // Release.gpg + InRelease alongside Release.
-        if let Some(gpg_cfg) = self.gpg.as_ref() {
-            let release_path = repo_config.base_path.join("Release");
-            match fs::read(&release_path).await {
-                Ok(release_bytes) => {
-                    if let Err(e) =
-                        crate::sign::sign_release(&repo_config.base_path, &release_bytes, gpg_cfg)
-                            .await
-                    {
-                        error!("Failed to sign Release for {}: {}", repo_config.name, e);
-                        return Err(e);
-                    }
-                }
-                Err(e) => {
-                    error!("Cannot read {} to sign: {}", release_path.display(), e);
-                    return Err(ArchiveError::Io(e));
-                }
-            }
-        }
-
+        info!("Successfully generated repository: {}", repo_config.name);
         Ok(())
     }
 
@@ -383,11 +216,10 @@ impl RepositoryGenerator {
 
         let mut tasks = Vec::new();
 
-        for (_name, repo_config) in repos {
+        for repo_config in repos.values() {
             let generator = Self {
                 scanner: Arc::clone(&self.scanner),
                 build_manager: Arc::clone(&self.build_manager),
-                config: self.config.clone(),
                 gpg: self.gpg.clone(),
                 runtime_config: self.runtime_config.clone(),
             };
@@ -399,7 +231,7 @@ impl RepositoryGenerator {
             tasks.push(task);
 
             // Limit concurrent operations
-            if tasks.len() >= self.config.max_concurrent {
+            if tasks.len() >= MAX_CONCURRENT {
                 // Wait for one task to complete
                 let (result, _index, remaining) = futures::future::select_all(tasks).await;
                 match result {
@@ -422,43 +254,43 @@ impl RepositoryGenerator {
 
         Ok(())
     }
+}
 
-    /// Clean up old repository files.
-    pub async fn cleanup_repository(&self, repo_config: &AptRepositoryConfig) -> ArchiveResult<()> {
-        info!("Cleaning up repository: {}", repo_config.name);
+/// Write the Packages, Sources and Contents indices for `builds`
+/// and a Release file listing them under `base_path`, then sign the
+/// Release file when `gpg` is set.
+pub(crate) async fn publish_dists(
+    base_path: &std::path::Path,
+    repository: apt_repository::Repository,
+    scanner: &Arc<PackageScanner>,
+    builds: &[crate::scanner::BuildInfo],
+    gpg: Option<&crate::config::GpgConfig>,
+) -> ArchiveResult<()> {
+    fs::create_dir_all(base_path)
+        .await
+        .map_err(ArchiveError::Io)?;
 
-        let suite_path = repo_config.suite_path();
+    let package_provider =
+        crate::on_demand::PrecomputedPackageProvider::new(Arc::clone(scanner), builds.to_vec());
+    let source_provider =
+        crate::on_demand::PrecomputedSourceProvider::new(Arc::clone(scanner), builds.to_vec());
+    let async_repo = AsyncRepository::new(repository);
+    async_repo
+        .generate_repository(base_path, &package_provider, &source_provider)
+        .await
+        .map_err(|e| ArchiveError::RepositoryGeneration(e.to_string()))?;
 
-        if suite_path.exists() {
-            info!("Removing existing repository files: {:?}", suite_path);
-            fs::remove_dir_all(&suite_path)
-                .await
-                .map_err(ArchiveError::Io)?;
-        }
+    // Contents entries are spliced into Release, so this must run
+    // before signing.
+    generate_contents(&async_repo, scanner, base_path, builds).await?;
 
-        Ok(())
+    if let Some(gpg) = gpg {
+        let release_bytes = fs::read(base_path.join("Release"))
+            .await
+            .map_err(ArchiveError::Io)?;
+        crate::sign::sign_release(base_path, &release_bytes, gpg).await?;
     }
-
-    /// Validate repository configuration.
-    pub fn validate_config(&self, repo_config: &AptRepositoryConfig) -> ArchiveResult<()> {
-        repo_config
-            .validate()
-            .map_err(ArchiveError::InvalidConfiguration)?;
-
-        if repo_config.architectures.is_empty() {
-            return Err(ArchiveError::InvalidConfiguration(
-                "At least one architecture must be specified".to_string(),
-            ));
-        }
-
-        if repo_config.components.is_empty() {
-            return Err(ArchiveError::InvalidConfiguration(
-                "At least one component must be specified".to_string(),
-            ));
-        }
-
-        Ok(())
-    }
+    Ok(())
 }
 
 /// Generate `Contents-<arch>` (and its `.gz`) for every
@@ -493,7 +325,7 @@ pub(crate) async fn generate_contents(
     let repository = async_repo.inner();
     let hash_algos = &repository.hash_algorithms;
 
-    let mut new_release_entries: Vec<(String, HashedFile)> = Vec::new();
+    let mut new_release_entries: Vec<HashedFile> = Vec::new();
 
     for component in &repository.components {
         for arch in &repository.architectures {
@@ -538,34 +370,26 @@ pub(crate) async fn generate_contents(
                 .await
                 .map_err(ArchiveError::Io)?;
 
-            // Uncompressed
-            let plain_name = format!("Contents-{}", arch);
-            let plain_path = component_dir.join(&plain_name);
-            fs::write(&plain_path, body.as_bytes())
-                .await
-                .map_err(ArchiveError::Io)?;
-            let (plain_size, plain_hashes) = hash_data(body.as_bytes(), hash_algos);
-            let mut plain_hf = HashedFile::new(format!("{}/{}", component, plain_name), plain_size);
-            plain_hf.hashes = plain_hashes;
-            new_release_entries.push((format!("{}/{}", component, plain_name), plain_hf));
+            for compression in [Compression::None, Compression::Gzip] {
+                let bytes = compression
+                    .compress(body.as_bytes())
+                    .map_err(|e| ArchiveError::RepositoryGeneration(e.to_string()))?;
+                let name = format!("Contents-{}{}", arch, compression.extension());
+                fs::write(component_dir.join(&name), &bytes)
+                    .await
+                    .map_err(ArchiveError::Io)?;
+                let (size, hashes) = hash_data(&bytes, hash_algos);
+                // by-hash copies so `Acquire-By-Hash: yes` clients
+                // can fetch stable hash URLs.
+                if repository.acquire_by_hash {
+                    write_by_hash(&component_dir, &bytes, hash_algos, &hashes).await?;
+                }
+                let mut hf = HashedFile::new(format!("{}/{}", component, name), size);
+                hf.hashes = hashes;
+                new_release_entries.push(hf);
+            }
 
-            // Gzipped
-            let gz_bytes = gzip_bytes(body.as_bytes())?;
-            let gz_name = format!("Contents-{}.gz", arch);
-            let gz_path = component_dir.join(&gz_name);
-            fs::write(&gz_path, &gz_bytes)
-                .await
-                .map_err(ArchiveError::Io)?;
-            let (gz_size, gz_hashes) = hash_data(&gz_bytes, hash_algos);
-            let mut gz_hf = HashedFile::new(format!("{}/{}", component, gz_name), gz_size);
-            gz_hf.hashes = gz_hashes;
-            new_release_entries.push((format!("{}/{}", component, gz_name), gz_hf));
-
-            // by-hash symlinks/copies so `Acquire-By-Hash:
-            // yes` clients can fetch stable hash URLs.
             if repository.acquire_by_hash {
-                write_by_hash(&component_dir, body.as_bytes(), hash_algos).await?;
-                write_by_hash(&component_dir, &gz_bytes, hash_algos).await?;
                 // The component directory holds the Contents
                 // by-hash files; prune them like the index ones.
                 if let Some(keep) = repository.by_hash_keep {
@@ -590,7 +414,7 @@ pub(crate) async fn generate_contents(
         .map_err(|e| ArchiveError::RepositoryGeneration(format!("Release is not UTF-8: {}", e)))?;
     let mut release = apt_repository::Release::from_str(&release_str)
         .map_err(|e| ArchiveError::RepositoryGeneration(e.to_string()))?;
-    for (_path, hf) in new_release_entries {
+    for hf in new_release_entries {
         release.add_file(hf);
     }
     let mut writer = std::fs::File::create(&release_path).map_err(ArchiveError::Io)?;
@@ -604,43 +428,6 @@ pub(crate) async fn generate_contents(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
-
-    #[test]
-    fn test_repository_generation_config_default() {
-        let config = RepositoryGenerationConfig::default();
-
-        assert!(config.by_hash);
-        assert_eq!(config.compressions.len(), 3);
-        assert_eq!(config.hash_algorithms.len(), 4);
-        assert_eq!(config.max_concurrent, 4);
-        assert!(!config.enable_signing);
-    }
-
-    #[test]
-    fn validate_config_accepts_minimal_valid_repo() {
-        let temp_dir = TempDir::new().unwrap();
-        let config = AptRepositoryConfig::new(
-            "test-repo".to_string(),
-            "test-suite".to_string(),
-            vec!["amd64".to_string()],
-            temp_dir.path().to_path_buf(),
-        );
-        assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn validate_config_rejects_empty_architectures() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut config = AptRepositoryConfig::new(
-            "test-repo".to_string(),
-            "test-suite".to_string(),
-            vec!["amd64".to_string()],
-            temp_dir.path().to_path_buf(),
-        );
-        config.architectures.clear();
-        assert!(config.validate().is_err());
-    }
 
     fn make_repo(name: &str, suite: &str) -> AptRepositoryConfig {
         AptRepositoryConfig::new(
@@ -745,35 +532,6 @@ mod tests {
         assert_eq!(dists, vec!["generic"]);
     }
 
-    /// `gzip_bytes` produces a valid gzip stream -- round-trip
-    /// through GzDecoder yields the original bytes. Guards
-    /// against a future refactor that flushes without finishing
-    /// the encoder (a common gzip mistake).
-    #[test]
-    fn gzip_bytes_round_trips() {
-        let plain = b"FILE                                                    LOCATION\nusr/bin/hello                                           main/hello\n";
-        let compressed = gzip_bytes(plain).unwrap();
-        // Gzip magic bytes 1f 8b -- sanity check we actually
-        // produced a gzip stream, not the raw input.
-        assert_eq!(&compressed[..2], &[0x1f, 0x8b]);
-        let mut dec = flate2::read::GzDecoder::new(&compressed[..]);
-        let mut round_trip = Vec::new();
-        std::io::Read::read_to_end(&mut dec, &mut round_trip).unwrap();
-        assert_eq!(round_trip, plain);
-    }
-
-    /// Empty input is still a valid gzip stream (Contents can be
-    /// empty when a suite has no builds yet).
-    #[test]
-    fn gzip_bytes_empty_input() {
-        let compressed = gzip_bytes(b"").unwrap();
-        assert_eq!(&compressed[..2], &[0x1f, 0x8b]);
-        let mut dec = flate2::read::GzDecoder::new(&compressed[..]);
-        let mut round_trip = Vec::new();
-        std::io::Read::read_to_end(&mut dec, &mut round_trip).unwrap();
-        assert!(round_trip.is_empty());
-    }
-
     /// A round-trip through apt_repository::Release: parse an
     /// existing Release, add a Contents-<arch> HashedFile, rewrite
     /// it, and confirm the new entry survives. This is the exact
@@ -829,9 +587,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let bytes = b"hello world";
         let algos = vec![HashAlgorithm::Sha256, HashAlgorithm::Md5];
-        write_by_hash(tmp.path(), bytes, &algos).await.unwrap();
-
         let (_, hashes) = hash_data(bytes, &algos);
+        write_by_hash(tmp.path(), bytes, &algos, &hashes)
+            .await
+            .unwrap();
+
         for algo in &algos {
             let hex = hashes.get(algo).unwrap();
             let p = tmp.path().join("by-hash").join(algo.as_str()).join(hex);
