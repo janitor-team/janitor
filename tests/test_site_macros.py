@@ -15,6 +15,7 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
+from bs4 import BeautifulSoup
 from jinja2 import Environment, select_autoescape
 
 from janitor.site import template_loader
@@ -52,6 +53,27 @@ def test_display_branch_url():
     
 """
     )
+
+
+def test_display_reviews_table_comments():
+    template = env.get_template("review_util.html")
+    reviews = [
+        {"reviewer": "other@example.com", "verdict": "rejected", "comment": "not now"},
+        {"reviewer": "me@example.com", "verdict": "rejected", "comment": "too big"},
+    ]
+    soup = BeautifulSoup(
+        str(
+            template.module.display_reviews_table(  # type: ignore
+                reviews, "me@example.com"
+            )
+        ),
+        "html.parser",
+    )
+    comments = [
+        tr.find_all("td", recursive=False)[2].get_text(strip=True)
+        for tr in soup.find_all("tr")[1:]
+    ]
+    assert comments == ["not now", "too big"]
 
 
 def _render_local_command(vcs, **context):
