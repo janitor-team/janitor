@@ -3667,13 +3667,16 @@ name = "janitor-mail-filter"
 version = "0.0.0"
 dependencies = [
  "async-std",
+ "axum",
  "clap",
+ "env_logger 0.11.11",
  "isahc",
  "log",
  "mailparse",
  "reqwest 0.13.5",
  "select",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
