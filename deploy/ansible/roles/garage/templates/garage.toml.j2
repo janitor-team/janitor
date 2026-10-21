@@ -1,0 +1,17 @@
+# Managed by ansible (roles/garage). One node, on loopback only.
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "sqlite"
+replication_factor = 1
+rpc_bind_addr = "127.0.0.1:{{ garage_rpc_port }}"
+rpc_public_addr = "127.0.0.1:{{ garage_rpc_port }}"
+rpc_secret_file = "/etc/garage/rpc_secret"
+
+[s3_api]
+s3_region = "{{ janitor_s3_region }}"
+api_bind_addr = "127.0.0.1:{{ garage_s3_port }}"
+
+[admin]
+# Loopback only; the playbook uses only /health; runtime admin tokens still work.
+api_bind_addr = "127.0.0.1:{{ garage_admin_port }}"
+metrics_require_token = true

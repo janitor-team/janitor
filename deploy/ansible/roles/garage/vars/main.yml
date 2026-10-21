@@ -1,0 +1,3 @@
+---
+# The bucket for janitor's build logs.
+garage_bucket: debian-janitor

@@ -1,0 +1,130 @@
+---
+# Optional (enable_garage): a one-node Garage on the control host, so
+# janitor's S3 log storage can be tried without a cloud account. It
+# makes the bucket and a key, and hands the key to roles/janitor_config.
+- name: Create the Garage directories
+  ansible.builtin.file:
+    path: "{{ garage_home }}/{{ item }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0700"
+  loop:
+    - ""
+    - meta
+    - data
+    - secrets
+
+- name: Generate Garage's RPC secret and janitor's S3 key once
+  # Garage's key ids are GK and 24 hex digits; secrets 64 hex digits.
+  ansible.builtin.shell: >-
+    set -eo pipefail; umask 077;
+    s=$(openssl rand -hex {{ item.bytes }});
+    printf '%s%s' {{ 'GK' if item.prefix else "''" }} "$s"
+    > {{ garage_home }}/secrets/{{ item.name }}
+  args:
+    executable: /bin/bash
+    creates: "{{ garage_home }}/secrets/{{ item.name }}"
+  loop:
+    - {name: rpc_secret, bytes: 32, prefix: false}
+    - {name: access_key_id, bytes: 12, prefix: true}
+    - {name: secret_access_key, bytes: 32, prefix: false}
+  no_log: true
+
+- name: Hand the secrets to the deploy user
+  ansible.builtin.file:
+    path: "{{ garage_home }}/secrets/{{ item }}"
+    owner: "{{ ansible_user }}"
+    mode: "0600"
+  loop: [rpc_secret, access_key_id, secret_access_key]
+
+- name: Deploy garage.toml
+  ansible.builtin.template:
+    src: garage.toml.j2
+    dest: "{{ garage_home }}/garage.toml"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  notify: Restart garage
+
+- name: Create the quadlet unit directory
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.config/containers/systemd"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0755"
+
+- name: Deploy the Garage quadlet unit
+  ansible.builtin.template:
+    src: garage.container.j2
+    dest: "/home/{{ ansible_user }}/.config/containers/systemd/garage.container"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  notify: Restart garage
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Start Garage
+  # The first start pulls the image.
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  ansible.builtin.systemd:
+    name: garage.service
+    scope: user
+    daemon_reload: true
+    state: started
+
+- name: Set up the node, key and bucket where missing
+  # Prints what it changed; the key's secret is read from its file.
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    g() { podman exec garage /garage "$@"; }
+    for _ in $(seq 60); do g status >/dev/null 2>&1 && break; sleep 2; done
+    if g status | grep -q 'NO ROLE ASSIGNED'; then
+      g layout assign -z local -c {{ garage_capacity }} "$(g node id -q | cut -d@ -f1)" >/dev/null
+      g layout apply --version "$(( $(g layout show | sed -n 's/^Current cluster layout version: //p') + 1 ))" >/dev/null
+      echo CHANGED layout
+    fi
+    if ! g key info janitor >/dev/null 2>&1; then
+      g key import --yes -n janitor "$(cat {{ garage_home }}/secrets/access_key_id)" \
+        "$(cat {{ garage_home }}/secrets/secret_access_key)" >/dev/null
+      echo CHANGED key
+    fi
+    if ! g bucket info {{ garage_bucket }} >/dev/null 2>&1; then
+      g bucket create {{ garage_bucket }} >/dev/null
+      echo CHANGED bucket
+    fi
+    if ! g bucket info {{ garage_bucket }} | grep -Eq '^ *RWO +GK[0-9a-f]+ +janitor'; then
+      g bucket allow --read --write --owner {{ garage_bucket }} --key janitor >/dev/null
+      echo CHANGED allow
+    fi
+  args:
+    executable: /bin/bash
+  register: garage_setup
+  changed_when: "'CHANGED' in garage_setup.stdout"
+
+- name: Wait for Garage's health route
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ garage_admin_port }}/health"
+  register: garage_health
+  until: garage_health.status == 200
+  retries: 30
+  delay: 2
+
+- name: Read janitor's S3 key
+  ansible.builtin.slurp:
+    src: "{{ garage_home }}/secrets/{{ item }}"
+  loop: [access_key_id, secret_access_key]
+  register: garage_key
+  no_log: true
+
+- name: Hand janitor's S3 key to roles/janitor_config
+  ansible.builtin.set_fact:
+    janitor_s3_access_key_id: "{{ garage_key.results[0].content | b64decode | trim }}"
+    janitor_s3_secret_access_key: "{{ garage_key.results[1].content | b64decode | trim }}"
+  no_log: true

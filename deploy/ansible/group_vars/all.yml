@@ -14,6 +14,7 @@
 #                        runner lists proposals with it; never the worker
 #   oauth_client_id      OAuth2 client for the site login; omit both
 #   oauth_client_secret  to run the site without login
+#   janitor_s3_secret_access_key  S3 key for janitor_logs_location
 # With a login, also set oauth_base_url (an OpenID Connect provider;
 # GitHub is not one), oauth_qa_reviewer_group and oauth_admin_group
 # (OpenID groups).
@@ -118,6 +119,17 @@ janitor_worker_image: >-
   {{ 'localhost/janitor-worker-custom:latest' if janitor_worker_extra_packages | length > 0
      else 'ghcr.io/jelmer/janitor/worker:latest' }}
 
+# Where the runner and site keep build logs: a path inside the containers,
+# or an S3 bucket as s3://BUCKET or s3://BUCKET/PREFIX, with
+# janitor_s3_endpoint_url set for a server other than AWS. They sign S3
+# requests with this key when it is set. Artifacts stay in a local
+# directory.
+janitor_logs_location: /mnt/janitor/data/logs
+janitor_s3_endpoint_url: ""
+janitor_s3_access_key_id: ""
+janitor_s3_secret_access_key: ""
+janitor_s3_region: us-east-1
+
 # Optional: Gitea on the control host, served by Caddy at
 # https://<gitea_domain>/ (its own host name). publish and the runner use
 # the bot's token; publish pushes over SSH on 127.0.0.1:gitea_ssh_port.
@@ -158,6 +170,16 @@ auto_upload_incoming: "{{ janitor_home }}/data/upload-incoming"
 # the runner hands that URL to generic builds.
 enable_ognibuild_dep: false
 ognibuild_dep_clients: [private_ranges]
+# Optional, for trying S3 log storage: Garage, an S3 server, on the
+# control host (loopback only). It makes the bucket and a key and sets
+# janitor_s3_access_key_id and janitor_s3_secret_access_key from it.
+enable_garage: false
+garage_image: docker.io/dxflrs/garage:v2.4.1
+garage_home: "/home/{{ ansible_user }}/garage"
+garage_s3_port: 3900
+garage_rpc_port: 3901
+garage_admin_port: 3903
+garage_capacity: 10G
 # Optional: janitor-mail-filter reads a forge's notification mail on
 # stdin and has publish refresh that proposal's status at once.
 # roles/mail_filter installs mail_filter_command for an MTA to pipe mail

@@ -11,6 +11,9 @@ Network=host
 Entrypoint=janitor-site
 Exec=--host 127.0.0.1 --port 8080 --public-port 8090 --config /mnt/janitor/janitor.conf --archiver-url http://127.0.0.1:9914/ --differ-url http://127.0.0.1:9920/ --publisher-url http://127.0.0.1:9912/ --runner-url http://127.0.0.1:9911/ --external-url {{ janitor_external_url }}
 Volume={{ janitor_home }}/janitor.conf:/mnt/janitor/janitor.conf:ro
+{% if janitor_s3_access_key_id | length > 0 %}
+EnvironmentFile={{ janitor_home }}/s3.env
+{% endif %}
 Volume={{ janitor_home }}/data/logs:/mnt/janitor/data/logs:ro
 Volume={{ janitor_home }}/data/artifacts:/mnt/janitor/data/artifacts:ro
 {% if caddy_self_signed | default(false) | bool %}

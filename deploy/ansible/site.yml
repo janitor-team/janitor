@@ -89,6 +89,8 @@
     - caddy
     - { role: archive_signing_key, when: "'archive' in janitor_services" }
     - { role: gitea, when: enable_gitea | bool }
+    # Before janitor_config, which writes the S3 key Garage hands it.
+    - { role: garage, when: enable_garage | bool }
     - { role: auto_upload_target, when: enable_auto_upload | bool and enable_auto_upload_target | bool }
     - janitor_config
     - janitor_quadlet

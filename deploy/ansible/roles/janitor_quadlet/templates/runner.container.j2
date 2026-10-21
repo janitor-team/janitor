@@ -11,6 +11,9 @@ Network=host
 Entrypoint=janitor-runner
 Exec=--listen-address 127.0.0.1 --port 9911 --public-port 9919 --config /mnt/janitor/janitor.conf --public-vcs-location {{ janitor_external_url }} --public-apt-archive-location {{ janitor_apt_archive_url }}{% if enable_ognibuild_dep | bool %} --public-dep-server-url {{ janitor_external_url }}ognibuild-dep/{% endif +%}
 Volume={{ janitor_home }}/janitor.conf:/mnt/janitor/janitor.conf:ro
+{% if janitor_s3_access_key_id | length > 0 %}
+EnvironmentFile={{ janitor_home }}/s3.env
+{% endif %}
 Volume={{ janitor_home }}/data/logs:/mnt/janitor/data/logs:rw
 Volume={{ janitor_home }}/data/artifacts:/mnt/janitor/data/artifacts:rw
 Volume={{ janitor_breezy_dir }}/runner:/root/.config/breezy:ro

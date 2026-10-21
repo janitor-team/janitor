@@ -95,7 +95,7 @@
   changed_when: false
   loop: "{{ janitor_units }}"
 
-- name: Start the janitor services, restarting those with a new image, unit, janitor.conf or CA bundle
+- name: Start the janitor services, restarting those with a new image, unit, janitor.conf, S3 key or CA bundle
   become: true
   become_user: "{{ ansible_user }}"
   environment:
@@ -110,6 +110,7 @@
          + (janitor_stale.results | selectattr('stdout', 'search', 'STALE') | map(attribute='item') | list)
          + (janitor_services | difference(['worker']) if janitor_conf is changed else [])
          + (janitor_worker_instances | list if janitor_worker_credentials is changed else [])
+         + (janitor_services | intersect(['runner', 'site']) if janitor_s3_env is changed else [])
          + (janitor_units | intersect(janitor_worker_instances | list + ['publish', 'runner', 'site']) if control_cert_trust is changed else []) }}
   loop: "{{ janitor_units }}"
 

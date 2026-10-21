@@ -10,9 +10,9 @@ host or onto several, and comes with Vagrant VMs to try it locally.
 - `ansible/site.yml`: a play that checks the secrets, then one play per
   inventory group:
   - `control`: `base`, `janitor_source`, `postgres`, `redis`, `caddy`,
-    `archive_signing_key`, `gitea` (optional), `auto_upload_target`
-    (optional), `janitor_config`, `janitor_quadlet`, `mail_filter`
-    (optional), `mta` (optional).
+    `archive_signing_key`, `gitea` (optional), `garage` (optional),
+    `auto_upload_target` (optional), `janitor_config`, `janitor_quadlet`,
+    `mail_filter` (optional), `mta` (optional).
   - `worker`: `base`, `worker_firewall`, `janitor_source`,
     `janitor_config`, `janitor_quadlet`.
 - `ansible/inventory.ini`: the hosts. One host in both groups for a single
@@ -140,8 +140,8 @@ candidates get in is in [docs/flow.md](../docs/flow.md).
   `ansible/roles/janitor_config/templates/janitor.conf.j2`; edit it for
   your own campaigns.
 - Back up PostgreSQL, `janitor_home/data` and `janitor_home/gnupg-archive`,
-  with Gitea `gitea_home/secrets`, and with auto-upload its key in
-  `auto_upload_gnupg_home`.
+  with Gitea `gitea_home/secrets`, with Garage `garage_home`, and with
+  auto-upload its key in `auto_upload_gnupg_home`.
 
 ### Several hosts
 
@@ -192,6 +192,24 @@ a read-only root. It has no login: Caddy serves it under
 default; 403 for the rest), and the runner passes that URL
 (`--public-dep-server-url`) to generic builds.
 
+### S3 log storage (optional)
+
+Set `janitor_logs_location` to an S3 bucket, as `s3://BUCKET` or
+`s3://BUCKET/PREFIX`, to keep build logs there instead of
+`janitor_home/data/logs`. For a server other than AWS, also set
+`janitor_s3_endpoint_url` (e.g. `https://s3.example.com`). The
+runner and site sign their requests with `janitor_s3_access_key_id` and
+`janitor_s3_secret_access_key`, written to `janitor_home/s3.env` (mode
+0600). Artifacts stay in a local
+directory.
+`enable_garage: true` runs Garage, an S3 server, on the control host's
+loopback with the bucket `debian-janitor` and a key of its own, made once
+in `garage_home/secrets`. To try it out, also set `janitor_logs_location`
+to `s3://debian-janitor/logs` and `janitor_s3_endpoint_url` to
+`http://127.0.0.1:3900` (`garage_s3_port`) as in
+`group_vars/vagrant.yml`. Leave the S3 key unset then: a
+key passed with `-e` overrides Garage's.
+
 ### Mail filter (optional)
 
 `enable_mail_filter: true` builds the `mail_filter` image and installs
@@ -236,8 +254,9 @@ has an /etc/hosts entry for it, and the machine your browser runs on
 needs one too (`<control IP> gitea.janitor.test`), or the site login
 cannot reach Gitea. They also turn on auto-upload of lintian-fixes
 builds to the local test target, and the mail filter with Postfix,
-which gets Gitea's mail for the bot. With several VMs, each worker gets its
-own password, made once in `.vagrant/worker-passwords.json`.
+which gets Gitea's mail for the bot, and keep the build logs in Garage.
+With several VMs, each worker gets its own password, made once in
+`.vagrant/worker-passwords.json`.
 
 Environment variables:
 
