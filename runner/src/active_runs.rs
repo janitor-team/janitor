@@ -239,7 +239,7 @@ mod tests {
             vcs_info: VcsInfo::default(),
             codebase: janitor::CodebaseName::new("test-codebase").unwrap(),
             instigated_context: None,
-            resume_from: None,
+            resume_from: Some("earlier-run".to_string()),
         }
     }
 
@@ -282,7 +282,40 @@ mod tests {
         let got = store.get(&rid("run-1")).await.unwrap();
         assert_eq!(got.log_id, "run-1");
         assert_eq!(got.worker_name, "worker-a");
+        assert_eq!(got.resume_from.as_deref(), Some("earlier-run"));
         cleanup(&store).await;
+    }
+
+    #[test]
+    fn serde_roundtrip_keeps_every_field() {
+        let run = ActiveRun {
+            worker_name: "worker-a".to_string(),
+            worker_link: Some("https://worker.example.com/".to_string()),
+            queue_id: 42,
+            log_id: "run-1".to_string(),
+            start_time: Utc::now(),
+            finish_time: Some(Utc::now()),
+            estimated_duration: Some(std::time::Duration::from_secs(90)),
+            campaign: "lintian-fixes".to_string(),
+            change_set: Some("cs-1".to_string()),
+            command: "lintian-brush".to_string(),
+            backchannel: Backchannel::Jenkins {
+                my_url: "https://jenkins.example.com/job/1/".to_string(),
+                jenkins: Some(serde_json::json!({"number": 1})),
+            },
+            vcs_info: VcsInfo {
+                branch_url: Some("https://example.com/hello.git".to_string()),
+                subpath: Some("sub".to_string()),
+                vcs_type: Some("git".to_string()),
+            },
+            codebase: "hello".to_string(),
+            instigated_context: Some(serde_json::json!({"reason": "test"})),
+            resume_from: Some("earlier-run".to_string()),
+        };
+        let json = serde_json::to_string(&run).unwrap();
+        let back: ActiveRun = serde_json::from_str(&json).unwrap();
+        // ActiveRun has no PartialEq; Debug prints every field.
+        assert_eq!(format!("{:?}", back), format!("{:?}", run));
     }
 
     #[tokio::test]
