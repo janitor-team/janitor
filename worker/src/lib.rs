@@ -124,6 +124,29 @@ pub fn get_build_arch() -> Result<String, DpkgArchitectureError> {
     Ok(String::from_utf8(output.stdout).unwrap().trim().to_owned())
 }
 
+/// Split an ognibuild session error into a result code, a message and details.
+pub fn session_error_parts(
+    e: ognibuild::session::Error,
+) -> (&'static str, String, Option<serde_json::Value>) {
+    match e {
+        ognibuild::session::Error::SetupFailure(msg, output) => (
+            "session-setup-failure",
+            msg,
+            Some(serde_json::json!({"output": output})),
+        ),
+        ognibuild::session::Error::IoError(e) => ("session-io-error", e.to_string(), None),
+        ognibuild::session::Error::CalledProcessError(e) => {
+            ("session-process-error", e.to_string(), None)
+        }
+        ognibuild::session::Error::ImageError(e) => ("session-image-error", e.to_string(), None),
+        ognibuild::session::Error::MissingBinary { command, source } => (
+            "session-binary-not-found",
+            format!("Missing {} binary: {}", command, source),
+            None,
+        ),
+    }
+}
+
 pub fn convert_codemod_script_failed(i: i32, command: &str) -> WorkerFailure {
     match i {
         127 => WorkerFailure {
@@ -1281,6 +1304,57 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::str::FromStr;
     use test_log::test;
+
+    #[test]
+    fn test_session_error_parts() {
+        use ognibuild::session::{Error, ImageError};
+        use std::os::unix::process::ExitStatusExt;
+        let cases = vec![
+            (
+                Error::SetupFailure(
+                    "No output from schroot".to_string(),
+                    "E: nope\n".to_string(),
+                ),
+                (
+                    "session-setup-failure",
+                    "No output from schroot".to_string(),
+                    Some(serde_json::json!({"output": "E: nope\n"})),
+                ),
+            ),
+            (
+                Error::IoError(std::io::Error::other("boom")),
+                ("session-io-error", "boom".to_string(), None),
+            ),
+            (
+                Error::CalledProcessError(std::process::ExitStatus::from_raw(1 << 8)),
+                ("session-process-error", "exit status: 1".to_string(), None),
+            ),
+            (
+                Error::ImageError(ImageError::UnsupportedArchitecture {
+                    arch: "s390x".to_string(),
+                }),
+                (
+                    "session-image-error",
+                    "Architecture s390x not supported for cloud images".to_string(),
+                    None,
+                ),
+            ),
+            (
+                Error::MissingBinary {
+                    command: "schroot".to_string(),
+                    source: std::io::ErrorKind::NotFound.into(),
+                },
+                (
+                    "session-binary-not-found",
+                    "Missing schroot binary: entity not found".to_string(),
+                    None,
+                ),
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(session_error_parts(error), expected);
+        }
+    }
 
     /// Regression for worker credential leaks. The cache push and
     /// branch-open log lines used to print URLs with embedded

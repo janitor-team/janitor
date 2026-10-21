@@ -31,6 +31,7 @@ BUG_ERROR_RESULT_CODES = [
     "worker-clone-malformed-transform",
     "chroot-not-found",
     "missing-dependency",
+    "session-binary-not-found",
     "worker-killed",
 ]
 
@@ -63,6 +64,8 @@ TRANSIENT_ERROR_RESULT_CODES = [
     "session-setup-failure",
     "apt-repository-setup-failure",
     "vcs-up-to-date-check-failed",
+    "session-io-error",
+    "session-process-error",
     "run-disappeared",
     "branch-temporarily-unavailable",
 ]

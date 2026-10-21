@@ -11,6 +11,17 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
 
+fn session_failure(e: ognibuild::session::Error) -> WorkerFailure {
+    let (code, msg, details) = crate::session_error_parts(e);
+    WorkerFailure {
+        code: code.to_string(),
+        description: format!("Failed to setup session: {}", msg),
+        details,
+        stage: vec!["build".to_string()],
+        transient: None,
+    }
+}
+
 pub fn generic_make_changes(
     local_tree: &breezyshim::workingtree::GenericWorkingTree,
     subpath: &Path,
@@ -144,16 +155,7 @@ fn build(
         log::info!("Using schroot {:?}", schroot);
         Box::new(
             ognibuild::session::schroot::SchrootSession::new(schroot, Some("janitor-worker"))
-                .map_err(|e| match e {
-                    ognibuild::session::Error::SetupFailure(_n, e) => WorkerFailure {
-                        code: "session-setup-failure".to_string(),
-                        description: format!("Failed to setup session: {}", e),
-                        details: None,
-                        stage: vec!["build".to_string()],
-                        transient: None,
-                    },
-                    _e => unreachable!(),
-                })?,
+                .map_err(session_failure)?,
         ) as Box<dyn Session>
     } else {
         Box::new(ognibuild::session::plain::PlainSession::new()) as Box<dyn Session>
@@ -175,14 +177,10 @@ fn build(
     let scope = ognibuild::installer::InstallationScope::Global;
     let project = session
         .project_from_vcs(local_tree, None, None)
-        .map_err(|e| WorkerFailure {
-            code: "session-setup-failure".to_string(),
-            description: format!("Failed to setup session: {}", e),
-            details: None,
-            stage: vec!["build".to_string()],
-            transient: None,
-        })?;
-    session.chdir(project.internal_path()).unwrap();
+        .map_err(session_failure)?;
+    session
+        .chdir(project.internal_path())
+        .map_err(session_failure)?;
     let installer = ognibuild::installer::auto_installer(session.as_ref(), scope, dep_server_url);
     let fixers = [Box::new(ognibuild::fixers::InstallFixer::new(
         installer.as_ref(),
