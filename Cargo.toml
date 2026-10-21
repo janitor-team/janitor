@@ -28,6 +28,7 @@ lazy-regex = "3.2.0"
 fancy-regex = ">=0.17,<0.20"
 askama = { workspace = true }
 futures = "0.3.30"
+git2 = { version = "0.18", default-features = false }
 sqlx = { workspace = true, features = ["chrono"] }
 sqlx-core = { workspace = true, features = ["chrono"] }
 sqlx-postgres = { workspace = true, features = ["chrono"] }

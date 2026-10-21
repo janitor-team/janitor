@@ -3466,6 +3466,7 @@ dependencies = [
  "filetime",
  "flate2",
  "futures",
+ "git2",
  "google-cloud-auth",
  "google-cloud-gax",
  "google-cloud-storage",
