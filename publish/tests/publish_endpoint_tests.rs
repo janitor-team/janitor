@@ -152,3 +152,83 @@ test_with_database! {
         }
     }
 }
+
+/// Give `run-1` a candidate and a publish policy, as `GET /blockers` needs both.
+async fn seed_publish_policy(pool: &PgPool, codebase: &str, campaign: &str) {
+    sqlx::query(
+        "INSERT INTO named_publish_policy (name, per_branch_policy) \
+         VALUES ('policy-1', ARRAY[ROW('main', 'propose', NULL)::branch_publish_policy])",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO candidate (suite, command, publish_policy, codebase, value) \
+         VALUES ($1, 'noop', 'policy-1', $2, 100)",
+    )
+    .bind(campaign)
+    .bind(codebase)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// The `reviews` that `GET /blockers/run-1` reports.
+async fn blockers_reviews(pool: &PgPool) -> serde_json::Value {
+    let app = build_app(pool.clone()).await;
+    let req = Request::builder()
+        .uri("/blockers/run-1")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    body["publish_status"]["details"]["reviews"].clone()
+}
+
+test_with_database! {
+    async fn blockers_with_a_review(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase_and_run(test_db.pool(), "cb-1", "lintian-fixes").await;
+        seed_publish_policy(test_db.pool(), "cb-1", "lintian-fixes").await;
+        sqlx::query(
+            "INSERT INTO review (run_id, reviewer, verdict, reviewed_at) \
+             VALUES ('run-1', 'alice', 'approved', '2026-01-02 03:04:05')",
+        )
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+
+        assert_eq!(
+            blockers_reviews(test_db.pool()).await,
+            serde_json::json!({
+                "alice": {"comment": null, "timestamp": "2026-01-02T03:04:05", "verdict": "approved"}
+            })
+        );
+    }
+}
+
+test_with_database! {
+    async fn blockers_with_a_review_without_reviewer(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase_and_run(test_db.pool(), "cb-1", "lintian-fixes").await;
+        seed_publish_policy(test_db.pool(), "cb-1", "lintian-fixes").await;
+        sqlx::query(
+            "INSERT INTO review (run_id, verdict, reviewed_at) \
+             VALUES ('run-1', 'approved', '2026-01-02 03:04:05')",
+        )
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+
+        assert_eq!(
+            blockers_reviews(test_db.pool()).await,
+            serde_json::json!({
+                "null": {"comment": null, "timestamp": "2026-01-02T03:04:05", "verdict": "approved"}
+            })
+        );
+    }
+}
