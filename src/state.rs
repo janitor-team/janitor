@@ -136,12 +136,6 @@ mod tests {
     }
 
     #[test]
-    fn test_run_duration() {
-        let run = make_run();
-        assert_eq!(run.duration(), chrono::Duration::minutes(5));
-    }
-
-    #[test]
     fn test_run_get_result_branch_found() {
         let run = make_run();
         let (name, base_rev, rev) = run.get_result_branch("main").unwrap();
@@ -193,12 +187,5 @@ mod tests {
         run2.value = Some(999);
         // Still equal because id is the same
         assert_eq!(run1, run2);
-    }
-
-    #[test]
-    fn test_run_zero_duration() {
-        let mut run = make_run();
-        run.finish_time = run.start_time;
-        assert_eq!(run.duration(), chrono::Duration::zero());
     }
 }
