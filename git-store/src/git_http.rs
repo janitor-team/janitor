@@ -431,7 +431,7 @@ async fn extract_auth_context(
         });
     }
 
-    let worker_name = crate::web::is_worker_request(&state.db_manager, headers).await?;
+    let worker_name = janitor::web::authenticated_worker(state.db_manager.pool(), headers).await?;
     Ok(AuthContext {
         allow_writes: worker_name.is_some(),
         worker_name,
