@@ -915,6 +915,12 @@ pub async fn git_backend(
         buf
     };
 
+    if method == axum::http::Method::POST && subpath == "git-receive-pack" {
+        if let Err(e) = state.repo_manager.ensure_head(codebase) {
+            warn!("could not set HEAD of {}: {}", codebase, e);
+        }
+    }
+
     let mut response = Response::builder().status(status_code);
     for (name, value) in response_headers.iter() {
         response = response.header(name, value);

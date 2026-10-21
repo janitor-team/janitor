@@ -602,6 +602,56 @@ db_test! {
 }
 
 db_test! {
+    async fn test_admin_push_points_head_at_main_branch(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase(test_db.pool(), "headtest").await;
+
+        let tmp = TempDir::new().unwrap();
+        let state = build_state(&tmp, &test_db, AppRole::Admin).await;
+        let app = web::create_admin_app(state, 0);
+        let (addr, handle) = spawn(app).await;
+
+        let src = TempDir::new().unwrap();
+        let run_git = |args: &[&str]| -> std::process::Output {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(src.path())
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .output()
+                .expect("failed to run git")
+        };
+        assert!(run_git(&["init", "-q", "-b", "master"]).status.success());
+        assert!(run_git(&["commit", "-q", "--allow-empty", "-m", "init"])
+            .status
+            .success());
+
+        let remote_url = format!("http://{}/headtest", addr);
+        let push = run_git(&[
+            "push",
+            &remote_url,
+            "HEAD:refs/heads/lintian-fixes/experimental",
+            "HEAD:refs/heads/lintian-fixes/upstream",
+            "HEAD:refs/heads/lintian-fixes/main",
+        ]);
+        assert!(
+            push.status.success(),
+            "git push failed: stderr={}",
+            String::from_utf8_lossy(&push.stderr)
+        );
+
+        let server_repo = git2::Repository::open_bare(tmp.path().join("headtest")).unwrap();
+        let head = server_repo.find_reference("HEAD").unwrap();
+        assert_eq!(head.symbolic_target(), Some("refs/heads/lintian-fixes/main"));
+
+        handle.abort();
+    }
+}
+
+db_test! {
     async fn test_public_worker_auth_flows_through(test_db: TestDatabase) {
         // Checks the auth + codebase-exists gate; does not drive a
         // full push.

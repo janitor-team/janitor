@@ -49,6 +49,24 @@ impl RepositoryManager {
         Repository::init_opts(path, &opts).map_err(GitStoreError::from)
     }
 
+    /// Point a HEAD that names a missing branch at a `*/main` branch, else the first by name.
+    pub fn ensure_head(&self, codebase: &str) -> Result<()> {
+        let repo = self.open_or_create(codebase)?;
+        match repo.head() {
+            Err(e) if e.code() == git2::ErrorCode::UnbornBranch => {}
+            _ => return Ok(()),
+        }
+        let target = repo
+            .branches(Some(git2::BranchType::Local))?
+            .filter_map(|b| b.ok()?.0.get().name().map(str::to_owned))
+            .min_by_key(|n| (!n.ends_with("/main"), n.clone()));
+        if let Some(name) = target {
+            info!("Pointing HEAD of {} at {}", codebase, name);
+            repo.set_head(&name)?;
+        }
+        Ok(())
+    }
+
     /// Check if a repository exists
     pub fn exists(&self, codebase: &CodebaseName) -> bool {
         let repo_path = self.repo_path(codebase);
