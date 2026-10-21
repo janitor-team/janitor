@@ -18,9 +18,16 @@
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock
 
+from markupsafe import Markup
 from yarl import URL
 
-from janitor.site import format_duration, format_timestamp, update_vars_from_request
+from janitor.site import (
+    DebdiffRetrievalError,
+    format_debdiff_error,
+    format_duration,
+    format_timestamp,
+    update_vars_from_request,
+)
 
 
 def test_duration():
@@ -33,6 +40,18 @@ def test_duration():
 
 def test_timestamp():
     assert "2022-10-01T11:10" == format_timestamp(datetime(2022, 10, 1, 11, 10, 22))
+
+
+def test_format_debdiff_error_escapes_html():
+    error = DebdiffRetrievalError(
+        'Unable to get debdiff: {"message":'
+        '"debdiff: dpkg-deb -c <img src=x onerror=alert(1)>.deb failed!"}'
+    )
+    assert format_debdiff_error(error) == Markup(
+        "Error retrieving debdiff: Unable to get debdiff: "
+        "{&#34;message&#34;:&#34;debdiff: dpkg-deb -c "
+        "&lt;img src=x onerror=alert(1)&gt;.deb failed!&#34;}"
+    )
 
 
 def _make_request(external_url=None, request_url="https://example.com/some/path"):

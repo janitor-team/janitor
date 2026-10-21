@@ -31,7 +31,12 @@ from janitor import state
 from janitor._site import find_build_log_failure, find_dist_log_failure
 from janitor.logs import LogRetrievalError
 from janitor.queue import Queue
-from janitor.site import BuildDiffUnavailable, DebdiffRetrievalError, get_archive_diff
+from janitor.site import (
+    BuildDiffUnavailable,
+    DebdiffRetrievalError,
+    format_debdiff_error,
+    get_archive_diff,
+)
 
 from ..config import get_campaign_config
 from ..vcs import VcsManager
@@ -212,7 +217,7 @@ WHERE followup.origin = $1""",
         except BuildDiffUnavailable:
             return ""
         except DebdiffRetrievalError as e:
-            return f"Error retrieving debdiff: {e}"
+            return format_debdiff_error(e)
 
     kwargs["show_debdiff"] = show_debdiff
     kwargs["max"] = max

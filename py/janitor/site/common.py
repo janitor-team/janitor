@@ -13,6 +13,7 @@ from janitor.queue import Queue
 from janitor.site import (
     BuildDiffUnavailable,
     DebdiffRetrievalError,
+    format_debdiff_error,
     get_archive_diff,
     update_vars_from_request,
 )
@@ -321,7 +322,7 @@ WHERE run.codebase = $1 AND run.suite = $2
         except BuildDiffUnavailable:
             return ""
         except DebdiffRetrievalError as e:
-            return f"Error retrieving debdiff: {e}"
+            return format_debdiff_error(e)
 
     kwargs: dict[str, Any] = {}
     kwargs.update([(k, v) for (k, v) in codebase.items() if k != "name"])

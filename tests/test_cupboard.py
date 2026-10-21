@@ -22,11 +22,13 @@ from datetime import timedelta
 import aiohttp_jinja2
 import pytest
 from aiohttp import web
+from bs4 import BeautifulSoup
 from jinja2 import Environment
 from yarl import URL
 
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
+from janitor.schedule import do_schedule_control
 from janitor.site import (
     TEMPLATE_ENV,
     classify_result_code,
@@ -130,6 +132,26 @@ async def test_queue(aiohttp_client, db):
     client = await create_client(aiohttp_client, db)
     resp = await client.get("/cupboard/queue")
     assert resp.status == 200
+
+
+async def test_queue_escapes_command(aiohttp_client, db):
+    async with db.acquire() as conn:
+        await _insert_codebase(conn, "pkg")
+        await do_schedule_control(
+            conn, "pkg", main_branch_revision=b"<svg/onload=alert(1)>"
+        )
+    client = await create_client(aiohttp_client, db)
+    resp = await client.get("/cupboard/queue")
+    assert resp.status == 200
+    soup = BeautifulSoup(await resp.text(), "html.parser")
+    cells = soup.select('tr[id^="queue-"] td')
+    assert [td.get_text(strip=True) for td in cells] == [
+        "pkg",
+        "brz up --revision=<svg/onload=alert(1)>",
+        "15s",
+        "None",
+        "",
+    ]
 
 
 async def test_publish_history(aiohttp_client, db):

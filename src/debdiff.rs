@@ -348,6 +348,11 @@ pub fn markdownify_debdiff(debdiff: &str) -> String {
 }
 
 pub fn htmlize_debdiff(debdiff: &str) -> String {
+    let escape = |text: &str| {
+        askama::filters::escape(text, askama::filters::Html)
+            .unwrap()
+            .to_string()
+    };
     let highlight_wdiff = |line: &str| {
         let line = lazy_regex::regex_replace!(
             r"\[-(.*?)-\]",
@@ -365,7 +370,7 @@ pub fn htmlize_debdiff(debdiff: &str) -> String {
     let mut ret = vec![];
     for (title, lines) in iter_sections(debdiff) {
         if let Some(title) = title {
-            ret.push(format!("<h4>{}</h4>", title));
+            ret.push(format!("<h4>{}</h4>", escape(title)));
             let wdiff = if lazy_regex::regex_is_match!(
                 r"Control files of package .*: lines which differ \(wdiff format\)",
                 title,
@@ -382,18 +387,13 @@ pub fn htmlize_debdiff(debdiff: &str) -> String {
                     }
                     ret.push(format!(
                         "<li><pre>{}</pre></li>",
-                        highlight_wdiff(&mlines.join("\n"))
+                        highlight_wdiff(&escape(&mlines.join("\n")))
                     ));
                 }
                 ret.push("</ul>".to_owned());
             } else {
                 ret.push("<pre>".to_owned());
-                ret.extend(
-                    lines
-                        .iter()
-                        .map(|line| line.to_string())
-                        .collect::<Vec<_>>(),
-                );
+                ret.extend(lines.iter().map(|line| escape(line)).collect::<Vec<_>>());
                 ret.push("</pre>".to_owned());
             }
         } else {
@@ -402,7 +402,7 @@ pub fn htmlize_debdiff(debdiff: &str) -> String {
                 if !line.trim().is_empty() {
                     let line = lazy_regex::regex_replace!(
                         "^(No differences were encountered between the control files of package) (.*)$",
-                        line,
+                        &escape(line),
                         r"$1 <b>$2</b>",
                     ).to_string();
                     ret.push(line);
@@ -756,6 +756,29 @@ Version: [-5.25.4-1~jan+unchanged1-] {+5.25.4-2~jan+lint1+}
     #[test]
     fn test_htmlize_debdiff_empty() {
         assert_eq!(htmlize_debdiff(""), "");
+    }
+
+    #[test]
+    fn test_htmlize_debdiff_escapes_package_content() {
+        let files = "Files in second set of .debs but not in first";
+        let control = "Control files: lines which differ (wdiff format)";
+        let debdiff = format!(
+            "{files}\n{}\n-rw-r--r--  root/root   /usr/share/doc/x/<img src=x onerror=alert(1)>\n\n\
+             {control}\n{}\nDescription: [-old-] {{+<script>x</script>+}}\n",
+            "-".repeat(files.len()),
+            "-".repeat(control.len()),
+        );
+        assert_eq!(
+            htmlize_debdiff(&debdiff),
+            "<h4>Files in second set of .debs but not in first</h4>\n\
+             <pre>\n\
+             -rw-r--r--  root/root   /usr/share/doc/x/&#60;img src=x onerror=alert(1)&#62;\n\
+             </pre>\n\
+             <h4>Control files: lines which differ (wdiff format)</h4>\n\
+             <ul>\n\
+             <li><pre>Description: <span style=\"color:red;font-weight:bold\">old</span> <span style=\"color:green;font-weight:bold\">&#60;script&#62;x&#60;/script&#62;</span></pre></li>\n\
+             </ul>"
+        );
     }
 
     #[test]

@@ -19,6 +19,7 @@ from typing import Optional
 
 from aiohttp import ClientConnectorError, web
 from jinja2 import PackageLoader
+from markupsafe import Markup, escape
 from yarl import URL
 
 from janitor import utcnow
@@ -160,6 +161,11 @@ def classify_result_code(result_code, transient: Optional[bool]):
 
 class DebdiffRetrievalError(Exception):
     """Error occurred while retrieving debdiff."""
+
+
+def format_debdiff_error(error: Exception) -> Markup:
+    # The debdiff value is rendered with |safe, so escape the differ's error.
+    return Markup("Error retrieving debdiff: ") + escape(str(error))
 
 
 class BuildDiffUnavailable(Exception):
