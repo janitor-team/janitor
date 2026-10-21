@@ -2752,7 +2752,7 @@ async fn public_assign(
     // from the request body. Workers can't lie about who they are.
     // Python's public app served this under /runner; we rely on the
     // ingress to strip that prefix.
-    assign_work_internal(state, worker_name, request, "/runner/active-runs").await
+    assign_work(state, worker_name, request, "/runner/active-runs").await
 }
 
 /// Unauthenticated assign for the private (intra-cluster) app. No
@@ -2811,7 +2811,30 @@ async fn private_assign(
                 .into_response();
         }
     }
-    assign_work_internal(state, worker_name, request, "/active-runs").await
+    assign_work(state, worker_name, request, "/active-runs").await
+}
+
+/// In its own task, so a dropped request can't leave a claim without an active run.
+async fn assign_work(
+    state: Arc<AppState>,
+    worker_name: String,
+    request: AssignRequest,
+    active_runs_path: &'static str,
+) -> Response {
+    match tokio::spawn(assign_work_internal(
+        state,
+        worker_name,
+        request,
+        active_runs_path,
+    ))
+    .await
+    {
+        Ok(response) => response,
+        Err(e) => {
+            log::error!("assign task failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 /// Generate a fresh run id.
