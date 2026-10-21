@@ -49,3 +49,9 @@ enable_mail_filter: true
 enable_mta: true
 mta_domains: ["{{ gitea_domain }}"]
 mta_mail_filter_recipients: ["{{ gitea_bot_user }}"]
+
+# Build logs in a bucket of a Garage S3 server on control.
+enable_garage: true
+janitor_logs_location: s3://debian-janitor/logs
+janitor_s3_endpoint_url: "http://127.0.0.1:{{ garage_s3_port }}"
+janitor_s3_region: garage
