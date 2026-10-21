@@ -1811,6 +1811,7 @@ mod tests {
         );
 
         let err = CheckMpError::BranchRateLimited {
+            url: url::Url::parse("https://github.com/foo/bar").unwrap(),
             retry_after: Some(chrono::Duration::minutes(30)),
         };
         assert_eq!(err.to_string(), "Branch is rate limited");
@@ -1820,6 +1821,37 @@ mod tests {
 
         let err = CheckMpError::ForgeLoginRequired;
         assert_eq!(err.to_string(), "Forge login required");
+    }
+
+    #[test]
+    fn test_rate_limit_backs_off_the_host_that_answered() {
+        let now = Utc::now();
+        let answered = url::Url::parse("git+ssh://git@github.com/foo/bar").unwrap();
+        let limiter = HashMap::from([(
+            rate_limit_key(&answered),
+            now + chrono::Duration::minutes(5),
+        )]);
+        let decisions = ["https://salsa.debian.org/", "https://github.com/"].map(|base| {
+            let key = rate_limit_key(&url::Url::parse(base).unwrap());
+            classify_forge_rate_limit(forge_backoff(&limiter, &key), now)
+        });
+        assert_eq!(
+            decisions,
+            [
+                ForgeRateLimitDecision::NotLimited,
+                ForgeRateLimitDecision::Backoff
+            ]
+        );
+    }
+
+    #[test]
+    fn test_rate_limit_on_a_subdomain_backs_off_the_forge() {
+        let deadline = Utc::now() + chrono::Duration::minutes(5);
+        let answered = url::Url::parse("https://git.launchpad.net/hello").unwrap();
+        let limiter = HashMap::from([(rate_limit_key(&answered), deadline)]);
+        let backoffs = ["launchpad.net", "pad.net", "bazaar.launchpad.net"]
+            .map(|forge_host| forge_backoff(&limiter, forge_host));
+        assert_eq!(backoffs, [Some(deadline), None, None]);
     }
 
     #[test]
@@ -2470,6 +2502,8 @@ pub enum CheckMpError {
     NoRunForMergeProposal(url::Url),
     /// The branch is rate limited.
     BranchRateLimited {
+        /// The URL whose host answered with the rate limit.
+        url: url::Url,
         /// Optional duration after which to retry.
         retry_after: Option<chrono::Duration>,
     },
@@ -2513,7 +2547,7 @@ impl std::fmt::Display for CheckMpError {
             CheckMpError::NoRunForMergeProposal(url) => {
                 write!(f, "No run for merge proposal: {}", url)
             }
-            CheckMpError::BranchRateLimited { retry_after: _ } => {
+            CheckMpError::BranchRateLimited { .. } => {
                 write!(f, "Branch is rate limited")
             }
             CheckMpError::UnexpectedHttpStatus => write!(f, "Unexpected HTTP status"),
@@ -3371,6 +3405,14 @@ async fn check_existing_mp(
                     revision = Some(branch.last_revision());
                     source_branch_name = branch.name();
                 }
+                Err(silver_platter::vcs::BranchOpenError::RateLimited {
+                    url, retry_after, ..
+                }) => {
+                    return Err(CheckMpError::BranchRateLimited {
+                        retry_after: janitor::vcs::branch_retry_after(&url, retry_after),
+                        url,
+                    });
+                }
                 Err(silver_platter::vcs::BranchOpenError::Missing { .. })
                 | Err(silver_platter::vcs::BranchOpenError::Unavailable { .. })
                 | Err(silver_platter::vcs::BranchOpenError::TemporarilyUnavailable { .. }) => {
@@ -3698,6 +3740,14 @@ async fn check_existing_mp(
             ) {
                 Ok(branch) => {
                     mp_remote_branch_name = branch.name();
+                }
+                Err(silver_platter::vcs::BranchOpenError::RateLimited {
+                    url, retry_after, ..
+                }) => {
+                    return Err(CheckMpError::BranchRateLimited {
+                        retry_after: janitor::vcs::branch_retry_after(&url, retry_after),
+                        url,
+                    });
                 }
                 Err(silver_platter::vcs::BranchOpenError::Missing { .. })
                 | Err(silver_platter::vcs::BranchOpenError::Unavailable { .. })
@@ -4638,15 +4688,15 @@ async fn check_existing(
             }
         };
         *status_count.entry(status.into()).or_insert(0) += 1;
-        // Key the per-forge rate-limit map on `base_url` rather than
-        // the human-readable `forge_name` string. Two forges can share
+        // Key the per-forge rate-limit map on the host of `base_url`
+        // rather than the human-readable `forge_name`. Two forges can share
         // a `forge_name` (e.g. two GitHub Enterprise deployments), so
         // using the name alone would let one forge's 429 silence the
         // other. Python uses object identity for the same reason;
-        // `base_url` is the closest stable approximation we have.
-        let forge_key = forge.base_url().to_string();
+        // the host is also what a rate-limited branch open reports.
+        let forge_key = rate_limit_key(&forge.base_url());
         let retry_after = match forge_rate_limiter.read() {
-            Ok(guard) => guard.get(&forge_key).copied(),
+            Ok(guard) => forge_backoff(&guard, &forge_key),
             Err(e) => {
                 log::error!("RwLock poisoned in check_all_mps: {}", e);
                 continue;
@@ -4662,7 +4712,7 @@ async fn check_existing(
             }
             ForgeRateLimitDecision::Expired => match forge_rate_limiter.write() {
                 Ok(mut guard) => {
-                    guard.remove(&forge_key);
+                    guard.retain(|host, _| !host_is_on_forge(host, &forge_key));
                 }
                 Err(e) => {
                     log::error!("RwLock poisoned when removing rate limit: {}", e);
@@ -4699,27 +4749,25 @@ async fn check_existing(
                 log::warn!("Login required, skipping.");
                 false
             }
-            Err(CheckMpError::BranchRateLimited { retry_after }) => {
+            Err(CheckMpError::BranchRateLimited { url, retry_after }) => {
                 let mp_url_str = mp
                     .url()
                     .map(|u| u.to_string())
                     .unwrap_or_else(|_| "<unknown URL>".to_string());
                 log::warn!(
-                    "Rate-limited accessing {}. Skipping {:?} for this cycle.",
+                    "Rate-limited accessing {}. Skipping {} for this cycle.",
                     mp_url_str,
-                    forge
+                    rate_limit_key(&url)
                 );
                 let retry_after = if let Some(retry_after) = retry_after {
                     retry_after
                 } else {
                     chrono::Duration::minutes(30)
                 };
+                // The target branch can be on another forge than the proposal.
                 match forge_rate_limiter.write() {
                     Ok(mut limiter) => {
-                        limiter.insert(
-                            forge.base_url().to_string(),
-                            chrono::Utc::now() + retry_after,
-                        );
+                        limiter.insert(rate_limit_key(&url), chrono::Utc::now() + retry_after);
                     }
                     Err(e) => {
                         log::error!("Failed to acquire write lock on rate limiter: {}", e);
@@ -4729,6 +4777,8 @@ async fn check_existing(
                 crate::metrics::FORGE_RATE_LIMITED_COUNT
                     .with_label_values(&[forge.forge_name().as_str()])
                     .inc();
+                // This proposal was not fully checked, so the scan is not a full one.
+                was_forge_ratelimited = true;
                 continue;
             }
             Err(CheckMpError::UnexpectedHttpStatus) => {
@@ -4928,6 +4978,33 @@ pub(crate) enum ForgeRateLimitDecision {
     Backoff,
     /// Backoff expired; caller should drop the entry.
     Expired,
+}
+
+/// The forge rate limiter key for `url`: its host, so a limit hits the host that answered.
+#[must_use]
+pub(crate) fn rate_limit_key(url: &url::Url) -> String {
+    url.host_str().unwrap_or_default().to_string()
+}
+
+/// The latest back-off for the forge on `forge_host`, from a 429 on that host or a subdomain.
+#[must_use]
+pub(crate) fn forge_backoff(
+    limiter: &HashMap<String, chrono::DateTime<Utc>>,
+    forge_host: &str,
+) -> Option<chrono::DateTime<Utc>> {
+    limiter
+        .iter()
+        .filter(|(host, _)| host_is_on_forge(host, forge_host))
+        .map(|(_, deadline)| *deadline)
+        .max()
+}
+
+/// Whether `host` is `forge_host` or a subdomain of it (git.launchpad.net for launchpad.net).
+fn host_is_on_forge(host: &str, forge_host: &str) -> bool {
+    host == forge_host
+        || host
+            .strip_suffix(forge_host)
+            .is_some_and(|sub| sub.ends_with('.'))
 }
 
 #[must_use]
