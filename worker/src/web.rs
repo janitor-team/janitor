@@ -279,6 +279,7 @@ pub fn app(state: Arc<RwLock<AppState>>) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/health", get(health))
+        .route("/ready", get(health))
         .route("/kill", post(kill))
         .route("/assignment", get(assignment))
         .route("/logs", get(get_logs))
@@ -314,6 +315,18 @@ mod tests {
 
         let body = get_body(response).await;
         assert_eq!(body, "ok");
+    }
+
+    #[tokio::test]
+    async fn test_ready() {
+        let app = app(Arc::new(RwLock::new(AppState::default())));
+        let request = Request::builder()
+            .uri("/ready")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(get_body(response).await, "ok");
     }
 
     #[tokio::test]

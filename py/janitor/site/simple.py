@@ -336,6 +336,7 @@ async def handle_repo_list(request):
 
 
 @private_routes.get("/health", name="health")
+@private_routes.get("/ready", name="ready")
 async def handle_health(request):
     return web.Response(text="ok")
 
