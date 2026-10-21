@@ -1041,7 +1041,7 @@ async fn consider(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> 
             &state.vcs_managers,
             &state.bucket_rate_limiter,
             &run,
-            &rate_limit_bucket,
+            rate_limit_bucket.as_deref(),
             unpublished_branches.as_slice(),
             &command,
             None,

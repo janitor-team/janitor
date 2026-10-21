@@ -152,3 +152,50 @@ test_with_database! {
         }
     }
 }
+
+test_with_database! {
+    async fn publish_ready_run_without_a_rate_limit_bucket(test_db: TestDatabase) {
+        let pool = test_db.pool();
+        setup_test_database(pool).await.unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO codebase (name, branch_url, url, vcs_type)
+                 VALUES ('cb-1', 'https://example.invalid/cb-1', 'https://example.invalid/cb-1', 'git');
+             INSERT INTO change_set (id, campaign, state) VALUES ('cs-1', 'lintian-fixes', 'ready');
+             INSERT INTO named_publish_policy (name, per_branch_policy)
+                 VALUES ('nobucket', ARRAY[ROW('main', 'propose', NULL)::branch_publish_policy]);
+             INSERT INTO candidate (suite, command, publish_policy, codebase, value)
+                 VALUES ('lintian-fixes', 'noop', 'nobucket', 'cb-1', 100);
+             INSERT INTO run (
+                 id, codebase, suite, command, start_time, finish_time, result_code, branch_url,
+                 main_branch_revision, revision, change_set, logfilenames, vcs_type, publish_status
+             ) VALUES (
+                 'run-1', 'cb-1', 'lintian-fixes', 'noop', NOW(), NOW(), 'success',
+                 'https://example.invalid/cb-1', 'rev-base', 'rev-tip', 'cs-1', ARRAY[]::text[],
+                 'git', 'approved'
+             );
+             INSERT INTO new_result_branch (run_id, role, remote_name, base_revision, revision)
+                 VALUES ('run-1', 'main', 'main', 'rev-base', 'rev-tip');",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let ready = janitor_publish::state::iter_publish_ready(pool, None)
+            .await
+            .unwrap();
+        let ready: Vec<_> = ready
+            .iter()
+            .map(|(run, bucket, command, branches)| {
+                let branches: Vec<_> = branches
+                    .iter()
+                    .map(|b| (b.role.as_str(), b.publish_mode.as_deref()))
+                    .collect();
+                (run.id.as_str(), bucket.as_deref(), command.as_str(), branches)
+            })
+            .collect();
+        assert_eq!(
+            ready,
+            vec![("run-1", None, "noop", vec![("main", Some("propose"))])]
+        );
+    }
+}
