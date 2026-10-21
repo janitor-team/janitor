@@ -382,6 +382,7 @@ async fn post_candidates_empty_list_returns_success_envelope() {
     assert_eq!(body["invalid_command"], json!([]));
     assert_eq!(body["invalid_value"], json!([]));
     assert_eq!(body["unknown_publish_policies"], json!([]));
+    assert_eq!(body["unknown_change_sets"], json!([]));
 }
 
 /// `POST /candidates` with a candidate for an unknown campaign
@@ -891,6 +892,80 @@ async fn post_candidates_records_unknown_codebase_via_fk_violation() {
         body["unknown_codebases"],
         json!(["codebase-that-does-not-exist"]),
         "candidate for missing codebase FK must land in unknown_codebases, got {body}"
+    );
+}
+
+/// `POST /candidates` lists a change set that does not exist in `unknown_change_sets`.
+#[tokio::test]
+async fn post_candidates_records_unknown_change_set() {
+    let Some((app, state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let pool = state.database.pool().clone();
+    for codebase in ["cand-unk-cs-a", "cand-unk-cs-b", "cand-unk-cs-c"] {
+        insert_codebase(&pool, codebase).await;
+    }
+    sqlx::query(
+        "INSERT INTO change_set (id, campaign) VALUES ($1, $2)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind("cand-unk-cs-known")
+    .bind("test-campaign")
+    .execute(&pool)
+    .await
+    .expect("insert change_set");
+
+    let body = json!([
+        {"codebase": "cand-unk-cs-a", "campaign": "test-campaign", "change_set": "cand-unk-cs-known"},
+        {"codebase": "cand-unk-cs-b", "campaign": "test-campaign", "change_set": "cand-unk-cs-missing"},
+        {"codebase": "cand-unk-cs-c", "campaign": "test-campaign", "change_set": ""},
+    ]);
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/candidates")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        get_body(response).await,
+        json!({
+            "invalid_command": [],
+            "invalid_value": [],
+            "success": [{
+                "bucket": "default",
+                "campaign": "test-campaign",
+                "change_set": "cand-unk-cs-known",
+                "codebase": "cand-unk-cs-a",
+                "estimated_duration": 15,
+                "offset": 35000.0,
+                "queue-id": 1,
+                "refresh": false,
+            }],
+            "unknown_campaigns": [],
+            "unknown_change_sets": ["", "cand-unk-cs-missing"],
+            "unknown_codebases": [],
+            "unknown_publish_policies": [],
+        })
+    );
+
+    let candidates: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT codebase, change_set FROM candidate
+         WHERE starts_with(codebase, 'cand-unk-cs-') ORDER BY codebase",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("candidate lookup");
+    assert_eq!(
+        candidates,
+        vec![(
+            "cand-unk-cs-a".to_string(),
+            Some("cand-unk-cs-known".to_string())
+        )]
     );
 }
 
