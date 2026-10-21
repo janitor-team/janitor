@@ -25,7 +25,7 @@ pub use backchannel::{
 };
 
 // Re-export watchdog types
-pub use watchdog::{RunHealthStatus, TerminationReason, Watchdog, WatchdogConfig, WatchdogStats};
+pub use watchdog::{RunHealthStatus, TerminationReason, Watchdog, WatchdogConfig};
 
 /// In-memory active-run tracking, mirroring Python's
 /// `QueueProcessor.active_runs`.
