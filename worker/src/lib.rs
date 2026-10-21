@@ -150,6 +150,16 @@ pub fn convert_codemod_script_failed(i: i32, command: &str) -> WorkerFailure {
     }
 }
 
+fn split_codemod_command(command: &str) -> Result<Vec<String>, WorkerFailure> {
+    shlex::split(command).ok_or_else(|| WorkerFailure {
+        code: "invalid-command-syntax".to_string(),
+        description: format!("Invalid command syntax: {}", command),
+        details: None,
+        stage: vec!["codemod".to_string()],
+        transient: Some(false),
+    })
+}
+
 type BuildConfig = serde_json::Value;
 type ValidateConfig = serde_json::Value;
 
@@ -1075,6 +1085,15 @@ pub async fn process_single_item(
 
         // TODO: Update metadata in appstate while working
 
+        let argv = match split_codemod_command(&assignment_.codemod.command) {
+            Ok(argv) => argv,
+            Err(e) => {
+                log::info!("Worker failed: {}", e);
+                metadata.update(&e);
+                return metadata;
+            }
+        };
+
         let result = run_worker(
             &assignment_.codebase,
             &assignment_.campaign,
@@ -1082,11 +1101,7 @@ pub async fn process_single_item(
             &assignment_.id,
             &assignment_.build.config,
             env,
-            shlex::split(&assignment_.codemod.command)
-                .unwrap()
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>(),
+            argv.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
             output_directory_.as_path(),
             &mut metadata,
             &target_repo_url_with_creds,
@@ -1330,6 +1345,20 @@ mod tests {
         assert_eq!(
             derive_branch_name(&url::Url::parse("https://example.com/").unwrap()),
             "example.com"
+        );
+    }
+
+    #[test]
+    fn test_split_codemod_command() {
+        assert_eq!(
+            split_codemod_command("echo 'oops"),
+            Err(WorkerFailure {
+                code: "invalid-command-syntax".to_string(),
+                description: "Invalid command syntax: echo 'oops".to_string(),
+                stage: vec!["codemod".to_string()],
+                details: None,
+                transient: Some(false),
+            })
         );
     }
 
