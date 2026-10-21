@@ -148,11 +148,11 @@ impl RunnerVcsManager {
         self.metrics.record_vcs_operation_duration(
             &vcs_type.to_string(),
             "get_revision_info",
-            "success",
+            if result.is_ok() { "success" } else { "error" },
             duration,
         );
 
-        Ok(result)
+        result.map_err(|e| VcsError::NetworkError(e.to_string()))
     }
 
     /// List repositories for a VCS type
