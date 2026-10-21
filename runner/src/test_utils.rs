@@ -437,7 +437,6 @@ pub async fn create_test_app_state_with_config(
     );
 
     let security_service = Arc::new(SecurityService::new(
-        crate::auth::SecurityConfig::default(),
         runner_db_arc.clone(),
         active_runs.clone(),
     ));
