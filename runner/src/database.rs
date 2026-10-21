@@ -1542,18 +1542,17 @@ INSERT INTO run (
             sqlx::query(
                 r#"
                 INSERT INTO codebase
-                (name, branch_url, url, branch, subpath, vcs_type, vcs_last_revision, value, web_url)
-                VALUES ($1, $2, $3, $4, $5, $6::text::vcs_type, $7, $8, $9)
+                (name, branch_url, url, branch, subpath, vcs_type, value, web_url)
+                VALUES ($1, $2, $3, $4, $5, $6::text::vcs_type, $7, $8)
                 ON CONFLICT (name) DO UPDATE SET
                     branch_url = EXCLUDED.branch_url,
                     subpath = EXCLUDED.subpath,
                     vcs_type = EXCLUDED.vcs_type,
-                    vcs_last_revision = EXCLUDED.vcs_last_revision,
                     value = EXCLUDED.value,
                     url = EXCLUDED.url,
                     branch = EXCLUDED.branch,
                     web_url = EXCLUDED.web_url
-                "#
+                "#,
             )
             .bind(&codebase.name)
             .bind(url)
@@ -1563,7 +1562,6 @@ INSERT INTO run (
             // downstream consumers get a string.
             .bind(codebase.subpath.as_deref().unwrap_or(""))
             .bind(&codebase.vcs_type)
-            .bind(&codebase.vcs_last_revision)
             .bind(codebase.value)
             .bind(&codebase.web_url)
             .execute(&mut *tx)
@@ -1821,8 +1819,6 @@ pub struct CodebaseUpload {
     pub vcs_type: Option<String>,
     /// URL for browsing the codebase.
     pub web_url: Option<String>,
-    /// Last known revision of the branch.
-    pub vcs_last_revision: Option<String>,
     /// Value of the codebase.
     pub value: Option<i64>,
 }

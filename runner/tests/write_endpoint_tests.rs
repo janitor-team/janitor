@@ -64,6 +64,22 @@ async fn insert_codebase(pool: &sqlx::PgPool, name: &str) {
     .expect("codebase insert");
 }
 
+/// Serve `app`, POST `body` to `/codebases` and return the status and JSON body.
+async fn post_codebases(app: &axum::Router, body: Value) -> (StatusCode, Value) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = app.clone();
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    let response = reqwest::Client::new()
+        .post(format!("http://{addr}/codebases"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    (status, response.json().await.unwrap())
+}
+
 /// `DELETE /candidates/{id}` on a non-numeric id must reject with
 /// 400. Verifies the parse-guard before we ever touch the DB.
 #[tokio::test]
@@ -152,6 +168,165 @@ async fn post_codebases_upserts_and_is_visible_via_get() {
         names,
         vec!["test-codebase-a".to_string(), "test-codebase-b".to_string()]
     );
+}
+
+async fn vcs_last_revision(pool: &sqlx::PgPool, name: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT vcs_last_revision FROM codebase WHERE name = $1")
+        .bind(name)
+        .fetch_one(pool)
+        .await
+        .expect("codebase lookup")
+}
+
+#[tokio::test]
+async fn post_codebases_does_not_write_vcs_last_revision() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let pool = state.database.pool();
+    let url = "https://example.invalid/cb";
+    assert_eq!(
+        post_codebases(
+            &app,
+            json!([{"name": "cb", "branch_url": url, "vcs_last_revision": "abc"}])
+        )
+        .await,
+        (StatusCode::OK, json!({}))
+    );
+    assert_eq!(vcs_last_revision(pool, "cb").await, None);
+
+    // A revision stored by someone else, e.g. the webhook, is kept.
+    sqlx::query("UPDATE codebase SET vcs_last_revision = 'def' WHERE name = 'cb'")
+        .execute(pool)
+        .await
+        .expect("codebase update");
+    assert_eq!(
+        post_codebases(&app, json!([{"name": "cb", "branch_url": url}])).await,
+        (StatusCode::OK, json!({}))
+    );
+    assert_eq!(vcs_last_revision(pool, "cb").await, Some("def".to_string()));
+}
+
+/// branch_url, url, branch, subpath, vcs_type, web_url and value of a codebase.
+type CodebaseFields = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<i32>,
+);
+
+async fn codebase_fields(pool: &sqlx::PgPool, name: &str) -> CodebaseFields {
+    sqlx::query_as(
+        "SELECT branch_url, url, branch, subpath, vcs_type::text, web_url, value
+         FROM codebase WHERE name = $1",
+    )
+    .bind(name)
+    .fetch_one(pool)
+    .await
+    .expect("codebase lookup")
+}
+
+fn some(s: &str) -> Option<String> {
+    Some(s.to_string())
+}
+
+#[tokio::test]
+async fn post_codebases_stores_fields() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let body = json!([{
+        "name": "cb",
+        "branch_url": "https://example.invalid/cb",
+        "branch": "dev",
+        "subpath": "sub",
+        "vcs_type": "git",
+        "web_url": "https://example.invalid/web/cb",
+        "value": 5
+    }]);
+    assert_eq!(
+        post_codebases(&app, body).await,
+        (StatusCode::OK, json!({}))
+    );
+    assert_eq!(
+        codebase_fields(state.database.pool(), "cb").await,
+        (
+            some("https://example.invalid/cb"),
+            some("https://example.invalid/cb"),
+            some("dev"),
+            some("sub"),
+            some("git"),
+            some("https://example.invalid/web/cb"),
+            Some(5),
+        )
+    );
+}
+
+#[tokio::test]
+async fn post_codebases_replaces_fields_of_existing_codebase() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let first = json!([{
+        "name": "cb",
+        "branch_url": "https://example.invalid/cb",
+        "branch": "dev",
+        "subpath": "sub",
+        "vcs_type": "git",
+        "web_url": "https://example.invalid/web/cb",
+        "value": 5
+    }]);
+    assert_eq!(
+        post_codebases(&app, first).await,
+        (StatusCode::OK, json!({}))
+    );
+    let second = json!([{"name": "cb", "url": "https://example.invalid/new", "vcs_type": "bzr"}]);
+    assert_eq!(
+        post_codebases(&app, second).await,
+        (StatusCode::OK, json!({}))
+    );
+    assert_eq!(
+        codebase_fields(state.database.pool(), "cb").await,
+        (
+            some("https://example.invalid/new"),
+            some("https://example.invalid/new"),
+            None,
+            some(""),
+            some("bzr"),
+            None,
+            None,
+        )
+    );
+}
+
+#[tokio::test]
+async fn post_codebases_with_a_bad_entry_stores_none() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let body = json!([
+        {"name": "good", "branch_url": "https://example.invalid/good", "vcs_type": "git"},
+        {"name": "bad", "branch_url": "https://example.invalid/bad", "vcs_type": "nope"}
+    ]);
+    assert_eq!(
+        post_codebases(&app, body).await,
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({"error": "Database error"})
+        )
+    );
+    let names: Vec<String> = sqlx::query_scalar("SELECT name FROM codebase")
+        .fetch_all(state.database.pool())
+        .await
+        .expect("query codebases");
+    assert_eq!(names, Vec::<String>::new());
 }
 
 /// `POST /schedule` with a nonexistent `run_id` returns 404 with the
