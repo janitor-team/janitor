@@ -23,16 +23,11 @@ $ cat schema/state.sql | psql janitor
 $ cat schema/debian/debian.sql | psql janitor  # only if using the Debian-specific features
 ```
 
-Workers authenticate against the runner with HTTP Basic Auth, checked against
-the `worker` table. Passwords are hashed with pgcrypto:
+Workers log in to the runner with HTTP Basic Auth; see
+[Registering workers](#registering-workers).
 
-```console
-$ psql janitor -c "INSERT INTO worker (name, password) VALUES ('myworker', crypt('mypassword', gen_salt('bf')))"
-```
-
-The worker process itself needs those same credentials supplied to it -
-inserting the row above only lets the runner *accept* a login, it does not
-give any worker one. `janitor-worker` looks for them in this order:
+Registering a worker only tells the runner which login to accept. The worker
+needs the same name and password. `janitor-worker` looks for them in this order:
 `--credentials <file>` (a JSON file with `login`/`password`), the
 `WORKER_NAME`/`WORKER_PASSWORD` environment variables, or embedded directly
 in `--base-url` (`http://myworker:mypassword@runner-host/`).
@@ -91,8 +86,8 @@ unset:
   instance). Without these, that VCS type is not available at all.
 - `zipkin_address` - a Zipkin endpoint; if set, enables distributed tracing
   at a 0.1 sample rate. No tracing without it.
-- `user_agent` - the HTTP User-Agent `differ`/`publish` send on outbound
-  requests. Falls back to a library default if unset.
+- `user_agent` - the HTTP User-Agent sent on outbound requests. Falls back to
+  `janitor/<version>` if unset.
 
 For a Janitor instance, you probably want a custom website in combination with
 the Janitor API. See the existing instances for inspiration.
@@ -108,11 +103,10 @@ Dockerfile to start from, then run your image in place of the published one.
 
 ## Registering workers
 
-Workers authenticate to the site with a name and password stored in the `worker`
+Workers log in to the runner with a name and password stored in the `worker`
 table. There are two ways to register one.
 
-The `janitor-admin` CLI is the easiest and safest option, since it generates the
-password for you rather than asking you to invent and hash one yourself:
+One way is `janitor-admin`, which makes up the password for you:
 
 ```console
 $ janitor-admin --url https://your-janitor-instance/ worker add myworker
@@ -126,11 +120,11 @@ generates a random password, stores its hash, and returns the plaintext password
 in the response. It isn't kept anywhere in recoverable form, so copy it down when it's
 printed.
 
-If you don't have `janitor-admin` set up, you can register a worker directly in the
-database instead:
+You can also register a worker through the runner's private API (port 9911 in
+the container image), with `worker.json` holding
+`{"name": "myworker", "password": "<the worker's password>"}`:
 
 ```console
-$ psql janitor -c "INSERT INTO worker (name, password) VALUES ('myworker', crypt('mypassword', gen_salt('bf')))"
+$ curl -X POST -H 'Content-Type: application/json' \
+    --data @worker.json http://localhost:9911/admin/workers
 ```
-
-Replace `mypassword` with the password you want the worker to use.
