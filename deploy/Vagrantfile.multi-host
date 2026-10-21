@@ -93,6 +93,8 @@ Vagrant.configure("2") do |config|
           janitor_branch: JANITOR_BRANCH,
           janitor_domain: CONTROL_IP,
           janitor_worker_address: ip,
+          # Only the VMs' own network may use the dependency server.
+          ognibuild_dep_clients: ["#{NETWORK}.0/24"],
           janitor_workers: machine_groups.include?("control") ? WORKER_ENTRIES.values : [WORKER_ENTRIES[name]].compact,
         }
       end

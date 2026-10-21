@@ -1,0 +1,19 @@
+# Managed by ansible (roles/janitor_quadlet).
+[Unit]
+Description=janitor ognibuild dependency server
+
+[Container]
+Image=ghcr.io/jelmer/janitor/ognibuild_dep:latest
+ContainerName=janitor-ognibuild_dep
+Network=host
+# The whole command line is given here.
+Entrypoint=dep-server
+Exec=--listen-address 127.0.0.1 --port 9934
+# It needs no files, privileges or state.
+User=65534
+Group=65534
+ReadOnly=true
+DropCapability=all
+NoNewPrivileges=true
+PodmanArgs=--memory=128m --pids-limit=64
+{% include 'common.j2' %}
