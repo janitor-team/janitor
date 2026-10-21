@@ -3,14 +3,19 @@ from datetime import timedelta
 import aiohttp_jinja2
 import aiozipkin
 from bs4 import BeautifulSoup
+from fakeredis.aioredis import FakeRedis
+from prometheus_client.parser import text_string_to_metric_families
 from yarl import URL
 
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
+from janitor.review import store_review
 from janitor.site import TEMPLATE_ENV
 from janitor.site.cupboard import create_app
+from janitor.site.simple import create_app as create_site_app
 
 from .test_cupboard import _insert_codebase, _insert_run, _user_middleware
+from .test_site_simple import create_config
 
 REVIEWER = {"email": "reviewer@example.com", "name": "Reviewer", "groups": []}
 
@@ -77,3 +82,55 @@ async def test_review_post_publishable_only_unchecked(aiohttp_client, db):
     resp = await client.post("/cupboard/review", data={"run_id": "somerun"})
     assert resp.status == 200
     assert shown_run(await resp.text()) == ["somerun"]
+
+
+async def stored_reviews(client):
+    resp = await client.get("/metrics")
+    assert resp.status == 200
+    families = {f.name: f for f in text_string_to_metric_families(await resp.text())}
+    return sorted(
+        (sample.labels["verdict"], sample.labels["reviewer"], sample.value)
+        for sample in families["stored_reviews"].samples
+    )
+
+
+async def store(conn, verdict, reviewer):
+    await store_review(
+        conn,
+        None,
+        None,
+        "run1",
+        verdict=verdict,
+        comment=None,
+        reviewer=reviewer,
+        is_qa_reviewer=False,
+    )
+
+
+async def test_metrics_stored_reviews(aiohttp_client, db):
+    private_app, app = await create_site_app(config=create_config(), redis=FakeRedis())
+    app["pool"] = db
+    client = await aiohttp_client(private_app)
+    async with db.acquire() as conn:
+        await _insert_codebase(conn, "foo")
+        now = utcnow()
+        await _insert_run(
+            conn,
+            run_id="run1",
+            codebase="foo",
+            start_time=now - timedelta(minutes=30),
+            finish_time=now,
+        )
+        await store(conn, "approved", "a@example.com")
+        await store(conn, "rejected", "b@example.com")
+    assert await stored_reviews(client) == [
+        ("approved", "a@example.com", 1.0),
+        ("rejected", "b@example.com", 1.0),
+    ]
+
+    async with db.acquire() as conn:
+        await store(conn, "rejected", "a@example.com")
+    assert await stored_reviews(client) == [
+        ("rejected", "a@example.com", 1.0),
+        ("rejected", "b@example.com", 1.0),
+    ]

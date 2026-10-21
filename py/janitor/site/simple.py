@@ -38,6 +38,7 @@ from jinja2 import select_autoescape
 
 from .. import state
 from ..config import Config
+from ..review import update_stored_reviews
 from ..schedule import do_schedule
 from ..vcs import VcsManager, get_vcs_managers_from_config
 from . import TEMPLATE_ENV, template_loader
@@ -425,7 +426,14 @@ async def create_app(
     )
     private_app.router.add_routes(private_routes)
 
-    metrics_route = private_app.router.add_get("/metrics", metrics, name="metrics")
+    async def handle_metrics(request):
+        async with app["pool"].acquire() as conn:
+            await update_stored_reviews(conn)
+        return await metrics(request)
+
+    metrics_route = private_app.router.add_get(
+        "/metrics", handle_metrics, name="metrics"
+    )
 
     app["topic_notifications"] = Topic("notifications")
     ws_notifications_route = app.router.add_get(

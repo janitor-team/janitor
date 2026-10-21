@@ -17,6 +17,7 @@
 
 from typing import Optional
 
+from aiohttp_openmetrics import Gauge
 from yarl import URL
 
 from .schedule import do_schedule
@@ -65,3 +66,19 @@ async def store_review(
             reviewer,
             verdict,
         )
+
+
+stored_reviews = Gauge(
+    "stored_reviews",
+    "Reviews in the review table, by verdict and reviewer",
+    labelnames=("verdict", "reviewer"),
+)
+
+
+async def update_stored_reviews(conn):
+    rows = await conn.fetch(
+        "SELECT verdict, reviewer, count(*) FROM review GROUP BY verdict, reviewer"
+    )
+    stored_reviews.clear()
+    for row in rows:
+        stored_reviews.labels(verdict=row[0], reviewer=row[1] or "").set(row[2])
