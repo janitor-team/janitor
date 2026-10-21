@@ -3660,7 +3660,7 @@ async fn check_existing_mp(
                         campaign: campaign_name,
                         branch_url: synth_branch_url,
                         command: String::new(),
-                        value: 0,
+                        value: None,
                         role: role.to_string(),
                         remote_branch_name: String::new(),
                         revision: synth_revision,
@@ -3848,9 +3848,9 @@ async fn check_existing_mp(
     // Insufficient value: the run still succeeds but the value
     // dropped below the campaign threshold (e.g. only trivial fixes
     // are left). Abandon the proposal politely.
-    if !run_sufficient_for_proposal(campaign_config, mp_run.value.try_into().ok()) {
+    if !run_sufficient_for_proposal(campaign_config, mp_run.value) {
         log::info!(
-            "{}: Run value {} fell below threshold; abandoning.",
+            "{}: Run value {:?} fell below threshold; abandoning.",
             mp_url,
             mp_run.value
         );
