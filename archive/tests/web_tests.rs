@@ -316,3 +316,28 @@ test_with_database! {
         }
     }
 }
+
+test_with_database! {
+    async fn on_demand_release_has_configured_origin(test_db: TestDatabase) {
+        setup_debian_test_database(test_db.pool()).await.unwrap();
+        insert_run(test_db.pool(), "run-1").await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = janitor::config::read_string(r#"origin: "janitor.example.org""#).unwrap();
+        let location = tmp.path().join("artifacts").display().to_string();
+        let service = ArchiveWebService::new(
+            ArchiveConfig::from_janitor_config(cfg, tmp.path(), None).unwrap(),
+            generator(test_db.pool(), tmp.path()).await,
+            PackageScanner::new(&location).await.unwrap(),
+            ArchiveDatabase::new(test_db.pool().clone()),
+        )
+        .await
+        .unwrap();
+
+        let (status, body) = get(&service.router(), "/dists/run/run-1/Release").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            paragraphs(body)[0].get("Origin"),
+            Some("janitor.example.org")
+        );
+    }
+}
