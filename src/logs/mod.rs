@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::io::{self, Read};
-use std::time::Duration;
 
 mod filesystem;
 pub use filesystem::FileSystemLogFileManager;
@@ -13,9 +12,6 @@ pub use gcs::GCSLogFileManager;
 
 mod s3;
 pub use s3::S3LogFileManager;
-
-// Re-export common error types
-pub use self::Error as LogError;
 
 #[derive(Debug, Clone)]
 pub enum Error {
@@ -93,18 +89,6 @@ pub trait LogFileManager: Send + Sync {
     /// Check if a log exists.
     async fn has_log(&self, codebase: &str, run_id: &str, name: &str) -> Result<bool, Error>;
 
-    /// Check if a log exists with timeout.
-    async fn has_log_with_timeout(
-        &self,
-        codebase: &str,
-        run_id: &str,
-        name: &str,
-        _timeout: Option<Duration>,
-    ) -> Result<bool, Error> {
-        // Default implementation ignores timeout
-        self.has_log(codebase, run_id, name).await
-    }
-
     /// Get a log.
     ///
     /// # Arguments
@@ -120,18 +104,6 @@ pub trait LogFileManager: Send + Sync {
         run_id: &str,
         name: &str,
     ) -> Result<Box<dyn Read + Send + Sync>, Error>;
-
-    /// Get a log with timeout.
-    async fn get_log_with_timeout(
-        &self,
-        codebase: &str,
-        run_id: &str,
-        name: &str,
-        _timeout: Option<Duration>,
-    ) -> Result<Box<dyn Read + Send + Sync>, Error> {
-        // Default implementation ignores timeout
-        self.get_log(codebase, run_id, name).await
-    }
 
     /// Import a log.
     ///
@@ -218,11 +190,6 @@ pub async fn create_log_manager(location: Option<&str>) -> Result<Box<dyn LogFil
     }
 }
 
-/// Get a log manager from a location string (Python compatibility wrapper)
-pub async fn get_log_manager(location: Option<&str>) -> Result<Box<dyn LogFileManager>, Error> {
-    create_log_manager(location).await
-}
-
 /// Import a log with primary and backup log managers
 ///
 /// This function provides sophisticated error handling and fallback mechanisms
@@ -255,7 +222,19 @@ pub async fn import_log(
             .map(DateTime::<Utc>::from)
     };
 
-    // Attempt with primary log manager
+    // Fall back to the backup manager, or fail with `no_backup` if there is none.
+    let fallback = |no_backup: Error| async move {
+        let Some(backup) = backup_log_manager else {
+            return Err(no_backup);
+        };
+        backup
+            .import_log(codebase, run_id, path, mtime_dt, basename)
+            .await?;
+        increment_upload_success();
+        Ok(())
+    };
+    let all_failed = || Error::Other("All log managers failed".to_string());
+
     match primary_log_manager
         .import_log(codebase, run_id, path, mtime_dt, basename)
         .await
@@ -263,39 +242,17 @@ pub async fn import_log(
         Ok(()) => {
             log::info!("Successfully imported log {} to primary manager", path);
             increment_upload_success();
-            return Ok(());
+            Ok(())
         }
         Err(Error::ServiceUnavailable) => {
             log::warn!("Unable to upload logfile {}: service unavailable", path);
             increment_upload_failed();
-            if let Some(backup) = backup_log_manager {
-                match backup
-                    .import_log(codebase, run_id, path, mtime_dt, basename)
-                    .await
-                {
-                    Ok(()) => {
-                        increment_upload_success();
-                        return Ok(());
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
+            fallback(all_failed()).await
         }
         Err(Error::Timeout) => {
             log::warn!("Timeout uploading logfile {}", path);
             increment_upload_failed();
-            if let Some(backup) = backup_log_manager {
-                match backup
-                    .import_log(codebase, run_id, path, mtime_dt, basename)
-                    .await
-                {
-                    Ok(()) => {
-                        increment_upload_success();
-                        return Ok(());
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
+            fallback(all_failed()).await
         }
         Err(Error::PermissionDenied) => {
             log::warn!("Permission denied error while uploading logfile {}", path);
@@ -309,110 +266,21 @@ pub async fn import_log(
             {
                 Ok(()) => {
                     increment_upload_success();
-                    return Ok(());
+                    Ok(())
                 }
                 Err(_) => {
                     increment_upload_failed();
-                    // If alternative basename fails, try backup manager
-                    if let Some(backup) = backup_log_manager {
-                        match backup
-                            .import_log(codebase, run_id, path, mtime_dt, basename)
-                            .await
-                        {
-                            Ok(()) => {
-                                increment_upload_success();
-                                return Ok(());
-                            }
-                            Err(e) => return Err(e),
-                        }
-                    }
+                    fallback(all_failed()).await
                 }
             }
         }
         Err(e) => {
             log::error!("Primary log manager failed: {}", e);
             increment_upload_failed();
-            // For other errors, try backup if available
-            if let Some(backup) = backup_log_manager {
+            if backup_log_manager.is_some() {
                 log::info!("Trying backup log manager");
-                match backup
-                    .import_log(codebase, run_id, path, mtime_dt, basename)
-                    .await
-                {
-                    Ok(()) => {
-                        increment_upload_success();
-                        return Ok(());
-                    }
-                    Err(e) => return Err(e),
-                }
             }
-            return Err(e);
+            fallback(e).await
         }
     }
-
-    Err(Error::Other("All log managers failed".to_string()))
-}
-
-/// Import multiple logs concurrently
-///
-/// This function provides batch import capabilities with concurrent processing
-/// similar to the Python implementation using asyncio.gather().
-pub async fn import_logs(
-    primary_log_manager: &dyn LogFileManager,
-    backup_log_manager: Option<&dyn LogFileManager>,
-    logs: Vec<(String, String, String, Option<String>)>, // (codebase, run_id, path, basename)
-    mtime: Option<i64>,
-) -> Vec<Result<(), Error>> {
-    use futures::future::join_all;
-
-    let import_futures = logs
-        .into_iter()
-        .map(|(codebase, run_id, path, basename)| async move {
-            import_log(
-                primary_log_manager,
-                backup_log_manager,
-                &codebase,
-                &run_id,
-                &path,
-                basename.as_deref(),
-                mtime,
-            )
-            .await
-        });
-
-    join_all(import_futures).await
-}
-
-/// Log entry structure for Python compatibility
-#[derive(Debug, Clone)]
-pub struct LogEntry {
-    pub name: String,
-    pub path: String,
-}
-
-/// Import logs from a list of log entries
-pub async fn import_logs_from_entries(
-    entries: Vec<LogEntry>,
-    logfile_manager: &dyn LogFileManager,
-    pkg: &str,
-    log_id: &str,
-    backup_logfile_manager: Option<&dyn LogFileManager>,
-    mtime: Option<i64>,
-) -> Vec<Result<(), Error>> {
-    use futures::future::join_all;
-
-    let import_futures = entries.into_iter().map(|entry| async move {
-        import_log(
-            logfile_manager,
-            backup_logfile_manager,
-            pkg,
-            log_id,
-            &entry.path,
-            Some(&entry.name),
-            mtime,
-        )
-        .await
-    });
-
-    join_all(import_futures).await
 }
