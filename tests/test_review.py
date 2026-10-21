@@ -2,6 +2,7 @@ from datetime import timedelta
 
 import aiohttp_jinja2
 import aiozipkin
+from aiohttp import web
 from bs4 import BeautifulSoup
 from yarl import URL
 
@@ -15,11 +16,11 @@ from .test_cupboard import _insert_codebase, _insert_run, _user_middleware
 REVIEWER = {"email": "reviewer@example.com", "name": "Reviewer", "groups": []}
 
 
-async def create_publishable_client(aiohttp_client, db):
+async def create_publishable_client(aiohttp_client, db, runner_url=None):
     app = create_app(
         config=read_config_string("oauth2_provider {}\n"),
         publisher_url=None,
-        runner_url=None,
+        runner_url=runner_url,
         differ_url=None,
         db=db,
     )
@@ -77,3 +78,27 @@ async def test_review_post_publishable_only_unchecked(aiohttp_client, db):
     resp = await client.post("/cupboard/review", data={"run_id": "somerun"})
     assert resp.status == 200
     assert shown_run(await resp.text()) == ["somerun"]
+
+
+async def test_review_post_rejects_path_run_id(aiohttp_client, db):
+    runner_paths = []
+
+    runner_app = web.Application()
+
+    async def _handle_any(request):
+        runner_paths.append(request.path)
+        return web.json_response({})
+
+    runner_app.router.add_post("/{tail:.*}", _handle_any)
+    runner_client = await aiohttp_client(runner_app)
+
+    client = await create_publishable_client(
+        aiohttp_client, db, runner_url=str(runner_client.make_url("/"))
+    )
+
+    resp = await client.post(
+        "/cupboard/review", data={"run_id": "../status", "verdict": "approve"}
+    )
+    assert resp.status == 404
+    assert await resp.text() == "invalid run_id"
+    assert runner_paths == []
