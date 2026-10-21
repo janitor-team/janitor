@@ -38,7 +38,7 @@ from .. import (
     is_qa_reviewer,
     worker_link_is_global,
 )
-from ..common import html_template
+from ..common import bad_row_count_as_400, html_template, parse_int_query_param
 from ..pkg import MergeProposalUserUrlResolver
 from ..setup import setup_postgres
 
@@ -58,8 +58,8 @@ async def handle_rejected(request):
 @routes.get("/cupboard/history", name="history")
 @html_template("cupboard/history.html", headers={"Vary": "Cookie"})
 async def handle_history(request):
-    limit = int(request.query.get("limit", "100"))
-    offset = int(request.query.get("offset", "0"))
+    limit = parse_int_query_param(request, "limit", 100)
+    offset = parse_int_query_param(request, "offset", 0)
 
     query = """\
 SELECT finish_time, codebase, suite, worker_link,
@@ -67,7 +67,8 @@ worker as worker_name, finish_time - start_time AS duration,
 result_code, id, description, failure_transient FROM run
 ORDER BY finish_time DESC LIMIT $1 OFFSET $2"""
     async with request.app["pool"].acquire() as conn:
-        runs = await conn.fetch(query, limit, offset)
+        async with bad_row_count_as_400():
+            runs = await conn.fetch(query, limit, offset)
     return {"count": limit, "history": runs}
 
 
@@ -98,7 +99,7 @@ async def handle_workers(request):
 @routes.get("/cupboard/queue", name="queue")
 @html_template("cupboard/queue.html", headers={"Vary": "Cookie"})
 async def handle_queue(request):
-    limit = int(request.query.get("limit", "100"))
+    limit = parse_int_query_param(request, "limit", 100)
     from .queue import write_queue
 
     return await write_queue(
@@ -272,7 +273,7 @@ async def handle_publish(request):
 @routes.get("/cupboard/publish/", name="publish-history")
 @html_template("cupboard/publish-history.html", headers={"Vary": "Cookie"})
 async def handle_publish_history(request):
-    limit = int(request.query.get("limit", "100"))
+    limit = parse_int_query_param(request, "limit", 100)
     from .publish import write_history
 
     async with request.app["pool"].acquire() as conn:
@@ -741,7 +742,8 @@ async def iter_needs_review(
 
     if limit is not None:
         query += f" LIMIT {limit}"
-    return await conn.fetch(query, *args)
+    async with bad_row_count_as_400():
+        return await conn.fetch(query, *args)
 
 
 def create_app(

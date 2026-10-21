@@ -342,3 +342,37 @@ async def test_login_link_hidden_without_provider(aiohttp_client, database_locat
     client = await _openid_site(aiohttp_client, database_location)
     resp = await client.get("/lintian-fixes/candidates")
     assert (resp.status, _login_links(await resp.text())) == (200, [])
+
+
+async def test_cupboard_answers_400_on_a_bad_limit_or_offset(
+    aiohttp_client, database_location
+):
+    _private_app, app = await create_app(
+        config=create_config(database_location), redis=FakeRedis()
+    )
+    client = await aiohttp_client(app)
+    answers = {}
+    for path in [
+        "/cupboard/history?limit=abc",
+        "/cupboard/history?limit=",
+        "/cupboard/history?offset=-1",
+        "/cupboard/queue?limit=-1",
+        "/cupboard/publish/?limit=9223372036854775808",
+        "/cupboard/review?limit=99999999999999999999",
+        "/cupboard/api/needs-review?limit=-1",
+    ]:
+        resp = await client.get(path)
+        answers[path] = (resp.status, await resp.text())
+    assert answers == {
+        "/cupboard/history?limit=abc": (400, "limit must be an integer"),
+        "/cupboard/history?limit=": (400, "limit must be an integer"),
+        "/cupboard/history?offset=-1": (400, "OFFSET must not be negative"),
+        "/cupboard/queue?limit=-1": (400, "LIMIT must not be negative"),
+        "/cupboard/publish/?limit=9223372036854775808": (
+            400,
+            "invalid input for query argument $1: 9223372036854775808 "
+            "(value out of int64 range)",
+        ),
+        "/cupboard/review?limit=99999999999999999999": (400, "bigint out of range"),
+        "/cupboard/api/needs-review?limit=-1": (400, "LIMIT must not be negative"),
+    }

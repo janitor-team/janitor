@@ -18,9 +18,12 @@
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock
 
+import asyncpg
+import pytest
 from yarl import URL
 
 from janitor.site import format_duration, format_timestamp, update_vars_from_request
+from janitor.site.common import bad_row_count_as_400
 
 
 def test_duration():
@@ -80,3 +83,16 @@ def test_update_vars_from_request_uses_external_url():
         vs["bzr_vcs_manager"].get_repository_url("mycb")
         == "https://public.example.org/bzr/mycb"
     )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        asyncpg.InvalidTextRepresentationError("invalid input syntax for type json"),
+        asyncpg.DataError("invalid input for query argument $1: 'x'"),
+    ],
+)
+async def test_bad_row_count_as_400_leaves_other_data_errors_alone(error):
+    with pytest.raises(type(error)):
+        async with bad_row_count_as_400():
+            raise error

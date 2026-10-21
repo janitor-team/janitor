@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 
+from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 import aiohttp_jinja2
@@ -16,6 +17,34 @@ from janitor.site import (
     get_archive_diff,
     update_vars_from_request,
 )
+
+
+def parse_int_query_param(request, name: str, default: int) -> int:
+    raw = request.query.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError as e:
+        raise web.HTTPBadRequest(text=f"{name} must be an integer") from e
+
+
+@asynccontextmanager
+async def bad_row_count_as_400():
+    """Answer 400 when the database refuses a LIMIT or OFFSET from the request."""
+    try:
+        yield
+    except (
+        asyncpg.InvalidRowCountInLimitClauseError,
+        asyncpg.InvalidRowCountInResultOffsetClauseError,
+        asyncpg.NumericValueOutOfRangeError,
+    ) as e:
+        raise web.HTTPBadRequest(text=str(e)) from e
+    except asyncpg.DataError as e:
+        # asyncpg itself refuses to bind an int outside int64.
+        if not isinstance(e.__cause__, OverflowError):
+            raise
+        raise web.HTTPBadRequest(text=str(e)) from e
 
 
 async def get_previous_runs(conn: asyncpg.Connection, codebase: str, suite: str):
