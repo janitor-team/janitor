@@ -479,8 +479,11 @@ fn tree_set_changelog_version(
         true,
     )?;
     if let Some(mut entry) = editor.iter().next() {
-        let version: debversion::Version =
-            format!("{}~", entry.version().unwrap()).parse().unwrap();
+        let Some(version) = entry.version() else {
+            log::warn!("Not setting the changelog version: the top entry has no valid version");
+            return Ok(());
+        };
+        let version: debversion::Version = format!("{}~", version).parse().unwrap();
         if version > *build_version {
             return Ok(());
         }
@@ -856,5 +859,31 @@ mod tests {
         assert_eq!(failure.code, "build-config-parse-failure");
         assert_eq!(failure.stage, vec!["build".to_string()]);
         assert_eq!(failure.transient, Some(false));
+    }
+
+    #[test]
+    fn test_tree_set_changelog_version_invalid_version() {
+        let td = tempfile::tempdir().unwrap();
+        let tree = empty_tree(&td);
+        let changelog = br#"foo (1_0) unstable; urgency=low
+
+  * Initial release.
+
+ -- Joe Example <joe@example.com>  Mon, 01 Jan 2001 00:00:00 +0000
+"#;
+        tree.mkdir(std::path::Path::new("debian")).unwrap();
+        tree.put_file_bytes_non_atomic(std::path::Path::new("debian/changelog"), changelog)
+            .unwrap();
+        tree.add(&[std::path::Path::new("debian/changelog")])
+            .unwrap();
+
+        tree_set_changelog_version(&tree, &"1.0-1".parse().unwrap(), std::path::Path::new(""))
+            .unwrap();
+
+        assert_eq!(
+            tree.get_file_text(std::path::Path::new("debian/changelog"))
+                .unwrap(),
+            changelog
+        );
     }
 }
