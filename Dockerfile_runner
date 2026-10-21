@@ -42,10 +42,11 @@ RUN apt-get update --yes \
         ca-certificates \
         dpkg-dev \
         git \
-        libpython3.14 \
         libssl3 \
         openssh-client \
         python3-breezy \
+ && apt-get satisfy --yes --no-install-recommends \
+        "libpython$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')" \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
