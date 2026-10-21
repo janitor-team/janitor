@@ -295,3 +295,37 @@ async def test_review_without_oauth2_provider_is_not_qa_review(aiohttp_client, d
     async with db.acquire() as conn:
         rows = await conn.fetch("SELECT run_id, reviewer, verdict FROM review")
     assert [tuple(row) for row in rows] == [("r1", "alice@example.com", "approved")]
+
+
+@pytest.mark.parametrize(
+    "user,status,runner_calls",
+    [
+        (None, 401, []),
+        ({"email": "bob@example.com", "groups": ["users"]}, 401, []),
+        ({"email": "alice@example.com", "groups": ["admins"]}, 201, ["peek"]),
+    ],
+)
+async def test_run_peek_needs_admin(aiohttp_client, db, user, status, runner_calls):
+    seen_calls = []
+    runner_app = web.Application()
+
+    async def _handle_peek(request):
+        seen_calls.append("peek")
+        return web.json_response({"id": "run-1", "queue_id": 3}, status=201)
+
+    runner_app.router.add_get("/active-runs/+peek", _handle_peek)
+    runner_client = await aiohttp_client(runner_app)
+
+    client = await create_client(
+        aiohttp_client,
+        db,
+        runner_url=str(runner_client.make_url("/")),
+        user=user,
+        config='oauth2_provider { client_id: "site" admin_group: "admins" }',
+    )
+
+    resp = await client.get("/active-runs/+peek")
+    assert resp.status == status
+    if status == 201:
+        assert await resp.json() == {"id": "run-1", "queue_id": 3}
+    assert seen_calls == runner_calls

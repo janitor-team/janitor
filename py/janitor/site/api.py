@@ -624,6 +624,7 @@ async def handle_publish_id(request):
 @docs()
 @routes.get("/active-runs/+peek")
 async def handle_run_peek(request):
+    check_admin(request)
     span = aiozipkin.request_span(request)
     url = URL(request.app["runner_url"]) / "active-runs/+peek"
     with span.new_child("forward-runner"):
