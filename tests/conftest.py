@@ -13,7 +13,7 @@ _SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schema"
 
 
 @pytest_asyncio.fixture()
-async def db():
+async def database_url():
     with testing.postgresql.Postgresql() as postgresql:
         conn = await asyncpg.connect(postgresql.url())
         try:
@@ -22,11 +22,16 @@ async def db():
         finally:
             await conn.close()
 
-        db = await create_pool(postgresql.url())
+        yield postgresql.url()
 
-        yield db
 
-        await db.close()
+@pytest_asyncio.fixture()
+async def db(database_url):
+    db = await create_pool(database_url)
+
+    yield db
+
+    await db.close()
 
 
 @pytest_asyncio.fixture()

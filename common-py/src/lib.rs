@@ -8,6 +8,7 @@ mod artifacts;
 mod config;
 mod io;
 mod logs;
+mod reprocess_logs;
 mod vcs;
 
 #[pyfunction]
@@ -55,6 +56,10 @@ pub fn _common(py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     let configm = pyo3::types::PyModule::new(py, "config")?;
     crate::config::init(py, &configm)?;
     m.add_submodule(&configm)?;
+
+    let reprocess_logsm = pyo3::types::PyModule::new(py, "reprocess_logs")?;
+    crate::reprocess_logs::init(py, &reprocess_logsm)?;
+    m.add_submodule(&reprocess_logsm)?;
 
     Ok(())
 }

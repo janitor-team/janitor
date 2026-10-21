@@ -5,6 +5,26 @@ use sqlx::Executor;
 use tokio::time::timeout;
 use tracing::{error, info};
 
+/// An error storing the new analysis of a run.
+#[derive(Debug)]
+pub enum Error {
+    /// Updating the run failed.
+    Database(sqlx::Error),
+    /// Rescheduling the run failed.
+    Schedule(crate::schedule::Error),
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Error::Database(e) => write!(f, "Failed to update run: {}", e),
+            Error::Schedule(e) => write!(f, "Failed to reschedule run: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
 /// Reprocess run logs.
 pub async fn reprocess_run_logs(
     db: &sqlx::PgPool,
@@ -17,19 +37,21 @@ pub async fn reprocess_run_logs(
     duration: chrono::Duration,
     result_code: &str,
     description: &str,
-    failure_details: &serde_json::Value,
+    failure_details: Option<&serde_json::Value>,
     process_fns: &[(String, String, AnalyzeLogFn<Box<dyn std::io::Read>>)],
     dry_run: bool,
     reschedule: bool,
     log_timeout: Option<chrono::Duration>,
-) -> Option<crate::analyze_log::AnalyzedLog> {
+) -> Result<Option<crate::analyze_log::AnalyzedLog>, Error> {
     if ["dist-no-tarball"].contains(&result_code) {
-        return None;
+        return Ok(None);
     }
     let log_timeout = log_timeout.unwrap_or_else(|| chrono::Duration::minutes(5));
     let mut process_fn_iter = process_fns.iter();
     let new_analysis = loop {
-        let (prefix, logname, f) = process_fn_iter.next()?;
+        let Some((prefix, logname, f)) = process_fn_iter.next() else {
+            return Ok(None);
+        };
         if !result_code.starts_with(prefix) {
             continue;
         }
@@ -44,26 +66,26 @@ pub async fn reprocess_run_logs(
                     break f(logf);
                 }
                 Err(crate::logs::Error::NotFound) => {
-                    return None;
+                    return Ok(None);
                 }
                 Err(e) => {
                     error!(
                         "{}/{}: Failed to fetch log {}: {:?}",
                         codebase, log_id, logname, e
                     );
-                    return None;
+                    return Ok(None);
                 }
             },
             Err(_) => {
                 error!("{}/{}: Timeout fetching log {}", codebase, log_id, logname);
-                return None;
+                return Ok(None);
             }
         }
     };
 
     if new_analysis.code != result_code
         || new_analysis.description != description
-        || new_analysis.failure_details.as_ref() != Some(failure_details)
+        || new_analysis.failure_details.as_ref() != failure_details
     {
         info!(
             "{}/{}: Updated {:?}, {:?} ⇒ {:?}, {:?} {:?}",
@@ -83,7 +105,7 @@ pub async fn reprocess_run_logs(
                 .bind(&new_analysis.failure_details)
                 .bind(log_id);
 
-            db.execute(query).await.unwrap();
+            db.execute(query).await.map_err(Error::Database)?;
             if reschedule && new_analysis.code != result_code {
                 crate::schedule::do_schedule(
                     db,
@@ -98,11 +120,11 @@ pub async fn reprocess_run_logs(
                     None,
                 )
                 .await
-                .unwrap();
+                .map_err(Error::Schedule)?;
             }
         }
-        return Some(new_analysis);
+        return Ok(Some(new_analysis));
     }
 
-    None
+    Ok(None)
 }

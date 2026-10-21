@@ -203,11 +203,7 @@ async def handle_needs_review(request):
 @docs()
 @routes.post("/run/{run_id}/reprocess-logs", name="admin-reprocess-logs-run")
 async def handle_run_reprocess_logs(request):
-    from ...reprocess_logs import (  # type: ignore
-        process_dist_log,
-        process_sbuild_log,
-        reprocess_run_logs,
-    )
+    from ...reprocess_logs import reprocess_run_logs
 
     check_admin(request)
     post = await request.post()
@@ -223,7 +219,7 @@ async def handle_run_reprocess_logs(request):
         )
 
     result = await reprocess_run_logs(
-        db=request.app["pool"],
+        config=request.app["config"],
         logfile_manager=request.app["logfile_manager"],
         codebase=run["codebase"],
         campaign=run["campaign"],
@@ -235,8 +231,8 @@ async def handle_run_reprocess_logs(request):
         description=run["description"],
         failure_details=run["failure_details"],
         process_fns=[
-            ("dist-", DIST_LOG_FILENAME, process_dist_log),
-            ("build-", BUILD_LOG_FILENAME, process_sbuild_log),
+            ("dist-", DIST_LOG_FILENAME, "dist"),
+            ("build-", BUILD_LOG_FILENAME, "sbuild"),
         ],
         dry_run=dry_run,
         reschedule=reschedule,
@@ -326,11 +322,7 @@ WHERE
 @docs()
 @routes.post("/reprocess-logs", name="admin-reprocess-logs")
 async def handle_reprocess_logs(request):
-    from ...reprocess_logs import (
-        process_dist_log,
-        process_sbuild_log,
-        reprocess_run_logs,
-    )
+    from ...reprocess_logs import reprocess_run_logs
 
     check_admin(request)
     post = await request.post()
@@ -357,7 +349,7 @@ async def handle_reprocess_logs(request):
         await spawn(
             request,
             reprocess_run_logs(
-                db=request.app["pool"],
+                config=request.app["config"],
                 logfile_manager=request.app["logfile_manager"],
                 codebase=row["codebase"],
                 campaign=row["campaign"],
@@ -369,8 +361,8 @@ async def handle_reprocess_logs(request):
                 description=row["description"],
                 failure_details=row["failure_details"],
                 process_fns=[
-                    ("dist-", DIST_LOG_FILENAME, process_dist_log),
-                    ("build-", BUILD_LOG_FILENAME, process_sbuild_log),
+                    ("dist-", DIST_LOG_FILENAME, "dist"),
+                    ("build-", BUILD_LOG_FILENAME, "sbuild"),
                 ],
                 dry_run=dry_run,
                 reschedule=reschedule,

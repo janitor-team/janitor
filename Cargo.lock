@@ -1274,9 +1274,11 @@ dependencies = [
  "pyo3-async-runtimes",
  "pyo3-filelike",
  "pyo3-log",
+ "pythonize",
  "reqwest 0.13.5",
  "serde_json",
  "silver-platter",
+ "sqlx",
  "tokio",
  "url",
 ]
@@ -5746,6 +5748,16 @@ dependencies = [
  "serde",
  "thiserror 2.0.20",
  "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "pythonize"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b79f670c9626c8b651c0581011b57b6ba6970bb69faf01a7c4c0cfc81c43f95"
+dependencies = [
+ "pyo3",
+ "serde",
 ]
 
 [[package]]

@@ -16,6 +16,7 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
 import sys
+import tempfile
 import types
 from datetime import timedelta
 
@@ -27,6 +28,7 @@ from yarl import URL
 
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
+from janitor.logs import FileSystemLogFileManager
 from janitor.site import (
     TEMPLATE_ENV,
     classify_result_code,
@@ -65,8 +67,8 @@ async def create_client(aiohttp_client, db, *, user=None, config=""):
     return await aiohttp_client(app)
 
 
-async def create_api_client(aiohttp_client, db, *, user):
-    config = read_config_string("oauth2_provider {}\n")
+async def create_api_client(aiohttp_client, db, *, user, config=""):
+    config = read_config_string("oauth2_provider {}\n" + config)
     app = create_api_app(config=config, publisher_url=None, runner_url=None, db=db)
     app.middlewares.insert(0, _user_middleware(user))
     return await aiohttp_client(app)
@@ -640,3 +642,90 @@ async def test_reprocess_logs_bulk_selects_every_unpack_code(db):
         rows = await select_runs_to_reprocess(conn)
 
     assert sorted(row["id"] for row in rows) == ["patch", "upstream"]
+
+
+MISSING_FOO_LOG = b"checking for foo... no\nconfigure: error: foo not found\n"
+MISSING_FOO_DETAILS = {
+    "current_version": None,
+    "minimum_version": None,
+    "name": "foo",
+    "url": None,
+}
+
+
+async def _insert_dist_failure(conn, logfile_manager, logs, run_id):
+    await _insert_codebase(conn, "foo")
+    now = utcnow()
+    await _insert_run(
+        conn,
+        run_id=run_id,
+        codebase="foo",
+        start_time=now - timedelta(minutes=30),
+        finish_time=now,
+        result_code="dist-command-failed",
+        description="Dist command failed",
+    )
+    with open(f"{logs}/dist.log", "wb") as f:
+        f.write(MISSING_FOO_LOG)
+    await logfile_manager.import_log("foo", run_id, f"{logs}/dist.log")
+
+
+async def test_reprocess_logs_run_stores_the_new_analysis(
+    aiohttp_client, db, database_url
+):
+    with tempfile.TemporaryDirectory() as logs:
+        config = f'database_location: "{database_url}"\nlogs_location: "{logs}"\n'
+        client = await create_api_client(
+            aiohttp_client, db, user=ADMIN_USER, config=config
+        )
+        async with db.acquire() as conn:
+            await _insert_dist_failure(
+                conn, client.app["logfile_manager"], logs, "run-1"
+            )
+        resp = await client.post("/run/run-1/reprocess-logs")
+        assert (resp.status, await resp.json()) == (
+            200,
+            {
+                "changed": True,
+                "result_code": "dist-missing-vague-dependency",
+                "description": "Missing dependency: foo",
+                "failure_details": MISSING_FOO_DETAILS,
+            },
+        )
+        async with db.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT result_code, description, failure_details FROM run"
+            )
+        assert tuple(row) == (
+            "dist-missing-vague-dependency",
+            "Missing dependency: foo",
+            MISSING_FOO_DETAILS,
+        )
+
+
+async def test_reprocess_run_logs_raises_a_failed_reschedule(db, database_url):
+    from janitor.reprocess_logs import reprocess_run_logs
+
+    with tempfile.TemporaryDirectory() as logs:
+        logfile_manager = FileSystemLogFileManager(logs)
+        async with db.acquire() as conn:
+            await _insert_dist_failure(conn, logfile_manager, logs, "run-1")
+        with pytest.raises(RuntimeError) as e:
+            await reprocess_run_logs(
+                config=read_config_string(f'database_location: "{database_url}"'),
+                logfile_manager=logfile_manager,
+                codebase="foo",
+                campaign="mycampaign",
+                log_id="run-1",
+                command="true",
+                change_set=None,
+                duration=timedelta(minutes=30),
+                result_code="dist-command-failed",
+                description="Dist command failed",
+                failure_details=None,
+                process_fns=[("dist-", "dist.log", "dist")],
+                reschedule=True,
+            )
+    assert str(e.value) == (
+        "Failed to reschedule run: No candidate available for mycampaign in foo"
+    )

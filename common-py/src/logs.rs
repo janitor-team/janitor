@@ -53,7 +53,7 @@ where
 }
 
 #[pyclass(subclass)]
-pub struct LogFileManager(DynLogFileManager);
+pub struct LogFileManager(pub(crate) DynLogFileManager);
 
 #[pymethods]
 impl LogFileManager {
