@@ -716,24 +716,6 @@ impl Watchdog {
             Ok(None)
         }
     }
-
-    /// Combine per-database failure counters with in-process
-    /// health-failure counts into a single stats map.
-    pub async fn failure_stats_including_health(
-        &self,
-    ) -> Result<HashMap<String, i64>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut stats = self.database.get_failure_stats().await?;
-        stats.insert(
-            "runs_with_health_failures".to_string(),
-            self.health_failures.len() as i64,
-        );
-        stats.insert(
-            "total_health_failures".to_string(),
-            self.health_failures.values().sum::<u32>() as i64,
-        );
-
-        Ok(stats)
-    }
 }
 
 /// Statistics about watchdog operation.
