@@ -41,8 +41,8 @@ RUN apt-get update --yes \
  && apt-get satisfy --yes --no-install-recommends \
         ca-certificates \
         dpkg-dev \
-        git \
-        gnupg \
+        gpg \
+        gpg-agent \
         libpython3.14 \
         libssl3 \
         python3-breezy \
