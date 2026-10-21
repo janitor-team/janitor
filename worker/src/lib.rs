@@ -972,6 +972,17 @@ impl From<client::UploadFailure> for SingleItemError {
     }
 }
 
+fn panic_message(e: tokio::task::JoinError) -> String {
+    match e.try_into_panic() {
+        Ok(payload) => payload
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "job panicked".to_string()),
+        Err(e) => e.to_string(),
+    }
+}
+
 pub async fn process_single_item(
     client: &crate::client::Client,
     my_url: Option<&Url>,
@@ -1146,8 +1157,28 @@ pub async fn process_single_item(
 
         metadata
     })
-    .await
-    .map_err(|e| SingleItemError::JobPanicked(e.to_string()))?;
+    .await;
+
+    let metadata = match metadata {
+        Ok(metadata) => metadata,
+        Err(e) => {
+            let description = panic_message(e);
+            let metadata = Metadata {
+                queue_id: Some(assignment.queue_id),
+                start_time: Some(start_time),
+                finish_time: Some(chrono::Utc::now()),
+                branch_url: assignment.branch.url.clone(),
+                vcs_type: Some(assignment.branch.vcs_type),
+                code: Some("worker-failure".to_string()),
+                description: Some(description.clone()),
+                ..Metadata::default()
+            };
+            client
+                .upload_results(&assignment.id, &metadata, Some(output_directory.path()))
+                .await?;
+            return Err(SingleItemError::JobPanicked(description));
+        }
+    };
 
     let result = client
         .upload_results(&assignment.id, &metadata, Some(output_directory.path()))
@@ -1515,6 +1546,100 @@ check:
                 vcs_type: Some(vcs_type),
             }
         );
+    }
+
+    #[tokio::test]
+    async fn test_process_single_item_uploads_job_panic() {
+        use axum::{extract::Multipart, http::StatusCode, routing::post, Json, Router};
+
+        type Uploaded = std::sync::Arc<std::sync::Mutex<Vec<(String, Metadata)>>>;
+
+        async fn assign() -> (StatusCode, Json<serde_json::Value>) {
+            // The unbalanced quote makes the job panic in shlex::split(..).unwrap().
+            let assignment = serde_json::json!({
+                "id": "run-1",
+                "queue_id": 3,
+                "campaign": "mycampaign",
+                "codebase": "mycodebase",
+                "force-build": false,
+                "branch": {
+                    "vcs_type": "git",
+                    "url": "https://example.com/repo",
+                    "subpath": "",
+                    "default-empty": false,
+                },
+                "target_repository": {"url": "https://example.com/target"},
+                "skip-setup-validation": false,
+                "codemod": {"command": "'", "environment": {}},
+                "env": {},
+                "build": {"target": "generic", "config": {}, "environment": {}},
+            });
+            (StatusCode::CREATED, Json(assignment))
+        }
+
+        async fn finish(
+            axum::extract::Path(run_id): axum::extract::Path<String>,
+            axum::extract::State(uploaded): axum::extract::State<Uploaded>,
+            mut multipart: Multipart,
+        ) -> Json<serde_json::Value> {
+            while let Some(field) = multipart.next_field().await.unwrap() {
+                if field.name() == Some("metadata") {
+                    let metadata = serde_json::from_slice(&field.bytes().await.unwrap()).unwrap();
+                    uploaded.lock().unwrap().push((run_id.clone(), metadata));
+                }
+            }
+            Json(serde_json::json!({"filenames": []}))
+        }
+
+        let uploaded = Uploaded::default();
+        let app = Router::new()
+            .route("/active-runs", post(assign))
+            .route("/active-runs/{run_id}/finish", post(finish))
+            .with_state(uploaded.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url: Url = format!("http://{}/", listener.local_addr().unwrap())
+            .parse()
+            .unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client =
+            client::Client::new(base_url, client::Credentials::None, DEFAULT_USER_AGENT).unwrap();
+        let output_dir = tempfile::tempdir().unwrap();
+        let result = process_single_item(
+            &client,
+            None,
+            "node",
+            None,
+            None,
+            None,
+            None,
+            false,
+            Some(output_dir.path()),
+            Default::default(),
+        )
+        .await;
+
+        let message = "called `Option::unwrap()` on a `None` value";
+        let mut uploaded = uploaded.lock().unwrap().clone();
+        for (_, metadata) in uploaded.iter_mut() {
+            assert!(metadata.start_time.take().is_some());
+            assert!(metadata.finish_time.take().is_some());
+        }
+        assert_eq!(
+            uploaded,
+            vec![(
+                "run-1".to_string(),
+                Metadata {
+                    queue_id: Some(3),
+                    code: Some("worker-failure".to_string()),
+                    description: Some(message.to_string()),
+                    branch_url: Some("https://example.com/repo".parse().unwrap()),
+                    vcs_type: Some(VcsType::Git),
+                    ..Metadata::default()
+                }
+            )]
+        );
+        assert!(matches!(result, Err(SingleItemError::JobPanicked(e)) if e == message));
     }
 
     /*
