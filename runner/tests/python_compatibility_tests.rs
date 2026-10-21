@@ -167,7 +167,6 @@ fn janitor_result_serialises_expected_field_names() {
     let result = JanitorResult {
         log_id: "test-log-123".to_string(),
         branch_url: "https://github.com/example/repo.git".to_string(),
-        subpath: None,
         code: "success".to_string(),
         transient: Some(false),
         codebase: "example/repo".to_string(),
@@ -178,21 +177,7 @@ fn janitor_result_serialises_expected_field_names() {
         logfilenames: vec!["build.log".to_string()],
         start_time: chrono::Utc::now(),
         finish_time: chrono::Utc::now(),
-        revision: None,
-        main_branch_revision: None,
-        change_set: None,
-        tags: None,
-        remotes: None,
-        branches: None,
-        failure_details: None,
-        failure_stage: None,
-        resume: None,
-        target: None,
-        worker_name: None,
-        vcs_type: None,
-        target_branch_url: None,
-        context: None,
-        builder_result: None,
+        ..Default::default()
     };
 
     let json_value = serde_json::to_value(&result).unwrap();

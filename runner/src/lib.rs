@@ -413,7 +413,7 @@ pub fn gather_logs(output_directory: &std::path::Path) -> impl Iterator<Item = s
 }
 
 /// Result of a Janitor run.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct JanitorResult {
     /// Unique identifier for the log.
     pub log_id: String,
@@ -738,33 +738,20 @@ impl ActiveRun {
             branch_url: self.vcs_info.branch_url.clone().unwrap_or_default(),
             subpath: self.vcs_info.subpath.clone(),
             code,
-            transient: None,
             codebase: self.codebase.clone(),
             campaign: self.campaign.clone(),
             description,
-            codemod: None,
-            value: None,
-            logfilenames: vec![],
             start_time: self.start_time,
             finish_time: Utc::now(),
-            revision: None,
-            main_branch_revision: None,
             change_set: self.change_set.clone(),
-            tags: None,
-            remotes: None,
-            branches: None,
-            failure_details: None,
-            failure_stage: None,
             resume: self
                 .resume_from
                 .as_ref()
                 .map(|id| ResultResume { run_id: id.clone() }),
-            target: None,
             worker_name: Some(self.worker_name.clone()),
             vcs_type: self.vcs_info.vcs_type.clone(),
-            target_branch_url: None,
             context: self.instigated_context.clone(),
-            builder_result: None,
+            ..Default::default()
         }
     }
 
@@ -2399,18 +2386,7 @@ mod tests {
             revision: Some(breezyshim::RevisionId::from(b"rev-1".to_vec())),
             main_branch_revision: Some(breezyshim::RevisionId::from(b"rev-0".to_vec())),
             change_set: Some("cs-1".to_string()),
-            tags: None,
-            remotes: None,
-            branches: None,
-            failure_details: None,
-            failure_stage: None,
-            resume: None,
-            target: None,
-            worker_name: None,
-            vcs_type: None,
-            target_branch_url: None,
-            context: None,
-            builder_result: None,
+            ..Default::default()
         };
         let json = serde_json::to_string(&result).unwrap();
         let roundtripped: JanitorResult = serde_json::from_str(&json).unwrap();
@@ -2427,32 +2403,16 @@ mod tests {
         let result = JanitorResult {
             log_id: "log-456".to_string(),
             branch_url: "https://example.com/repo".to_string(),
-            subpath: None,
             code: "build-failed".to_string(),
             transient: Some(true),
             codebase: "failcodebase".to_string(),
             campaign: "fresh-releases".to_string(),
             description: Some("Build failed".to_string()),
-            codemod: None,
-            value: None,
-            logfilenames: vec![],
             start_time: chrono::Utc::now(),
             finish_time: chrono::Utc::now(),
-            revision: None,
-            main_branch_revision: None,
-            change_set: None,
-            tags: None,
-            remotes: None,
-            branches: None,
             failure_details: Some(serde_json::json!({"error": "compilation failed"})),
             failure_stage: Some(vec!["build".to_string()]),
-            resume: None,
-            target: None,
-            worker_name: None,
-            vcs_type: None,
-            target_branch_url: None,
-            context: None,
-            builder_result: None,
+            ..Default::default()
         };
         let json = serde_json::to_string(&result).unwrap();
         let roundtripped: JanitorResult = serde_json::from_str(&json).unwrap();
@@ -2467,21 +2427,13 @@ mod tests {
         let result = JanitorResult {
             log_id: "log-789".to_string(),
             branch_url: "https://example.com/repo".to_string(),
-            subpath: None,
             code: "success".to_string(),
-            transient: None,
             codebase: "test".to_string(),
             campaign: "test".to_string(),
             description: Some("OK".to_string()),
             codemod: Some(serde_json::json!({})),
-            value: None,
-            logfilenames: vec![],
             start_time: chrono::Utc::now(),
             finish_time: chrono::Utc::now(),
-            revision: None,
-            main_branch_revision: None,
-            change_set: None,
-            tags: None,
             remotes: Some(maplit::hashmap! {
                 "origin".to_string() => ResultRemote {
                     url: "https://example.com/origin".to_string(),
@@ -2493,8 +2445,6 @@ mod tests {
                 None,
                 None,
             )]),
-            failure_details: None,
-            failure_stage: None,
             resume: Some(ResultResume {
                 run_id: "prev-run".to_string(),
             }),
@@ -2502,11 +2452,7 @@ mod tests {
                 name: "debian".to_string(),
                 details: serde_json::json!({"dist": "unstable"}),
             }),
-            worker_name: None,
-            vcs_type: None,
-            target_branch_url: None,
-            context: None,
-            builder_result: None,
+            ..Default::default()
         };
         let json = serde_json::to_string(&result).unwrap();
         let roundtripped: JanitorResult = serde_json::from_str(&json).unwrap();
