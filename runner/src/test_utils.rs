@@ -232,13 +232,13 @@ impl crate::logs::LogFileManager for MockLogFileManager {
         Ok(Box::new(std::io::Cursor::new(b"mock log content")))
     }
 
-    async fn import_log(
+    async fn import_log_data(
         &self,
         _codebase: &CodebaseName,
         _run_id: &RunId,
-        _orig_path: &str,
+        _name: &str,
+        _data: &[u8],
         _mtime: Option<chrono::DateTime<chrono::Utc>>,
-        _basename: Option<&str>,
     ) -> Result<(), crate::logs::Error> {
         Ok(())
     }

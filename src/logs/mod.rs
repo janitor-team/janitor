@@ -2,6 +2,7 @@ use crate::{CodebaseName, RunId};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::io::{self, Read};
+use std::path::Path;
 use std::time::Duration;
 
 mod filesystem;
@@ -139,7 +140,7 @@ pub trait LogFileManager: Send + Sync {
         self.get_log(codebase, run_id, name).await
     }
 
-    /// Import a log.
+    /// Import a log from a file.
     ///
     /// # Arguments
     /// * `codebase` - The codebase name.
@@ -154,6 +155,33 @@ pub trait LogFileManager: Send + Sync {
         orig_path: &str,
         mtime: Option<DateTime<Utc>>,
         basename: Option<&str>,
+    ) -> Result<(), Error> {
+        let data = tokio::fs::read(orig_path).await?;
+        let basename = basename.unwrap_or_else(|| {
+            Path::new(orig_path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("unknown")
+        });
+        self.import_log_data(codebase, run_id, basename, &data, mtime)
+            .await
+    }
+
+    /// Import a log from its contents. It is stored gzipped.
+    ///
+    /// # Arguments
+    /// * `codebase` - The codebase name.
+    /// * `run_id` - The run ID.
+    /// * `name` - The log name.
+    /// * `data` - The log contents.
+    /// * `mtime` - The modification time of the log.
+    async fn import_log_data(
+        &self,
+        codebase: &CodebaseName,
+        run_id: &RunId,
+        name: &str,
+        data: &[u8],
+        mtime: Option<DateTime<Utc>>,
     ) -> Result<(), Error>;
 
     /// Delete a log.
@@ -248,15 +276,6 @@ pub async fn import_log(
     basename: Option<&str>,
     mtime: Option<i64>, // Unix timestamp for Python compatibility
 ) -> Result<(), Error> {
-    // Validate input path (no slashes in components)
-    if let Some(basename) = basename {
-        if basename.contains('/') {
-            return Err(Error::Other(
-                "Basename cannot contain '/' characters".to_string(),
-            ));
-        }
-    }
-
     let mtime_dt = if let Some(mtime) = mtime {
         DateTime::from_timestamp(mtime, 0)
     } else {
@@ -265,23 +284,58 @@ pub async fn import_log(
             .and_then(|metadata| metadata.modified().ok())
             .map(DateTime::<Utc>::from)
     };
+    let data = tokio::fs::read(path).await?;
+    let basename = basename.unwrap_or_else(|| {
+        Path::new(path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("unknown")
+    });
+    import_log_data(
+        primary_log_manager,
+        backup_log_manager,
+        codebase,
+        run_id,
+        basename,
+        &data,
+        mtime_dt,
+    )
+    .await
+}
+
+/// Import a log from its contents, like [`import_log`].
+pub async fn import_log_data(
+    primary_log_manager: &dyn LogFileManager,
+    backup_log_manager: Option<&dyn LogFileManager>,
+    codebase: &CodebaseName,
+    run_id: &RunId,
+    name: &str,
+    data: &[u8],
+    mtime: Option<DateTime<Utc>>,
+) -> Result<(), Error> {
+    // Validate input path (no slashes in components)
+    if name.contains('/') {
+        return Err(Error::Other(
+            "Basename cannot contain '/' characters".to_string(),
+        ));
+    }
 
     // Attempt with primary log manager
     match primary_log_manager
-        .import_log(codebase, run_id, path, mtime_dt, basename)
+        .import_log_data(codebase, run_id, name, data, mtime)
         .await
     {
         Ok(()) => {
-            log::info!("Successfully imported log {} to primary manager", path);
+            log::info!("Successfully imported log {} to primary manager", name);
             increment_upload_success();
             return Ok(());
         }
         Err(Error::ServiceUnavailable) => {
-            log::warn!("Unable to upload logfile {}: service unavailable", path);
+            log::warn!("Unable to upload logfile {}: service unavailable", name);
             increment_upload_failed();
             if let Some(backup) = backup_log_manager {
                 match backup
-                    .import_log(codebase, run_id, path, mtime_dt, basename)
+                    .import_log_data(codebase, run_id, name, data, mtime)
                     .await
                 {
                     Ok(()) => {
@@ -293,11 +347,11 @@ pub async fn import_log(
             }
         }
         Err(Error::Timeout) => {
-            log::warn!("Timeout uploading logfile {}", path);
+            log::warn!("Timeout uploading logfile {}", name);
             increment_upload_failed();
             if let Some(backup) = backup_log_manager {
                 match backup
-                    .import_log(codebase, run_id, path, mtime_dt, basename)
+                    .import_log_data(codebase, run_id, name, data, mtime)
                     .await
                 {
                     Ok(()) => {
@@ -309,13 +363,13 @@ pub async fn import_log(
             }
         }
         Err(Error::PermissionDenied) => {
-            log::warn!("Permission denied error while uploading logfile {}", path);
+            log::warn!("Permission denied error while uploading logfile {}", name);
             // Try with timestamp-based alternative basename
             let suffix = chrono::Utc::now().format("%Y%m%dT%H%M%S").to_string();
-            let alt_basename = basename.map(|b| format!("{}.{}", b, suffix));
+            let alt_basename = format!("{}.{}", name, suffix);
 
             match primary_log_manager
-                .import_log(codebase, run_id, path, mtime_dt, alt_basename.as_deref())
+                .import_log_data(codebase, run_id, &alt_basename, data, mtime)
                 .await
             {
                 Ok(()) => {
@@ -327,7 +381,7 @@ pub async fn import_log(
                     // If alternative basename fails, try backup manager
                     if let Some(backup) = backup_log_manager {
                         match backup
-                            .import_log(codebase, run_id, path, mtime_dt, basename)
+                            .import_log_data(codebase, run_id, name, data, mtime)
                             .await
                         {
                             Ok(()) => {
@@ -347,7 +401,7 @@ pub async fn import_log(
             if let Some(backup) = backup_log_manager {
                 log::info!("Trying backup log manager");
                 match backup
-                    .import_log(codebase, run_id, path, mtime_dt, basename)
+                    .import_log_data(codebase, run_id, name, data, mtime)
                     .await
                 {
                     Ok(()) => {

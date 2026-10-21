@@ -9,9 +9,6 @@ use google_cloud_gax::paginator::ItemPaginator;
 use google_cloud_storage::client::{Storage, StorageControl};
 use std::collections::HashMap;
 use std::io::{self, Cursor, Read};
-use std::path::PathBuf;
-use tokio::fs::File;
-use tokio::io::AsyncReadExt;
 
 use crate::logs::{Error, LogFileManager};
 
@@ -127,47 +124,20 @@ impl LogFileManager for GCSLogFileManager {
         Ok(Box::new(decoder) as Box<dyn Read + Send + Sync>)
     }
 
-    async fn import_log(
+    async fn import_log_data(
         &self,
         codebase: &CodebaseName,
         run_id: &RunId,
-        orig_path: &str,
+        name: &str,
+        data: &[u8],
         _mtime: Option<DateTime<Utc>>,
-        basename: Option<&str>,
     ) -> Result<(), Error> {
-        // Extract basename from the path if not provided
-        let basename_owned: Option<String> = if basename.is_none() {
-            let path = PathBuf::from(orig_path);
-            if let Some(filename) = path.file_name() {
-                if let Some(name_str) = filename.to_str() {
-                    Some(name_str.to_string())
-                } else {
-                    return Err(Error::Other("Invalid filename".to_string()));
-                }
-            } else {
-                return Err(Error::Other(
-                    "Cannot extract basename from path".to_string(),
-                ));
-            }
-        } else {
-            None
-        };
-
-        // Use either the provided basename or the extracted one
-        let basename_ref = basename.unwrap_or_else(|| basename_owned.as_ref().unwrap());
-
-        // Generate the final object name
         let bucket = self.bucket_path();
-        let object_name = self.get_object_name(codebase, run_id, basename_ref);
-
-        let mut file = File::open(orig_path).await?;
-        let mut plain_data = Vec::new();
-        file.read_to_end(&mut plain_data).await?;
+        let object_name = self.get_object_name(codebase, run_id, name);
 
         // Compress the data
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        io::copy(&mut Cursor::new(&plain_data), &mut encoder)
-            .map_err(|e| Error::Other(e.to_string()))?;
+        io::copy(&mut Cursor::new(data), &mut encoder).map_err(|e| Error::Other(e.to_string()))?;
         let compressed_data = encoder.finish().map_err(|e| Error::Other(e.to_string()))?;
 
         // Upload to GCS using the new API

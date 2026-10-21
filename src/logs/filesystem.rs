@@ -69,26 +69,19 @@ impl LogFileManager for FileSystemLogFileManager {
         Err(Error::NotFound)
     }
 
-    async fn import_log(
+    async fn import_log_data(
         &self,
         codebase: &CodebaseName,
         run_id: &RunId,
-        orig_path: &str,
+        name: &str,
+        data: &[u8],
         mtime: Option<DateTime<Utc>>,
-        basename: Option<&str>,
     ) -> Result<(), Error> {
         let dest_dir = self.log_directory.join(codebase).join(run_id);
         tokio::fs::create_dir_all(&dest_dir).await?;
 
-        let data = tokio::fs::read(orig_path).await?;
-
-        let basename = basename.unwrap_or_else(|| {
-            Path::new(orig_path)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("unknown")
-        });
-        let dest_path = dest_dir.join(format!("{}.gz", basename));
+        let data = data.to_vec();
+        let dest_path = dest_dir.join(format!("{}.gz", name));
 
         // Compress data in a blocking task to avoid blocking the executor
         let compressed = tokio::task::spawn_blocking(move || -> io::Result<Vec<u8>> {

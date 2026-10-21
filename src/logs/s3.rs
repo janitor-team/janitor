@@ -6,7 +6,6 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use reqwest::{Client, StatusCode};
 use std::io::{self, Cursor, Read};
-use std::path::Path;
 use std::time::Duration;
 
 use crate::logs::{Error, LogFileManager};
@@ -99,28 +98,19 @@ impl LogFileManager for S3LogFileManager {
         }
     }
 
-    async fn import_log(
+    async fn import_log_data(
         &self,
         codebase: &CodebaseName,
         run_id: &RunId,
-        orig_path: &str,
+        name: &str,
+        data: &[u8],
         _mtime: Option<DateTime<Utc>>,
-        basename: Option<&str>,
     ) -> Result<(), Error> {
-        let data = tokio::fs::read(orig_path).await?;
-
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        io::copy(&mut Cursor::new(&data), &mut encoder)?;
+        io::copy(&mut Cursor::new(data), &mut encoder)?;
         let compressed_data = encoder.finish()?;
 
-        let basename = basename.unwrap_or_else(|| {
-            Path::new(orig_path)
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown")
-        });
-
-        let key = self.get_key(codebase, run_id, basename);
+        let key = self.get_key(codebase, run_id, name);
         let url = format!("{}{}", self.base_url, key);
 
         let resp = self

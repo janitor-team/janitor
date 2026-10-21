@@ -272,11 +272,7 @@ impl ApplicationBuilder {
             None => (None, None),
         };
 
-        // Initialize upload processor. The storage dir is shared with
-        // the site pod (mounted via PV at the same path) so logs the
-        // worker uploads here can be served straight off disk by the
-        // site's FileSystemLogFileManager. Default to
-        // `/var/log/janitor` to match the FS log manager default;
+        // Initialize upload processor. Default to `/var/log/janitor`,
         // overridable via UPLOAD_STORAGE_DIR for unit tests / dev.
         log::info!("Initializing upload processor...");
         let upload_storage_dir = std::env::var("UPLOAD_STORAGE_DIR")

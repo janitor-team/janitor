@@ -2472,12 +2472,10 @@ async fn finish_run_multipart_internal(
         }
     };
 
-    // Process multipart upload. Pass the codebase so logs land in
-    // the `{root}/{codebase}/{run_id}/<name>` layout the site's
-    // FileSystemLogFileManager expects.
+    // Process multipart upload. The logs stay in memory until stored below.
     let uploaded_result = match state
         .upload_processor
-        .process_upload(multipart, &run_id, &active_run.codebase)
+        .process_upload(multipart, &run_id)
         .await
     {
         Ok(result) => result,
@@ -2565,18 +2563,14 @@ async fn finish_run_multipart_internal(
     janitor_result.logfilenames = log_filenames.clone();
 
     for log_file in &uploaded_result.log_files {
-        let Some(path_str) = log_file.stored_path.to_str() else {
-            log::warn!("Invalid UTF-8 in log file path: {:?}", log_file.stored_path);
-            continue;
-        };
-        if let Err(e) = janitor::logs::import_log(
+        if let Err(e) = janitor::logs::import_log_data(
             state.log_manager.as_ref(),
             state.backup_log_manager.as_deref(),
             &active_run.codebase,
             &run_id,
-            path_str,
-            Some(&log_file.filename),
-            Some(janitor_result.finish_time.timestamp()),
+            &log_file.filename,
+            &log_file.data,
+            Some(janitor_result.finish_time),
         )
         .await
         {

@@ -23,13 +23,22 @@ pub struct UploadedFile {
     pub uploaded_at: DateTime<Utc>,
 }
 
+/// Log uploaded by a worker, kept in memory until `/finish` stores it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UploadedLog {
+    /// Original filename.
+    pub filename: String,
+    /// Log contents.
+    pub data: Vec<u8>,
+}
+
 /// Complete worker result uploaded via multipart form.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UploadedWorkerResult {
     /// Worker result metadata.
     pub worker_result: WorkerResult,
     /// Log files uploaded.
-    pub log_files: Vec<UploadedFile>,
+    pub log_files: Vec<UploadedLog>,
     /// Artifact files uploaded.
     pub artifact_files: Vec<UploadedFile>,
     /// Build output files (for builder results).
@@ -60,18 +69,13 @@ impl UploadProcessor {
 
     /// Process a multipart upload from a worker.
     ///
-    /// `codebase` is the codebase name for this run; logs are stored
-    /// under `{storage_dir}/{codebase}/{run_id}/{filename}` so the
-    /// site's `FileSystemLogFileManager` (which expects the
-    /// `{root}/{codebase}/{run_id}/{name}` layout) can read them
-    /// straight off a shared volume -- no separate proxy needed.
+    /// Logs are kept in memory for `/finish` to store.
     /// Other categories (artifacts/build/metadata) keep the
     /// `{storage_dir}/{run_id}/{category}/{filename}` layout.
     pub async fn process_upload(
         &self,
         mut multipart: Multipart,
         run_id: &janitor::RunId,
-        codebase: &janitor::CodebaseName,
     ) -> Result<UploadedWorkerResult, UploadError> {
         let mut worker_result: Option<WorkerResult> = None;
         let mut log_files = Vec::new();
@@ -80,17 +84,11 @@ impl UploadProcessor {
         let mut metadata_files = Vec::new();
         let mut total_size = 0u64;
 
-        // Per-category directory layout. Logs follow the FS log
-        // manager layout so `LOG_URL=file://{storage_dir}` on the
-        // site pod can find them.
+        // Per-category directory layout.
         let run_dir = self.storage_dir.join(run_id);
         tokio::fs::create_dir_all(&run_dir)
             .await
             .map_err(|e| UploadError::Storage(format!("Failed to create directory: {}", e)))?;
-        let logs_dir = self.storage_dir.join(codebase).join(run_id);
-        tokio::fs::create_dir_all(&logs_dir)
-            .await
-            .map_err(|e| UploadError::Storage(format!("Failed to create logs directory: {}", e)))?;
 
         while let Some(field) = multipart
             .next_field()
@@ -152,12 +150,7 @@ impl UploadProcessor {
                     let filename = field.file_name().unwrap_or_default().to_string();
                     let is_log = filename.ends_with(".log") || filename == "worker.log";
                     if is_log {
-                        // Logs land in `{storage_dir}/{codebase}/{run_id}/<name>`
-                        // -- the layout the FS log manager expects.
-                        let file = self
-                            .save_field_flat(field, &logs_dir, &mut total_size)
-                            .await?;
-                        log_files.push(file);
+                        log_files.push(self.read_log_field(field, &mut total_size).await?);
                     } else {
                         let file = self
                             .save_field_to_file(field, &run_dir, "artifacts", &mut total_size)
@@ -166,11 +159,7 @@ impl UploadProcessor {
                     }
                 }
                 field_name if field_name.starts_with("log_") => {
-                    // Process log file
-                    let file = self
-                        .save_field_to_file(field, &run_dir, "logs", &mut total_size)
-                        .await?;
-                    log_files.push(file);
+                    log_files.push(self.read_log_field(field, &mut total_size).await?);
                 }
                 field_name if field_name.starts_with("artifact_") => {
                     // Process artifact file
@@ -219,35 +208,32 @@ impl UploadProcessor {
         })
     }
 
-    /// Save a multipart field straight into `dir/<filename>` --
-    /// no category subfolder. Used for log files which already get
-    /// a per-codebase/per-run directory upstream.
-    async fn save_field_flat<'a>(
+    /// Read a log field into memory.
+    async fn read_log_field<'a>(
         &self,
-        field: axum::extract::multipart::Field<'a>,
-        dir: &PathBuf,
+        mut field: axum::extract::multipart::Field<'a>,
         total_size: &mut u64,
-    ) -> Result<UploadedFile, UploadError> {
+    ) -> Result<UploadedLog, UploadError> {
         let filename = field.file_name().unwrap_or("unknown").to_string();
-        let content_type = field.content_type().map(|ct| ct.to_string());
-        let safe_filename = sanitize_filename(&filename);
-        let file_path = dir.join(&safe_filename);
-        let file_size =
-            stream_field_to_disk(field, &file_path, self.max_file_size, &filename).await?;
-        *total_size += file_size;
-        log::info!(
-            "Uploaded log: {} ({} bytes) -> {:?}",
-            filename,
-            file_size,
-            file_path
-        );
-        Ok(UploadedFile {
-            filename,
-            content_type,
-            size: file_size,
-            stored_path: file_path,
-            uploaded_at: Utc::now(),
-        })
+        let mut data = Vec::new();
+        while let Some(chunk) = field
+            .chunk()
+            .await
+            .map_err(|e| UploadError::Multipart(format!("Failed to read file data: {}", e)))?
+        {
+            data.extend_from_slice(&chunk);
+            if data.len() as u64 > self.max_file_size {
+                return Err(UploadError::SizeLimit(format!(
+                    "File {} size {} exceeds limit {}",
+                    filename,
+                    data.len(),
+                    self.max_file_size
+                )));
+            }
+        }
+        *total_size += data.len() as u64;
+        log::info!("Uploaded log: {} ({} bytes)", filename, data.len());
+        Ok(UploadedLog { filename, data })
     }
 
     /// Save a multipart field to a file.
@@ -654,5 +640,53 @@ mod tests {
         assert_eq!(sanitize_filename("with:colon.txt"), "with_colon.txt");
         assert_eq!(sanitize_filename("..dangerous"), "dangerous");
         assert_eq!(sanitize_filename("dangerous.."), "dangerous");
+    }
+
+    fn files_under(dir: &std::path::Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                files.extend(files_under(&path));
+            } else {
+                files.push(path);
+            }
+        }
+        files
+    }
+
+    #[tokio::test]
+    async fn test_process_upload_leaves_no_log_in_the_storage_dir() {
+        let storage = tempfile::tempdir().unwrap();
+        let processor = UploadProcessor::new(storage.path().to_path_buf(), 1024, 4096);
+        let body = "--b\r\n\
+            Content-Disposition: form-data; name=\"metadata\"; filename=\"result.json\"\r\n\r\n\
+            {\"code\":\"success\",\"description\":\"ok\"}\r\n\
+            --b\r\n\
+            Content-Disposition: form-data; name=\"file\"; filename=\"build.log\"\r\n\r\n\
+            build output\n\r\n\
+            --b--\r\n";
+        let request = axum::http::Request::builder()
+            .header("content-type", "multipart/form-data; boundary=b")
+            .body(axum::body::Body::from(body))
+            .unwrap();
+        let multipart = <Multipart as axum::extract::FromRequest<()>>::from_request(request, &())
+            .await
+            .unwrap();
+
+        let uploaded = processor
+            .process_upload(multipart, &janitor::RunId::new("run-1").unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            (uploaded.log_files, files_under(storage.path())),
+            (
+                vec![UploadedLog {
+                    filename: "build.log".to_string(),
+                    data: b"build output\n".to_vec(),
+                }],
+                vec![]
+            )
+        );
     }
 }
