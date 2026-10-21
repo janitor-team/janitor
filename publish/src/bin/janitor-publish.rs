@@ -76,6 +76,10 @@ struct Args {
     /// Path to merge proposal templates
     #[clap(long)]
     template_env_path: Option<PathBuf>,
+
+    /// Seconds after which a janitor-publish-one run is killed.
+    #[clap(long, default_value = "3600")]
+    publish_one_timeout: u64,
 }
 
 #[tokio::main]
@@ -196,7 +200,7 @@ async fn main() -> Result<(), i32> {
         .map(|redis_location| rslock::LockManager::new(vec![redis_location]));
 
     log::info!("building publish worker");
-    let publish_worker = janitor_publish::PublishWorker::new(
+    let mut publish_worker = janitor_publish::PublishWorker::new(
         args.template_env_path,
         args.external_url,
         args.differ_url,
@@ -205,6 +209,7 @@ async fn main() -> Result<(), i32> {
         lock_manager,
     )
     .await;
+    publish_worker.publish_one_timeout = std::time::Duration::from_secs(args.publish_one_timeout);
     log::info!("publish worker built; initializing GPG context");
 
     // Set up health checker

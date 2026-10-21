@@ -708,6 +708,8 @@ pub struct PublishOneError {
 pub struct PublishWorker {
     /// Optional path to the template environment.
     pub template_env_path: Option<PathBuf>,
+    /// Command run for each publish; `janitor-publish-one` from `PATH` by default.
+    pub publish_one_command: Vec<String>,
     /// Optional external URL for the publish operation.
     pub external_url: Option<url::Url>,
     /// URL of the differ service.
@@ -718,6 +720,10 @@ pub struct PublishWorker {
     pub redis_manager: Option<Arc<janitor::redis::RedisManager>>,
     /// Optional lock manager for coordinating publish operations.
     pub lock_manager: Option<rslock::LockManager>,
+    /// Lifetime of a branch lock; it is renewed while the publish runs.
+    pub lock_lifetime: std::time::Duration,
+    /// Time after which a publish child is killed and the publish fails.
+    pub publish_one_timeout: std::time::Duration,
 }
 
 /// Errors that can occur when interacting with a worker process.
@@ -778,6 +784,7 @@ async fn run_worker_process(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
         .spawn()?;
 
     use tokio::io::AsyncWriteExt;
@@ -832,6 +839,55 @@ async fn run_worker_process(
     }
 }
 
+/// A branch lock that is renewed until it is dropped.
+struct BranchLock {
+    lock: Arc<rslock::Lock>,
+    renewal: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for BranchLock {
+    fn drop(&mut self) {
+        self.renewal.abort();
+        // The only unlock, for success, errors and cancellation; it deletes only our token.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let lock = self.lock.clone();
+            runtime.spawn(async move { lock.lock_manager.unlock(&lock).await });
+        }
+    }
+}
+
+/// Take the publish lock of a branch and keep it alive until it is dropped.
+async fn lock_branch(
+    lock_manager: &rslock::LockManager,
+    target_branch_url: &url::Url,
+    lifetime: std::time::Duration,
+) -> Result<BranchLock, rslock::LockError> {
+    let resource = format!("publish:{}", target_branch_url);
+    let lock = Arc::new(lock_manager.lock(resource.as_bytes(), lifetime).await?);
+    let renewal = tokio::spawn(renew_branch_lock(lock.clone(), lifetime));
+    Ok(BranchLock { lock, renewal })
+}
+
+/// Extend a branch lock every third of its lifetime, as long as it is ours.
+async fn renew_branch_lock(lock: Arc<rslock::Lock>, lifetime: std::time::Duration) {
+    let mut lost = false;
+    loop {
+        tokio::time::sleep(lifetime / 3).await;
+        match lock.lock_manager.extend(&lock, lifetime).await {
+            Ok(_) => lost = false,
+            Err(e) if !lost => {
+                lost = true;
+                log::warn!(
+                    "Lost the lock {}: {}",
+                    String::from_utf8_lossy(&lock.resource),
+                    e
+                );
+            }
+            Err(_) => {}
+        }
+    }
+}
+
 impl PublishWorker {
     /// Create a new publish worker.
     ///
@@ -854,11 +910,14 @@ impl PublishWorker {
     ) -> Self {
         Self {
             template_env_path,
+            publish_one_command: vec!["janitor-publish-one".to_string()],
             external_url,
             differ_url,
             redis,
             redis_manager,
             lock_manager,
+            lock_lifetime: std::time::Duration::from_secs(60),
+            publish_one_timeout: std::time::Duration::from_secs(3600),
         }
     }
 
@@ -931,7 +990,7 @@ impl PublishWorker {
             auto_merge,
         };
 
-        let mut args = vec!["janitor-publish-one".to_string()];
+        let mut args = self.publish_one_command.clone();
 
         if let Some(template_env_path) = self.template_env_path.as_ref() {
             args.push(format!(
@@ -940,41 +999,36 @@ impl PublishWorker {
             ));
         }
 
-        let (returncode, response) = if let Some(lock_manager) = &self.lock_manager {
-            match lock_manager
-                .lock(
-                    format!("publish:{}", target_branch_url).as_bytes(),
-                    std::time::Duration::from_secs(60),
-                )
+        // On timeout the child is dropped, which kills it.
+        let child = async {
+            match tokio::time::timeout(self.publish_one_timeout, run_worker_process(args, request))
                 .await
             {
-                Ok(rl) => {
-                    let (returncode, response) = match run_worker_process(args, request).await {
-                        Ok((returncode, response)) => (returncode, response),
-                        Err(e) => {
-                            return Err(PublishError::Failure {
-                                code: "publisher-invalid-response".to_string(),
-                                description: e.to_string(),
-                            });
-                        }
-                    };
-                    lock_manager.unlock(&rl).await;
-                    (returncode, response)
-                }
+                Ok(Ok((returncode, response))) => Ok((returncode, response)),
+                Ok(Err(e)) => Err(PublishError::Failure {
+                    code: "publisher-invalid-response".to_string(),
+                    description: e.to_string(),
+                }),
+                Err(_) => Err(PublishError::Failure {
+                    code: "worker-timeout".to_string(),
+                    description: format!(
+                        "janitor-publish-one did not finish within {:?}",
+                        self.publish_one_timeout
+                    ),
+                }),
+            }
+        };
+
+        let (returncode, response) = if let Some(lock_manager) = &self.lock_manager {
+            match lock_branch(lock_manager, target_branch_url, self.lock_lifetime).await {
+                // Dropping the lock at the end of this arm releases it.
+                Ok(_lock) => child.await?,
                 Err(_) => {
                     return Err(PublishError::BranchBusy(target_branch_url.clone()));
                 }
             }
         } else {
-            match run_worker_process(args, request).await {
-                Ok((returncode, response)) => (returncode, response),
-                Err(e) => {
-                    return Err(PublishError::Failure {
-                        code: "publisher-invalid-response".to_string(),
-                        description: e.to_string(),
-                    });
-                }
-            }
+            child.await?
         };
 
         if returncode == 1 {

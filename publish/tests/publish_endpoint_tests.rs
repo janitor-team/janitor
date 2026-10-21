@@ -152,3 +152,193 @@ test_with_database! {
         }
     }
 }
+
+/// Redis for the branch locks; `None` when there is none to test with.
+async fn test_redis_url() -> Option<String> {
+    janitor_runner::test_utils::ensure_redis().await;
+    let url = std::env::var("TEST_REDIS_URL").ok();
+    if url.is_none() {
+        eprintln!("skipping: TEST_REDIS_URL unset and no container");
+    }
+    url
+}
+
+/// A worker that runs `command` as its publish child and takes branch locks in `redis_url`.
+async fn locking_worker(redis_url: &str, command: &[&str]) -> PublishWorker {
+    let mut worker = PublishWorker::new(
+        None,
+        None,
+        url::Url::parse("http://differ.invalid").unwrap(),
+        None,
+        None,
+        Some(rslock::LockManager::new(vec![redis_url.to_string()])),
+    )
+    .await;
+    worker.publish_one_command = command.iter().map(|s| s.to_string()).collect();
+    worker
+}
+
+fn lock_test_target() -> url::Url {
+    format!("https://example.com/lock-test-{}", uuid::Uuid::new_v4())
+        .parse()
+        .unwrap()
+}
+
+/// Propose a change to `target` through `PublishWorker::publish_one`.
+async fn propose(
+    worker: &PublishWorker,
+    target: &url::Url,
+) -> Result<janitor_publish::PublishOneResult, janitor_publish::PublishError> {
+    worker
+        .publish_one(
+            &janitor::Campaign::new("campaign").unwrap(),
+            &janitor::CodebaseName::new("codebase").unwrap(),
+            "true",
+            target,
+            janitor::publish::Mode::Propose,
+            "main",
+            &breezyshim::RevisionId::from(b"rev".to_vec()),
+            &janitor::RunId::new("log-id").unwrap(),
+            Some(&janitor::RunId::new("unchanged-id").unwrap()),
+            "campaign",
+            None,
+            &janitor::vcs::RemoteBzrVcsManager::new("https://example.com/bzr/".parse().unwrap()),
+            None,
+            false,
+            true,
+            None,
+            None,
+            None,
+            None,
+            &serde_json::Value::Null,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+}
+
+/// Whether a second publisher could take the branch lock within `wait`.
+async fn lock_is_free(redis_url: &str, target: &url::Url, wait: std::time::Duration) -> bool {
+    let lock_manager = rslock::LockManager::new(vec![redis_url.to_string()]);
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        if let Ok(lock) = lock_manager
+            .lock(
+                format!("publish:{target}").as_bytes(),
+                std::time::Duration::from_secs(1),
+            )
+            .await
+        {
+            lock_manager.unlock(&lock).await;
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+const CHILD_ANSWER: &str =
+    r#"{"branch_name": "b", "target_branch_url": "https://example.com/", "mode": "propose"}"#;
+
+#[tokio::test]
+async fn long_child_keeps_branch_lock() {
+    let Some(redis_url) = test_redis_url().await else {
+        return;
+    };
+    let script = format!("sleep 5; echo '{CHILD_ANSWER}'");
+    let mut worker = locking_worker(&redis_url, &["sh", "-c", &script]).await;
+    // The child runs for more than three lock lifetimes.
+    worker.lock_lifetime = std::time::Duration::from_millis(1500);
+    let target = lock_test_target();
+
+    let publish = propose(&worker, &target);
+    tokio::pin!(publish);
+    let result = loop {
+        tokio::select! {
+            result = &mut publish => break result,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
+                assert!(
+                    !lock_is_free(&redis_url, &target, std::time::Duration::ZERO).await,
+                    "a second publish got the branch lock while the child was running"
+                );
+            }
+        }
+    };
+    assert_eq!(result.unwrap().branch_name(), "b");
+    assert!(
+        lock_is_free(&redis_url, &target, std::time::Duration::from_secs(2)).await,
+        "branch lock still held after the child ended"
+    );
+}
+
+#[tokio::test]
+async fn cancelled_publish_kills_child_and_releases_branch_lock() {
+    let Some(redis_url) = test_redis_url().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let pid_file = dir.path().join("child.pid");
+    let script = format!("echo $$ > '{}'; exec sleep 30", pid_file.display());
+    let worker = locking_worker(&redis_url, &["sh", "-c", &script]).await;
+    let target = lock_test_target();
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), propose(&worker, &target))
+        .await
+        .expect_err("the child did not hang");
+
+    wait_until_child_is_gone(&pid_file).await;
+    assert!(
+        lock_is_free(&redis_url, &target, std::time::Duration::from_secs(2)).await,
+        "branch lock still held after the publish was cancelled"
+    );
+}
+
+/// Wait up to 2 s for the child whose pid is in `pid_file` to be killed.
+async fn wait_until_child_is_gone(pid_file: &std::path::Path) {
+    let pid = std::fs::read_to_string(pid_file).unwrap();
+    let stat = format!("/proc/{}/stat", pid.trim());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    // A killed child is gone, or a zombie until it is reaped.
+    while std::fs::read_to_string(&stat).is_ok_and(|s| !s.contains(") Z ")) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the child is still running"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+async fn publish_child_past_its_timeout_is_killed_and_releases_branch_lock() {
+    let Some(redis_url) = test_redis_url().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let pid_file = dir.path().join("child.pid");
+    let script = format!("echo $$ > '{}'; exec sleep 30", pid_file.display());
+    let mut worker = locking_worker(&redis_url, &["sh", "-c", &script]).await;
+    worker.publish_one_timeout = std::time::Duration::from_secs(1);
+    let target = lock_test_target();
+
+    let Err(janitor_publish::PublishError::Failure { code, description }) =
+        propose(&worker, &target).await
+    else {
+        panic!("the publish did not fail with a failure code");
+    };
+    assert_eq!(
+        (code.as_str(), description.as_str()),
+        (
+            "worker-timeout",
+            "janitor-publish-one did not finish within 1s"
+        )
+    );
+    wait_until_child_is_gone(&pid_file).await;
+    assert!(
+        lock_is_free(&redis_url, &target, std::time::Duration::from_secs(2)).await,
+        "branch lock still held after the child timed out"
+    );
+}
