@@ -48,11 +48,13 @@ this order and waits for each health route:
 | `janitor-publish` | `janitor-publish` | 127.0.0.1:9912 |
 | `janitor-site` | `janitor-site` | 127.0.0.1:8080 (admin), 127.0.0.1:8090 (public) |
 | `janitor-auto_upload` (optional) | `janitor-auto-upload` | 127.0.0.1:9933 (`/metrics` only) |
+| `janitor-ognibuild_dep` (optional) | `dep-server` | 127.0.0.1:9934 |
 | `janitor-worker` | `janitor-worker --loop` | `janitor_worker_address`:9821 |
 
 Caddy serves `janitor_external_url` and proxies `/runner/` (without the
 prefix) to the runner's public port, `/git/` and `/bzr/` to the stores'
-public ports, `/dists/` to the archive and everything else to the site.
+public ports, `/dists/` to the archive, `/ognibuild-dep/` (optional) to
+the dependency server and everything else to the site.
 No private port is proxied. Workers use only that URL, so a worker host
 needs to reach the control host on port 443 (and 80 for the apt
 repository), and the control host needs to reach each worker on 9821.
@@ -180,6 +182,15 @@ there, not the primary key.
 `enable_auto_upload_target: true` instead makes a test-only key and a
 dput host that copies uploads into `auto_upload_incoming` on the control
 host, to try it out.
+
+### ognibuild dependency server (optional)
+
+`enable_ognibuild_dep: true` runs ognibuild's `dep-server` (image
+`ognibuild_dep`) on the control host, as nobody with no capabilities on
+a read-only root. It has no login: Caddy serves it under
+`/ognibuild-dep/` only to `ognibuild_dep_clients` (private addresses by
+default; 403 for the rest), and the runner passes that URL
+(`--public-dep-server-url`) to generic builds.
 
 ### Mail filter (optional)
 

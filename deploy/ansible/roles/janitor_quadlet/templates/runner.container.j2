@@ -9,7 +9,7 @@ ContainerName=janitor-runner
 Network=host
 # The whole command line is given here.
 Entrypoint=janitor-runner
-Exec=--listen-address 127.0.0.1 --port 9911 --public-port 9919 --config /mnt/janitor/janitor.conf --public-vcs-location {{ janitor_external_url }} --public-apt-archive-location {{ janitor_apt_archive_url }}
+Exec=--listen-address 127.0.0.1 --port 9911 --public-port 9919 --config /mnt/janitor/janitor.conf --public-vcs-location {{ janitor_external_url }} --public-apt-archive-location {{ janitor_apt_archive_url }}{% if enable_ognibuild_dep | bool %} --public-dep-server-url {{ janitor_external_url }}ognibuild-dep/{% endif +%}
 Volume={{ janitor_home }}/janitor.conf:/mnt/janitor/janitor.conf:ro
 Volume={{ janitor_home }}/data/logs:/mnt/janitor/data/logs:rw
 Volume={{ janitor_home }}/data/artifacts:/mnt/janitor/data/artifacts:rw

@@ -26,6 +26,13 @@
 	handle /bzr/* {
 		reverse_proxy 127.0.0.1:9930
 	}
+{% if enable_ognibuild_dep | bool %}
+	handle_path /ognibuild-dep/* {
+		@not_dep_client not remote_ip {{ ognibuild_dep_clients | join(' ') }}
+		respond @not_dep_client 403
+		reverse_proxy 127.0.0.1:9934
+	}
+{% endif %}
 	# The apt repository metadata; the site serves the pool files itself.
 	handle /dists/* {
 		reverse_proxy 127.0.0.1:9914

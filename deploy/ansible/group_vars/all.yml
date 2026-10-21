@@ -79,6 +79,7 @@ janitor_control_services:
 # Long-running services on this host, from its groups.
 janitor_services: >-
   {{ (janitor_control_services + (['auto_upload'] if enable_auto_upload | bool else [])
+      + (['ognibuild_dep'] if enable_ognibuild_dep | bool else [])
       if 'control' in group_names else [])
      + (['worker'] if 'worker' in group_names else []) }}
 # The systemd units of janitor_services, one per worker instance.
@@ -151,6 +152,12 @@ auto_upload_distributions: []
 # test-only signing key made on the control host (roles/auto_upload_target).
 enable_auto_upload_target: false
 auto_upload_incoming: "{{ janitor_home }}/data/upload-incoming"
+# Optional: ognibuild's dependency server (image ognibuild_dep) on the
+# control host. It has no login; Caddy serves it under /ognibuild-dep/
+# to ognibuild_dep_clients (Caddy remote_ip ranges; 403 for the rest), and
+# the runner hands that URL to generic builds.
+enable_ognibuild_dep: false
+ognibuild_dep_clients: [private_ranges]
 # Optional: janitor-mail-filter reads a forge's notification mail on
 # stdin and has publish refresh that proposal's status at once.
 # roles/mail_filter installs mail_filter_command for an MTA to pipe mail
@@ -194,4 +201,5 @@ janitor_health_urls:
   site: http://127.0.0.1:8080/health
   # auto-upload has no /health.
   auto_upload: http://127.0.0.1:9933/metrics
+  ognibuild_dep: http://127.0.0.1:9934/health
   worker: "http://{{ janitor_worker_address }}:9821/health"
