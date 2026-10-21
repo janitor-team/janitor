@@ -295,3 +295,142 @@ async def test_review_without_oauth2_provider_is_not_qa_review(aiohttp_client, d
     async with db.acquire() as conn:
         rows = await conn.fetch("SELECT run_id, reviewer, verdict FROM review")
     assert [tuple(row) for row in rows] == [("r1", "alice@example.com", "approved")]
+
+
+async def _runner_client(aiohttp_client, path, received, body, status=200):
+    runner_app = web.Application()
+
+    async def _handle(request):
+        received.append(await request.json())
+        return web.json_response(body, status=status)
+
+    runner_app.router.add_post(path, _handle)
+    return await aiohttp_client(runner_app)
+
+
+async def test_codebase_schedule_forwards_to_runner(aiohttp_client, db):
+    received: list[dict] = []
+    runner_client = await _runner_client(
+        aiohttp_client,
+        "/schedule",
+        received,
+        {"campaign": "mycampaign", "codebase": "foo", "queue_position": 1},
+    )
+
+    client = await create_client(
+        aiohttp_client,
+        db,
+        runner_url=str(runner_client.make_url("/")),
+        user={"email": "alice@example.com", "groups": []},
+    )
+
+    resp = await client.post(
+        "/mycampaign/c/foo/schedule", data={"refresh": "1", "offset": "5"}
+    )
+    assert resp.status == 200
+    assert await resp.json() == {
+        "campaign": "mycampaign",
+        "codebase": "foo",
+        "queue_position": 1,
+    }
+    assert received == [
+        {
+            "campaign": "mycampaign",
+            "codebase": "foo",
+            "refresh": True,
+            "requester": "alice@example.com",
+            "bucket": "manual",
+            "offset": 5.0,
+        }
+    ]
+
+
+async def test_codebase_schedule_needs_login(aiohttp_client, db):
+    received: list[dict] = []
+    runner_client = await _runner_client(aiohttp_client, "/schedule", received, {})
+
+    client = await create_client(
+        aiohttp_client, db, runner_url=str(runner_client.make_url("/"))
+    )
+
+    resp = await client.post("/mycampaign/c/foo/schedule")
+    assert resp.status == 401
+    assert received == []
+
+
+@pytest.mark.parametrize(
+    "path, runner_path",
+    [
+        ("/mycampaign/c/foo/schedule", "/schedule"),
+        ("/run/1/reschedule", "/schedule"),
+        ("/run/1/schedule-control", "/schedule-control"),
+    ],
+)
+@pytest.mark.parametrize(
+    "data, error",
+    [
+        ({"refresh": "x"}, "invalid boolean for refresh"),
+        ({"offset": "x"}, "invalid number for offset"),
+        ({"offset": "nan"}, "invalid number for offset"),
+        ({"offset": "inf"}, "invalid number for offset"),
+    ],
+)
+async def test_schedule_bad_input(aiohttp_client, db, path, runner_path, data, error):
+    received: list[dict] = []
+    runner_client = await _runner_client(aiohttp_client, runner_path, received, {})
+
+    client = await create_client(
+        aiohttp_client,
+        db,
+        runner_url=str(runner_client.make_url("/")),
+        user={"email": "alice@example.com", "groups": []},
+    )
+
+    resp = await client.post(path, data=data)
+    assert resp.status == 400
+    assert await resp.json() == {"error": error}
+    assert received == []
+
+
+async def test_codebase_schedule_passes_through_runner_error(aiohttp_client, db):
+    received: list[dict] = []
+    runner_client = await _runner_client(
+        aiohttp_client,
+        "/schedule",
+        received,
+        {"reason": "no command specified"},
+        status=400,
+    )
+
+    client = await create_client(
+        aiohttp_client,
+        db,
+        runner_url=str(runner_client.make_url("/")),
+        user={"email": "alice@example.com", "groups": []},
+    )
+
+    resp = await client.post("/mycampaign/c/foo/schedule")
+    assert resp.status == 400
+    assert await resp.json() == {"reason": "no command specified"}
+
+
+async def test_schedule_control_passes_through_runner_error(aiohttp_client, db):
+    received: list[dict] = []
+    runner_client = await _runner_client(
+        aiohttp_client,
+        "/schedule-control",
+        received,
+        {"reason": "Run not found"},
+        status=404,
+    )
+
+    client = await create_client(
+        aiohttp_client,
+        db,
+        runner_url=str(runner_client.make_url("/")),
+        user={"email": "alice@example.com", "groups": []},
+    )
+
+    resp = await client.post("/run/nonexistent/schedule-control")
+    assert resp.status == 404
+    assert await resp.json() == {"reason": "Run not found"}
