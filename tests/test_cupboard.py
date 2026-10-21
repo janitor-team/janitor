@@ -20,8 +20,10 @@ import types
 from datetime import timedelta
 
 import aiohttp_jinja2
+import aiozipkin
 import pytest
 from aiohttp import web
+from bs4 import BeautifulSoup
 from jinja2 import Environment
 from yarl import URL
 
@@ -62,6 +64,8 @@ async def create_client(aiohttp_client, db, *, user=None, config=""):
     # caller is py/janitor/site/simple.py.
     aiohttp_jinja2.get_env(app).globals.update(TEMPLATE_ENV)
     app.middlewares.insert(0, _user_middleware(user))
+    tracer = await aiozipkin.create_custom(aiozipkin.create_endpoint("test"))
+    aiozipkin.setup(app, tracer)
     return await aiohttp_client(app)
 
 
@@ -324,6 +328,44 @@ async def test_evaluate_unknown_run_returns_404(db):
 
     with pytest.raises(web.HTTPNotFound):
         await generate_evaluate(db, {}, None, None, "nonexistent", None)
+
+
+async def test_review_evaluation_ignores_host_header(
+    aiohttp_client, aiohttp_server, db
+):
+    contacted = []
+
+    async def evaluator(request):
+        contacted.append(request.path)
+        return web.Response(text="<script>evil</script>", content_type="text/html")
+
+    attacker_app = web.Application()
+    attacker_app.router.add_get("/{tail:.*}", evaluator)
+    attacker = await aiohttp_server(attacker_app)
+    client = await create_client(aiohttp_client, db)
+    async with db.acquire() as conn:
+        await _insert_codebase(conn, "foo")
+        now = utcnow()
+        await _insert_run(
+            conn, run_id="run1", codebase="foo", start_time=now, finish_time=now
+        )
+        await conn.execute(
+            "INSERT INTO new_result_branch (run_id, role) VALUES ('run1', 'main')"
+        )
+        await conn.execute("INSERT INTO named_publish_policy (name) VALUES ('p')")
+        await conn.execute(
+            "INSERT INTO candidate (suite, command, codebase, publish_policy) "
+            "VALUES ('mycampaign', 'true', 'foo', 'p')"
+        )
+
+    resp = await client.get(
+        "/cupboard/review?publishable_only=false&required_only=false",
+        headers={"Host": f"127.0.0.1:{attacker.port}"},
+    )
+    assert resp.status == 200
+    assert contacted == []
+    soup = BeautifulSoup(await resp.text(), "html.parser")
+    assert [span.get_text() for span in soup.select("#command")] == ["true"]
 
 
 ADMIN_USER = {"email": "admin@example.com", "groups": []}

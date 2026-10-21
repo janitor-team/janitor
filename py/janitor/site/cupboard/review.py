@@ -7,6 +7,7 @@ import aiozipkin
 import asyncpg
 from aiohttp import ClientConnectorError, ClientResponseError, web
 from breezy.revision import NULL_REVISION
+from yarl import URL
 
 from janitor import state
 
@@ -77,15 +78,33 @@ async def generate_review(
         campaign,
     ) = entries.pop(0)
 
-    evaluate_url = str(request.url.join(request.app["evaluate_url"]))
+    evaluate_url = request.app["evaluate_url"]
 
-    try:
-        async with request.app["http_client_session"].get(
-            evaluate_url.replace("RUN_ID", run_id), raise_for_status=True
-        ) as resp:
-            evaluate = await resp.text()
-    except (ClientConnectorError, ClientResponseError) as e:
-        evaluate = f"Unable to retrieve evaluation: {e}"
+    if URL(str(evaluate_url)).is_absolute():
+        fetch_url = str(evaluate_url).replace("RUN_ID", run_id)
+        try:
+            async with request.app["http_client_session"].get(
+                fetch_url, raise_for_status=True
+            ) as resp:
+                evaluate = await resp.text()
+        except (ClientConnectorError, ClientResponseError) as e:
+            evaluate = f"Unable to retrieve evaluation: {e}"
+    else:
+        try:
+            data = await generate_evaluate(
+                request.app["pool"],
+                vcs_managers,
+                request.app["http_client_session"],
+                differ_url,
+                run_id,
+                span,
+            )
+            evaluate = await render_template_for_request(
+                "cupboard/default-evaluate.html", request, data
+            )
+        except Exception:
+            logging.exception("Unable to render evaluation for %s", run_id)
+            evaluate = "Unable to retrieve evaluation."
 
     kwargs = {
         "review_instructions_url": request.app.get("review_instructions_url"),
