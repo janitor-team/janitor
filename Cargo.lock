@@ -3554,7 +3554,6 @@ dependencies = [
  "git2",
  "http",
  "janitor",
- "libc",
  "nix",
  "prometheus 0.14.0",
  "pyo3",
