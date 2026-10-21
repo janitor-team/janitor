@@ -313,6 +313,28 @@ fn test_loggerhead_changes_endpoint_reachable() {
             "unexpected status {} for /bzr/foo/changes",
             status
         );
+        if status == 503 {
+            eprintln!("skipping: loggerhead static dir not found");
+            handle.abort();
+            return;
+        }
+
+        // Pages whose loggerhead route has its own path parameter.
+        for page in [
+            "changes/1",
+            "files/1",
+            "revision/1",
+            "view/1/README",
+            "annotate/1/README",
+            "download/1/README",
+        ] {
+            let resp = client
+                .get(format!("http://{}/bzr/foo/{}", addr, page))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), reqwest::StatusCode::OK, "/bzr/foo/{}", page);
+        }
 
         handle.abort();
     });
