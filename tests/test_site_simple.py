@@ -275,7 +275,7 @@ async def test_merge_proposal_without_url_returns_400(
     assert await resp.text() == "no url specified"
 
 
-async def _start_provider(aiohttp_server, *, discovery=None):
+async def _start_provider(aiohttp_server, *, discovery=None, userinfo=None):
     """A local server standing in for the OpenID provider."""
 
     async def handle_discovery(request):
@@ -290,8 +290,25 @@ async def _start_provider(aiohttp_server, *, discovery=None):
             }
         )
 
+    async def handle_token(request):
+        form = await request.post()
+        assert (form["grant_type"], form["code"]) == ("authorization_code", "authcode")
+        return web.json_response(
+            {
+                "token_type": "Bearer",
+                "access_token": "the-access-token",
+                "refresh_token": "the-refresh-token",
+            }
+        )
+
+    async def handle_userinfo(request):
+        assert request.headers["Authorization"] == "Bearer the-access-token"
+        return web.json_response(userinfo)
+
     provider_app = web.Application()
     provider_app.router.add_get("/.well-known/openid-configuration", handle_discovery)
+    provider_app.router.add_post("/token", handle_token)
+    provider_app.router.add_get("/userinfo", handle_userinfo)
     return await aiohttp_server(provider_app)
 
 
@@ -342,3 +359,29 @@ async def test_login_link_hidden_without_provider(aiohttp_client, database_locat
     client = await _openid_site(aiohttp_client, database_location)
     resp = await client.get("/lintian-fixes/candidates")
     assert (resp.status, _login_links(await resp.text())) == (200, [])
+
+
+async def _callback(client, **cookies):
+    return await client.get(
+        "/oauth/callback",
+        params={"code": "authcode", "state": "mystate"},
+        cookies={"state": "mystate", **cookies},
+        allow_redirects=False,
+    )
+
+
+async def test_oauth_callback_clears_state_cookie_with_matching_path(
+    aiohttp_client, aiohttp_server, database_location
+):
+    provider = await _start_provider(
+        aiohttp_server, userinfo={"email": "alice@example.com", "groups": []}
+    )
+    client = await _openid_site(aiohttp_client, database_location, provider)
+    resp = await _callback(client)
+    state = resp.cookies["state"]
+    assert (resp.status, state.value, state["path"], state["max-age"]) == (
+        302,
+        "",
+        "/oauth/callback",
+        "0",
+    )

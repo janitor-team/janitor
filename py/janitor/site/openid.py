@@ -104,9 +104,10 @@ INSERT INTO site_session (id, userinfo) VALUES ($1, $2)
 
     # TODO(jelmer): Store access token / refresh token?
 
+    callback_path = request.app.router["oauth2-callback"].url_for()
     resp = web.HTTPFound(back_url)
 
-    resp.del_cookie("state")
+    resp.del_cookie("state", path=callback_path)
     resp.del_cookie("back_url")
     resp.set_cookie(
         "session_id", session_id, secure=True, httponly=True, samesite="Strict"
