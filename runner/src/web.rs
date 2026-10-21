@@ -1526,7 +1526,7 @@ async fn peek_active_run(State(state): State<Arc<AppState>>) -> impl IntoRespons
 /// Query parameters for `GET /queue` (`?limit=N`).
 #[derive(serde::Deserialize, Default)]
 struct GetQueueQuery {
-    limit: Option<i64>,
+    limit: Option<u32>,
 }
 
 /// `GET /queue` -- return the queued items as
@@ -1536,7 +1536,7 @@ async fn get_queue(
     Query(query): Query<GetQueueQuery>,
 ) -> impl IntoResponse {
     let queue = janitor::queue::Queue::new(state.database.pool());
-    match queue.iter_queue(query.limit, None).await {
+    match queue.iter_queue(query.limit.map(i64::from), None).await {
         Ok(items) => {
             let payload: Vec<serde_json::Value> = items
                 .into_iter()

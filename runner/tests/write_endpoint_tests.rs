@@ -597,6 +597,24 @@ async fn get_queue_returns_scheduled_entries() {
     assert!(entry["queue_id"].is_i64(), "queue_id must be a number");
 }
 
+/// `GET /queue` answers 400 for a negative limit.
+#[tokio::test]
+async fn get_queue_negative_limit_returns_400() {
+    let Some((app, _state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/queue?limit=-1")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
 /// `POST /kill/{id}` on a run whose backchannel does not support
 /// killing returns 501. Jenkins backchannel always returns
 /// `PingError::NotSupported`.
