@@ -275,7 +275,7 @@ async def test_merge_proposal_without_url_returns_400(
     assert await resp.text() == "no url specified"
 
 
-async def _start_provider(aiohttp_server, *, discovery=None):
+async def _start_provider(aiohttp_server, *, discovery=None, userinfo=None):
     """A local server standing in for the OpenID provider."""
 
     async def handle_discovery(request):
@@ -290,17 +290,35 @@ async def _start_provider(aiohttp_server, *, discovery=None):
             }
         )
 
+    async def handle_token(request):
+        form = await request.post()
+        assert (form["grant_type"], form["code"]) == ("authorization_code", "authcode")
+        return web.json_response(
+            {
+                "token_type": "Bearer",
+                "access_token": "the-access-token",
+                "refresh_token": "the-refresh-token",
+            }
+        )
+
+    async def handle_userinfo(request):
+        assert request.headers["Authorization"] == "Bearer the-access-token"
+        return web.json_response(userinfo)
+
     provider_app = web.Application()
     provider_app.router.add_get("/.well-known/openid-configuration", handle_discovery)
+    provider_app.router.add_post("/token", handle_token)
+    provider_app.router.add_get("/userinfo", handle_userinfo)
     return await aiohttp_server(provider_app)
 
 
-async def _openid_site(aiohttp_client, database_location, provider=None):
+async def _openid_site(aiohttp_client, database_location, provider=None, groups=""):
     base_url = f'base_url: "{provider.make_url("/")}"' if provider else ""
     oauth2_provider = f"""oauth2_provider {{
   client_id: "test-client"
   client_secret: "test-secret"
   {base_url}
+  {groups}
 }}"""
     _private_app, app = await create_app(
         config=create_config(database_location, oauth2_provider),
@@ -342,3 +360,43 @@ async def test_login_link_hidden_without_provider(aiohttp_client, database_locat
     client = await _openid_site(aiohttp_client, database_location)
     resp = await client.get("/lintian-fixes/candidates")
     assert (resp.status, _login_links(await resp.text())) == (200, [])
+
+
+async def _callback(client, **cookies):
+    return await client.get(
+        "/oauth/callback",
+        params={"code": "authcode", "state": "mystate"},
+        cookies={"state": "mystate", **cookies},
+        allow_redirects=False,
+    )
+
+
+async def _get_session(client, session_id):
+    async with client.app.database.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT userinfo FROM site_session WHERE id = $1", session_id
+        )
+
+
+@pytest.mark.parametrize(
+    "userinfo, groups",
+    [
+        ({"name": "Alice", "email": "alice@example.com"}, []),
+        ({"name": "Alice", "email": "alice@example.com", "groups": None}, []),
+        ({"name": "Alice", "email": "alice@example.com", "groups": ["x"]}, ["x"]),
+    ],
+)
+async def test_oauth_callback_defaults_missing_groups_claim(
+    aiohttp_client, aiohttp_server, database_location, userinfo, groups
+):
+    provider = await _start_provider(aiohttp_server, userinfo=userinfo)
+    client = await _openid_site(
+        aiohttp_client, database_location, provider, groups='admin_group: "admins"'
+    )
+    resp = await _callback(client)
+    session_id = resp.cookies["session_id"].value
+    page = await client.get(
+        "/lintian-fixes/candidates", cookies={"session_id": session_id}
+    )
+    stored = await _get_session(client, session_id)
+    assert (resp.status, page.status, stored["groups"]) == (302, 200, groups)

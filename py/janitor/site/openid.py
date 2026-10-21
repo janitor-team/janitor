@@ -92,6 +92,8 @@ async def handle_oauth_callback(request):
         raise_for_status=True,
     ) as resp:
         userinfo = await resp.json()
+    # Some providers send no groups claim, or null; is_admin reads it on every page.
+    userinfo["groups"] = userinfo.get("groups") or []
     session_id = str(uuid.uuid4())
     async with request.app.database.acquire() as conn:
         await conn.execute(
