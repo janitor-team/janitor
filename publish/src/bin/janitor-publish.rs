@@ -119,6 +119,12 @@ async fn main() -> Result<(), i32> {
 
     let config: &'static _ = Box::leak(config);
 
+    if let Err(e) =
+        janitor::utils::set_user_agent(config.has_user_agent().then(|| config.user_agent()))
+    {
+        log::warn!("failed to install user agent override: {e}");
+    }
+
     let bucket_rate_limiter: Mutex<Box<dyn RateLimiter>> =
         std::sync::Mutex::new(if args.slowstart {
             Box::new(SlowStartRateLimiter::new(args.max_mps_per_bucket)) as Box<dyn RateLimiter>

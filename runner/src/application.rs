@@ -173,6 +173,14 @@ impl ApplicationBuilder {
 
         log::info!("Initializing Janitor Runner application...");
 
+        if let Err(e) = janitor::utils::set_user_agent(
+            self.config
+                .has_user_agent()
+                .then(|| self.config.user_agent()),
+        ) {
+            log::warn!("failed to install user agent override: {e}");
+        }
+
         self.validate()?;
 
         let public_vcs_location = self.public_vcs_location.as_deref().ok_or_else(|| {
