@@ -1081,7 +1081,10 @@ pub async fn derived_branch_name(
         format!("{}/{}", campaign_branch, role)
     };
 
-    let cotenants = has_cotenants(conn, &run.codebase, &run.branch_url).await?;
+    let cotenants = match run.branch_url.as_deref() {
+        Some(branch_url) => has_cotenants(conn, &run.codebase, branch_url).await?,
+        None => None,
+    };
 
     if cotenants == Some(true) {
         Ok(format!("{}/{}", base, run.codebase))
@@ -2578,7 +2581,7 @@ pub async fn publish_from_policy(
         log::warn!("no command set for {}", run.id);
         return Ok(None);
     }
-    if command != run.command {
+    if run.command.as_deref() != Some(command) {
         log::warn!(
             "Not publishing {}/{}: command has changed. Build used {:?}, now: {:?}. Rescheduling.",
             run.codebase,
@@ -2638,6 +2641,14 @@ pub async fn publish_from_policy(
             );
             return Ok(None);
         }
+    };
+    let Some(remote_branch_name) = remote_branch_name else {
+        log::warn!(
+            "run {} role {} has no remote branch name; skipping publish",
+            run.id,
+            role
+        );
+        return Ok(None);
     };
     let target_branch_url = role_branch_url(target_branch_url, Some(&remote_branch_name));
 
@@ -2746,7 +2757,11 @@ pub async fn publish_from_policy(
 
     let derived_name = derived_branch_name(conn, campaign_config, run, role).await?;
 
-    let vcs_type_parsed = match <VcsType as std::str::FromStr>::from_str(&run.vcs_type) {
+    let Some(vcs_type) = run.vcs_type.as_deref() else {
+        log::warn!("publish_from_policy: run {} has no VCS type", run.id);
+        return Ok(None);
+    };
+    let vcs_type_parsed = match <VcsType as std::str::FromStr>::from_str(vcs_type) {
         Ok(v) => v,
         Err(e) => {
             log::warn!(
@@ -2780,7 +2795,7 @@ pub async fn publish_from_policy(
     log::info!(
         "Publishing {} / {:?} / {} (mode: {})",
         run.codebase,
-        run.command,
+        command,
         role,
         mode
     );
@@ -2789,7 +2804,7 @@ pub async fn publish_from_policy(
         .publish_one(
             &run.suite,
             &run.codebase,
-            &run.command,
+            command,
             &target_branch_url,
             mode,
             role,
@@ -2990,6 +3005,12 @@ pub async fn publish_and_store(
         .ok_or_else(|| format!("run {} has no result branch for role {}", run.id, role))?;
     let revision =
         revision.ok_or_else(|| format!("run {} role {} has no tip revision", run.id, role))?;
+    let remote_branch_name = remote_branch_name
+        .ok_or_else(|| format!("run {} role {} has no remote branch name", run.id, role))?;
+    let command = run
+        .command
+        .as_deref()
+        .ok_or_else(|| format!("run {} has no command", run.id))?;
 
     // target_branch_url is the run's target_branch_url (or branch_url
     // fallback) with the role's remote branch name appended as a
@@ -2997,7 +3018,8 @@ pub async fn publish_and_store(
     let base_target_url: url::Url = run
         .target_branch_url
         .as_deref()
-        .unwrap_or(&run.branch_url)
+        .or(run.branch_url.as_deref())
+        .ok_or_else(|| format!("run {} has no branch URL", run.id))?
         .parse()
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
             format!("invalid target/branch URL for run {}: {}", run.id, e).into()
@@ -3031,12 +3053,17 @@ pub async fn publish_and_store(
 
     let derived_name = derived_branch_name(conn, campaign_config, run, role).await?;
 
-    let vcs_type: VcsType = run.vcs_type.parse().map_err(|e| {
-        format!(
-            "unknown vcs_type {:?} for run {}: {}",
-            run.vcs_type, run.id, e
-        )
-    })?;
+    let vcs_type: VcsType = run
+        .vcs_type
+        .as_deref()
+        .ok_or_else(|| format!("run {} has no VCS type", run.id))?
+        .parse()
+        .map_err(|e| {
+            format!(
+                "unknown vcs_type {:?} for run {}: {}",
+                run.vcs_type, run.id, e
+            )
+        })?;
     let vcs_manager = vcs_managers
         .get(&vcs_type)
         .ok_or_else(|| format!("no VcsManager registered for vcs_type {:?}", vcs_type))?
@@ -3061,7 +3088,7 @@ pub async fn publish_and_store(
         .publish_one(
             &run.suite,
             &run.codebase,
-            &run.command,
+            command,
             &target_branch_url,
             mode,
             role,
@@ -3658,11 +3685,11 @@ async fn check_existing_mp(
                     mp_run = Some(crate::state::MergeProposalRun {
                         id: None,
                         campaign: campaign_name,
-                        branch_url: synth_branch_url,
-                        command: String::new(),
+                        branch_url: Some(synth_branch_url),
+                        command: None,
                         value: 0,
                         role: role.to_string(),
-                        remote_branch_name: String::new(),
+                        remote_branch_name: None,
                         revision: synth_revision,
                         codebase: cb.clone(),
                         change_set: None,
@@ -3676,19 +3703,27 @@ async fn check_existing_mp(
     }
 
     let mp_run = mp_run.expect("checked above that mp_run is Some");
+    let mp_run_branch_url = match mp_run.branch_url.as_deref().map(url::Url::parse) {
+        None => None,
+        Some(Ok(url)) => Some(url),
+        Some(Err(e)) => {
+            log::warn!(
+                "{}: run {:?} has an invalid branch URL {:?}: {}",
+                mp_url,
+                mp_run.id,
+                mp_run.branch_url,
+                e
+            );
+            None
+        }
+    };
 
     // Resolve mp_remote_branch_name. Prefer the value the run recorded;
-    // if it's empty, fall back to opening the target branch and reading
+    // if it's missing, fall back to opening the target branch and reading
     // its `.name`.
-    let mut mp_remote_branch_name: Option<String> = if mp_run.remote_branch_name.is_empty() {
-        None
-    } else {
-        Some(mp_run.remote_branch_name.clone())
-    };
+    let mut mp_remote_branch_name: Option<String> = mp_run.remote_branch_name.clone();
     if mp_remote_branch_name.is_none() {
-        let candidate_target = target_branch_url
-            .clone()
-            .or_else(|| mp_run.branch_url.parse().ok());
+        let candidate_target = target_branch_url.clone().or(mp_run_branch_url.clone());
         if let Some(target_url) = candidate_target {
             match silver_platter::vcs::open_branch(
                 &target_url,
@@ -3746,9 +3781,7 @@ async fn check_existing_mp(
         }
     };
 
-    let mut target_branch_url = target_branch_url
-        .clone()
-        .or_else(|| mp_run.branch_url.parse().ok());
+    let mut target_branch_url = target_branch_url.clone().or(mp_run_branch_url.clone());
 
     // Closed-as-applied: a follow-up run came in and produced
     // nothing, meaning the changes have already been merged in some
@@ -3898,24 +3931,50 @@ async fn check_existing_mp(
             }
         };
 
-    // Role / remote-branch-name change. Match Python: enter whenever
-    // the two names differ and last_run_remote_branch_name is present.
-    // Inside, when mp_run.remote_branch_name is empty we refuse to act
-    // (Python's `return False` branch) rather than falling through into
-    // downstream comparisons with a missing value.
-    if last_run_remote_branch_name.as_str() != mp_run.remote_branch_name
-        && !last_run_remote_branch_name.is_empty()
+    // Remote branch name change; older runs recorded no name, so nothing to compare.
+    if let Some(last_run_remote_branch_name) = last_run_remote_branch_name
+        .as_deref()
+        .filter(|name| mp_run.remote_branch_name.as_deref() != Some(*name))
     {
+        let mp_remote_name = match mp_run.remote_branch_name.as_deref() {
+            None => {
+                log::warn!(
+                    "{}: Run {:?} recorded no remote branch name, latest run uses {}",
+                    mp_url,
+                    mp_run.id,
+                    last_run_remote_branch_name
+                );
+                return Ok(false);
+            }
+            // The worker records '' for an unnamed branch, such as a bzr default branch.
+            Some("") => {
+                log::warn!(
+                    "{}: Run {:?} was on an unnamed branch, latest run uses {}",
+                    mp_url,
+                    mp_run.id,
+                    last_run_remote_branch_name
+                );
+                return Ok(false);
+            }
+            Some(name) => name,
+        };
+        if last_run_remote_branch_name.is_empty() {
+            log::warn!(
+                "{}: Latest run {} is on an unnamed branch, run {:?} used {}",
+                mp_url,
+                last_run.id,
+                mp_run.id,
+                mp_remote_name
+            );
+            return Ok(false);
+        }
         log::warn!(
             "{}: Remote branch name has changed: {} -> {}",
             mp_url,
-            mp_run.remote_branch_name,
+            mp_remote_name,
             last_run_remote_branch_name
         );
-        if mp_run.remote_branch_name.is_empty() {
-            return Ok(false);
-        }
-        let new_name = last_run_remote_branch_name.clone();
+        let new_name = last_run_remote_branch_name.to_string();
         let rename_result = tokio::task::spawn_blocking({
             let mp = mp.clone();
             let new_name = new_name.clone();
@@ -3935,9 +3994,8 @@ async fn check_existing_mp(
                 // value. Python does the equivalent
                 // `target_branch_url = role_branch_url(mp_run["branch_url"], mp_remote_branch_name)`
                 // right here.
-                if let Ok(base) = mp_run.branch_url.parse::<url::Url>() {
-                    target_branch_url =
-                        Some(role_branch_url(&base, Some(&mp_run.remote_branch_name)));
+                if let Some(base) = mp_run_branch_url.as_ref() {
+                    target_branch_url = Some(role_branch_url(base, Some(mp_remote_name)));
                 }
             }
             Err(_) => {
@@ -3948,7 +4006,7 @@ async fn check_existing_mp(
                 if let (Some(rev), Some(target)) = (revision.as_ref(), target_branch_url.as_ref()) {
                     let comment = format!(
                         "This merge proposal will be closed, since the branch for the role '{}' has changed from {} to {}.",
-                        mp_run.role, mp_run.remote_branch_name, new_name
+                        mp_run.role, mp_remote_name, new_name
                     );
                     match abandon_or_close_mp_async(
                         &mut proposal_info_manager,
@@ -3981,8 +4039,11 @@ async fn check_existing_mp(
     // the latest run for the same codebase/campaign. When the new run
     // points to a different branch, we can't republish the same
     // proposal against it, so skip.
-    let mp_branch = mp_run.branch_url.parse::<url::Url>().ok();
-    let last_run_branch = last_run.branch_url.parse::<url::Url>().ok();
+    let mp_branch = mp_run_branch_url;
+    let last_run_branch = last_run
+        .branch_url
+        .as_deref()
+        .and_then(|u| u.parse::<url::Url>().ok());
     if !branches_match(
         mp_branch.as_ref(),
         last_run_branch.as_ref(),
@@ -4080,8 +4141,20 @@ async fn check_existing_mp(
             };
 
         // Resolve the right VcsManager for the new run's vcs_type.
+        let (Some(vcs_type_of_last_run), Some(last_run_command)) =
+            (last_run.vcs_type.as_deref(), last_run.command.as_deref())
+        else {
+            log::warn!(
+                "{}: new run {} has no VCS type ({:?}) or command ({:?})",
+                mp_url,
+                last_run.id,
+                last_run.vcs_type,
+                last_run.command
+            );
+            return Ok(false);
+        };
         let vcs_type_for_publish =
-            match <VcsType as std::str::FromStr>::from_str(&last_run.vcs_type) {
+            match <VcsType as std::str::FromStr>::from_str(vcs_type_of_last_run) {
                 Ok(v) => v,
                 Err(e) => {
                     log::warn!(
@@ -4133,7 +4206,7 @@ async fn check_existing_mp(
             .publish_one(
                 &last_run.suite,
                 &last_run.codebase,
-                &last_run.command,
+                last_run_command,
                 &target_branch_url_for_publish,
                 Mode::Propose,
                 &mp_run.role,
@@ -5045,14 +5118,19 @@ async fn consider_publish_run(
     }
 
     // Missing branch_url: can't publish anywhere.
-    if run.branch_url.is_empty() {
-        log::warn!(
-            "{}: considering publishing for branch without branch url",
-            run.id
-        );
-        crate::metrics::MISSING_BRANCH_URL_COUNT.inc();
-        return Ok(status_only("missing_branch_url"));
-    }
+    let branch_url = match run.branch_url.as_deref() {
+        // The runner stores '' for a codebase without a branch URL.
+        None | Some("") => {
+            log::warn!(
+                "{}: considering publishing for branch without branch url ({:?})",
+                run.id,
+                run.branch_url
+            );
+            crate::metrics::MISSING_BRANCH_URL_COUNT.inc();
+            return Ok(status_only("missing_branch_url"));
+        }
+        Some(branch_url) => branch_url,
+    };
 
     // Rejected/closed previous MP: the maintainer has explicitly
     // said no, so don't try again for this campaign/codebase.
@@ -5072,7 +5150,7 @@ async fn consider_publish_run(
     // feed into role_branch_url for each role. Python uses
     // `run.target_branch_url or run.branch_url`.
     let target_branch_url_str =
-        resolve_target_branch_url(run.target_branch_url.as_deref(), &run.branch_url);
+        resolve_target_branch_url(run.target_branch_url.as_deref(), branch_url);
     let target_branch_url: url::Url = match target_branch_url_str.parse() {
         Ok(u) => u,
         Err(e) => {

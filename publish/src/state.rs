@@ -472,9 +472,9 @@ pub struct MergeProposalRun {
     /// Campaign name (`run.suite` in the schema).
     pub campaign: Campaign,
     /// URL of the codebase branch the run targeted.
-    pub branch_url: String,
+    pub branch_url: Option<String>,
     /// Command that produced the run.
-    pub command: String,
+    pub command: Option<String>,
     /// Configured value of the candidate that scheduled this run.
     /// Matches `run.value` which is `int` (INT4) in the schema.
     pub value: i32,
@@ -482,7 +482,7 @@ pub struct MergeProposalRun {
     /// revision (e.g. `main`).
     pub role: String,
     /// Remote branch name recorded for the matching result branch.
-    pub remote_branch_name: String,
+    pub remote_branch_name: Option<String>,
     /// Revision id of the matching result branch.
     pub revision: RevisionId,
     /// Codebase the run belonged to.
