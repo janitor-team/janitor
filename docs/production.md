@@ -89,8 +89,9 @@ unset:
 - `git_location`/`bzr_location` - where `git_store`/`bzr_store` repos live
   (a local path, or a remote URL pointing at a `git_store`/`bzr_store`
   instance). Without these, that VCS type is not available at all.
-- `zipkin_address` - a Zipkin endpoint; if set, enables distributed tracing
-  at a 0.1 sample rate. No tracing without it.
+- `zipkin_address` - the OTLP traces URL of a Zipkin server, e.g.
+  `http://localhost:9411/v1/traces`. Traces at a 0.1 sample rate; none
+  without it.
 - `user_agent` - the HTTP User-Agent `differ`/`publish` send on outbound
   requests. Falls back to a library default if unset.
 
