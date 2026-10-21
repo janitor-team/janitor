@@ -91,7 +91,7 @@ pub(crate) fn build(
         }
 
         let result: Result<BuildOnceResult, IterateBuildError> =
-            if let Some(suffix) = config.build_suffix.as_ref() {
+            if let Some(suffix) = config.build_suffix.as_deref().filter(|s| !s.is_empty()) {
                 let packaging_context = ognibuild::debian::context::DebianPackagingContext::new(
                     Clone::clone(local_tree),
                     subpath,
