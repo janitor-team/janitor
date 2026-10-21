@@ -46,6 +46,44 @@ pub mod web;
 
 mod tee;
 
+/// Session backend for a `chroot` value: `schroot:` or `unshare:` prefixed, else a schroot name.
+#[cfg(target_os = "linux")]
+fn session_kind(chroot: Option<&str>) -> Result<ognibuild::session::SessionKind, String> {
+    use ognibuild::session::SessionKind;
+    match chroot {
+        None => Ok(SessionKind::Plain),
+        Some("") => Err("empty chroot value".to_string()),
+        Some(c) if matches!(c.split_once(':'), Some(("schroot" | "unshare", _))) => c.parse(),
+        Some(c) => Ok(SessionKind::Schroot(c.to_string())),
+    }
+}
+
+/// Open the session for a `chroot` value.
+#[cfg(target_os = "linux")]
+pub fn open_session(
+    chroot: Option<&str>,
+    session_prefix: Option<&str>,
+) -> Result<Box<dyn ognibuild::session::Session>, ognibuild::session::Error> {
+    let kind = session_kind(chroot).map_err(|e| {
+        ognibuild::session::Error::SetupFailure(format!("invalid chroot {:?}", chroot), e)
+    })?;
+    let session = kind.build(session_prefix)?;
+    // Unshare sessions deliberately keep network access; for other kinds this is a no-op.
+    session.set_isolate_network(false);
+    Ok(session)
+}
+
+/// Message for a session that could not be opened.
+pub fn session_error_message(e: &ognibuild::session::Error) -> String {
+    use ognibuild::session::Error;
+    match e {
+        Error::SetupFailure(msg, detail) if detail.is_empty() => msg.clone(),
+        Error::SetupFailure(_, detail) => detail.clone(),
+        Error::ImageError(e) => e.to_string(),
+        e => e.to_string(),
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct AppState {
     pub output_directory: Option<std::path::PathBuf>,
@@ -1281,6 +1319,59 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::str::FromStr;
     use test_log::test;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_session_kind() {
+        use ognibuild::session::SessionKind;
+        let schroot = |name: &str| Ok(SessionKind::Schroot(name.to_string()));
+        let unshare = |suite: &str| Ok(SessionKind::Unshare(suite.to_string()));
+        assert_eq!(session_kind(None), Ok(SessionKind::Plain));
+        assert_eq!(
+            session_kind(Some("unstable-amd64-sbuild")),
+            schroot("unstable-amd64-sbuild")
+        );
+        assert_eq!(session_kind(Some("schroot:x")), schroot("x"));
+        assert_eq!(session_kind(Some("session:x")), schroot("session:x"));
+        assert_eq!(session_kind(Some("unshare")), schroot("unshare"));
+        assert_eq!(session_kind(Some("unshare:sid")), unshare("sid"));
+        assert_eq!(session_kind(Some("unshare:trixie")), unshare("trixie"));
+        assert_eq!(
+            session_kind(Some("unshare:")),
+            Err("unshare session requires a suite".to_string())
+        );
+        assert_eq!(
+            session_kind(Some("")),
+            Err("empty chroot value".to_string())
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_open_session_missing_image() {
+        let err = open_session(Some("unshare:no-such-suite"), None)
+            .err()
+            .unwrap();
+        assert_eq!(session_error_message(&err), "No cached image available");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "needs user namespaces, network access and the cached sid image"]
+    fn test_open_session_unshare() {
+        use ognibuild::debian::apt::{AptManager, SatisfyEntry};
+        let session = open_session(Some("unshare:sid"), None).unwrap();
+        assert_ne!(session.location(), Path::new("/"));
+        assert!(!session.exists(Path::new("/usr/bin/hello")));
+        ognibuild::debian::apt::run_apt(session.as_ref(), vec!["update"], vec![]).unwrap();
+        let apt = AptManager::new(session.as_ref(), None);
+        apt.satisfy(vec![SatisfyEntry::Required("hello".to_string())])
+            .unwrap();
+        let out = session
+            .check_output(vec!["/usr/bin/hello"], None, None, None)
+            .unwrap();
+        assert_eq!(out, b"Hello, world!\n");
+    }
 
     /// Regression for worker credential leaks. The cache push and
     /// branch-open log lines used to print URLs with embedded

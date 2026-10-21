@@ -15,7 +15,7 @@ struct Args {
 
     #[cfg(target_os = "linux")]
     #[clap(short, long, env = "SCHROOT")]
-    /// Schroot to use
+    /// Schroot to use, or `unshare:<suite>`
     schroot: Option<String>,
 
     #[clap(short, long, default_value = "..")]
@@ -67,11 +67,13 @@ fn main() -> Result<(), i32> {
     let subdir = package.unwrap_or_else(|| "package".to_owned());
 
     #[cfg(target_os = "linux")]
-    let mut session: Box<dyn Session> = if let Some(schroot) = args.schroot {
-        Box::new(ognibuild::session::schroot::SchrootSession::new(&schroot, None).unwrap())
-    } else {
-        Box::new(ognibuild::session::plain::PlainSession::new())
-    };
+    let mut session: Box<dyn Session> = janitor_worker::open_session(args.schroot.as_deref(), None)
+        .unwrap_or_else(|e| {
+            report_failure(
+                "session-setup-failure",
+                &janitor_worker::session_error_message(&e),
+            )
+        });
 
     #[cfg(not(target_os = "linux"))]
     let mut session: Box<dyn Session> = Box::new(ognibuild::session::plain::PlainSession::new());

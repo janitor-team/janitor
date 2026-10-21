@@ -140,24 +140,21 @@ fn build(
 ) -> Result<serde_json::Value, WorkerFailure> {
     use ognibuild::session::Session;
     #[cfg(target_os = "linux")]
-    let mut session: Box<dyn Session> = if let Some(schroot) = schroot {
-        log::info!("Using schroot {:?}", schroot);
-        Box::new(
-            ognibuild::session::schroot::SchrootSession::new(schroot, Some("janitor-worker"))
-                .map_err(|e| match e {
-                    ognibuild::session::Error::SetupFailure(_n, e) => WorkerFailure {
-                        code: "session-setup-failure".to_string(),
-                        description: format!("Failed to setup session: {}", e),
-                        details: None,
-                        stage: vec!["build".to_string()],
-                        transient: None,
-                    },
-                    _e => unreachable!(),
-                })?,
-        ) as Box<dyn Session>
-    } else {
-        Box::new(ognibuild::session::plain::PlainSession::new()) as Box<dyn Session>
-    };
+    if let Some(schroot) = schroot {
+        log::info!("Using session {:?}", schroot);
+    }
+    #[cfg(target_os = "linux")]
+    let mut session: Box<dyn Session> = crate::open_session(schroot, Some("janitor-worker"))
+        .map_err(|e| WorkerFailure {
+            code: "session-setup-failure".to_string(),
+            description: format!(
+                "Failed to setup session: {}",
+                crate::session_error_message(&e)
+            ),
+            details: None,
+            stage: vec!["build".to_string()],
+            transient: None,
+        })?;
 
     #[cfg(not(target_os = "linux"))]
     let mut session: Box<dyn Session> = if schroot.is_some() {
@@ -177,7 +174,10 @@ fn build(
         .project_from_vcs(local_tree, None, None)
         .map_err(|e| WorkerFailure {
             code: "session-setup-failure".to_string(),
-            description: format!("Failed to setup session: {}", e),
+            description: format!(
+                "Failed to setup session: {}",
+                crate::session_error_message(&e)
+            ),
             details: None,
             stage: vec!["build".to_string()],
             transient: None,
