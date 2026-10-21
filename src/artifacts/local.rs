@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use std::fs;
 use std::fs::File;
 use std::io::{self, ErrorKind};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::artifacts::{ArtifactManager, Error};
 
@@ -57,6 +57,13 @@ impl ArtifactManager for LocalArtifactManager {
         run_id: &RunId,
         filename: &str,
     ) -> Result<Box<dyn std::io::Read + Send + Sync>, Error> {
+        let mut components = Path::new(filename).components();
+        if !matches!(
+            (components.next(), components.next()),
+            (Some(Component::Normal(_)), None)
+        ) {
+            return Err(io::Error::from(ErrorKind::NotFound).into());
+        }
         let path = self.path.join(run_id).join(filename);
         Ok(Box::new(File::open(path)?))
     }
@@ -284,6 +291,25 @@ mod tests {
         let mut content = String::new();
         reader.read_to_string(&mut content).unwrap();
         assert_eq!(content, "hello");
+    }
+
+    #[tokio::test]
+    async fn test_get_artifact_outside_run_dir() {
+        let (td, mgr) = setup();
+        let source = create_source_dir(&[("file.txt", b"hello")]);
+        mgr.store_artifacts("run-1", source.path(), None)
+            .await
+            .unwrap();
+        let outside = td.path().join("outside.txt");
+        fs::write(&outside, b"outside").unwrap();
+
+        for name in ["../outside.txt", outside.to_str().unwrap()] {
+            let kind = match mgr.get_artifact("run-1", name).await {
+                Err(Error::IoError(e)) => Some(e.kind()),
+                _ => None,
+            };
+            assert_eq!(kind, Some(ErrorKind::NotFound), "{}", name);
+        }
     }
 
     #[tokio::test]
