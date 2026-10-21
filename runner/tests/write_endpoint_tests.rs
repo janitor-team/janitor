@@ -64,6 +64,19 @@ async fn insert_codebase(pool: &sqlx::PgPool, name: &str) {
     .expect("codebase insert");
 }
 
+/// POST `body` to `/codebases` and return the status and JSON body.
+async fn post_codebases(app: &axum::Router, body: Value) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/codebases")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    let status = response.status();
+    (status, get_body(response).await)
+}
+
 /// `DELETE /candidates/{id}` on a non-numeric id must reject with
 /// 400. Verifies the parse-guard before we ever touch the DB.
 #[tokio::test]
@@ -151,6 +164,57 @@ async fn post_codebases_upserts_and_is_visible_via_get() {
     assert_eq!(
         names,
         vec!["test-codebase-a".to_string(), "test-codebase-b".to_string()]
+    );
+}
+
+/// A `branch_url` or `url` that is not a URL, also `""`, is refused and nothing is stored.
+#[tokio::test]
+async fn post_codebases_rejects_an_invalid_vcs_url() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    for entry in [
+        json!({"name": "cb", "branch_url": "/srv/git/cb", "vcs_type": "git"}),
+        json!({"name": "cb", "branch_url": "", "vcs_type": "git"}),
+        json!({"name": "cb", "url": "/srv/git/cb", "vcs_type": "git"}),
+        json!({"name": "cb", "url": "", "vcs_type": "git"}),
+    ] {
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/codebases")
+            .header("content-type", "application/json")
+            .body(Body::from(json!([entry]).to_string()))
+            .unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{entry}"
+        );
+    }
+    let names: Vec<String> = sqlx::query_scalar("SELECT name FROM codebase")
+        .fetch_all(state.database.pool())
+        .await
+        .expect("query codebases");
+    assert_eq!(names, Vec::<String>::new());
+}
+
+/// The schema needs a name or a `branch_url`, so an entry with neither is refused.
+#[tokio::test]
+async fn post_codebases_rejects_an_entry_with_no_name_and_no_url() {
+    let Some((app, _state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    assert_eq!(
+        post_codebases(&app, json!([{"vcs_type": "git"}])).await,
+        (
+            StatusCode::BAD_REQUEST,
+            json!({"reason": "Codebase with no branch_url or url must have a name"})
+        )
     );
 }
 
