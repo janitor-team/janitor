@@ -61,6 +61,14 @@ fn main() -> Result<(), i32> {
 
     args.logging.init();
 
+    let directory = args.directory.canonicalize().unwrap_or_else(|e| {
+        report_failure(
+            "io-error",
+            &format!("Unable to open {}: {}", args.directory.display(), e),
+        )
+    });
+    let args = Args { directory, ..args };
+
     let package = std::env::var("PACKAGE").ok();
     let version = std::env::var("VERSION").ok();
 
@@ -179,11 +187,15 @@ fn main() -> Result<(), i32> {
         (None, None)
     };
 
-    let target_dir = args
-        .directory
-        .join(&args.target_dir)
-        .canonicalize()
-        .unwrap();
+    let target_dir = args.directory.join(&args.target_dir);
+    let target_dir = std::fs::create_dir_all(&target_dir)
+        .and_then(|()| target_dir.canonicalize())
+        .unwrap_or_else(|e| {
+            report_failure(
+                "io-error",
+                &format!("Unable to create {}: {}", target_dir.display(), e),
+            )
+        });
 
     let mut log_manager: Box<dyn LogManager> = if let Some(log_directory) = args.log_directory {
         Box::new(DirectoryLogManager::new(
