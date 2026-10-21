@@ -54,11 +54,14 @@ RUN apt-get update --yes \
  && apt-get clean
 
 # unshare mode is the only sbuild chroot mode that works unprivileged in a rootless container
+# sbuild rebuilds a week-old tarball from the campaign name, which fails; refresh by running janitor-create-sbuild-chroot again
 RUN echo "root:1:65535" > /etc/subuid \
  && echo "root:1:65535" > /etc/subgid \
- && echo '$chroot_mode = "unshare";' >> /etc/sbuild/sbuild.conf
+ && echo '$chroot_mode = "unshare";' >> /etc/sbuild/sbuild.conf \
+ && echo '$unshare_mmdebstrap_max_age = -1;' >> /etc/sbuild/sbuild.conf
 
 COPY --from=build /code/target/release/janitor-worker /usr/local/bin/janitor-worker
+COPY --from=build /code/target/release/janitor-create-sbuild-chroot /usr/local/bin/janitor-create-sbuild-chroot
 
 COPY autopkgtest-wrapper /usr/local/bin/autopkgtest-wrapper
 
