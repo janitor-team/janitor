@@ -393,6 +393,7 @@ async def create_app(
     listen_address: Optional[str] = None,
     port: Optional[int] = None,
     redis=None,
+    notification_queue_size: int = 100,
 ):
     if minified:
         minified_prefix = ""
@@ -427,7 +428,9 @@ async def create_app(
 
     metrics_route = private_app.router.add_get("/metrics", metrics, name="metrics")
 
-    app["topic_notifications"] = Topic("notifications")
+    app["topic_notifications"] = Topic(
+        "notifications", queue_size=notification_queue_size
+    )
     ws_notifications_route = app.router.add_get(
         "/ws/notifications",
         functools.partial(pubsub_handler, app["topic_notifications"]),  # type: ignore
@@ -739,6 +742,12 @@ async def main_async(argv=None):
         action="store_true",
         help="Show debug output (plus avoid minified JS)",
     )
+    parser.add_argument(
+        "--notification-queue-size",
+        type=int,
+        default=100,
+        help="Messages kept for a websocket client that does not read (0: no limit)",
+    )
 
     args = parser.parse_args()
 
@@ -771,6 +780,7 @@ async def main_async(argv=None):
         differ_url=args.differ_url,
         listen_address=args.host,
         port=args.port,
+        notification_queue_size=args.notification_queue_size,
     )
 
     private_runner = web.AppRunner(private_app)
