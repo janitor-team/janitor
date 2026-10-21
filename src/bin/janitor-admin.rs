@@ -41,6 +41,8 @@ enum Command {
     },
     /// Reschedule runs.
     Reschedule(RescheduleArgs),
+    /// Reprocess the logs of finished runs.
+    ReprocessLogs(ReprocessLogsArgs),
     /// Inspect the queue.
     Queue {
         #[command(subcommand)]
@@ -109,6 +111,33 @@ struct RescheduleArgs {
     /// Include transient failures (mass reschedule only).
     #[arg(long)]
     include_transient: bool,
+}
+
+#[derive(Args)]
+struct ReprocessLogsArgs {
+    /// Run ID to reprocess; may be repeated. Without it, the filters below select runs.
+    #[arg(long = "run-id")]
+    run_ids: Vec<String>,
+
+    /// Restrict to this campaign.
+    #[arg(long)]
+    campaign: Option<String>,
+
+    /// Only runs whose description matches this regex.
+    #[arg(long)]
+    description_re: Option<String>,
+
+    /// Only runs older than N days.
+    #[arg(long)]
+    min_age: Option<u32>,
+
+    /// Show what would change without storing it.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Reschedule runs whose result code changes.
+    #[arg(long)]
+    reschedule: bool,
 }
 
 #[derive(Subcommand)]
@@ -320,6 +349,44 @@ async fn cmd_reschedule(client: &ApiClient, args: &RescheduleArgs) -> Result<(),
     Ok(())
 }
 
+async fn cmd_reprocess_logs(client: &ApiClient, args: &ReprocessLogsArgs) -> Result<(), String> {
+    let mut form: Vec<(&str, String)> = Vec::new();
+    for run_id in &args.run_ids {
+        form.push(("run_id", run_id.clone()));
+    }
+    if let Some(campaign) = &args.campaign {
+        form.push(("campaign", campaign.clone()));
+    }
+    if let Some(desc) = &args.description_re {
+        form.push(("description_re", desc.clone()));
+    }
+    if let Some(min_age) = args.min_age {
+        form.push(("min_age", min_age.to_string()));
+    }
+    if args.dry_run {
+        form.push(("dry_run", "1".to_string()));
+    }
+    if args.reschedule {
+        form.push(("reschedule", "1".to_string()));
+    }
+    let resp = client
+        .request(reqwest::Method::POST, "cupboard/api/reprocess-logs")?
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let resp = expect_success(resp).await?;
+    let runs: Vec<Value> = resp.json().await.map_err(|e| e.to_string())?;
+    println!("Reprocessing the logs of {} run(s).", runs.len());
+    for entry in runs {
+        let codebase = entry.get("codebase").and_then(Value::as_str).unwrap_or("?");
+        let campaign = entry.get("campaign").and_then(Value::as_str).unwrap_or("?");
+        let log_id = entry.get("log_id").and_then(Value::as_str).unwrap_or("?");
+        println!("  {} / {} ({})", codebase, campaign, log_id);
+    }
+    Ok(())
+}
+
 async fn cmd_queue_list(client: &ApiClient, limit: u32) -> Result<(), String> {
     let resp = client
         .request(reqwest::Method::GET, "api/queue")?
@@ -381,6 +448,7 @@ async fn main() -> ExitCode {
             WorkerCmd::Delete { name } => cmd_worker_delete(&client, &name).await,
         },
         Command::Reschedule(args) => cmd_reschedule(&client, &args).await,
+        Command::ReprocessLogs(args) => cmd_reprocess_logs(&client, &args).await,
         Command::Queue { cmd } => match cmd {
             QueueCmd::List { limit } => cmd_queue_list(&client, limit).await,
         },
@@ -402,6 +470,122 @@ async fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+
+    type Posted = Arc<Mutex<Vec<(String, Vec<(String, String)>)>>>;
+
+    async fn form_server() -> (ApiClient, Posted) {
+        let posted: Posted = Arc::default();
+        let record = posted.clone();
+        let app = axum::Router::new().fallback(move |uri: axum::http::Uri, body: String| {
+            let record = record.clone();
+            async move {
+                let fields = url::form_urlencoded::parse(body.as_bytes())
+                    .into_owned()
+                    .collect();
+                record
+                    .lock()
+                    .unwrap()
+                    .push((uri.path().to_string(), fields));
+                axum::Json(Vec::<Value>::new())
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (ApiClient::new(base, None, None).unwrap(), posted)
+    }
+
+    fn fields(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn reprocess_logs_posts_the_fields_the_handler_reads() {
+        let (client, posted) = form_server().await;
+        for argv in [
+            &[
+                "reprocess-logs",
+                "--run-id",
+                "run-1",
+                "--run-id",
+                "run-2",
+                "--dry-run",
+            ][..],
+            &[
+                "reprocess-logs",
+                "--campaign",
+                "lintian-fixes",
+                "--description-re",
+                "^Failed",
+                "--min-age",
+                "3",
+                "--reschedule",
+            ][..],
+        ] {
+            let cli =
+                Cli::try_parse_from(std::iter::once("janitor-admin").chain(argv.iter().copied()))
+                    .unwrap();
+            let Command::ReprocessLogs(args) = cli.command else {
+                panic!("wrong subcommand");
+            };
+            cmd_reprocess_logs(&client, &args).await.unwrap();
+        }
+        assert_eq!(
+            *posted.lock().unwrap(),
+            vec![
+                (
+                    "/cupboard/api/reprocess-logs".to_string(),
+                    fields(&[("run_id", "run-1"), ("run_id", "run-2"), ("dry_run", "1")])
+                ),
+                (
+                    "/cupboard/api/reprocess-logs".to_string(),
+                    fields(&[
+                        ("campaign", "lintian-fixes"),
+                        ("description_re", "^Failed"),
+                        ("min_age", "3"),
+                        ("reschedule", "1"),
+                    ])
+                ),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn mass_reschedule_posts_the_fields_the_handler_reads() {
+        let (client, posted) = form_server().await;
+        let cli = Cli::try_parse_from([
+            "janitor-admin",
+            "reschedule",
+            "--result-code",
+            "never-processed",
+            "--campaign",
+            "lintian-fixes",
+            "--refresh",
+            "--offset",
+            "10",
+        ])
+        .unwrap();
+        let Command::Reschedule(args) = cli.command else {
+            panic!("wrong subcommand");
+        };
+        cmd_reschedule(&client, &args).await.unwrap();
+        assert_eq!(
+            *posted.lock().unwrap(),
+            vec![(
+                "/cupboard/api/mass-reschedule".to_string(),
+                fields(&[
+                    ("result_code", "never-processed"),
+                    ("campaign", "lintian-fixes"),
+                    ("offset", "10"),
+                    ("refresh", "1"),
+                ])
+            )]
+        );
+    }
 
     #[test]
     fn api_url_appends_when_base_has_no_trailing_slash() {
