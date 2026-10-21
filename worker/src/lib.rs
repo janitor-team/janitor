@@ -192,7 +192,7 @@ pub fn run_worker(
     command: Vec<&str>,
     output_directory: &std::path::Path,
     metadata: &mut Metadata,
-    target_repo_url: &Url,
+    target_repo_url: Option<&Url>,
     vendor: &str,
     target: &str,
     vcs_type: Option<VcsType>,
@@ -274,19 +274,27 @@ pub fn run_worker(
         metadata.subpath = Some(subpath.to_string_lossy().to_string());
         empty_format = None;
     } else {
-        assert!(vcs_type.is_some());
+        let Some(vcs_type) = vcs_type else {
+            return Err(WorkerFailure {
+                code: "vcs-type-unknown".to_string(),
+                description: "No branch URL and no VCS type to create a branch with".to_string(),
+                stage: vec!["setup".to_owned()],
+                transient: Some(false),
+                details: None,
+            });
+        };
         main_branch = None;
         metadata.branch_url = None;
-        metadata.vcs_type = vcs_type;
+        metadata.vcs_type = Some(vcs_type);
         metadata.subpath = Some("".to_string());
         empty_format = if let Some(f) =
-            breezyshim::controldir::FORMAT_REGISTRY.make_controldir(&vcs_type.unwrap().to_string())
+            breezyshim::controldir::FORMAT_REGISTRY.make_controldir(&vcs_type.to_string())
         {
             Some(f)
         } else {
             return Err(WorkerFailure {
                 code: "vcs-type-unsupported".to_string(),
-                description: format!("Unable to find format for vcs type {}", vcs_type.unwrap()),
+                description: format!("Unable to find format for vcs type {}", vcs_type),
                 stage: vec!["setup".to_owned()],
                 transient: Some(false),
                 details: Some(serde_json::json!({"vcs_type": vcs_type})),
@@ -834,20 +842,23 @@ pub fn run_worker(
         vcs_type.unwrap()
     };
 
-    match vcs_type {
-        VcsType::Git => &crate::vcs::GitVcs as &dyn crate::vcs::Vcs,
-        VcsType::Bzr => &crate::vcs::BzrVcs,
+    // Without a target repository there is nowhere to upload the result to.
+    if let Some(target_repo_url) = target_repo_url {
+        match vcs_type {
+            VcsType::Git => &crate::vcs::GitVcs as &dyn crate::vcs::Vcs,
+            VcsType::Bzr => &crate::vcs::BzrVcs,
+        }
+        .import_branches(
+            target_repo_url,
+            &ws.local_tree().branch(),
+            campaign,
+            run_id,
+            &result_branches,
+            changer_result.tags(),
+            false,
+        )
+        .map_err(|e| push_error_to_worker_failure(e, vec!["result-push".to_string()]))?;
     }
-    .import_branches(
-        target_repo_url,
-        &ws.local_tree().branch(),
-        campaign,
-        run_id,
-        &result_branches,
-        changer_result.tags(),
-        false,
-    )
-    .map_err(|e| push_error_to_worker_failure(e, vec!["result-push".to_string()]))?;
 
     let should_build = if force_build {
         true
@@ -868,25 +879,29 @@ pub fn run_worker(
         details: target_details,
     });
 
-    log::info!(
-        "Pushing result branch to {}",
-        sanitise_url_for_log(target_repo_url)
-    );
+    if let Some(target_repo_url) = target_repo_url {
+        log::info!(
+            "Pushing result branch to {}",
+            sanitise_url_for_log(target_repo_url)
+        );
 
-    match vcs_type {
-        VcsType::Git => &crate::vcs::GitVcs as &dyn crate::vcs::Vcs,
-        VcsType::Bzr => &crate::vcs::BzrVcs,
+        match vcs_type {
+            VcsType::Git => &crate::vcs::GitVcs as &dyn crate::vcs::Vcs,
+            VcsType::Bzr => &crate::vcs::BzrVcs,
+        }
+        .import_branches(
+            target_repo_url,
+            &ws.local_tree().branch(),
+            campaign,
+            run_id,
+            &result_branches,
+            changer_result.tags(),
+            true,
+        )
+        .map_err(|e| push_error_to_worker_failure(e, vec!["result-sym".to_owned()]))?;
+    } else {
+        log::warn!("No target repository; not uploading the result");
     }
-    .import_branches(
-        target_repo_url,
-        &ws.local_tree().branch(),
-        campaign,
-        run_id,
-        &result_branches,
-        changer_result.tags(),
-        true,
-    )
-    .map_err(|e| push_error_to_worker_failure(e, vec!["result-sym".to_owned()]))?;
 
     if let Some(cached_branch_url) = cached_branch_url.as_ref() {
         // TODO(jelmer): integrate into import_branches_git / import_branches_bzr
@@ -1048,9 +1063,11 @@ pub async fn process_single_item(
     // them into the runner-side config. No-op for `Credentials::None`,
     // so in-cluster setups using cluster-internal URLs without auth
     // still work.
-    let target_repo_url_with_creds = client
-        .credentials()
-        .embed_in_url(&assignment.target_repository.url);
+    let target_repo_url_with_creds = assignment
+        .target_repository
+        .url
+        .as_ref()
+        .map(|u| client.credentials().embed_in_url(u));
     // The cached_url and resume_branch_url usually point at the same
     // git-store as target_repository (the runner derives them from
     // the same `public_vcs_location`), so they need the same Basic
@@ -1069,7 +1086,7 @@ pub async fn process_single_item(
             queue_id: Some(assignment.queue_id),
             start_time: Some(start_time),
             branch_url: assignment_.branch.url.clone(),
-            vcs_type: Some(assignment.branch.vcs_type),
+            vcs_type: assignment.branch.vcs_type,
             ..Metadata::default()
         };
 
@@ -1089,10 +1106,10 @@ pub async fn process_single_item(
                 .collect::<Vec<_>>(),
             output_directory_.as_path(),
             &mut metadata,
-            &target_repo_url_with_creds,
+            target_repo_url_with_creds.as_ref(),
             &vendor,
             &assignment_.build.target,
-            Some(assignment_.branch.vcs_type),
+            assignment_.branch.vcs_type,
             assignment_.branch.subpath.as_ref(),
             resume_branch_url_with_creds.as_ref(),
             cached_branch_url_with_creds.as_ref(),
@@ -1380,6 +1397,109 @@ mod tests {
         test_run_worker_existing(tempfile::tempdir().unwrap().path(), VcsType::Bzr);
     }
 
+    #[serial]
+    #[test]
+    fn test_run_worker_without_vcs_type_or_target_repository() {
+        let td = tempfile::tempdir().unwrap();
+        let tmp_path = td.path();
+        let wt = breezyshim::controldir::create_standalone_workingtree(
+            &tmp_path.join("main"),
+            &breezyshim::controldir::FORMAT_REGISTRY
+                .make_controldir("git")
+                .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(tmp_path.join("main").join("Makefile"), "all:\n\ncheck:\n").unwrap();
+        wt.add(&[Path::new("Makefile")]).unwrap();
+        let old_revid = wt.build_commit().message("Add makefile").commit().unwrap();
+        let output_dir = tmp_path.join("output");
+        std::fs::create_dir(&output_dir).unwrap();
+        let mut metadata = Metadata::default();
+        run_worker(
+            "mycodebase",
+            "mycampaign",
+            Some(&wt.branch().get_user_url()),
+            "run-id",
+            &serde_json::json!({
+                "chroot": serde_json::Value::Null,
+                "dep_server_url": serde_json::Value::Null,
+            }),
+            HashMap::new(),
+            vec!["sh", "-c", "echo foo > bar"],
+            &output_dir,
+            &mut metadata,
+            None,
+            "foo",
+            "generic",
+            None,
+            Path::new(""),
+            None,
+            None,
+            None,
+            None,
+            &mut None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        // The type is taken from the branch, and the result is still recorded.
+        assert_eq!(metadata.vcs_type, Some(VcsType::Git));
+        let revision = metadata.revision.clone().unwrap();
+        assert_ne!(revision, old_revid);
+        assert_eq!(
+            metadata.branches,
+            vec![(
+                "main".to_string(),
+                Some("master".to_string()),
+                Some(old_revid),
+                Some(revision)
+            )]
+        );
+    }
+
+    #[serial]
+    #[test]
+    fn test_run_worker_without_branch_url_or_vcs_type() {
+        let td = tempfile::tempdir().unwrap();
+        let output_dir = td.path().join("output");
+        std::fs::create_dir(&output_dir).unwrap();
+        let mut metadata = Metadata::default();
+        let err = run_worker(
+            "mycodebase",
+            "mycampaign",
+            None,
+            "run-id",
+            &serde_json::json!({
+                "chroot": serde_json::Value::Null,
+                "dep_server_url": serde_json::Value::Null,
+            }),
+            HashMap::new(),
+            vec!["sh", "-c", "echo foo > bar"],
+            &output_dir,
+            &mut metadata,
+            None,
+            "foo",
+            "generic",
+            None,
+            Path::new(""),
+            None,
+            None,
+            None,
+            None,
+            &mut None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "vcs-type-unknown");
+    }
+
     fn test_run_worker_existing(tmp_path: &std::path::Path, vcs_type: VcsType) {
         let wt = breezyshim::controldir::create_standalone_workingtree(
             &tmp_path.join("main"),
@@ -1419,7 +1539,7 @@ check:
             vec!["sh", "-c", "echo foo > bar"],
             &output_dir,
             &mut metadata,
-            &Url::from_directory_path(tmp_path.join("target")).unwrap(),
+            Some(&Url::from_directory_path(tmp_path.join("target")).unwrap()),
             "foo",
             "generic",
             Some(vcs_type),
