@@ -28,10 +28,6 @@ pub enum BzrError {
     #[error("Authentication failed")]
     AuthenticationFailed,
 
-    /// Subprocess operation errors
-    #[error("Subprocess error: {0}")]
-    Subprocess(String),
-
     /// IO errors
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -74,11 +70,6 @@ impl BzrError {
         }
     }
 
-    /// Create a subprocess error
-    pub fn subprocess<S: Into<String>>(message: S) -> Self {
-        Self::Subprocess(message.into())
-    }
-
     /// Create an invalid request error
     pub fn invalid_request<S: Into<String>>(message: S) -> Self {
         Self::InvalidRequest {
@@ -101,7 +92,6 @@ impl IntoResponse for BzrError {
             BzrError::PathNotFound { .. } => (StatusCode::NOT_FOUND, "Repository not found"),
             BzrError::InvalidRequest { .. } => (StatusCode::BAD_REQUEST, "Invalid request"),
             BzrError::Repository { .. } => (StatusCode::NOT_FOUND, "Repository error"),
-            BzrError::Subprocess(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Operation failed"),
             BzrError::Python(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Python error"),
             BzrError::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
             BzrError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, "IO error"),
