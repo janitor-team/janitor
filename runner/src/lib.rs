@@ -59,6 +59,7 @@ pub mod watchdog;
 pub mod web;
 
 /// Test utilities for the runner module.
+#[cfg(any(test, feature = "testing"))]
 pub mod test_utils;
 
 /// Test helpers for database-dependent tests
