@@ -212,6 +212,24 @@ impl TestConfigBuilder {
     }
 }
 
+/// Insert a codebase row with a git branch URL under example.invalid.
+///
+/// The `codebase` table's check constraint requires
+/// `(branch_url IS NULL) = (url IS NULL)`, so set both.
+pub async fn insert_codebase(pool: &sqlx::PgPool, name: &str) {
+    let url = format!("https://example.invalid/{name}");
+    sqlx::query(
+        "INSERT INTO codebase (name, branch_url, url, vcs_type)
+         VALUES ($1, $2, $2, 'git')
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(name)
+    .bind(&url)
+    .execute(pool)
+    .await
+    .expect("codebase insert");
+}
+
 /// Create a wired-up test `AppState` from a [`TestConfigBuilder`], so
 /// tests can register campaigns and other config knobs the handlers
 /// read. Errors if no database or Redis is available.
