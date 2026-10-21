@@ -2278,7 +2278,6 @@ async fn publish_finish_events(
     state: &Arc<AppState>,
     run_id: &RunId,
     janitor_result: &crate::JanitorResult,
-    queue_id: i64,
 ) {
     // The DB writes already committed. If any of these Redis side
     // effects fails we can't roll back, so we log at error, bump the
@@ -2299,13 +2298,6 @@ async fn publish_finish_events(
     }
 
     state.active_runs.remove(run_id).await;
-
-    if let Err(e) = state.database.unassign_queue_item(queue_id).await {
-        log::error!("Failed to unassign queue item from Redis: {}", e);
-        crate::metrics::REDIS_OPERATIONS_TOTAL
-            .with_label_values(&["unassign_queue_item", "error"])
-            .inc();
-    }
 
     let processing: Vec<serde_json::Value> = state
         .active_runs
@@ -2662,7 +2654,7 @@ async fn finish_run_multipart_internal(
 
     // Publish the completed result to subscribers and tear down the
     // active-run state.
-    publish_finish_events(&state, &run_id, &janitor_result, active_run.queue_id).await;
+    publish_finish_events(&state, &run_id, &janitor_result).await;
     crate::metrics::MetricsCollector::set_active_runs(
         &active_run.worker_name,
         state
@@ -3395,6 +3387,13 @@ async fn assign_work_internal(
             &format!("Forge {} rate-limited us; retry after {}s", host, wait_secs),
         )
         .await;
+        if let Err(e) = state
+            .database
+            .unassign_queue_item(assignment.queue_item.id)
+            .await
+        {
+            log::error!("Failed to unassign queue item from Redis: {}", e);
+        }
 
         return (
             StatusCode::SERVICE_UNAVAILABLE,

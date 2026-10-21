@@ -1465,7 +1465,7 @@ INSERT INTO run (
         // The old "DELETE FROM active_run" query lived here but that
         // table never existed in the real schema -- active-run state is
         // in-process in `crate::active_runs::ActiveRunStore` and the
-        // watchdog drives eviction via `drain_older_than`. The DELETE
+        // watchdog drives eviction in `run_maintenance`. The DELETE
         // made this function fail every maintenance tick with
         // "relation 'active_run' does not exist"; removed.
 
