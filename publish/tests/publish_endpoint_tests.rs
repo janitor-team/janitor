@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use janitor::publish::MergeProposalStatus;
 use janitor::{schema::setup_test_database, test_utils::TestDatabase, test_with_database};
+use janitor_publish::rate_limiter::{FixedRateLimiter, NonRateLimiter, RateLimiter};
 use janitor_publish::{AppState, PublishWorker};
 use sqlx::PgPool;
 use tower::ServiceExt;
@@ -45,7 +47,7 @@ async fn seed_codebase_and_run(pool: &PgPool, codebase: &str, campaign: &str) {
     .unwrap();
 }
 
-async fn build_app(pool: PgPool) -> axum::Router {
+async fn build_state(pool: PgPool, bucket_rate_limiter: Box<dyn RateLimiter>) -> Arc<AppState> {
     let config: &'static janitor::config::Config = Box::leak(Box::new(
         janitor::config::read_string("").expect("empty config parses"),
     ));
@@ -62,11 +64,9 @@ async fn build_app(pool: PgPool) -> axum::Router {
         "publish-test".to_string(),
         env!("CARGO_PKG_VERSION").to_string(),
     ));
-    let state = Arc::new(AppState {
+    Arc::new(AppState {
         conn: pool,
-        bucket_rate_limiter: Arc::new(Mutex::new(Box::new(
-            janitor_publish::rate_limiter::NonRateLimiter,
-        ))),
+        bucket_rate_limiter: Arc::new(Mutex::new(bucket_rate_limiter)),
         forge_rate_limiter: Arc::new(RwLock::new(HashMap::new())),
         push_limit: None,
         redis: None,
@@ -80,8 +80,11 @@ async fn build_app(pool: PgPool) -> axum::Router {
         require_binary_diff: false,
         health_checker,
         last_full_scan_at: tokio::sync::watch::channel(None).0,
-    });
-    janitor_publish::web::app(state)
+    })
+}
+
+async fn build_app(pool: PgPool) -> axum::Router {
+    janitor_publish::web::app(build_state(pool, Box::new(NonRateLimiter)).await)
 }
 
 test_with_database! {
@@ -109,6 +112,37 @@ test_with_database! {
             "reason should name the codebase/campaign: {reason}"
         );
     }
+}
+
+#[tokio::test]
+async fn rate_limits_reports_max_open_of_a_fixed_limit() {
+    let mut limiter: Box<dyn RateLimiter> = Box::new(FixedRateLimiter::new(3));
+    limiter.set_mps_per_bucket(&maplit::hashmap! {
+        MergeProposalStatus::Open => maplit::hashmap! { "lintian-fixes".to_string() => 1 },
+    });
+    let pool = PgPool::connect_lazy("postgres://localhost/unused").unwrap();
+    let app = janitor_publish::web::app(build_state(pool, limiter).await);
+
+    let mut bodies = Vec::new();
+    for bucket in ["lintian-fixes", "never-seen"] {
+        let req = Request::builder()
+            .uri(format!("/rate-limits/{bucket}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        bodies.push(serde_json::from_slice::<serde_json::Value>(&bytes).unwrap());
+    }
+    assert_eq!(
+        bodies,
+        vec![
+            serde_json::json!({"open": 1, "max_open": 3, "remaining": 2}),
+            serde_json::json!({"open": null, "max_open": 3, "remaining": null}),
+        ]
+    );
 }
 
 test_with_database! {

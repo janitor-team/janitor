@@ -1776,8 +1776,9 @@ async fn autopublish(
 
 /// `GET /rate-limits/{bucket}`: current open and max-open figures for a
 /// single bucket. An unknown bucket returns 200 with
-/// `{open: null, max_open: null, remaining: null}`, not 404. Both
-/// numbers are read under one lock so they can't drift mid-call.
+/// `open` and `remaining` null, not 404. `max_open` is still set when a
+/// fixed limit is configured. Both numbers are read under one lock so
+/// they can't drift mid-call.
 async fn get_rate_limit(
     State(state): State<Arc<AppState>>,
     Path(bucket): Path<String>,
@@ -2341,8 +2342,6 @@ mod tests {
         PerBranchPolicy, PolicyDocument,
     };
     use std::collections::HashMap;
-
-    // --- classify_mp_status_transition ---
 
     /// Closed -> closed in any combination is a no-op update.
     /// CLOSED_STATUSES is `[closed, abandoned, rejected, applied]`,
