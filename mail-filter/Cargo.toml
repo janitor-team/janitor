@@ -17,7 +17,6 @@ async-std = "1"
 log = "0.4"
 clap = { workspace = true, optional = true, features = ["derive"] }
 reqwest = { workspace = true, features = ["blocking", "json"], optional = true }
-env_logger = { workspace = true, optional = true }
 
 [[bin]]
 name="janitor-mail-filter"
@@ -25,4 +24,4 @@ required-features=["cmdline"]
 
 [features]
 default = ["cmdline"]
-cmdline = ["dep:clap", "dep:reqwest", "dep:env_logger"]
+cmdline = ["dep:clap", "dep:reqwest"]

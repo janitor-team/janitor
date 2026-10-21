@@ -1682,9 +1682,9 @@ dependencies = [
 
 [[package]]
 name = "debian-control"
-version = "0.3.19"
+version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40851de259bd5b0a72967f8f4d9d6ec53674d921b521d3db6731cb8e7b4885ce"
+checksum = "2aad04b9806f983ce4218285471e906d88570fc2fa94665fede3bc4542f56c85"
 dependencies = [
  "chrono",
  "deb822-fast",
@@ -3455,7 +3455,6 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "breezyshim",
- "buildlog-consultant",
  "bytes",
  "chrono",
  "clap",
@@ -3481,7 +3480,6 @@ dependencies = [
  "protobuf-codegen 3.7.2",
  "protoc-rust",
  "pyo3",
- "rand 0.9.5",
  "redis 1.7.0",
  "regex",
  "reqwest 0.13.5",
@@ -3668,7 +3666,6 @@ version = "0.0.0"
 dependencies = [
  "async-std",
  "clap",
- "env_logger 0.11.11",
  "isahc",
  "log",
  "mailparse",
