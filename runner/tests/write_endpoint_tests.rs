@@ -1687,6 +1687,60 @@ async fn finish_multipart_without_metadata_returns_400() {
         .await;
 }
 
+/// The archive reads the target from the published result to regenerate its repository.
+#[tokio::test]
+async fn finish_result_carries_build_target() {
+    let Some((app, state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let pool = state.database.pool().clone();
+    insert_codebase(&pool, "finish-neg-cb").await;
+    state
+        .auth_service
+        .create_worker("finish-worker", "pw", None)
+        .await
+        .expect("create worker");
+    seed_active_run_for_finish(&state, "run-with-target").await;
+
+    let boundary = "target-boundary";
+    let worker_result = r#"{"code":"success","description":"ok","target":{"name":"debian","details":{"build_version":"1.0-1"}}}"#;
+    let body = format!(
+        "--{boundary}\r\n\
+         Content-Disposition: form-data; name=\"metadata\"; filename=\"result.json\"\r\n\
+         Content-Type: application/json\r\n\r\n\
+         {worker_result}\r\n\
+         --{boundary}--\r\n"
+    );
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/active-runs/run-with-target/finish")
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Body::from(body))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = get_body(response).await;
+    assert_eq!(
+        body["result"]["target"],
+        json!({
+            "name": "debian",
+            "details": {
+                "source": null,
+                "build_version": "1.0-1",
+                "build_distribution": null,
+                "changes_filenames": null,
+                "lintian": null,
+                "binary_packages": null
+            }
+        })
+    );
+}
+
 /// `POST /finish` with malformed multipart (unterminated body) yields
 /// a 400 with the multipart-parse error, not a 500 or a hang.
 #[tokio::test]
