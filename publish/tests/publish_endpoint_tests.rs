@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use janitor::{schema::setup_test_database, test_utils::TestDatabase, test_with_database};
+use janitor_publish::rate_limiter::{FixedRateLimiter, NonRateLimiter, RateLimiter};
 use janitor_publish::{AppState, PublishWorker};
 use sqlx::PgPool;
 use tower::ServiceExt;
@@ -45,7 +46,7 @@ async fn seed_codebase_and_run(pool: &PgPool, codebase: &str, campaign: &str) {
     .unwrap();
 }
 
-async fn build_app(pool: PgPool) -> axum::Router {
+async fn build_state(pool: PgPool, bucket_rate_limiter: Box<dyn RateLimiter>) -> Arc<AppState> {
     let config: &'static janitor::config::Config = Box::leak(Box::new(
         janitor::config::read_string("").expect("empty config parses"),
     ));
@@ -62,11 +63,9 @@ async fn build_app(pool: PgPool) -> axum::Router {
         "publish-test".to_string(),
         env!("CARGO_PKG_VERSION").to_string(),
     ));
-    let state = Arc::new(AppState {
+    Arc::new(AppState {
         conn: pool,
-        bucket_rate_limiter: Arc::new(Mutex::new(Box::new(
-            janitor_publish::rate_limiter::NonRateLimiter,
-        ))),
+        bucket_rate_limiter: Arc::new(Mutex::new(bucket_rate_limiter)),
         forge_rate_limiter: Arc::new(RwLock::new(HashMap::new())),
         push_limit: None,
         redis: None,
@@ -80,8 +79,11 @@ async fn build_app(pool: PgPool) -> axum::Router {
         require_binary_diff: false,
         health_checker,
         last_full_scan_at: tokio::sync::watch::channel(None).0,
-    });
-    janitor_publish::web::app(state)
+    })
+}
+
+async fn build_app(pool: PgPool) -> axum::Router {
+    janitor_publish::web::app(build_state(pool, Box::new(NonRateLimiter)).await)
 }
 
 test_with_database! {
@@ -150,5 +152,72 @@ test_with_database! {
             let resp = app.clone().oneshot(req).await.unwrap();
             assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{} {}", method, uri);
         }
+    }
+}
+
+async fn seed_mp_row(pool: &PgPool, url: &str, status: Option<&str>, bucket: Option<&str>) {
+    sqlx::query(
+        "INSERT INTO merge_proposal (url, status, rate_limit_bucket)
+         VALUES ($1, $2::merge_proposal_status, $3)",
+    )
+    .bind(url)
+    .bind(status)
+    .bind(bucket)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Refresh a fixed limiter from the database and return its open counts.
+async fn refreshed_open_counts(pool: &PgPool) -> Option<HashMap<String, usize>> {
+    let state = build_state(pool.clone(), Box::new(FixedRateLimiter::new(5))).await;
+    janitor_publish::refresh_bucket_mp_counts(state.clone())
+        .await
+        .unwrap();
+    let limiter = state.bucket_rate_limiter.lock().unwrap();
+    limiter.get_stats().map(|stats| stats.per_bucket)
+}
+
+test_with_database! {
+    async fn test_refresh_bucket_mp_counts_counts_open_per_bucket(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        let pool = test_db.pool();
+        seed_mp_row(pool, "https://example.invalid/mp/1", Some("open"), Some("a")).await;
+        seed_mp_row(pool, "https://example.invalid/mp/2", Some("open"), Some("a")).await;
+        seed_mp_row(pool, "https://example.invalid/mp/3", Some("open"), Some("b")).await;
+        seed_mp_row(pool, "https://example.invalid/mp/4", Some("merged"), Some("a")).await;
+
+        assert_eq!(
+            refreshed_open_counts(pool).await,
+            Some(maplit::hashmap! {"a".to_string() => 2, "b".to_string() => 1})
+        );
+    }
+}
+
+test_with_database! {
+    async fn test_refresh_bucket_mp_counts_skips_null_bucket(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        let pool = test_db.pool();
+        seed_mp_row(pool, "https://example.invalid/mp/1", Some("open"), Some("a")).await;
+        seed_mp_row(pool, "https://example.invalid/mp/2", Some("open"), None).await;
+
+        assert_eq!(
+            refreshed_open_counts(pool).await,
+            Some(maplit::hashmap! {"a".to_string() => 1})
+        );
+    }
+}
+
+test_with_database! {
+    async fn test_refresh_bucket_mp_counts_skips_null_status(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        let pool = test_db.pool();
+        seed_mp_row(pool, "https://example.invalid/mp/1", Some("open"), Some("a")).await;
+        seed_mp_row(pool, "https://example.invalid/mp/2", None, Some("b")).await;
+
+        assert_eq!(
+            refreshed_open_counts(pool).await,
+            Some(maplit::hashmap! {"a".to_string() => 1})
+        );
     }
 }
