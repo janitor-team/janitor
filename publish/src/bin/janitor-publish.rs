@@ -1,4 +1,5 @@
-use clap::Parser;
+use clap::error::ErrorKind;
+use clap::{CommandFactory, Parser, ValueEnum};
 use janitor_publish::rate_limiter::{
     FixedRateLimiter, NonRateLimiter, RateLimiter, SlowStartRateLimiter,
 };
@@ -8,11 +9,22 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use url::Url;
 
+#[derive(Clone, Copy, ValueEnum)]
+enum RateLimiterKind {
+    Slowstart,
+    Fixed,
+    None,
+}
+
 #[derive(Parser)]
 struct Args {
     /// Maximum number of open merge proposals per bucket.
-    #[clap(long)]
+    #[clap(long, required_if_eq("rate_limiter", "fixed"))]
     max_mps_per_bucket: Option<usize>,
+
+    /// Merge proposal rate limiter.
+    #[clap(long, value_enum, default_value_t = RateLimiterKind::Slowstart)]
+    rate_limiter: RateLimiterKind,
 
     /// Prometheus push gateway to export to.
     #[clap(long)]
@@ -41,10 +53,6 @@ struct Args {
     /// Path to load configuration from.
     #[clap(long, default_value = "janitor.conf")]
     config: std::path::PathBuf,
-
-    /// Use slow start rate limiter.
-    #[clap(long)]
-    slowstart: bool,
 
     /// Limit number of pushes per cycle.
     #[clap(long)]
@@ -78,9 +86,32 @@ struct Args {
     template_env_path: Option<PathBuf>,
 }
 
+impl Args {
+    fn check(self) -> Result<Self, clap::Error> {
+        if matches!(self.rate_limiter, RateLimiterKind::None) && self.max_mps_per_bucket.is_some() {
+            return Err(Args::command().error(
+                ErrorKind::ArgumentConflict,
+                "--max-mps-per-bucket cannot be used with --rate-limiter none",
+            ));
+        }
+        Ok(self)
+    }
+}
+
+fn bucket_rate_limiter(args: &Args) -> Box<dyn RateLimiter> {
+    match args.rate_limiter {
+        RateLimiterKind::Slowstart => Box::new(SlowStartRateLimiter::new(args.max_mps_per_bucket)),
+        RateLimiterKind::Fixed => Box::new(FixedRateLimiter::new(
+            args.max_mps_per_bucket
+                .expect("clap requires --max-mps-per-bucket"),
+        )),
+        RateLimiterKind::None => Box::new(NonRateLimiter),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), i32> {
-    let args = Args::parse();
+    let args = Args::parse().check().unwrap_or_else(|e| e.exit());
 
     args.logging.init();
 
@@ -120,13 +151,7 @@ async fn main() -> Result<(), i32> {
     let config: &'static _ = Box::leak(config);
 
     let bucket_rate_limiter: Mutex<Box<dyn RateLimiter>> =
-        std::sync::Mutex::new(if args.slowstart {
-            Box::new(SlowStartRateLimiter::new(args.max_mps_per_bucket)) as Box<dyn RateLimiter>
-        } else if let Some(max_mps_per_bucket) = args.max_mps_per_bucket {
-            Box::new(FixedRateLimiter::new(max_mps_per_bucket)) as Box<dyn RateLimiter>
-        } else {
-            Box::new(NonRateLimiter) as Box<dyn RateLimiter>
-        });
+        std::sync::Mutex::new(bucket_rate_limiter(&args));
 
     let forge_rate_limiter = std::sync::Arc::new(RwLock::new(HashMap::new()));
 
@@ -251,6 +276,10 @@ async fn main() -> Result<(), i32> {
     });
 
     if args.once {
+        // Slow start needs the counts.
+        if let Err(e) = janitor_publish::refresh_bucket_mp_counts(state.clone()).await {
+            log::error!("Failed to count merge proposals: {}", e);
+        }
         janitor_publish::publish_pending_ready(state, args.push_limit, args.require_binary_diff)
             .await
             .map_err(|e| {
@@ -305,4 +334,57 @@ async fn main() -> Result<(), i32> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use janitor::publish::MergeProposalStatus;
+    use janitor_publish::rate_limiter::RateLimitStatus;
+
+    fn limit(argv: &[&str]) -> Option<usize> {
+        let mut limiter = bucket_rate_limiter(&Args::parse_from(argv));
+        let open = HashMap::from([("default".to_string(), 9)]);
+        limiter.set_mps_per_bucket(&HashMap::from([(MergeProposalStatus::Open, open)]));
+        match limiter.check_allowed("default") {
+            RateLimitStatus::BucketRateLimited { max_open_mps, .. } => Some(max_open_mps),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn test_bucket_rate_limiter_choice() {
+        assert_eq!(limit(&["janitor-publish"]), Some(1));
+        assert_eq!(
+            limit(&["janitor-publish", "--rate-limiter", "slowstart"]),
+            Some(1)
+        );
+        assert_eq!(
+            limit(&[
+                "janitor-publish",
+                "--rate-limiter",
+                "fixed",
+                "--max-mps-per-bucket",
+                "5"
+            ]),
+            Some(5)
+        );
+        assert_eq!(limit(&["janitor-publish", "--rate-limiter", "none"]), None);
+        let fixed = Args::try_parse_from(["janitor-publish", "--rate-limiter", "fixed"]);
+        assert_eq!(
+            fixed.err().map(|e| e.kind()),
+            Some(ErrorKind::MissingRequiredArgument)
+        );
+        let none = Args::try_parse_from([
+            "janitor-publish",
+            "--rate-limiter",
+            "none",
+            "--max-mps-per-bucket",
+            "5",
+        ]);
+        assert_eq!(
+            none.and_then(Args::check).err().map(|e| e.kind()),
+            Some(ErrorKind::ArgumentConflict)
+        );
+    }
 }
