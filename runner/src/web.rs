@@ -3378,9 +3378,15 @@ async fn assign_work_internal(
         // Record the host in Redis so `next_queue_item_with_rate_limiting`
         // skips it until the forge-supplied `retry_after`. Fall back
         // to a conservative 30 minutes if the forge didn't include a
-        // Retry-After header.
-        let wait_secs = retry_after.unwrap_or(1800.0).max(0.0);
-        let until = chrono::Utc::now() + chrono::Duration::seconds(wait_secs as i64);
+        // Retry-After header, or sent an invalid one, which is also an error.
+        let default_wait = chrono::Duration::minutes(30);
+        let wait = retry_after.map_or(Ok(default_wait), janitor::vcs::retry_after_duration);
+        if let Err(e) = &wait {
+            log::error!("Forge {} sent an {}", host, e);
+        }
+        let applied = wait.unwrap_or(default_wait);
+        let wait_secs = applied.num_seconds();
+        let until = chrono::Utc::now() + applied;
         crate::metrics::RATE_LIMITED_COUNT
             .with_label_values(&[&host])
             .inc();
@@ -3388,23 +3394,34 @@ async fn assign_work_internal(
             log::warn!("Failed to record rate-limit for host {}: {}", host, e);
         }
 
-        abort_assignment(
-            &state,
-            &assignment,
-            "resume-rate-limited",
-            &format!("Forge {} rate-limited us; retry after {}s", host, wait_secs),
-        )
-        .await;
+        let description = match &wait {
+            Ok(_) => format!("Forge {} rate-limited us; retry after {}s", host, wait_secs),
+            Err(e) => format!(
+                "Forge {} rate-limited us with an invalid Retry-After ({}); retry after {}s",
+                host, e.0, wait_secs
+            ),
+        };
+        abort_assignment(&state, &assignment, "resume-rate-limited", &description).await;
 
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
-                "reason": "rate limited",
-                "host": host,
-                "retry_after": retry_after,
-            })),
-        )
-            .into_response();
+        return match wait {
+            Ok(_) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "reason": "rate limited",
+                    "host": host,
+                    "retry_after": retry_after,
+                })),
+            ),
+            Err(e) => (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": "invalid Retry-After from forge",
+                    "host": host,
+                    "retry_after": e.0.to_string(),
+                })),
+            ),
+        }
+        .into_response();
     }
 
     let resume_assignment: Option<ResumeAssignment> = resume_outcome.resume;
