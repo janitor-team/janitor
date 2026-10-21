@@ -2771,7 +2771,7 @@ pub async fn publish_from_policy(
 
     let tags: Option<Vec<(String, RevisionId)>> = run.result_tags.as_ref().map(|t| {
         t.iter()
-            .map(|(name, rev)| (name.clone(), RevisionId::from(rev.as_bytes().to_vec())))
+            .map(|tag| (tag.actual_name.clone(), tag.revision.clone()))
             .collect()
     });
     let codemod_result = run.result.clone().unwrap_or(serde_json::Value::Null);
@@ -3042,10 +3042,9 @@ pub async fn publish_and_store(
         .ok_or_else(|| format!("no VcsManager registered for vcs_type {:?}", vcs_type))?
         .as_ref();
 
-    // Convert result_tags from (String, String) -> (String, RevisionId).
     let tags: Option<Vec<(String, RevisionId)>> = run.result_tags.as_ref().map(|t| {
         t.iter()
-            .map(|(name, rev)| (name.clone(), RevisionId::from(rev.as_bytes().to_vec())))
+            .map(|tag| (tag.actual_name.clone(), tag.revision.clone()))
             .collect()
     });
 
@@ -4106,12 +4105,10 @@ async fn check_existing_mp(
             }
         };
 
-        // Convert the run's result_tags from Vec<(String, String)> to
-        // Vec<(String, RevisionId)> the way publish_one wants them.
         let tags_for_publish: Option<Vec<(String, RevisionId)>> =
             last_run.result_tags.as_ref().map(|tags| {
                 tags.iter()
-                    .map(|(name, rev)| (name.clone(), RevisionId::from(rev.as_bytes().to_vec())))
+                    .map(|tag| (tag.actual_name.clone(), tag.revision.clone()))
                     .collect()
             });
 
