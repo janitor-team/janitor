@@ -248,6 +248,10 @@ async fn main() -> Result<(), i32> {
         require_binary_diff: args.require_binary_diff,
         health_checker,
         last_full_scan_at: tokio::sync::watch::channel(None).0,
+        http_client: janitor_publish::http_client().map_err(|e| {
+            log::error!("Failed to build HTTP client: {}", e);
+            1
+        })?,
     });
 
     if args.once {
