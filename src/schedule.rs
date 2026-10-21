@@ -6,7 +6,7 @@ use chrono::Duration;
 use debian_control::lossless::relations::{Relation, Relations};
 use debian_control::relations::VersionConstraint;
 use sqlx::postgres::types::PgInterval;
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool, Postgres};
 use std::collections::HashMap;
 
 pub const FIRST_RUN_BONUS: f64 = 100.0;
@@ -103,8 +103,8 @@ WHERE TRUE
     }))
 }
 
-async fn estimate_duration_campaign_codebase(
-    conn: &PgPool,
+async fn estimate_duration_campaign_codebase<'e>(
+    conn: impl sqlx::Executor<'e, Database = Postgres>,
     codebase: Option<&CodebaseName>,
     campaign: Option<&Campaign>,
 ) -> Result<Option<Duration>, sqlx::Error> {
@@ -181,7 +181,7 @@ async fn estimate_duration(
 }
 
 async fn estimate_success_probability_and_duration(
-    conn: &PgPool,
+    conn: &mut PgConnection,
     codebase: &CodebaseName,
     campaign: &Campaign,
     context: Option<&str>,
@@ -225,7 +225,7 @@ ORDER BY start_time DESC
     for run in query
         .bind(codebase)
         .bind(campaign)
-        .fetch_all(conn)
+        .fetch_all(&mut *conn)
         .await?
         .iter()
     {
@@ -269,7 +269,7 @@ ORDER BY start_time DESC
                     })
                     .collect()
             };
-            if deps_satisfied(conn, campaign, groups).await? {
+            if deps_satisfied(&mut *conn, campaign, groups).await? {
                 success += 1;
                 same_context = false;
             }
@@ -286,11 +286,11 @@ ORDER BY start_time DESC
         // It's going to be hard to estimate the duration, but other campaigns
         // for the same codebase might be a good candidate.
         if let Some(duration) =
-            estimate_duration_campaign_codebase(conn, Some(codebase), None).await?
+            estimate_duration_campaign_codebase(&mut *conn, Some(codebase), None).await?
         {
             duration
         } else if let Some(duration) =
-            estimate_duration_campaign_codebase(conn, None, Some(campaign)).await?
+            estimate_duration_campaign_codebase(&mut *conn, None, Some(campaign)).await?
         {
             duration
         } else {
@@ -382,7 +382,7 @@ fn calculate_offset(
 /// and codebase, computing an offset from the estimated success
 /// probability, duration and candidate value.
 pub async fn do_schedule_regular(
-    conn: &PgPool,
+    conn: &mut PgConnection,
     codebase: &CodebaseName,
     campaign: &Campaign,
     command: Option<&str>,
@@ -407,7 +407,7 @@ pub async fn do_schedule_regular(
         // Option semantics so downstream defaulting (matches Python's
         // `row["value"] -> None`) can propagate.
         let candidate = sqlx::query_as::<_, (Option<i32>, Option<f64>, String, Option<String>)>(
-            "SELECT value, success_chance, command, context FROM candidate WHERE codebase = $1 and suite = $2 and coalesce(change_set, '') = $3").bind(codebase).bind(campaign).bind(change_set.map_or("", |c| c.as_str())).fetch_optional(conn).await?;
+            "SELECT value, success_chance, command, context FROM candidate WHERE codebase = $1 and suite = $2 and coalesce(change_set, '') = $3").bind(codebase).bind(campaign).bind(change_set.map_or("", |c| c.as_str())).fetch_optional(&mut *conn).await?;
         let candidate = if let Some(candidate) = candidate {
             candidate
         } else {
@@ -436,8 +436,13 @@ pub async fn do_schedule_regular(
     };
 
     let (estimated_probability_of_success, estimated_duration, total_previous_runs) =
-        estimate_success_probability_and_duration(conn, codebase, campaign, context.as_deref())
-            .await?;
+        estimate_success_probability_and_duration(
+            &mut *conn,
+            codebase,
+            campaign,
+            context.as_deref(),
+        )
+        .await?;
 
     assert!(
         estimated_duration >= chrono::Duration::seconds(0),
@@ -450,7 +455,7 @@ pub async fn do_schedule_regular(
         // `1.0 * value` produces NUMERIC in Postgres; cast the outer
         // result to double precision so sqlx can decode into f64.
         normalized_codebase_value = sqlx::query_scalar::<_, f64>(
-            "select coalesce(least(1.0 * value / (select max(value) from codebase), 1.0), 1.0)::float8 from codebase WHERE name = $1").bind(codebase).fetch_optional(conn).await?
+            "select coalesce(least(1.0 * value / (select max(value) from codebase), 1.0), 1.0)::float8 from codebase WHERE name = $1").bind(codebase).fetch_optional(&mut *conn).await?
     }
 
     let offset = calculate_offset(
@@ -469,21 +474,20 @@ pub async fn do_schedule_regular(
 
     assert!(!command.is_empty());
     let (queue_id, bucket): (i32, String) = if !dry_run {
-        let queue = Queue::new(conn);
-        let (queue_id, actual_bucket) = queue
-            .add(
-                codebase,
-                &command,
-                campaign,
-                change_set,
-                offset,
-                bucket,
-                context.as_deref(),
-                Some(estimated_duration),
-                refresh,
-                Some(requester),
-            )
-            .await?;
+        let (queue_id, actual_bucket) = Queue::add(
+            &mut *conn,
+            codebase,
+            &command,
+            campaign,
+            change_set,
+            offset,
+            bucket,
+            context.as_deref(),
+            Some(estimated_duration),
+            refresh,
+            Some(requester),
+        )
+        .await?;
         (queue_id, actual_bucket)
     } else {
         (-1, bucket.to_owned())
@@ -525,6 +529,7 @@ pub async fn bulk_add_to_queue(
     if let Some(max_codebase_value) = max_codebase_value.filter(|&v| v > 0.0) {
         log::info!("Maximum value: {}", max_codebase_value);
     }
+    let mut conn = conn.acquire().await?;
     for req in todo {
         let normalized_codebase_value = if let Some(max_codebase_value) = max_codebase_value {
             std::cmp::min_by(
@@ -536,7 +541,7 @@ pub async fn bulk_add_to_queue(
             1.0
         };
         do_schedule_regular(
-            conn,
+            &mut conn,
             &req.codebase,
             &req.campaign,
             Some(&req.command),
@@ -577,7 +582,7 @@ impl RelationRef {
     }
 }
 
-async fn dep_available(conn: &PgPool, rel: &RelationRef) -> Result<bool, sqlx::Error> {
+async fn dep_available(conn: &mut PgConnection, rel: &RelationRef) -> Result<bool, sqlx::Error> {
     let mut query = sqlx::QueryBuilder::new(
         r###"
 SELECT
@@ -607,14 +612,14 @@ WHERE
 }
 
 async fn deps_satisfied(
-    conn: &PgPool,
+    conn: &mut PgConnection,
     _campaign: &Campaign,
     dependencies: Vec<Vec<RelationRef>>,
 ) -> Result<bool, sqlx::Error> {
     for group in dependencies {
         let mut found = false;
         for subdep in group {
-            if dep_available(conn, &subdep).await? {
+            if dep_available(&mut *conn, &subdep).await? {
                 found = true;
                 break;
             }
@@ -1033,8 +1038,9 @@ mod tests {
         .await
         .unwrap();
 
+        let mut conn = pool.acquire().await.unwrap();
         let (probability, duration, total) = estimate_success_probability_and_duration(
-            pool,
+            &mut conn,
             &CodebaseName::new("cb").unwrap(),
             &Campaign::new("lintian-fixes").unwrap(),
             None,
@@ -1090,8 +1096,9 @@ mod tests {
         .await
         .unwrap();
 
+        let mut conn = pool.acquire().await.unwrap();
         let (probability, duration, total) = estimate_success_probability_and_duration(
-            pool,
+            &mut conn,
             &CodebaseName::new("foo").unwrap(),
             &Campaign::new("lintian-fixes").unwrap(),
             None,
@@ -1140,20 +1147,19 @@ pub async fn do_schedule(
     } else {
         estimate_duration(conn, codebase, campaign).await?
     };
-    let queue = Queue::new(conn);
-    let (queue_id, bucket) = queue
-        .add(
-            codebase,
-            &command,
-            campaign,
-            change_set,
-            offset,
-            bucket,
-            None,
-            Some(estimated_duration),
-            refresh,
-            requester,
-        )
-        .await?;
+    let (queue_id, bucket) = Queue::add(
+        &mut *conn.acquire().await?,
+        codebase,
+        &command,
+        campaign,
+        change_set,
+        offset,
+        bucket,
+        None,
+        Some(estimated_duration),
+        refresh,
+        requester,
+    )
+    .await?;
     Ok((offset, estimated_duration, queue_id, bucket))
 }

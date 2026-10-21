@@ -1528,9 +1528,14 @@ INSERT INTO run (
         .await
     }
 
-    /// Upload/update codebases in the database.
-    pub async fn upload_codebases(&self, codebases: &[CodebaseUpload]) -> Result<(), sqlx::Error> {
+    /// Upload/update codebases and, in the same transaction, queue the candidates of
+    /// existing ones whose branch URL or subpath changed.
+    pub async fn upload_codebases(
+        &self,
+        codebases: &[CodebaseUpload],
+    ) -> Result<(), janitor::schedule::Error> {
         let mut tx = self.pool().begin().await?;
+        let mut changed = Vec::new();
 
         for codebase in codebases {
             // TODO: split segment parameters out of branch_url (and join
@@ -1539,8 +1544,9 @@ INSERT INTO run (
             // A branch without a URL is meaningless; drop it.
             let branch = url.and(codebase.branch.as_ref());
 
-            sqlx::query(
+            let row: (Option<CodebaseName>, Option<bool>) = sqlx::query_as(
                 r#"
+                WITH old AS (SELECT branch_url, subpath FROM codebase WHERE name = $1)
                 INSERT INTO codebase
                 (name, branch_url, url, branch, subpath, vcs_type, vcs_last_revision, value, web_url)
                 VALUES ($1, $2, $3, $4, $5, $6::text::vcs_type, $7, $8, $9)
@@ -1553,6 +1559,8 @@ INSERT INTO run (
                     url = EXCLUDED.url,
                     branch = EXCLUDED.branch,
                     web_url = EXCLUDED.web_url
+                RETURNING name, (SELECT old.branch_url IS DISTINCT FROM codebase.branch_url
+                    OR old.subpath IS DISTINCT FROM codebase.subpath FROM old)
                 "#
             )
             .bind(&codebase.name)
@@ -1566,10 +1574,18 @@ INSERT INTO run (
             .bind(&codebase.vcs_last_revision)
             .bind(codebase.value)
             .bind(&codebase.web_url)
-            .execute(&mut *tx)
+            .fetch_one(&mut *tx)
             .await?;
+            if let (Some(name), Some(true)) = row {
+                if !changed.contains(&name) {
+                    changed.push(name);
+                }
+            }
         }
 
+        for codebase in &changed {
+            schedule_codebase_candidates(&mut tx, codebase).await?;
+        }
         tx.commit().await?;
         Ok(())
     }
@@ -1802,6 +1818,39 @@ pub struct CodebaseRow {
     pub vcs_last_revision: Option<String>,
     /// Value of the codebase.
     pub value: Option<i32>,
+}
+
+/// Queue all candidates of a codebase.
+async fn schedule_codebase_candidates(
+    conn: &mut sqlx::PgConnection,
+    codebase: &CodebaseName,
+) -> Result<(), janitor::schedule::Error> {
+    let candidates = sqlx::query_as::<_, (Campaign, Option<ChangeSetId>)>(
+        "SELECT suite::text, change_set FROM candidate WHERE codebase = $1",
+    )
+    .bind(codebase)
+    .fetch_all(&mut *conn)
+    .await?;
+    for (campaign, change_set) in candidates {
+        janitor::schedule::do_schedule_regular(
+            &mut *conn,
+            codebase,
+            &campaign,
+            None,
+            None,
+            None,
+            None,
+            Some("codebase update"),
+            0.0,
+            None,
+            change_set.as_ref(),
+            false,
+            false,
+            None,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// Entry in a `POST /codebases` request body.

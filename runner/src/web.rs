@@ -1297,11 +1297,20 @@ async fn upload_candidates(
                 .into_response();
         }
 
-        // Schedule on the pool (do_schedule_regular uses its own
-        // connection; Python passed the outer conn but Rust's
-        // schedule helpers take &PgPool).
+        // Schedule after the commit, on a new connection from the pool.
+        let mut conn = match pool.acquire().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                log::error!("Failed to get a connection to schedule {}: {}", codebase, e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "Database error"})),
+                )
+                    .into_response();
+            }
+        };
         match janitor::schedule::do_schedule_regular(
-            pool,
+            &mut conn,
             &codebase,
             &campaign,
             Some(&command),
@@ -2353,8 +2362,15 @@ async fn publish_finish_events(
     let result_code = janitor_result.code.clone();
     let main_branch_revision = janitor_result.main_branch_revision.clone();
     tokio::spawn(async move {
+        let mut conn = match pool.acquire().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                log::warn!("Failed to get a connection to schedule {}: {}", codebase, e);
+                return;
+            }
+        };
         match janitor::schedule::do_schedule_regular(
-            &pool,
+            &mut conn,
             &codebase,
             &campaign,
             None,
