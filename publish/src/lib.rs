@@ -708,6 +708,8 @@ pub struct PublishOneError {
 pub struct PublishWorker {
     /// Optional path to the template environment.
     pub template_env_path: Option<PathBuf>,
+    /// Command run for each publish; `janitor-publish-one` from `PATH` by default.
+    pub publish_one_command: Vec<String>,
     /// Optional external URL for the publish operation.
     pub external_url: Option<url::Url>,
     /// URL of the differ service.
@@ -854,6 +856,7 @@ impl PublishWorker {
     ) -> Self {
         Self {
             template_env_path,
+            publish_one_command: vec!["janitor-publish-one".to_string()],
             external_url,
             differ_url,
             redis,
@@ -931,7 +934,7 @@ impl PublishWorker {
             auto_merge,
         };
 
-        let mut args = vec!["janitor-publish-one".to_string()];
+        let mut args = self.publish_one_command.clone();
 
         if let Some(template_env_path) = self.template_env_path.as_ref() {
             args.push(format!(
@@ -2012,15 +2015,6 @@ mod tests {
     fn test_resolve_target_branch_url_falls_back_when_none() {
         assert_eq!(
             resolve_target_branch_url(None, "https://run/r"),
-            "https://run/r"
-        );
-    }
-
-    #[test]
-    fn test_resolve_target_branch_url_falls_back_when_empty() {
-        // Empty string is treated like missing.
-        assert_eq!(
-            resolve_target_branch_url(Some(""), "https://run/r"),
             "https://run/r"
         );
     }
@@ -4942,16 +4936,12 @@ pub(crate) fn classify_forge_rate_limit(
     }
 }
 
-/// Pick the URL `publish_from_policy` should publish to: the explicit
-/// `target_branch_url` wins, but a missing or empty value falls through
-/// to the run's `branch_url`.
+/// Pick the URL to publish a run to: its `target_branch_url`, else its `branch_url`.
 pub(crate) fn resolve_target_branch_url<'a>(
     target_branch_url: Option<&'a str>,
     branch_url: &'a str,
 ) -> &'a str {
-    target_branch_url
-        .filter(|s| !s.is_empty())
-        .unwrap_or(branch_url)
+    target_branch_url.unwrap_or(branch_url)
 }
 
 /// Should the per-branch loop skip the `main` role because an earlier
