@@ -539,6 +539,64 @@ db_test! {
     }
 }
 
+db_test! {
+    async fn test_public_serves_only_the_smart_protocol(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase(test_db.pool(), "dumb").await;
+        let tmp = TempDir::new().unwrap();
+        let repo = git2::Repository::init_bare(tmp.path().join("dumb")).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree = repo
+            .find_tree(repo.treebuilder(None).unwrap().write().unwrap())
+            .unwrap();
+        let commit = repo
+            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap()
+            .to_string();
+        // What `git update-server-info` writes for dumb clients.
+        std::fs::write(tmp.path().join("dumb/info/refs"), "refs\n").unwrap();
+
+        let state = build_state(&tmp, &test_db, AppRole::Public).await;
+        let (addr, handle) = spawn(web::create_public_app(state, 0)).await;
+        let client = reqwest::Client::builder()
+            .user_agent("git/2.47.3")
+            .build()
+            .unwrap();
+        let mut answers = Vec::new();
+        for path in [
+            "HEAD".to_string(),
+            "info/refs".to_string(),
+            format!("objects/{}/{}", &commit[..2], &commit[2..]),
+            "info/refs?x&service=git-upload-pack".to_string(),
+            "info/refs?service=git-upload-pack".to_string(),
+        ] {
+            let resp = client
+                .get(format!("http://{}/git/dumb/{}", addr, path))
+                .send()
+                .await
+                .unwrap();
+            let content_type = resp
+                .headers()
+                .get("content-type")
+                .map(|v| v.to_str().unwrap().to_string());
+            answers.push((path, resp.status().as_u16(), content_type));
+        }
+        handle.abort();
+
+        let smart = Some("application/x-git-upload-pack-advertisement".to_string());
+        assert_eq!(
+            answers,
+            vec![
+                ("HEAD".to_string(), 404, None),
+                ("info/refs".to_string(), 404, None),
+                (format!("objects/{}/{}", &commit[..2], &commit[2..]), 404, None),
+                ("info/refs?x&service=git-upload-pack".to_string(), 200, smart.clone()),
+                ("info/refs?service=git-upload-pack".to_string(), 200, smart),
+            ]
+        );
+    }
+}
+
 // Drive `git push` through the smart-HTTP backend end-to-end. Guards
 // against pack-framing regressions in `git_backend`'s CGI bridge
 // (stdin streaming, stdout header parsing, body buffering).
