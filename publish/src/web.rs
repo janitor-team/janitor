@@ -1648,6 +1648,42 @@ async fn refresh_status(
     };
     log::info!("Request to refresh proposal status for {}", url);
 
+    // Only recorded proposals: a URL must not make a foreign proposal ours.
+    let known: Option<(i32,)> = match sqlx::query_as("SELECT 1 FROM merge_proposal WHERE url = $1")
+        .bind(url.as_str())
+        .fetch_optional(&state.conn)
+        .await
+    {
+        Ok(row) => row,
+        Err(e) => {
+            log::error!("Error reading merge proposal {}: {}", url, e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_response("Database error"),
+            )
+                .into_response();
+        }
+    };
+    if known.is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(
+                serde_json::to_value(NotFoundResponse {
+                    reason: "No such merge proposal".to_string(),
+                    url: Some(url.to_string()),
+                    name: None,
+                    id: None,
+                    bucket: None,
+                    run_id: None,
+                    campaign: None,
+                    codebase: None,
+                })
+                .unwrap(),
+            ),
+        )
+            .into_response();
+    }
+
     async fn scan(state: Arc<AppState>, url: url::Url) {
         // get_proposal_by_url and is_merged/is_closed are PyO3 calls
         // that block synchronously. Move the lookup-and-classify

@@ -152,3 +152,48 @@ test_with_database! {
         }
     }
 }
+
+test_with_database! {
+    async fn refresh_status_refuses_unrecorded_proposal(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        sqlx::query("INSERT INTO merge_proposal (url, status) VALUES ($1, 'open')")
+            .bind("https://forge.invalid/cb-1/pulls/1")
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+
+        let app = build_app(test_db.pool().clone()).await;
+        let refresh = |url: &str| {
+            Request::builder()
+                .method("POST")
+                .uri("/refresh-status")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!("url={}", url)))
+                .unwrap()
+        };
+
+        let resp = app
+            .clone()
+            .oneshot(refresh("https://forge.invalid/cb-1/pulls/2"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "reason": "No such merge proposal",
+                "url": "https://forge.invalid/cb-1/pulls/2",
+            })
+        );
+
+        let resp = app
+            .oneshot(refresh("https://forge.invalid/cb-1/pulls/1"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    }
+}
