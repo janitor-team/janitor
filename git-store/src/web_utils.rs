@@ -16,7 +16,7 @@ use tower_http::{
     cors::{Any, CorsLayer},
     limit::RequestBodyLimitLayer,
     timeout::TimeoutLayer,
-    trace::TraceLayer,
+    trace::{DefaultMakeSpan, TraceLayer},
 };
 
 /// Per-request counter labelled by method / route / status. Mirrors
@@ -165,7 +165,11 @@ pub fn apply_standard_middleware<S: Clone + Send + Sync + 'static>(
     }
 
     if config.enable_request_logging {
-        router = router.layer(TraceLayer::new_for_http());
+        // INFO, so the request span passes the default filter and is exported.
+        router = router.layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().level(tracing::Level::INFO)),
+        );
     }
 
     router
@@ -203,5 +207,32 @@ mod tests {
             .with_label_values(&["GET", "/x", "200"])
             .get();
         assert_eq!(after, before + 1);
+    }
+
+    #[tokio::test]
+    async fn request_span_passes_info_filter() {
+        let subscriber = tracing_subscriber::layer::SubscriberExt::with(
+            tracing_subscriber::registry(),
+            tracing_subscriber::filter::LevelFilter::INFO,
+        );
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let app = apply_standard_middleware(
+            Router::new().route(
+                "/span",
+                get(|| async {
+                    tracing::Span::current()
+                        .metadata()
+                        .map_or("none", |m| m.name())
+                }),
+            ),
+            &WebConfig::default(),
+        );
+
+        let resp = app
+            .oneshot(Request::builder().uri("/span").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 64).await.unwrap();
+        assert_eq!(std::str::from_utf8(&body).unwrap(), "request");
     }
 }

@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tower::ServiceExt;
 use tower_http::services::ServeDir;
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 use tracing::{debug, info, warn};
 
 use crate::config::ArchiveConfig;
@@ -233,8 +233,11 @@ impl ArchiveWebService {
             .route("/gpg-key", get(serve_gpg_key))
             .route("/pgp_keys", get(handle_pgp_keys))
             .route("/metrics", get(shared::metrics_ok))
-            // One span per request, exported when zipkin_address is set.
-            .layer(TraceLayer::new_for_http())
+            // One span per request, at INFO so the default filter lets it be exported.
+            .layer(
+                TraceLayer::new_for_http()
+                    .make_span_with(DefaultMakeSpan::new().level(tracing::Level::INFO)),
+            )
             .with_state(self.state.clone())
     }
 
