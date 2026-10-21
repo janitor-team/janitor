@@ -2546,6 +2546,12 @@ mod tests {
     }
 
     #[test]
+    fn test_worker_result_code_defaults_to_success() {
+        let wr: WorkerResult = serde_json::from_str("{}").unwrap();
+        assert_eq!(wr.code, "success");
+    }
+
+    #[test]
     fn test_worker_result_accepts_missing_refreshed() {
         let payload = serde_json::json!({
             "code": "success",
