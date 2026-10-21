@@ -223,7 +223,6 @@ mod tests {
             queue_id: 0,
             log_id: log_id.to_string(),
             start_time: Utc::now(),
-            finish_time: None,
             estimated_duration: None,
             campaign: "test".to_string(),
             change_set: None,
