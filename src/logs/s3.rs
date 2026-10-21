@@ -38,8 +38,22 @@ impl S3LogFileManager {
         format!("logs/{}/{}/{}.gz", codebase, run_id, name)
     }
 
-    fn get_url(&self, codebase: &CodebaseName, run_id: &RunId, name: &str) -> String {
-        format!("{}{}", self.base_url, self.get_key(codebase, run_id, name))
+    fn get_url(
+        &self,
+        codebase: &CodebaseName,
+        run_id: &RunId,
+        name: &str,
+    ) -> Result<String, Error> {
+        // The URL parser resolves .. (also %2e%2e), reads \ as / and ends
+        // the path at ? or #.
+        if name.contains(['/', '\\', '?', '#']) {
+            return Err(Error::NotFound);
+        }
+        Ok(format!(
+            "{}{}",
+            self.base_url,
+            self.get_key(codebase, run_id, name)
+        ))
     }
 }
 
@@ -51,7 +65,10 @@ impl LogFileManager for S3LogFileManager {
         run_id: &RunId,
         name: &str,
     ) -> Result<bool, Error> {
-        let url = self.get_url(codebase, run_id, name);
+        let url = match self.get_url(codebase, run_id, name) {
+            Ok(url) => url,
+            Err(_) => return Ok(false),
+        };
 
         match self.client.head(&url).send().await {
             Ok(resp) => match resp.status() {
@@ -73,7 +90,7 @@ impl LogFileManager for S3LogFileManager {
         run_id: &RunId,
         name: &str,
     ) -> Result<Box<dyn Read + Send + Sync>, Error> {
-        let url = self.get_url(codebase, run_id, name);
+        let url = self.get_url(codebase, run_id, name)?;
 
         let resp = self
             .client
@@ -120,6 +137,12 @@ impl LogFileManager for S3LogFileManager {
                 .unwrap_or("unknown")
         });
 
+        if basename.contains(['/', '\\', '?', '#']) {
+            return Err(Error::Other(
+                "Basename cannot contain '/', '\\', '?' or '#' characters".to_string(),
+            ));
+        }
+
         let key = self.get_key(codebase, run_id, basename);
         let url = format!("{}{}", self.base_url, key);
 
@@ -149,7 +172,7 @@ impl LogFileManager for S3LogFileManager {
         run_id: &RunId,
         name: &str,
     ) -> Result<(), Error> {
-        let url = self.get_url(codebase, run_id, name);
+        let url = self.get_url(codebase, run_id, name)?;
 
         let resp = self
             .client
@@ -181,7 +204,7 @@ impl LogFileManager for S3LogFileManager {
         run_id: &RunId,
         name: &str,
     ) -> Result<DateTime<Utc>, Error> {
-        let url = self.get_url(codebase, run_id, name);
+        let url = self.get_url(codebase, run_id, name)?;
 
         // Use HEAD request to get object metadata including last-modified
         let response = self
@@ -229,5 +252,85 @@ impl LogFileManager for S3LogFileManager {
             Ok(r) if r.status() == StatusCode::FORBIDDEN => Err(Error::PermissionDenied),
             _ => Err(Error::ServiceUnavailable),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_parent_name_rejected() {
+        // Nothing listens on port 1, so a request would give an error.
+        let mgr = S3LogFileManager::new("http://127.0.0.1:1", None).unwrap();
+        let codebase = CodebaseName::new("foo").unwrap();
+        let run_id = RunId::new("run-1").unwrap();
+        assert!(mgr.has_log(&codebase, &run_id, "build.log").await.is_err());
+        let mut requested = Vec::new();
+        for name in [
+            "../../../build.log",
+            "..\\..\\..\\build.log",
+            "%2e%2e/%2e%2e/%2e%2e/build.log",
+            ".%2E/.%2E/.%2E/build.log",
+            "..?",
+            "..#",
+            "build.log?acl",
+        ] {
+            let has_log = mgr.has_log(&codebase, &run_id, name).await;
+            let get_log = mgr.get_log(&codebase, &run_id, name).await;
+            if !matches!(has_log, Ok(false)) || !matches!(get_log, Err(Error::NotFound)) {
+                requested.push(name);
+            }
+        }
+        assert_eq!(requested, Vec::<&str>::new());
+    }
+
+    fn refused(result: Result<(), Error>) -> bool {
+        matches!(result, Err(Error::Other(e)) if e.starts_with("Basename cannot contain"))
+    }
+
+    #[tokio::test]
+    async fn test_parent_basename_rejected() {
+        // Nothing listens on port 1, so an upload would give an error.
+        let mgr = S3LogFileManager::new("http://127.0.0.1:1", None).unwrap();
+        let codebase = CodebaseName::new("foo").unwrap();
+        let run_id = RunId::new("run-1").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let file = |name: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, "").unwrap();
+            path.to_str().unwrap().to_string()
+        };
+        let path = file("x.log");
+        let result =
+            crate::logs::import_log(&mgr, None, &codebase, &run_id, &path, Some("x.log"), None)
+                .await;
+        assert!(matches!(result, Err(Error::Other(e)) if e == "All log managers failed"));
+        let result = mgr.import_log(&codebase, &run_id, &path, None, None).await;
+        assert!(matches!(result, Err(Error::ServiceUnavailable)));
+        let mut requested = Vec::new();
+        for name in ["..\\..\\..\\x.log", "../x.log", "x.log?acl", "x.log#x"] {
+            let result =
+                crate::logs::import_log(&mgr, None, &codebase, &run_id, &path, Some(name), None)
+                    .await;
+            if !refused(result) {
+                requested.push(format!("logs::import_log {}", name));
+            }
+            let result = mgr
+                .import_log(&codebase, &run_id, &path, None, Some(name))
+                .await;
+            if !refused(result) {
+                requested.push(format!("basename {}", name));
+            }
+            if !name.contains('/') {
+                let result = mgr
+                    .import_log(&codebase, &run_id, &file(name), None, None)
+                    .await;
+                if !refused(result) {
+                    requested.push(format!("file name {}", name));
+                }
+            }
+        }
+        assert_eq!(requested, Vec::<String>::new());
     }
 }

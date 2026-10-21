@@ -248,11 +248,11 @@ pub async fn import_log(
     basename: Option<&str>,
     mtime: Option<i64>, // Unix timestamp for Python compatibility
 ) -> Result<(), Error> {
-    // Validate input path (no slashes in components)
+    // Validate input path (no slashes, ? or # in components)
     if let Some(basename) = basename {
-        if basename.contains('/') {
+        if basename.contains(['/', '\\', '?', '#']) {
             return Err(Error::Other(
-                "Basename cannot contain '/' characters".to_string(),
+                "Basename cannot contain '/', '\\', '?' or '#' characters".to_string(),
             ));
         }
     }
