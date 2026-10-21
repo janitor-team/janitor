@@ -113,17 +113,9 @@ impl Subscriber {
     {
         info!("Subscribing to Redis channel: {}", channel);
 
-        let mut pubsub = self
-            .manager
-            .client()
-            .get_async_pubsub()
-            .await
-            .map_err(|e| JanitorError::Redis(e))?;
+        let mut pubsub = self.manager.client().get_async_pubsub().await?;
 
-        pubsub
-            .subscribe(channel)
-            .await
-            .map_err(|e| JanitorError::Redis(e))?;
+        pubsub.subscribe(channel).await?;
 
         info!("Successfully subscribed to channel: {}", channel);
 

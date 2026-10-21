@@ -1,22 +1,16 @@
-//! Redis connection management and utilities for the Janitor platform.
-//!
-//! This module provides a centralized Redis connection manager that handles:
-//! - Connection pooling and management
-//! - Automatic reconnection with backoff
-//! - Pub/Sub messaging
-//! - Health checking
-//! - Standardized error handling
+//! Redis connection management and pub/sub helpers for the Janitor platform.
 
 use crate::error::JanitorError;
-use redis::{aio::ConnectionManager, Client};
+use redis::{
+    aio::{ConnectionManager, ConnectionManagerConfig},
+    Client,
+};
 use std::{sync::Arc, time::Duration};
-use tokio::sync::RwLock;
+use tokio::sync::OnceCell;
 use tracing::{error, info, warn};
 
-pub mod connection;
 pub mod pubsub;
 
-pub use connection::ConnectionPool;
 pub use pubsub::{PubSubMessage, Publisher, Subscriber};
 
 /// Configuration for Redis connections
@@ -24,8 +18,6 @@ pub use pubsub::{PubSubMessage, Publisher, Subscriber};
 pub struct RedisConfig {
     /// Redis URL
     pub url: String,
-    /// Maximum number of connections in the pool
-    pub max_connections: u32,
     /// Connection timeout in seconds
     pub connection_timeout_seconds: u64,
     /// Number of retry attempts for failed operations
@@ -38,7 +30,6 @@ impl Default for RedisConfig {
     fn default() -> Self {
         Self {
             url: "redis://127.0.0.1/".to_string(),
-            max_connections: 10,
             connection_timeout_seconds: 30,
             retry_attempts: 3,
             retry_delay_ms: 1000,
@@ -56,137 +47,56 @@ impl RedisConfig {
     }
 }
 
-/// Redis manager for centralized connection and operation management
+/// Redis manager holding a single, self-reconnecting connection that is
+/// shared by every clone.
 #[derive(Clone)]
 pub struct RedisManager {
-    /// Redis client
     client: Arc<Client>,
-    /// Configuration
     config: Arc<RedisConfig>,
-    /// Connection pool for async operations
-    connection_pool: Arc<ConnectionPool>,
-    /// Current connection state
-    connection_state: Arc<RwLock<ConnectionState>>,
-}
-
-/// Connection state tracking
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ConnectionState {
-    /// Not connected
-    Disconnected,
-    /// Currently connecting
-    Connecting,
-    /// Successfully connected
-    Connected,
-    /// Connection failed
-    Failed,
+    connection: Arc<OnceCell<ConnectionManager>>,
 }
 
 impl RedisManager {
     /// Create a new Redis manager from configuration
     pub fn new(config: RedisConfig) -> Result<Self, JanitorError> {
-        let client = Client::open(config.url.as_str()).map_err(|e| JanitorError::Redis(e))?;
-
-        let connection_pool = ConnectionPool::new(
-            Arc::new(client.clone()),
-            config.max_connections as usize,
-            config.connection_timeout_seconds * 1000, // Convert to ms
-        );
+        let client = Client::open(config.url.as_str())?;
 
         Ok(Self {
             client: Arc::new(client),
             config: Arc::new(config),
-            connection_pool: Arc::new(connection_pool),
-            connection_state: Arc::new(RwLock::new(ConnectionState::Disconnected)),
+            connection: Arc::new(OnceCell::new()),
         })
     }
 
-    /// Get a connection from the pool
-    pub async fn get_connection(&self) -> Result<ConnectionManager, JanitorError> {
-        self.ensure_connected().await?;
-        self.connection_pool.get().await
-    }
-
-    /// Get a connection manager (single connection shared across tasks)
+    /// Get the shared connection manager, connecting on first use
     pub async fn get_connection_manager(&self) -> Result<ConnectionManager, JanitorError> {
-        self.ensure_connected().await?;
-
-        ConnectionManager::new((*self.client).clone())
-            .await
-            .map_err(|e| JanitorError::Redis(e))
-    }
-
-    /// Ensure we have a valid connection, attempting to reconnect if necessary
-    async fn ensure_connected(&self) -> Result<(), JanitorError> {
-        let state = self.connection_state.read().await;
-
-        match *state {
-            ConnectionState::Connected => return Ok(()),
-            ConnectionState::Connecting => {
-                // Wait a bit for ongoing connection attempt
-                drop(state);
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                let state = self.connection_state.read().await;
-                if *state == ConnectionState::Connected {
-                    return Ok(());
+        let conn = self
+            .connection
+            .get_or_try_init(|| async {
+                info!("Attempting to connect to Redis at {}", self.config.url);
+                let config = ConnectionManagerConfig::new().set_connection_timeout(Some(
+                    Duration::from_secs(self.config.connection_timeout_seconds),
+                ));
+                match ConnectionManager::new_with_config((*self.client).clone(), config).await {
+                    Ok(conn) => {
+                        info!("Successfully connected to Redis");
+                        Ok(conn)
+                    }
+                    Err(e) => {
+                        error!("Failed to connect to Redis: {}", e);
+                        Err(e)
+                    }
                 }
-            }
-            _ => {}
-        }
-
-        // State is automatically dropped here
-
-        // Try to connect
-        self.connect().await
-    }
-
-    /// Attempt to establish a connection
-    async fn connect(&self) -> Result<(), JanitorError> {
-        let mut state = self.connection_state.write().await;
-
-        // Check if another task already connected
-        if *state == ConnectionState::Connected {
-            return Ok(());
-        }
-
-        *state = ConnectionState::Connecting;
-        drop(state);
-
-        info!("Attempting to connect to Redis at {}", self.config.url);
-
-        match self.test_connection().await {
-            Ok(()) => {
-                info!("Successfully connected to Redis");
-                *self.connection_state.write().await = ConnectionState::Connected;
-                Ok(())
-            }
-            Err(e) => {
-                error!("Failed to connect to Redis: {}", e);
-                *self.connection_state.write().await = ConnectionState::Failed;
-                Err(e)
-            }
-        }
-    }
-
-    /// Test the connection with a PING command
-    async fn test_connection(&self) -> Result<(), JanitorError> {
-        let mut conn = self
-            .client
-            .get_connection_manager()
-            .await
-            .map_err(JanitorError::Redis)?;
-
-        redis::cmd("PING")
-            .query_async::<String>(&mut conn)
-            .await
-            .map_err(JanitorError::Redis)?;
-
-        Ok(())
+            })
+            .await?;
+        Ok(conn.clone())
     }
 
     /// Perform a health check
     pub async fn health_check(&self) -> Result<(), JanitorError> {
-        self.test_connection().await
+        let mut conn = self.get_connection_manager().await?;
+        redis::cmd("PING").query_async::<String>(&mut conn).await?;
+        Ok(())
     }
 
     /// Create a publisher for pub/sub operations
@@ -204,48 +114,34 @@ impl RedisManager {
         &self.client
     }
 
-    /// Execute a Redis command with automatic retry on connection failure
+    /// Execute a Redis command, retrying on connection failure
     pub async fn execute<T>(&self, cmd: &mut redis::Cmd) -> Result<T, JanitorError>
     where
         T: redis::FromRedisValue,
     {
-        let mut retries = self.config.retry_attempts;
         let mut last_error = None;
-
-        while retries > 0 {
-            match self.get_connection().await {
-                Ok(mut conn) => match cmd.query_async(&mut conn).await {
-                    Ok(result) => return Ok(result),
-                    Err(e) => {
-                        if Self::is_connection_error(&e) {
-                            warn!("Redis connection error, will retry: {}", e);
-                            *self.connection_state.write().await = ConnectionState::Disconnected;
-                            last_error = Some(e);
-                            retries -= 1;
-
-                            if retries > 0 {
-                                tokio::time::sleep(Duration::from_millis(
-                                    self.config.retry_delay_ms,
-                                ))
-                                .await;
-                            }
-                        } else {
-                            return Err(JanitorError::Redis(e));
-                        }
-                    }
-                },
+        for attempt in 1..=self.config.retry_attempts {
+            if attempt > 1 {
+                tokio::time::sleep(Duration::from_millis(self.config.retry_delay_ms)).await;
+            }
+            let mut conn = match self.get_connection_manager().await {
+                Ok(conn) => conn,
                 Err(e) => {
                     last_error = Some(redis::RedisError::from((
                         redis::ErrorKind::Io,
                         "Connection pool error",
                         e.to_string(),
                     )));
-                    retries -= 1;
-
-                    if retries > 0 {
-                        tokio::time::sleep(Duration::from_millis(self.config.retry_delay_ms)).await;
-                    }
+                    continue;
                 }
+            };
+            match cmd.query_async(&mut conn).await {
+                Ok(result) => return Ok(result),
+                Err(e) if Self::is_connection_error(&e) => {
+                    warn!("Redis connection error, will retry: {}", e);
+                    last_error = Some(e);
+                }
+                Err(e) => return Err(e.into()),
             }
         }
 
