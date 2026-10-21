@@ -106,6 +106,24 @@ codemods your campaigns need installed.
 See "Custom worker tooling" in [Dockerfiles_.md](Dockerfiles_.md) for the
 Dockerfile to start from, then run your image in place of the published one.
 
+## Moving logs to another store
+
+`janitor-migrate-logs` moves the log files of every run from one log store to
+another, for example when changing `logs_location` from a local directory to a
+bucket:
+
+```console
+$ cargo run --release --bin janitor-migrate-logs -- \
+    --config janitor.conf /srv/janitor/logs gs://my-bucket
+```
+
+A location is anything `logs_location` accepts. Point `logs_location` at the
+new store first, so that runs finishing in the meantime are not left behind.
+A log is removed from the old store only once it is in the new one, and a log
+the new store already has is left alone in both, so the tool can be run again.
+`--dry-run` lists what would be moved and `--keep` copies without removing.
+It exits with a non-zero status if the source does not exist or any run failed.
+
 ## Registering workers
 
 Workers authenticate to the site with a name and password stored in the `worker`
