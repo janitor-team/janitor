@@ -37,6 +37,24 @@ can be really complicated - allowing for more optimal scheduling - or really
 simple, in which case they just output a candidate for each codebase in a campaign
 with fixed settings for value and success_chance.
 
+Injecting codebases and candidates directly
+===========================================
+
+The runner also accepts codebases and candidates directly over its own
+internal HTTP API - the same interface a candidate generation script
+itself calls:
+
+* ``POST /codebases`` - a JSON array of ``{"name": ..., "branch_url": ...}``
+  objects.
+* ``POST /candidates`` - a JSON array of
+  ``{"codebase": ..., "campaign": ..., "value": ...}`` objects, where
+  ``campaign`` must match a configured campaign name (e.g.
+  ``lintian-fixes``) and ``codebase`` an already-registered codebase
+  name. ``command`` and ``value`` are both optional; ``command``
+  defaults to the campaign's own configured command when omitted.
+
+Both endpoints run on the runner's internal port, not the public site.
+
 Scheduling
 ==========
 
