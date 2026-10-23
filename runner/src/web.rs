@@ -4492,7 +4492,7 @@ distribution {
             "only the in-window successes should be deleted"
         );
 
-        // After DELETE, the `run_refresh_last_run` trigger re-runs
+        // After DELETE, the `run_refresh` trigger re-runs
         // `refresh_last_run` for each (codebase, campaign): if any
         // run survives it repoints `last_run_id`, otherwise it drops
         // the last_run row entirely (see refresh_last_run in the
