@@ -3615,6 +3615,7 @@ dependencies = [
  "pyo3",
  "serde",
  "serde_json",
+ "serial_test 3.5.0",
  "shlex 2.0.1",
  "sqlx",
  "tempfile",

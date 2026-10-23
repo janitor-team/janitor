@@ -1109,9 +1109,11 @@ async fn candidate_pairs(
     if msg.revision == msg.main_branch_revision {
         let rows = sqlx::query_as::<_, (RunId,)>(
             r#"SELECT id FROM run
-               WHERE result_code = 'success' AND main_branch_revision = $1"#,
+               WHERE result_code = 'success' AND main_branch_revision = $1
+                 AND id != $2"#,
         )
         .bind(&msg.revision)
+        .bind(&msg.log_id)
         .fetch_all(pool)
         .await?;
         Ok(rows
@@ -1756,6 +1758,39 @@ mod tests {
         );
         // A subsequent acquire generates again.
         assert!(matches!(inflight.acquire(key), InFlightHandle::Generate(_)));
+    }
+
+    janitor::test_with_database! {
+        async fn control_result_is_not_paired_with_itself(db: TestDatabase) {
+            janitor::schema::setup_test_database(db.pool()).await.unwrap();
+            sqlx::raw_sql(
+                "INSERT INTO codebase (name, branch_url, url, vcs_type) \
+                 VALUES ('pkg', 'https://example.com/pkg', 'https://example.com/pkg', 'git'); \
+                 INSERT INTO change_set (id, campaign) \
+                 VALUES ('control-run', 'control'), ('lint-run', 'lintian-fixes'); \
+                 INSERT INTO run (id, codebase, suite, change_set, result_code, revision, \
+                                  main_branch_revision, logfilenames) \
+                 VALUES ('control-run', 'pkg', 'control', 'control-run', 'success', 'base-rev', \
+                         'base-rev', '{}'), \
+                        ('lint-run', 'pkg', 'lintian-fixes', 'lint-run', 'success', 'new-rev', \
+                         'base-rev', '{}')",
+            )
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+            let msg = ResultMessage {
+                code: "success".to_string(),
+                log_id: "control-run".to_string(),
+                revision: "base-rev".to_string(),
+                main_branch_revision: "base-rev".to_string(),
+                codebase: "pkg".to_string(),
+            };
+            assert_eq!(
+                candidate_pairs(db.pool(), &msg).await.unwrap(),
+                vec![("control-run".to_string(), "lint-run".to_string())]
+            );
+        }
     }
 
     /// Router-level tests: build a real axum Router with the same
