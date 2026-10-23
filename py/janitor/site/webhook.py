@@ -235,7 +235,7 @@ WHERE
     return await conn.fetch(query, candidates)
 
 
-async def parse_webhook(request, db):
+async def _parse_webhook_changes(request):
     if request.content_type == "application/json":
         body = await request.json()
     elif request.content_type == "application/x-www-form-urlencoded":
@@ -278,6 +278,16 @@ async def parse_webhook(request, db):
             return
     else:
         raise web.HTTPBadRequest(text="Unrecognized webhook")
+    return changes
+
+
+async def parse_webhook(request, db):
+    try:
+        changes = await _parse_webhook_changes(request)
+    except (AttributeError, KeyError, TypeError, ValueError) as e:
+        raise web.HTTPBadRequest(text=f"Malformed webhook body: {e!r}") from e
+    if changes is None:
+        return
 
     async with db.acquire() as conn:
         for change in changes:

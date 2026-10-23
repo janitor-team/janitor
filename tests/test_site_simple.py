@@ -229,6 +229,39 @@ async def test_webhook_gitlab_push_matches_codebase(aiohttp_client, database_loc
     )
 
 
+async def test_webhook_malformed_body_returns_400(aiohttp_client, database_location):
+    _private_app, app = await create_app(
+        config=create_config(database_location), redis=FakeRedis()
+    )
+    client = await aiohttp_client(app)
+    results = []
+    push = {"ref": "refs/heads/main", "after": "0" * 40}
+    for body in [
+        '{"ref": ',
+        json.dumps(push),
+        json.dumps({**push, "after": None, "repository": {"clone_url": "x"}}),
+    ]:
+        resp = await client.post(
+            "/webhook",
+            headers={"X-Gitea-Event": "push", "Content-Type": "application/json"},
+            data=body,
+        )
+        results.append((resp.status, await resp.text()))
+    assert results == [
+        (
+            400,
+            "Malformed webhook body: "
+            "JSONDecodeError('Expecting value: line 1 column 9 (char 8)')",
+        ),
+        (400, "Malformed webhook body: KeyError('repository')"),
+        (
+            400,
+            "Malformed webhook body: "
+            "AttributeError(\"'NoneType' object has no attribute 'encode'\")",
+        ),
+    ]
+
+
 async def test_candidates_with_multiple_unscored_does_not_500(
     aiohttp_client, database_location
 ):
