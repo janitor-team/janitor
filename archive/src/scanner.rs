@@ -323,9 +323,19 @@ impl PackageScanner {
         // sidecar files like `.buildinfo`/`.changes`/`.udeb` that
         // the debian ecosystem does need. `None` == retrieve
         // everything.
-        self.artifact_manager
-            .retrieve_artifacts(build_id, artifact_dir.path(), None)
+        let download =
+            self.artifact_manager
+                .retrieve_artifacts(build_id, artifact_dir.path(), None);
+        let timeout = std::time::Duration::from_secs(crate::DEFAULT_GCS_TIMEOUT as u64);
+        tokio::time::timeout(timeout, download)
             .await
+            .map_err(|_| {
+                ArchiveError::ArtifactRetrieval(format!(
+                    "Timed out after {}s downloading artifacts for build {}",
+                    crate::DEFAULT_GCS_TIMEOUT,
+                    build_id
+                ))
+            })?
             .map_err(|e| match e {
                 janitor::artifacts::Error::ArtifactsMissing => ArchiveError::ArtifactsMissing {
                     build_id: build_id.clone(),

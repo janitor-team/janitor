@@ -30,6 +30,10 @@ pub enum UploadError {
     #[error("Artifacts missing for run {0}")]
     ArtifactsMissing(String),
 
+    /// Downloading the artifacts took too long.
+    #[error("Timed out retrieving artifacts for run {0}")]
+    ArtifactsTimeout(String),
+
     /// No `.changes` files were found under the retrieved artifacts.
     #[error("No changes files found in artifacts")]
     NoChangesFiles,

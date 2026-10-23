@@ -1,11 +1,15 @@
 //! Fetch build artifacts from the configured artifact store.
 
+use std::time::Duration;
 use tempfile::TempDir;
 use tracing::{debug, info, warn};
 
 use crate::error::{Result, UploadError};
 use janitor::artifacts::{get_artifact_manager, ArtifactManager};
 use janitor::RunId;
+
+/// Give up on a download that stalls, with the same limit as the archive.
+const RETRIEVE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// Wraps the shared [`ArtifactManager`] and downloads runs into a fresh temp dir.
 pub struct ArtifactProcessor {
@@ -29,18 +33,21 @@ impl ArtifactProcessor {
         info!(%run_id, "retrieving artifacts");
 
         let temp_dir = TempDir::new().map_err(UploadError::Io)?;
-        match self
+        let download = self
             .artifact_manager
-            .retrieve_artifacts(run_id, temp_dir.path(), None)
-            .await
-        {
-            Ok(_) => {
+            .retrieve_artifacts(run_id, temp_dir.path(), None);
+        match tokio::time::timeout(RETRIEVE_TIMEOUT, download).await {
+            Ok(Ok(_)) => {
                 debug!(%run_id, path = ?temp_dir.path(), "retrieved");
                 Ok(temp_dir)
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 warn!(%run_id, error = ?e, "artifacts missing");
                 Err(UploadError::ArtifactsMissing(run_id.to_string()))
+            }
+            Err(_) => {
+                warn!(%run_id, "timed out retrieving artifacts");
+                Err(UploadError::ArtifactsTimeout(run_id.to_string()))
             }
         }
     }
