@@ -366,6 +366,90 @@ test_with_database! {
     }
 }
 
+// A role is a single sub-path name, so a `/`, `\` or `%` in it is
+// rejected with a 400 before the request is handled. axum percent-
+// decodes the admin single-segment role route once, so `%2F`/`%5C`/`%25`
+// arrive as `/`/`\`/`%` inside the role, while a double-encoded value
+// reaches the public sub_path arm as a literal `%2F`/`%5C`, and a single
+// `%25` as a literal `%`. All of these must be refused, and a normal
+// role must still reach the protocol handler.
+test_with_database! {
+    async fn test_role_rejects_separators_and_percent_400(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase(test_db.pool(), "foo").await;
+
+        let tmp = TempDir::new().unwrap();
+        let cfg = build_config(tmp.path(), test_db_url(&test_db));
+        let (admin, public) = create_applications(cfg, janitor_config_with_campaign())
+            .await
+            .unwrap();
+        let (admin_addr, admin_handle) = spawn_public(admin).await;
+        let (public_addr, public_handle) = spawn_public(public).await;
+
+        let client = reqwest::Client::new();
+
+        // Admin role route: axum decodes the single `{role}` segment, so
+        // `%2F`/`%5C`/`%25` arrive as `/`/`\`/`%` inside the role.
+        for path in [
+            "/foo/campaign/ro%2Fle/.bzr/smart",
+            "/foo/campaign/ro%5Cle/.bzr/smart",
+            "/foo/campaign/ro%25le/.bzr/smart",
+        ] {
+            let resp = client
+                .post(format!("http://{}{}", admin_addr, path))
+                .body(b"bzr request 3\nhello\n".to_vec())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 400, "{}", path);
+        }
+
+        // Public sub_path arm: a double-encoded separator reaches the
+        // dispatcher as the literal `%2F` or `%5C` in the role segment, and
+        // a single `%25` as a literal `%`.
+        for path in [
+            "/bzr/foo/campaign/ro%252Fle/.bzr/smart",
+            "/bzr/foo/campaign/ro%255Cle/.bzr/smart",
+            "/bzr/foo/campaign/ro%25le/.bzr/smart",
+        ] {
+            let resp = client
+                .post(format!("http://{}{}", public_addr, path))
+                .body(b"bzr request 3\nhello\n".to_vec())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 400, "{}", path);
+        }
+
+        // The rejected requests must return before any transport walk, so
+        // no shared repo gets created on disk for the codebase.
+        assert!(
+            !tmp.path().join("foo").join(".bzr").exists(),
+            "a rejected role must not create the shared repo at {}/foo/.bzr",
+            tmp.path().display()
+        );
+
+        // A normal role still flows through to the protocol handler: the
+        // repo is created on demand and the smart protocol runs (a 200
+        // with Breezy's smart-protocol error framing for the toy body).
+        let resp = client
+            .post(format!("http://{}/foo/campaign/main/.bzr/smart", admin_addr))
+            .body(b"bzr request 3\nhello\n".to_vec())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        assert!(
+            tmp.path().join("foo").join(".bzr").exists(),
+            "a normal role should reach the handler and create {}/foo/.bzr",
+            tmp.path().display()
+        );
+
+        admin_handle.abort();
+        public_handle.abort();
+    }
+}
+
 test_with_database! {
     async fn test_public_invalid_identifiers_400(test_db: TestDatabase) {
         setup_test_database(test_db.pool()).await.unwrap();

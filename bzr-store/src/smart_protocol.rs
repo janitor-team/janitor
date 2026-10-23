@@ -154,6 +154,20 @@ fn handle_exchange(
         .map_err(|e| BzrError::Python(format!("ResponseBuffer::into_bytes: {}", e)))
 }
 
+/// A role is a single sub-path name under the campaign, so it must not
+/// contain a path separator or percent sign. Reject a role that holds
+/// `/`, `\` or `%`, like the `CodebaseName` and `Campaign` ids, which
+/// already reject these, so only the plain-string role is checked here.
+fn validate_role(role: &str) -> Result<()> {
+    if role.contains('/') || role.contains('\\') || role.contains('%') {
+        return Err(BzrError::invalid_request(format!(
+            "invalid role: {:?}",
+            role
+        )));
+    }
+    Ok(())
+}
+
 /// Internal dispatch shared by the three route shapes. Checks the
 /// codebase in the DB, validates the campaign against `janitor.conf`
 /// campaigns, and runs the smart protocol exchange with per-app
@@ -170,6 +184,10 @@ pub async fn smart_protocol_dispatch(
         "smart protocol request codebase={} campaign={:?} role={:?}",
         codebase, campaign, role
     );
+
+    if let Some(r) = role.as_deref() {
+        validate_role(r)?;
+    }
 
     if !state.database.validate_codebase(&codebase).await? {
         warn!("unknown codebase: {}", codebase);
