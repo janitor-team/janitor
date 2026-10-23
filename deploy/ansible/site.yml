@@ -1,0 +1,91 @@
+---
+# One play per inventory group. A single host in every group gets all of
+# them; see inventory.ini.
+- name: Validate secret vars
+  hosts: janitor
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check secret vars hold no characters that break their use
+      # They are spliced unescaped into a PostgreSQL URI, breezy's
+      # authentication.conf and janitor.conf. breezy_whoami is left out:
+      # "Name <email>" needs @ and spaces.
+      ansible.builtin.assert:
+        that:
+          - not (lookup('vars', item, default='') | string | regex_search("[@:/%'\"\\s]"))
+        fail_msg: >-
+          {{ item }} contains one of @ : / % ' " or whitespace, which break
+          the PostgreSQL URI or the config files it is written into.
+        quiet: true
+      loop:
+        - janitor_db_password
+        - breezy_github_token
+        - oauth_client_id
+        - oauth_client_secret
+      when: (lookup('vars', item, default='') | string | length) > 0
+
+    - name: Check every worker has its own password
+      ansible.builtin.assert:
+        that:
+          - passwords | select('equalto', '') | list | length == 0
+          - passwords | select('search', "[@:/%'\"\\s]") | list | length == 0
+          - passwords | unique | length == passwords | length
+        fail_msg: >-
+          Every janitor_workers entry needs a password of its own, without
+          @ : / % ' " or whitespace.
+        quiet: true
+      vars:
+        passwords: "{{ janitor_workers | map(attribute='password') | map('string') | list }}"
+
+    - name: Check auto_upload has a dput host and a signing key
+      ansible.builtin.assert:
+        that:
+          - auto_upload_dput_host | length > 0
+          - enable_auto_upload_target | bool or auto_upload_debsign_keyid | length > 0
+        fail_msg: >-
+          enable_auto_upload needs auto_upload_dput_host and, without
+          enable_auto_upload_target, auto_upload_debsign_keyid.
+        quiet: true
+      when: enable_auto_upload | bool
+
+    - name: Check the MTA has a domain and pipes only into an installed mail filter
+      ansible.builtin.assert:
+        that:
+          - mta_domains | length > 0
+          - enable_mail_filter | bool or mta_mail_filter_recipients | length == 0
+          - mta_mail_filter_recipients | length <= (mail_filter_max_instances | int) // 2
+        fail_msg: >-
+          enable_mta needs mta_domains, mta_mail_filter_recipients needs
+          enable_mail_filter, and at most half of mail_filter_max_instances
+          recipients (systemd drops filter connections beyond it).
+        quiet: true
+      when: enable_mta | bool
+
+- name: Deploy the janitor control services
+  hosts: control
+  become: true
+  roles:
+    - base
+    # Clones the source; roles/postgres loads schema/*.sql from it.
+    - janitor_source
+    - postgres
+    - redis
+    - caddy
+    - { role: archive_signing_key, when: "'archive' in janitor_services" }
+    - { role: gitea, when: enable_gitea | bool }
+    # Before janitor_config, which writes the S3 key Garage hands it.
+    - { role: garage, when: enable_garage | bool }
+    - { role: auto_upload_target, when: enable_auto_upload | bool and enable_auto_upload_target | bool }
+    - janitor_config
+    - janitor_quadlet
+    - { role: mail_filter, when: enable_mail_filter | bool }
+    - { role: mta, when: enable_mta | bool }
+
+- name: Deploy the janitor workers (the control play already covers a host in both groups)
+  hosts: worker:!control
+  become: true
+  roles:
+    - base
+    - janitor_source
+    - janitor_config
+    - janitor_quadlet

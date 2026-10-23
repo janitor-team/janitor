@@ -1,0 +1,3 @@
+---
+# janitor's S3 log storage always uses this bucket.
+garage_bucket: debian-janitor

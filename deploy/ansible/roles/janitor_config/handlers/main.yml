@@ -1,0 +1,4 @@
+---
+- name: Update the host's CA bundle
+  ansible.builtin.command: update-ca-certificates
+  changed_when: true

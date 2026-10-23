@@ -106,6 +106,9 @@ codemods your campaigns need installed.
 See "Custom worker tooling" in [Dockerfiles_.md](Dockerfiles_.md) for the
 Dockerfile to start from, then run your image in place of the published one.
 
+[deploy/](../deploy/README.md) has an Ansible playbook that deploys an
+instance onto one host or several.
+
 ## Registering workers
 
 Workers authenticate to the site with a name and password stored in the `worker`

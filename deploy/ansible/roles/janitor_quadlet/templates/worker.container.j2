@@ -1,0 +1,31 @@
+# Managed by ansible (roles/janitor_quadlet).
+[Unit]
+Description=janitor worker
+
+[Container]
+Image={{ janitor_worker_image }}
+ContainerName=janitor-worker
+Network=host
+# sbuild's and ognibuild's unshare sessions need these beyond podman's
+# rootless defaults; mounting a new /proc needs /proc unmasked.
+AddCapability=SYS_ADMIN
+AddCapability=SYS_CHROOT
+AddCapability=SETUID
+AddCapability=SETGID
+Unmask=/proc/*
+Environment=WORKER_NAME={{ worker_name }}
+Environment=WORKER_PASSWORD={{ janitor_worker_password }}
+Volume={{ janitor_breezy_dir }}/worker:/root/.config/breezy:ro
+{% if caddy_self_signed | default(false) | bool %}
+# The host's CA bundle, which holds the control host's self-signed certificate.
+Volume=/etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro
+{% endif %}
+# The build images survive a container restart.
+Volume={{ janitor_home }}/data/sbuild:/root/.cache/sbuild:rw
+Volume={{ janitor_home }}/data/ognibuild:/root/.cache/ognibuild:rw
+# The image's ENTRYPOINT already passes --listen-address, and clap refuses
+# a repeated flag, so the whole command line is given here. tini-static is
+# PID 1 and reaps what janitor-worker's children leave behind.
+Entrypoint=tini-static
+Exec=-- janitor-worker --port 9821 --listen-address {{ janitor_worker_address }} --external-address {{ janitor_worker_address }} --base-url {{ janitor_external_url }}runner/ --loop
+{% include 'common.j2' %}

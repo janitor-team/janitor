@@ -1,0 +1,127 @@
+---
+# Rootless podman with systemd user units (quadlet), so the services
+# come back after a reboot.
+- name: Create the quadlet unit directory
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.config/containers/systemd"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0755"
+
+- name: Deploy the quadlet units
+  # The file name sets the unit name. Mode 0600: the worker's unit holds
+  # its password.
+  ansible.builtin.template:
+    src: "{{ item }}.container.j2"
+    dest: "/home/{{ ansible_user }}/.config/containers/systemd/janitor-{{ item }}.container"
+    owner: "{{ ansible_user }}"
+    mode: "0600"
+  loop: "{{ janitor_services }}"
+  register: janitor_units
+  notify: Reload user systemd
+  no_log: true
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Create the host directories the worker's build images live in
+  ansible.builtin.file:
+    path: "{{ janitor_home }}/data/{{ item }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0755"
+  loop:
+    - sbuild
+    - ognibuild
+  when: "'worker' in janitor_services"
+
+- name: Find running services whose image was rebuilt or pulled since they started
+  # A running container keeps the image it started with.
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  ansible.builtin.shell: |
+    set -eu
+    running=$(podman inspect --format '{{ '{{.Image}}' }}' janitor-{{ item }} 2>/dev/null || true)
+    latest=$(podman image inspect --format '{{ '{{.Id}}' }}' {{ janitor_worker_image if item == 'worker' else 'ghcr.io/jelmer/janitor/' + item + ':latest' }})
+    if [ -n "$running" ] && [ "$running" != "$latest" ]; then echo STALE; fi
+  args:
+    executable: /bin/bash
+  register: janitor_stale
+  changed_when: false
+  loop: "{{ janitor_services }}"
+
+- name: Start the janitor services, restarting those with a new image, unit, janitor.conf, S3 key or CA bundle
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  ansible.builtin.systemd:
+    name: "janitor-{{ item }}.service"
+    scope: user
+    state: "{{ 'restarted' if janitor_restart is contains(item) else 'started' }}"
+  vars:
+    janitor_restart: >-
+      {{ (janitor_units.results | selectattr('changed') | map(attribute='item') | list)
+         + (janitor_stale.results | selectattr('stdout', 'search', 'STALE') | map(attribute='item') | list)
+         + (janitor_services | difference(['worker']) if janitor_conf is changed else [])
+         + (janitor_services | intersect(['runner', 'site']) if janitor_s3_env is changed else [])
+         + (janitor_services | intersect(['worker', 'publish', 'runner', 'site']) if control_cert_trust is changed else []) }}
+  loop: "{{ janitor_services }}"
+
+- name: Wait for each service's health route
+  ansible.builtin.uri:
+    url: "{{ janitor_health_urls[item] }}"
+  register: janitor_health
+  until: janitor_health.status == 200
+  retries: 30
+  delay: 5
+  loop: "{{ janitor_services }}"
+
+# The worker's build session image, made inside the worker container.
+- name: Cache the build session image (ogni cache-env, a few minutes)
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  ansible.builtin.command: podman exec janitor-worker ogni cache-env {{ janitor_worker_session_suite }}
+  register: ogni_cache_env
+  # ogni reports on stderr.
+  changed_when: "'Successfully cached' in ogni_cache_env.stderr"
+  when: "'worker' in janitor_services"
+
+# sbuild's unshare-mode tarball, made with mmdebstrap the way
+# create-sbuild-chroot-unshare.py does.
+- name: Check whether the sbuild chroot tarball exists
+  ansible.builtin.stat:
+    path: "{{ janitor_home }}/data/sbuild/{{ janitor_sbuild_chroot }}.tar.xz"
+  register: chroot_tarball
+  when: "'worker' in janitor_services"
+
+- name: Build the sbuild chroot tarball (mmdebstrap, a few minutes)
+  # Written under a name sbuild does not pick up, then moved in place.
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  ansible.builtin.command: >
+    podman exec janitor-worker sh -c
+    "mmdebstrap --variant=buildd unstable
+    /root/.cache/sbuild/{{ janitor_sbuild_chroot }}.partial.tar.xz
+    http://deb.debian.org/debian --mode=unshare --arch=amd64 --components=main &&
+    mv /root/.cache/sbuild/{{ janitor_sbuild_chroot }}.partial.tar.xz
+    /root/.cache/sbuild/{{ janitor_sbuild_chroot }}.tar.xz"
+  changed_when: true
+  when: "'worker' in janitor_services and not chroot_tarball.stat.exists"
+
+- name: Link the chroot tarball under each campaign build distribution's name
+  ansible.builtin.file:
+    src: "{{ janitor_sbuild_chroot }}.tar.xz"
+    dest: "{{ janitor_home }}/data/sbuild/{{ item }}.tar.xz"
+    state: link
+    follow: false
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+  loop: "{{ janitor_sbuild_chroot_aliases }}"
+  when: "'worker' in janitor_services"

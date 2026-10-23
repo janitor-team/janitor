@@ -1,0 +1,25 @@
+# Managed by ansible (roles/gitea).
+[Unit]
+Description=Gitea, a forge to try janitor's publishing against
+
+[Container]
+Image={{ gitea_image }}
+ContainerName=gitea
+Network=host
+# The image's git user (uid 1000) owns the host directories as the deploy user.
+UserNS=keep-id:uid=1000,gid=1000
+Volume={{ gitea_home }}/data:/var/lib/gitea:rw
+Volume={{ gitea_home }}/app.ini:/etc/gitea/app.ini:ro
+{% if caddy_self_signed | default(false) | bool %}
+# The host's CA certificates, for webhooks to the site's self-signed
+# HTTPS; the whole directory, so an update shows without a restart.
+Volume=/etc/ssl/certs:/etc/ssl/certs:ro
+{% endif %}
+
+[Service]
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

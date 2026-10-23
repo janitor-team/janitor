@@ -1,0 +1,16 @@
+# Managed by ansible (roles/janitor_quadlet).
+[Unit]
+Description=janitor differ
+
+[Container]
+Image=ghcr.io/jelmer/janitor/differ:latest
+ContainerName=janitor-differ
+Network=host
+# The image's ENTRYPOINT already passes --listen-address, and clap refuses
+# a repeated flag, so the whole command line is given here.
+Entrypoint=janitor-differ
+Exec=--listen-address 127.0.0.1 --port 9920 --config /mnt/janitor/janitor.conf --cache-path /mnt/janitor/data/cache/differ
+Volume={{ janitor_home }}/janitor.conf:/mnt/janitor/janitor.conf:ro
+Volume={{ janitor_home }}/data/artifacts:/mnt/janitor/data/artifacts:ro
+Volume={{ janitor_home }}/data/cache/differ:/mnt/janitor/data/cache/differ:rw
+{% include 'common.j2' %}

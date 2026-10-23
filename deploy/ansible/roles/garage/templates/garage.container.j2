@@ -1,0 +1,20 @@
+# Managed by ansible (roles/garage).
+[Unit]
+Description=Garage, an S3 server to try janitor's S3 log storage against
+
+[Container]
+Image={{ garage_image }}
+ContainerName=garage
+Network=host
+Volume={{ garage_home }}/garage.toml:/etc/garage.toml:ro
+Volume={{ garage_home }}/secrets/rpc_secret:/etc/garage/rpc_secret:ro
+Volume={{ garage_home }}/meta:/var/lib/garage/meta:rw
+Volume={{ garage_home }}/data:/var/lib/garage/data:rw
+
+[Service]
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

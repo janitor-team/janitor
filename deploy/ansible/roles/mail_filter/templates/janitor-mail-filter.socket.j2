@@ -1,0 +1,14 @@
+# Managed by ansible (roles/mail_filter).
+[Unit]
+Description=janitor mail filter socket ({{ mail_filter_command }} writes one mail to it)
+
+[Socket]
+ListenStream=%t/janitor-mail-filter.sock
+SocketMode=0600
+Accept=yes
+# systemd drops connections beyond this (the mail can be lost): the MTA
+# must run fewer filter deliveries at once.
+MaxConnections={{ mail_filter_max_instances }}
+
+[Install]
+WantedBy=sockets.target

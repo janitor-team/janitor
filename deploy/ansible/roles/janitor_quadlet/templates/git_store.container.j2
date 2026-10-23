@@ -1,0 +1,15 @@
+# Managed by ansible (roles/janitor_quadlet).
+[Unit]
+Description=janitor git store
+
+[Container]
+Image=ghcr.io/jelmer/janitor/git_store:latest
+ContainerName=janitor-git_store
+Network=host
+# The image's ENTRYPOINT already passes --listen-address, and clap refuses
+# a repeated flag, so the whole command line is given here.
+Entrypoint=janitor-git-store
+Exec=--listen-address 127.0.0.1 --port 9923 --public-port 9924 --config /mnt/janitor/janitor.conf --vcs-path /mnt/janitor/data/git
+Volume={{ janitor_home }}/janitor.conf:/mnt/janitor/janitor.conf:ro
+Volume={{ janitor_home }}/data/git:/mnt/janitor/data/git:rw
+{% include 'common.j2' %}
