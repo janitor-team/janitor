@@ -1,0 +1,86 @@
+Return-Path: <gitea@gitea.janitor.test>
+Received: from janitor-control (localhost [127.0.0.1])
+	by gitea.janitor.test (Postfix) with UTF8SMTP id 04D2C21064
+	for <janitor-bot@gitea.janitor.test>; Tue, 20 Oct 2026 21:38:55 +0000 (UTC)
+Date: Tue, 20 Oct 2026 21:38:54 +0000
+In-Reply-To: <packages/sl/pulls/1@gitea.janitor.test>
+List-Archive: <https://gitea.janitor.test/packages/sl>
+List-ID: packages/sl <sl.packages.gitea.janitor.test>
+List-Unsubscribe: <https://gitea.janitor.test/packages/sl/pulls/1>
+MIME-Version: 1.0
+Message-ID: <packages/sl/pulls/1/merge/1792532334263@gitea.janitor.test>
+References: <packages/sl/pulls/1@gitea.janitor.test>
+Subject: Re: [packages/sl] Changes for lintian-fixes
+ (6e77870a-c262-4e3c-abd3-d1f62f872d7f) (#1)
+X-Auto-Response-Suppress: All
+X-GitHub-Reason: pull
+X-GitHub-Recipient: janitor-bot
+X-GitHub-Recipient-Address: janitor-bot@gitea.janitor.test
+X-GitHub-Sender: maintainer
+X-GitLab-Issue-IID: 1
+X-GitLab-NotificationReason: pull
+X-GitLab-Project: sl
+X-GitLab-Project-Path: packages/sl
+X-Gitea-Issue-ID: 1
+X-Gitea-Issue-Link: https://gitea.janitor.test/packages/sl/pulls/1
+X-Gitea-Reason: pull
+X-Gitea-Recipient: janitor-bot
+X-Gitea-Recipient-Address: janitor-bot@gitea.janitor.test
+X-Gitea-Repository: sl
+X-Gitea-Repository-Link: https://gitea.janitor.test/packages/sl
+X-Gitea-Repository-Path: packages/sl
+X-Gitea-Sender: maintainer
+X-Mailer: Gitea
+From: "maintainer" <gitea@gitea.janitor.test>
+To: <janitor-bot@gitea.janitor.test>
+Content-Type: multipart/alternative;
+ boundary=6e5243a199d4af368bfd762d30cef4ff585af124fa06dc26339d1c1226ce
+
+--6e5243a199d4af368bfd762d30cef4ff585af124fa06dc26339d1c1226ce
+Content-Transfer-Encoding: quoted-printable
+Content-Type: text/plain; charset=UTF-8
+
+*@maintainer* merged #1 into master.
+
+---
+View it on Gitea ( https://gitea.janitor.test/packages/sl/pulls/1 ).
+--6e5243a199d4af368bfd762d30cef4ff585af124fa06dc26339d1c1226ce
+Content-Transfer-Encoding: quoted-printable
+Content-Type: text/html; charset=UTF-8
+
+<!DOCTYPE html>
+<html>
+<head>
+	<meta http-equiv=3D"Content-Type" content=3D"text/html; charset=3Dutf-8">
+	<title>Re: [packages/sl] Changes for lintian-fixes (6e77870a-c262-4e3c-abd=
+3-d1f62f872d7f) (#1)</title>
+
+	<style>
+		blockquote { padding-left: 1em; margin: 1em 0; border-left: 1px solid gre=
+y; color: #777}
+	</style>
+
+</head>
+
+<body>
+=09
+=09
+	<p>
+	=09
+			<b>@maintainer</b> merged #1 into master.
+	=09
+		=09
+		</p>
+=09
+	<div style=3D"font-size:small; color:#666;">
+		<p>
+			---
+			<br>
+			<a href=3D"https://gitea.janitor.test/packages/sl/pulls/1">View it on Gi=
+tea</a>.
+		</p>
+	</div>
+</body>
+</html>
+
+--6e5243a199d4af368bfd762d30cef4ff585af124fa06dc26339d1c1226ce--

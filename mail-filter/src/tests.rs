@@ -21,6 +21,23 @@ fn test_parse_gitlab_merged_email() {
     );
 }
 
+#[test]
+fn test_parse_gitea_merged_email() {
+    let email = include_bytes!("../tests/data/gitea-merged-email.txt");
+
+    assert_eq!(
+        Some("https://gitea.janitor.test/packages/sl/pulls/1"),
+        parse_email(std::io::Cursor::new(email)).as_deref()
+    );
+}
+
+#[test]
+fn test_parse_gitea_issue_email() {
+    let email = b"X-Gitea-Issue-Link: https://gitea.example.com/org/repo/issues/3\r\n\r\nBody\r\n";
+
+    assert_eq!(None, parse_email(std::io::Cursor::new(email)));
+}
+
 // Unit tests for parse_plain_text_body
 #[test]
 fn test_parse_plain_text_body_github() {

@@ -5,7 +5,7 @@
 
 #![deny(missing_docs)]
 
-use mailparse::parse_mail;
+use mailparse::{parse_mail, MailHeaderMap};
 use select::document::Document;
 use select::predicate::{And, Attr, Name};
 use serde_json::Value;
@@ -106,6 +106,13 @@ pub fn parse_email<F: std::io::Read>(mut file: F) -> Option<String> {
     let mail = parse_mail(data.as_bytes())
         .inspect_err(|e| log::error!("Failed to parse email: {}", e))
         .ok()?;
+
+    // Gitea names the pull request only in a header.
+    if let Some(link) = mail.headers.get_first_value("X-Gitea-Issue-Link") {
+        if link.contains("/pulls/") {
+            return Some(link);
+        }
+    }
 
     for part in mail.subparts {
         let body = match part.get_body() {
