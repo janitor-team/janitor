@@ -21,6 +21,46 @@ fn test_parse_gitlab_merged_email() {
     );
 }
 
+#[test]
+fn test_parse_single_part_launchpad_email() {
+    let email = b"From: Example <noreply@launchpad.net>\r\n\
+Subject: [Merge] ~user/project/trunk into project/trunk\r\n\
+Content-Type: text/plain; charset=\"utf-8\"\r\n\
+\r\n\
+The proposal to merge ~user/project/trunk into project/trunk has been updated.\r\n\
+For more details, see:\r\n\
+https://code.launchpad.net/~user/project/trunk/+merge/123456\r\n";
+
+    assert_eq!(
+        Some("https://code.launchpad.net/~user/project/trunk/+merge/123456"),
+        parse_email(std::io::Cursor::new(email)).as_deref()
+    );
+}
+
+#[test]
+fn test_parse_nested_multipart_email() {
+    let email = b"From: Example <noreply@github.com>\r\n\
+Subject: Merged\r\n\
+Content-Type: multipart/mixed; boundary=\"outer\"\r\n\
+\r\n\
+--outer\r\n\
+Content-Type: multipart/alternative; boundary=\"inner\"\r\n\
+\r\n\
+--inner\r\n\
+Content-Type: text/plain; charset=\"utf-8\"\r\n\
+\r\n\
+Merged #1 into main.\r\n\
+Reply to this email directly or view it on GitHub:\r\n\
+https://github.com/owner/repo/pull/1#event-1\r\n\
+--inner--\r\n\
+--outer--\r\n";
+
+    assert_eq!(
+        Some("https://github.com/owner/repo/pull/1"),
+        parse_email(std::io::Cursor::new(email)).as_deref()
+    );
+}
+
 // Unit tests for parse_plain_text_body
 #[test]
 fn test_parse_plain_text_body_github() {

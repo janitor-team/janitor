@@ -107,7 +107,7 @@ pub fn parse_email<F: std::io::Read>(mut file: F) -> Option<String> {
         .inspect_err(|e| log::error!("Failed to parse email: {}", e))
         .ok()?;
 
-    for part in mail.subparts {
+    for part in mail.parts() {
         let body = match part.get_body() {
             Ok(body) => body,
             Err(e) => {
