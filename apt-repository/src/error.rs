@@ -45,6 +45,10 @@ pub enum AptRepositoryError {
     /// Directory creation failed.
     #[error("Failed to create directory: {0}")]
     DirectoryCreation(String),
+
+    /// A package or source provider failed.
+    #[error("Provider error: {0}")]
+    Provider(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
 impl AptRepositoryError {
