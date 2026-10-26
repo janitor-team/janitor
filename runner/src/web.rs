@@ -764,7 +764,7 @@ fn main_branch_name(branch_url: Option<&str>) -> String {
 }
 
 /// `POST /codebases` -- bulk upsert codebases. Returns 200 with an
-/// empty object on success.
+/// empty object on success, or 400 with a reason for an invalid entry.
 async fn update_codebases(
     State(state): State<Arc<AppState>>,
     Json(codebases): Json<Vec<crate::database::CodebaseUpload>>,
@@ -782,6 +782,9 @@ async fn update_codebases(
 
     match state.database.upload_codebases(&codebases).await {
         Ok(()) => (StatusCode::OK, Json(json!({}))),
+        Err(crate::database::UploadCodebasesError::Invalid(reason)) => {
+            (StatusCode::BAD_REQUEST, Json(json!({"reason": reason})))
+        }
         Err(e) => {
             log::error!("Failed to upload codebases: {}", e);
             (
