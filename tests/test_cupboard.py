@@ -27,6 +27,7 @@ from yarl import URL
 
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
+from janitor.logs import LogRetrievalError
 from janitor.site import (
     TEMPLATE_ENV,
     classify_result_code,
@@ -39,6 +40,7 @@ from janitor.site.cupboard import create_app
 from janitor.site.cupboard.api import create_app as create_api_app
 from janitor.site.cupboard.api import select_runs_to_reprocess
 from janitor.site.cupboard.publish import iter_publish_history
+from janitor.site.pkg import read_log
 
 from .conftest import _insert_codebase, _insert_run
 
@@ -317,6 +319,22 @@ async def test_run_redirect_unknown_run_returns_404(aiohttp_client, db):
     client = await create_client(aiohttp_client, db)
     resp = await client.get("/cupboard/run/nonexistent/", allow_redirects=False)
     assert resp.status == 404
+
+
+@pytest.mark.parametrize(
+    "error,expected",
+    [
+        (FileNotFoundError("Log not found"), None),
+        (LogRetrievalError("timed out"), b"timed out"),
+        (PermissionError("Permission denied"), b"Permission denied"),
+    ],
+)
+async def test_read_log(error, expected):
+    class LogFileManager:
+        async def get_log(self, codebase, run_id, name):
+            raise error
+
+    assert await read_log(LogFileManager(), "foo", "somerun", "worker.log") == expected
 
 
 async def test_evaluate_unknown_run_returns_404(db):

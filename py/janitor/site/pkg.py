@@ -66,6 +66,16 @@ async def get_publish_history(
     )
 
 
+async def read_log(logfile_manager, codebase, run_id, name):
+    try:
+        logfile = await logfile_manager.get_log(codebase, run_id, name)
+        return await logfile.read()
+    except FileNotFoundError:
+        return None
+    except (LogRetrievalError, PermissionError) as e:
+        return str(e).encode("utf-8")
+
+
 async def generate_run_file(
     db,
     client,
@@ -233,15 +243,6 @@ WHERE followup.origin = $1""",
 
     cache_logs = {}
 
-    async def _get_log(name):
-        try:
-            logfile = await logfile_manager.get_log(run["codebase"], run["id"], name)
-            return await logfile.read()
-        except FileNotFoundError:
-            return None
-        except LogRetrievalError as e:
-            return str(e).encode("utf-8")
-
     def has_log(name):
         return name in run["logfilenames"]
 
@@ -250,7 +251,9 @@ WHERE followup.origin = $1""",
             log = None
         else:
             if name not in cache_logs:
-                cache_logs[name] = await _get_log(name)
+                cache_logs[name] = await read_log(
+                    logfile_manager, run["codebase"], run["id"], name
+                )
             log = cache_logs[name]
         if log is None:
             return BytesIO(b"Log file missing.")
