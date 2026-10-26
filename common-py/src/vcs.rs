@@ -64,7 +64,10 @@ impl VcsManager {
     ) -> PyResult<Bound<'a, PyAny>> {
         let z = self.0.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let diff = z.get_diff(&codebase, &old_revid, &new_revid).await;
+            let diff = z
+                .get_diff(&codebase, &old_revid, &new_revid)
+                .await
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
             Ok(Python::attach(|py| PyBytes::new(py, &diff).unbind()))
         })
     }
