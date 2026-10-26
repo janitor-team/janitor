@@ -221,7 +221,8 @@ cd {{ codebase }}
         <div class="highlight-default notranslate">
             <div class="highlight">
                 <pre>
-{% for binary_package in binary_packages %}apt install -t {{ distribution }} {{ binary_package }}{% endfor %}</pre>
+{% for binary_package in binary_packages %}apt install -t {{ distribution }} {{ binary_package }}
+{% endfor %}</pre>
             </div>
         </div>
     {% endif %}
