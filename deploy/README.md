@@ -9,6 +9,26 @@ several, over SSH (see [Deploy onto your own hosts](#deploy-onto-your-own-hosts)
 Vagrant is optional: the Vagrantfiles only create local VMs to try the
 playbook on (see [Vagrant (optional)](#vagrant-optional)).
 
+## Where to find what
+
+| Question | Section |
+|---|---|
+| What do I need first? | [Before you start](#before-you-start) |
+| How do I run it on my own machines (bare metal, VMs, cloud)? | [Deploy onto your own hosts](#deploy-onto-your-own-hosts) |
+| How do I change what a run deploys? | [What to change where](#what-to-change-where) |
+| How do I check that it worked? | [Check that it works](#check-that-it-works) |
+| How do I upgrade and back up? | [Upgrades, own campaigns, backups](#upgrades-own-campaigns-backups) |
+| How do I use several hosts or more workers? | [Several hosts](#several-hosts) |
+| How do I set up dev, test, staging or production? | [Environments](#environments) |
+| Can I self-host everything, or use hosted services? | [Self-hosted or hosted](#self-hosted-or-hosted) |
+| What does the playbook install, and where? | [Layout](#layout), [What runs where](#what-runs-where) |
+| What are the optional features, and how do I turn one on? | [Optional features](#optional-features) |
+| How do I try it in local VMs (Vagrant)? | [Vagrant (optional)](#vagrant-optional) |
+
+This README covers the playbook. For janitor itself, see
+[docs/production.md](../docs/production.md) (setting it up by hand) and
+[docs/flow.md](../docs/flow.md) (how codebases and candidates get in).
+
 ## Before you start
 
 - Debian 13 hosts, each with an `ansible_user` that can use sudo without
@@ -24,7 +44,8 @@ playbook on (see [Vagrant (optional)](#vagrant-optional)).
   VMs) or `janitor_scheme: http` (plain HTTP, only on a network nobody
   else can read).
 - Sizes tested: a control host with 8 CPUs, 24 GB of memory and 200 GB
-  of disk, and workers with 6 CPUs, 12 GB and 150 GB (the Vagrant VMs).
+  of disk, and workers with 6 CPUs, 12 GB and 150 GB (the Vagrant VMs);
+  such a worker ran 3 builds at once (`janitor_worker_concurrency: 3`).
 - The first run builds every image from source. In the Vagrant VMs this
   takes 60 to 80 minutes; `use_prebuilt_images: true` pulls them instead.
 
@@ -143,6 +164,96 @@ the workers from another address, or `enable_worker_firewall: false` to
 have the next run remove the table. A drop-in for `nftables.service`
 loads the table again whenever nftables starts or reloads. No other
 firewall rule is touched.
+
+## Environments
+
+Every environment uses the same playbook; only the inventory, the
+secrets file and a few variables differ. Give each environment an
+inventory with a group named after it (`[staging]` below), and put its
+settings in `ansible/group_vars/<group>.yml`, as `group_vars/vagrant.yml`
+does for the Vagrant VMs:
+
+```
+# ansible/inventory-staging.ini: one host, as in inventory.ini
+[control]
+staging1 ansible_host=203.0.113.10 ansible_user=deploy
+
+[worker]
+staging1 ansible_host=203.0.113.10 ansible_user=deploy
+
+[janitor:children]
+control
+worker
+
+[staging:children]
+janitor
+```
+
+```
+# ansible/group_vars/staging.yml
+janitor_domain: staging.example.org
+```
+
+Then run:
+
+```
+ansible-playbook -i inventory-staging.ini site.yml -e @/path/to/staging-secrets.yml
+```
+
+`group_vars/staging.yml` overrides `group_vars/all.yml`, and `-e`
+overrides both. Two things to watch:
+
+- A `group_vars/janitor.yml`, `control.yml` or `worker.yml` overrides
+  every environment's file, so keep environment settings out of them.
+- A `group_vars/all.yml` in an inventory directory of its own (e.g.
+  `inventories/staging/group_vars/all.yml`) loses to the playbook's
+  `group_vars/all.yml` for every variable both files set.
+
+| | Dev or test | Staging | Production |
+|---|---|---|---|
+| Hosts | one VM ([Vagrant](#vagrant-optional)) or one host | one host, or as in production | a control host and [worker hosts](#several-hosts) |
+| Sizes | [the tested ones](#before-you-start) | as dev or test | more worker hosts, or a higher `janitor_worker_concurrency` |
+| Name and certificate | `caddy_self_signed: true`, or `janitor_scheme: http` without Gitea or site login | a DNS name of its own; a low `caddy_hsts_max_age` at first | a DNS name; Caddy gets the certificate; a low `caddy_hsts_max_age` at first |
+| Secrets | throwaway values | ansible-vault, none shared with production | ansible-vault |
+| Images | `use_prebuilt_images: true` (faster; `latest` may differ from `janitor_branch`) | as in production | built from `janitor_branch` (the default) |
+| Services | the test servers ([Self-hosted or hosted](#self-hosted-or-hosted)) | the upload test target (`enable_auto_upload_target`), and only codebases in repositories you own | your choice ([Self-hosted or hosted](#self-hosted-or-hosted)) |
+| Worker firewall | none (needs a worker-only host) | on for worker-only hosts (default) | on for worker-only hosts (default) |
+| Backups | none | your choice | [what to back up](#upgrades-own-campaigns-backups) |
+
+A staging copy with real codebases opens real proposals (pull
+requests) on those codebases' own repositories.
+
+## Self-hosted or hosted
+
+Per part, what the playbook can run itself and which hosted service it
+can use instead. Use the Self-hosted column to run everything yourself,
+as the Vagrant VMs do. Servers marked "test" run on the control host
+and are only for trying janitor out. The playbook supports nothing
+outside this table.
+
+| Part | Self-hosted | Hosted |
+|---|---|---|
+| Forge | test [Gitea](#gitea-optional) (`enable_gitea`) | GitHub (`breezy_github_token`) |
+| Site login | test Gitea (`gitea_site_login: true`) | an OpenID Connect provider (see **Site login** below) |
+| Build logs | a local directory (default), or test [Garage](#s3-log-storage-optional) | an S3 service (see **Build logs** below) |
+| Artifacts | a local directory | |
+| Uploads | the test target (`enable_auto_upload_target`) | a `dput` host reached without SSH, e.g. ftp ([Auto-upload](#auto-upload-optional)) |
+| Mail | test Postfix, or your own MTA on the control host ([Mail filter](#mail-filter-optional)) | |
+| Tracing | test [Jaeger](#tracing-optional) | |
+| Images | built from source (default) | pulled from ghcr.io (`use_prebuilt_images: true`) |
+| PostgreSQL, Redis, git and bzr stores | on the control host | |
+
+- **Forge**: the playbook writes breezy logins for GitHub and for its
+  own Gitea.
+- **Site login**: with an OpenID Connect provider, set
+  `oauth_client_id`, `oauth_client_secret`, `oauth_base_url`,
+  `oauth_qa_reviewer_group` and `oauth_admin_group`. Use a provider that
+  serves `/.well-known/openid-configuration` at the root of its host and
+  sends a `groups` claim.
+- **Build logs**: an S3 service; see
+  [S3 log storage](#s3-log-storage-optional).
+- **Mail**: `mail_filter_command` talks to a socket on the control host,
+  so the MTA must run there; a hosted mailbox cannot run the command.
 
 ## Layout
 
@@ -267,9 +378,11 @@ with `debsign` and uploads it with `dput`.
   `auto_upload_gnupg_home` (a signing-only subkey, not the primary key),
   its id in `auto_upload_debsign_keyid`, and the upload host's section in
   `auto_upload_dput_cf` (it replaces the image's `/etc/dput.cf`), named
-  by `auto_upload_dput_host`. `enable_auto_upload_target` instead creates
-  a test-only key and a dput host that copies uploads into
-  `auto_upload_incoming` on the control host.
+  by `auto_upload_dput_host`. The container has no SSH key, so the
+  upload method must not need one (e.g. ftp, not scp, sftp or rsync).
+  `enable_auto_upload_target` instead creates a test-only key and a dput
+  host that copies uploads into `auto_upload_incoming` on the control
+  host.
 - **Check**: after a successful build, `journalctl --user -u
   janitor-auto_upload` shows `received` with its run id; with the test
   target, `ls <auto_upload_incoming>` lists its `.changes`.
@@ -308,6 +421,8 @@ is on, its builds are given that server's URL.
 
 Build logs in an S3 bucket instead of a local directory
 (`janitor_home/data/logs`). Artifacts stay in a local directory.
+
+Set `janitor_s3_region` for a server outside `us-east-1`.
 
 - **Switch**: set `janitor_logs_location` to the bucket, as
   `s3://BUCKET` or `s3://BUCKET/PREFIX`, and for a server other than AWS
