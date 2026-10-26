@@ -491,8 +491,8 @@ pub struct JanitorResult {
 
     /// Optional details about the failure.
     pub failure_details: Option<serde_json::Value>,
-    /// Optional stages where failure occurred.
-    pub failure_stage: Option<Vec<String>>,
+    /// Optional stage where failure occurred, as sent by the worker.
+    pub failure_stage: Option<String>,
 
     /// Optional information about resuming a previous run.
     pub resume: Option<ResultResume>,
@@ -2467,7 +2467,7 @@ mod tests {
             remotes: None,
             branches: None,
             failure_details: Some(serde_json::json!({"error": "compilation failed"})),
-            failure_stage: Some(vec!["build".to_string()]),
+            failure_stage: Some("build".to_string()),
             resume: None,
             target: None,
             worker_name: None,
@@ -2481,7 +2481,7 @@ mod tests {
         assert_eq!(roundtripped.code, "build-failed");
         assert_eq!(roundtripped.transient, Some(true));
         assert!(roundtripped.failure_details.is_some());
-        assert_eq!(roundtripped.failure_stage, Some(vec!["build".to_string()]));
+        assert_eq!(roundtripped.failure_stage.as_deref(), Some("build"));
     }
 
     #[test]
