@@ -11,8 +11,9 @@ host or onto several, and comes with Vagrant VMs to try it locally.
   inventory group:
   - `control`: `base`, `janitor_source`, `postgres`, `redis`, `caddy`,
     `archive_signing_key`, `gitea` (optional), `garage` (optional),
-    `auto_upload_target` (optional), `janitor_config`, `janitor_quadlet`,
-    `mail_filter` (optional), `mta` (optional).
+    `jaeger` (optional), `auto_upload_target` (optional),
+    `janitor_config`, `janitor_quadlet`, `mail_filter` (optional), `mta`
+    (optional).
   - `worker`: `base`, `worker_firewall`, `janitor_source`,
     `janitor_config`, `janitor_quadlet`.
 - `ansible/inventory.ini`: the hosts. One host in both groups for a single
@@ -210,6 +211,17 @@ to `s3://debian-janitor/logs` and `janitor_s3_endpoint_url` to
 `group_vars/vagrant.yml`. Leave the S3 key unset then: a
 key passed with `-e` overrides Garage's.
 
+### Tracing (optional)
+
+`enable_tracing: true` runs Jaeger on the control host's loopback, with
+the spans in memory (at most `jaeger_max_traces` traces), and sets
+`zipkin_address`. The runner, git_store and archive send OTLP there and
+the site sends Zipkin JSON to `/api/v2/spans` on the same server; Caddy
+hands each to Jaeger's receiver for it. The other services send no
+spans. 1 in 10 traces is sampled. The UI and its API are at
+`http://127.0.0.1:16686/` on the control host (e.g. through
+`ssh -L 16686:127.0.0.1:16686`).
+
 ### Mail filter (optional)
 
 `enable_mail_filter: true` builds the `mail_filter` image and installs
@@ -254,7 +266,8 @@ has an /etc/hosts entry for it, and the machine your browser runs on
 needs one too (`<control IP> gitea.janitor.test`), or the site login
 cannot reach Gitea. They also turn on auto-upload of lintian-fixes
 builds to the local test target, and the mail filter with Postfix,
-which gets Gitea's mail for the bot, and keep the build logs in Garage.
+which gets Gitea's mail for the bot, keep the build logs in Garage and
+send the spans to Jaeger.
 With several VMs, each worker gets its own password, made once in
 `.vagrant/worker-passwords.json`.
 

@@ -180,6 +180,23 @@ garage_s3_port: 3900
 garage_rpc_port: 3901
 garage_admin_port: 3903
 garage_capacity: 10G
+# Optional, for trying janitor's tracing: Jaeger on the control host
+# (loopback only), keeping up to jaeger_max_traces traces in memory.
+# janitor.conf's zipkin_address is then
+# http://127.0.0.1:<tracing_port>/v1/traces, where roles/caddy sends the
+# site's Zipkin JSON (/api/v2/spans) to Jaeger's Zipkin receiver and the
+# rest (OTLP) to its OTLP one. The services sample 1 in 10 traces.
+enable_tracing: false
+jaeger_image: docker.io/jaegertracing/jaeger:2.22.0
+jaeger_home: "/home/{{ ansible_user }}/jaeger"
+tracing_port: 9411
+jaeger_otlp_port: 4318
+jaeger_zipkin_port: 9412
+# The UI and its HTTP API; its gRPC API listens one port below.
+jaeger_ui_port: 16686
+jaeger_health_port: 13133
+jaeger_max_traces: 10000
+jaeger_memory: 512m
 # Optional: janitor-mail-filter reads a forge's notification mail on
 # stdin and has publish refresh that proposal's status at once.
 # roles/mail_filter installs mail_filter_command for an MTA to pipe mail

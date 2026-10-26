@@ -1,0 +1,11 @@
+---
+- name: Restart jaeger
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  ansible.builtin.systemd:
+    name: jaeger.service
+    scope: user
+    daemon_reload: true
+    state: restarted

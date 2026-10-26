@@ -1,0 +1,25 @@
+# Managed by ansible (roles/jaeger).
+[Unit]
+Description=Jaeger, keeping the janitor services' spans in memory
+
+[Container]
+Image={{ jaeger_image }}
+ContainerName=jaeger
+Network=host
+Exec=--config /etc/jaeger/config.yaml
+Volume={{ jaeger_home }}/config.yaml:/etc/jaeger/config.yaml:ro
+# The image's own user; it needs no files beyond its configuration.
+User=10001
+Group=10001
+ReadOnly=true
+DropCapability=all
+NoNewPrivileges=true
+PodmanArgs=--memory={{ jaeger_memory }} --pids-limit=128
+
+[Service]
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

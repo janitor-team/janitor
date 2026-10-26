@@ -55,3 +55,6 @@ enable_garage: true
 janitor_logs_location: s3://debian-janitor/logs
 janitor_s3_endpoint_url: "http://127.0.0.1:{{ garage_s3_port }}"
 janitor_s3_region: garage
+
+# Spans of the runner, site, git_store and archive in Jaeger on control.
+enable_tracing: true
