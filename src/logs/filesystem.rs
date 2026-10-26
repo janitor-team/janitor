@@ -80,8 +80,7 @@ impl LogFileManager for FileSystemLogFileManager {
         let dest_dir = self.log_directory.join(codebase).join(run_id);
         tokio::fs::create_dir_all(&dest_dir).await?;
 
-        let basename =
-            basename.unwrap_or_else(|| crate::logs::path_basename(orig_path).unwrap_or("unknown"));
+        let basename = crate::logs::log_basename(basename, orig_path)?;
         let dest_path = dest_dir.join(format!("{}.gz", basename));
         let compressed = crate::logs::read_compressed(orig_path).await?;
 
@@ -303,6 +302,27 @@ mod tests {
             .await
             .unwrap(),
             true
+        );
+    }
+
+    #[tokio::test]
+    async fn test_import_without_basename_from_path() {
+        let (_td, mgr) = setup();
+
+        let err = mgr
+            .import_log(
+                &CodebaseName::new("codebase").unwrap(),
+                &RunId::new("run-1").unwrap(),
+                "/",
+                None,
+                None,
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "Cannot extract basename from path /".to_string()
         );
     }
 

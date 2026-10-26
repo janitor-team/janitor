@@ -85,11 +85,16 @@ fn increment_upload_success() {
     }
 }
 
-/// The file name of `orig_path`, used when no explicit basename is given.
-fn path_basename(orig_path: &str) -> Option<&str> {
+/// The name to store `orig_path` under: `basename` if given, otherwise the
+/// file name of `orig_path`.
+fn log_basename<'a>(basename: Option<&'a str>, orig_path: &'a str) -> Result<&'a str, Error> {
+    if let Some(basename) = basename {
+        return Ok(basename);
+    }
     std::path::Path::new(orig_path)
         .file_name()
         .and_then(|name| name.to_str())
+        .ok_or_else(|| Error::Other(format!("Cannot extract basename from path {}", orig_path)))
 }
 
 /// Read `path` and return its gzip-compressed contents.

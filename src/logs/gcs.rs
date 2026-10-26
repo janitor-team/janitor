@@ -130,11 +130,7 @@ impl LogFileManager for GCSLogFileManager {
         _mtime: Option<DateTime<Utc>>,
         basename: Option<&str>,
     ) -> Result<(), Error> {
-        let basename = match basename {
-            Some(basename) => basename,
-            None => crate::logs::path_basename(orig_path)
-                .ok_or_else(|| Error::Other("Cannot extract basename from path".to_string()))?,
-        };
+        let basename = crate::logs::log_basename(basename, orig_path)?;
         let bucket = self.bucket_path();
         let object_name = self.get_object_name(codebase, run_id, basename);
         let compressed_data = crate::logs::read_compressed(orig_path).await?;

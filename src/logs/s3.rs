@@ -100,8 +100,7 @@ impl LogFileManager for S3LogFileManager {
         basename: Option<&str>,
     ) -> Result<(), Error> {
         let compressed_data = crate::logs::read_compressed(orig_path).await?;
-        let basename =
-            basename.unwrap_or_else(|| crate::logs::path_basename(orig_path).unwrap_or("unknown"));
+        let basename = crate::logs::log_basename(basename, orig_path)?;
 
         let key = self.get_key(codebase, run_id, basename);
         let url = format!("{}{}", self.base_url, key);
