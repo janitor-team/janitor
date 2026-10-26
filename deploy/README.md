@@ -2,8 +2,147 @@
 
 An Ansible playbook that deploys a janitor instance: every service as a
 rootless podman container under systemd (quadlet), PostgreSQL with the
-`debversion` extension, Redis and Caddy. It deploys onto one Debian 13
-host or onto several, and comes with Vagrant VMs to try it locally.
+`debversion` extension, Redis and Caddy. It deploys onto Debian 13 hosts
+you already have (bare metal, VMs or cloud servers), one host or
+several, over SSH (see [Deploy onto your own hosts](#deploy-onto-your-own-hosts)).
+
+Vagrant is optional: the Vagrantfiles only create local VMs to try the
+playbook on (see [Vagrant (optional)](#vagrant-optional)).
+
+## Before you start
+
+- Debian 13 hosts, each with an `ansible_user` that can use sudo without
+  a password (or add `--ask-become-pass`), reachable over SSH with its
+  host key already in your `known_hosts` (`host_key_checking` is on).
+- On the machine you run the playbook from: `ansible-core` (Debian 13's
+  2.19 works) and the collections in `ansible/requirements.yml`.
+- A DNS name for the control host (`janitor_domain`; the host that runs
+  the site, database and runner, or your only host), with ports 80 and
+  443 open to the internet so Caddy can get a certificate for it (with
+  Gitea, `gitea_domain` too). Without one, set `caddy_self_signed: true`
+  (a self-signed certificate that every host trusts, as in the Vagrant
+  VMs) or `janitor_scheme: http` (plain HTTP, only on a network nobody
+  else can read).
+- Sizes tested: a control host with 8 CPUs, 24 GB of memory and 200 GB
+  of disk, and workers with 6 CPUs, 12 GB and 150 GB (the Vagrant VMs).
+- The first run builds every image from source. In the Vagrant VMs this
+  takes 60 to 80 minutes; `use_prebuilt_images: true` pulls them instead.
+
+## Deploy onto your own hosts
+
+No Vagrant needed. From any machine that can SSH to the hosts:
+
+```
+cd deploy/ansible   # its ansible.cfg points at inventory.ini
+# 1. inventory.ini: your hosts, their SSH user and key
+# 2. group_vars/all.yml: janitor_domain, janitor_github_org, any enable_* switch
+# 3. a secrets file outside the repository (see below)
+ansible-galaxy collection install -r requirements.yml
+ansible-playbook site.yml -e @/path/to/secrets.yml
+```
+
+The secrets file holds the three required secrets,
+`janitor_db_password`, `worker_password` and `breezy_whoami`
+(`Name <email>`), and any optional ones listed at the top of
+`group_vars/all.yml`, as YAML:
+
+```
+janitor_db_password: "..."
+worker_password: "..."
+breezy_whoami: "Janitor Bot <bot@example.com>"
+```
+
+With several hosts, `janitor_workers` replaces `worker_password`, which
+can then be left out.
+
+Encrypt it with ansible-vault and add `--ask-vault-pass` if you like.
+Apart from `breezy_whoami`, the values must not contain `@ : / % ' "`
+or whitespace; `site.yml` checks this.
+`janitor_github_org` names the archive signing key and janitor.conf's
+`origin`.
+
+Run the same command again after any change: it only changes what
+differs, and restarts only the services whose image, unit or
+configuration changed.
+
+With GitHub (`breezy_github_token` set), each run prints the bot's SSH
+public key (kept in `janitor_ssh_dir`, apart from `ansible_user`'s
+`~/.ssh`); add it to the bot account once, before publish opens its
+first merge proposal.
+
+### What to change where
+
+| To change | Edit |
+|---|---|
+| Which hosts, their SSH user and key | `ansible/inventory.ini` |
+| Settings for every host: domain, branch, defaults | `ansible/group_vars/all.yml` |
+| Settings for one host, e.g. a worker's `janitor_worker_address` | `ansible/host_vars/<host>.yml` (create it; see [Several hosts](#several-hosts)) |
+| The workers' [firewall](#several-hosts) | `enable_worker_firewall` and `worker_firewall_sources` |
+| Builds a worker host runs at once (one `janitor-worker` container each) | `janitor_worker_concurrency` |
+| Secrets, and the workers (`janitor_workers`) | a file passed with `-e @file`, never one in the repository |
+| Campaigns | `ansible/roles/janitor_config/templates/janitor.conf.j2` |
+| [Gitea](#gitea-optional) | `enable_gitea` and the `gitea_*` variables |
+| [Auto-upload](#auto-upload-optional) | `enable_auto_upload` (test target: `enable_auto_upload_target`) and `auto_upload_*` |
+| [ognibuild dependency server](#ognibuild-dependency-server-optional) | `enable_ognibuild_dep` and `ognibuild_dep_clients` |
+| [Generic campaign](#generic-campaign-optional) | `enable_generic_campaign` (defined in `janitor.conf.j2`) |
+| [S3 log storage](#s3-log-storage-optional) | `janitor_logs_location` and `janitor_s3_*` (test server: `enable_garage`) |
+| [Tracing](#tracing-optional) | `enable_tracing` and the `jaeger_*` variables |
+| [Mail filter](#mail-filter-optional) | `enable_mail_filter` (test MTA: `enable_mta`) and `mail_filter_*` |
+| [The Vagrant VMs](#vagrant-optional) | `ansible/group_vars/vagrant.yml`; their sizes in the Vagrantfiles |
+
+### Check that it works
+
+Run these on the control host. Log in over SSH as `ansible_user`,
+because `systemctl --user` does not work through `sudo -u`:
+
+```
+systemctl --user list-units 'janitor-*'    # every unit active (running)
+curl -s http://127.0.0.1:9911/health        # the runner: "status":"healthy"
+journalctl --user -u janitor-runner         # a unit's log
+```
+
+The other ports are in the unit table under
+[What runs where](#what-runs-where). The site is then at
+`janitor_external_url`. How codebases and candidates get in is in
+[docs/flow.md](../docs/flow.md).
+
+### Upgrades, own campaigns, backups
+
+- Changing `janitor_branch` rebuilds the images. The schema is loaded
+  into an empty database; schema changes from a new `janitor_branch` are
+  applied by hand.
+- `janitor.conf` is a fixed template,
+  `ansible/roles/janitor_config/templates/janitor.conf.j2`; edit it for
+  your own campaigns.
+- Back up PostgreSQL, `janitor_home/data`, `janitor_home/gnupg-archive`
+  and `janitor_ssh_dir`. Also back up `gitea_home/secrets` with Gitea,
+  `garage_home` with Garage, and `auto_upload_gnupg_home` with
+  auto-upload.
+
+### Several hosts
+
+Put the hosts in `[control]` and `[worker]`, and set:
+
+- `janitor_domain`: a name every worker can reach the control host on.
+- `janitor_worker_address` and `worker_name`, per worker host (in
+  `host_vars/<host>.yml`): the address the runner reaches it on, and its
+  entry in `janitor_workers`.
+- `janitor_workers` in the secrets file, since it holds the passwords
+  (the default is one entry made from `worker_name` and
+  `worker_password`): every worker's `name` and its own `password`; the
+  control host registers them all, and each worker uses the entry for
+  its `worker_name`.
+
+Workers need the control host's ports 443 and 80, and the control host
+needs each worker's ports 9821 to 9820 + `janitor_worker_concurrency`.
+On a host only in `[worker]` the playbook adds an nftables table,
+`janitor_worker`, that lets only the control host and the host itself
+reach them. It allows each control host's `ansible_host` (or
+`janitor_domain`); set `worker_firewall_sources` if the runner reaches
+the workers from another address, or `enable_worker_firewall: false` to
+have the next run remove the table. A drop-in for `nftables.service`
+loads the table again whenever nftables starts or reloads. No other
+firewall rule is touched.
 
 ## Layout
 
@@ -16,6 +155,9 @@ host or onto several, and comes with Vagrant VMs to try it locally.
     (optional).
   - `worker`: `base`, `worker_firewall`, `janitor_source`,
     `janitor_config`, `janitor_quadlet`.
+
+  The optional roles are described under
+  [Optional features](#optional-features).
 - `ansible/inventory.ini`: the hosts. One host in both groups for a single
   host.
 - `ansible/group_vars/all.yml`: every variable, with the secrets listed at
@@ -50,27 +192,22 @@ this order and waits for each health route:
 | `janitor-site` | `janitor-site` | 127.0.0.1:8080 (admin), 127.0.0.1:8090 (public) |
 | `janitor-auto_upload` (optional) | `janitor-auto-upload` | 127.0.0.1:9933 (`/metrics` only) |
 | `janitor-ognibuild_dep` (optional) | `dep-server` | 127.0.0.1:9934 |
-| `janitor-worker` | `janitor-worker --loop` | `janitor_worker_address`:9821 |
+| `janitor-worker`, `janitor-worker-<n>` | `janitor-worker --loop` | `janitor_worker_address`:9821, 9820 + n |
 
 Caddy serves `janitor_external_url` and proxies `/runner/` (without the
 prefix) to the runner's public port, `/git/` and `/bzr/` to the stores'
 public ports, `/dists/` to the archive, `/ognibuild-dep/` (optional) to
 the dependency server and everything else to the site.
-No private port is proxied. Workers use only that URL, so a worker host
-needs to reach the control host on port 443 (and 80 for the apt
-repository), and the control host needs to reach each worker on 9821.
-On a host only in `[worker]` an nftables table, `janitor_worker`, lets
-only the control host and the host itself reach 9821
-(`enable_worker_firewall`, `worker_firewall_sources`).
+No private port is proxied. Workers use only that URL.
 
 With `janitor_scheme: https` (the default) plain HTTP serves only the apt
 repository (`janitor_apt_archive_url`), which the build chroots read
 without CA certificates; every other path, worker logins included, is
-redirected to HTTPS. `caddy_self_signed: true` (the Vagrant VMs) makes a
-self-signed certificate for a control host without a real domain; every
-host fetches it from the control host when the playbook runs, adds it to
-its CA bundle and mounts that bundle into the worker, publish, runner and
-site.
+redirected to HTTPS on `janitor_domain`. `caddy_self_signed: true`
+creates a self-signed certificate for a control host without a real
+domain; every host fetches it from the control host when the playbook
+runs, adds it to its CA bundle and mounts that bundle into the worker,
+publish, runner and site.
 
 With every page, file and redirect, Caddy's public sites send
 `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` and,
@@ -93,163 +230,151 @@ The published worker image has no codemods: list the packages your
 campaigns need in `janitor_worker_extra_packages` and the playbook
 builds a derived image with them.
 
-## Before you start
+## Optional features
 
-- Debian 13 hosts, each with an `ansible_user` that can use sudo.
-- A DNS name for the control host (`janitor_domain`), with ports 80 and
-  443 open to the internet so Caddy can get a certificate for it.
-- Time: the first run builds every image from source, 60 to 80 minutes
-  in the Vagrant VMs (`use_prebuilt_images: true` pulls them instead).
-
-## Usage
-
-```
-cd ansible
-# edit inventory.ini and group_vars/all.yml; pass the secrets with -e or ansible-vault
-ansible-galaxy collection install -r requirements.yml
-ansible-playbook site.yml
-```
-
-Set at least `janitor_domain`, `janitor_github_org` and the secrets at
-the top of `group_vars/all.yml`. `janitor_github_org` names the archive
-signing key and janitor.conf's `origin`.
-
-With GitHub (`breezy_github_token` set), the first run prints the bot's
-SSH public key (kept in `janitor_ssh_dir`, apart from the deploy user's
-`~/.ssh`); add it to the bot account before publish opens its first
-merge proposal.
-
-### Check that it works
-
-On the control host, as `ansible_user`:
-
-```
-systemctl --user list-units 'janitor-*'    # every unit active (running)
-curl -s http://127.0.0.1:9911/health        # the runner; the ports are in the table above
-journalctl --user -u janitor-runner         # a unit's log
-```
-
-The site is then at `janitor_external_url`. How codebases and
-candidates get in is in [docs/flow.md](../docs/flow.md).
-
-### Upgrades, own campaigns, backups
-
-- Changing `janitor_branch` rebuilds the images. The schema is loaded
-  into an empty database; schema changes from a new `janitor_branch` are
-  applied by hand.
-- `janitor.conf` is a fixed template,
-  `ansible/roles/janitor_config/templates/janitor.conf.j2`; edit it for
-  your own campaigns.
-- Back up PostgreSQL, `janitor_home/data` and `janitor_home/gnupg-archive`,
-  with Gitea `gitea_home/secrets`, with Garage `garage_home`, and with
-  auto-upload its key in `auto_upload_gnupg_home`.
-
-### Several hosts
-
-Put the hosts in `[control]` and `[worker]`, and set:
-
-- `janitor_domain`: a name every worker can reach the control host on.
-- `janitor_worker_address`, per worker host: its own address, which the
-  runner pings.
-- `janitor_workers`: every worker's `name` and its own `password`; the
-  control host registers them all, and each worker uses the entry for its
-  `worker_name`.
+Each feature is off by default. Each section says what it is, then gives
+the **Switch**, what it **Needs**, and how to **Check** it (on the
+control host, as `ansible_user`, unless the line says otherwise). The
+Vagrant VMs turn them all on.
 
 ### Gitea (optional)
 
-`enable_gitea: true` runs Gitea on the control host, served by Caddy at
-`https://<gitea_domain>/` (its own host name). The playbook makes an
-admin, the bot
+Gitea on the control host: the playbook creates an admin, the bot
 (`gitea_bot_user`, whose token publish and the runner use and whose SSH
-key publish pushes with), the `gitea_test_users`, the `gitea_test_org`
+key publish pushes with), the `gitea_test_users`, the `gitea_test_org`,
 and copies `gitea_test_repos` into it. Gitea's SSH server listens on
 127.0.0.1:`gitea_ssh_port` only, for publish; people clone over HTTPS.
-`gitea_site_login: true` registers
-the site as an OAuth2 application and logs in there; set
-`oauth_qa_reviewer_group` and `oauth_admin_group` to Gitea organizations
-or teams (`org:team`). Gitea's secrets and tokens are kept in
-`gitea_home/secrets`.
+With `gitea_site_login: true`
+the site logs in through Gitea
+(OAuth2); set `oauth_qa_reviewer_group` and `oauth_admin_group` to Gitea
+organizations or teams (`org:team`).
+
+- **Switch**: `enable_gitea: true`.
+- **Needs**: `gitea_domain`, a second DNS name for the control host;
+  Caddy serves Gitea at its root.
+- **Check**: `curl -s https://<gitea_domain>/api/v1/version` prints
+  Gitea's version.
 
 ### Auto-upload (optional)
 
-`enable_auto_upload: true` runs `janitor-auto-upload` on the control
-host. For every successful Debian build (only `auto_upload_distributions`
-if set) it signs the `.changes` with `debsign` as
-`auto_upload_debsign_keyid` and uploads it with `dput` to
-`auto_upload_dput_host`. Put that key in `auto_upload_gnupg_home`
-without a passphrase, and the host's section in `auto_upload_dput_cf`,
-which replaces the image's `/etc/dput.cf`. Use a signing-only subkey
-there, not the primary key.
-`enable_auto_upload_target: true` instead makes a test-only key and a
-dput host that copies uploads into `auto_upload_incoming` on the control
-host, to try it out.
+`janitor-auto-upload` on the control host: it signs the `.changes` of
+every successful Debian build (only `auto_upload_distributions` if set)
+with `debsign` and uploads it with `dput`.
+
+- **Switch**: `enable_auto_upload: true`; to try it out, also
+  `enable_auto_upload_target: true`.
+- **Needs**: a signing key without a passphrase in
+  `auto_upload_gnupg_home` (a signing-only subkey, not the primary key),
+  its id in `auto_upload_debsign_keyid`, and the upload host's section in
+  `auto_upload_dput_cf` (it replaces the image's `/etc/dput.cf`), named
+  by `auto_upload_dput_host`. `enable_auto_upload_target` instead creates
+  a test-only key and a dput host that copies uploads into
+  `auto_upload_incoming` on the control host.
+- **Check**: after a successful build, `journalctl --user -u
+  janitor-auto_upload` shows `received` with its run id; with the test
+  target, `ls <auto_upload_incoming>` lists its `.changes`.
 
 ### ognibuild dependency server (optional)
 
-`enable_ognibuild_dep: true` runs ognibuild's `dep-server` (image
-`ognibuild_dep`) on the control host, as nobody with no capabilities on
-a read-only root. It has no login: Caddy serves it under
-`/ognibuild-dep/` only to `ognibuild_dep_clients` (private addresses by
-default; 403 for the rest), and the runner passes that URL
-(`--public-dep-server-url`) to generic builds.
+ognibuild's `dep-server` (image `ognibuild_dep`) runs on the control
+host as nobody, with no capabilities and a read-only root. The runner
+passes its URL to generic builds (`--public-dep-server-url`).
+
+- **Switch**: `enable_ognibuild_dep: true`.
+- **Needs**: nothing else. It has no login: Caddy serves it under
+  `/ognibuild-dep/` only to `ognibuild_dep_clients` (private addresses by
+  default) and answers 403 to the rest.
+- **Check**: `curl -s -o /dev/null -w '%{http_code}\n'
+  https://<janitor_domain>/ognibuild-dep/health` prints 200 from a
+  worker and 403 from an address outside `ognibuild_dep_clients`.
+
+### Generic campaign (optional)
+
+A campaign named `generic` that builds a codebase's branch as it is, on
+the worker, with ognibuild (for example by running `make`). It uses no
+chroot and makes no Debian package. If the
+[dependency server](#ognibuild-dependency-server-optional)
+is on, its builds are given that server's URL.
+
+- **Switch**: `enable_generic_campaign: true`.
+- **Needs**: nothing else. Add codebases and `generic` candidates as for
+  any campaign ([docs/flow.md](../docs/flow.md)); the campaign itself is
+  in `janitor.conf.j2`.
+- **Check**: open `<janitor_external_url>generic/`: it lists the
+  campaign. A codebase with no missing dependencies gets a run with
+  result `success`.
 
 ### S3 log storage (optional)
 
-Set `janitor_logs_location` to an S3 bucket, as `s3://BUCKET` or
-`s3://BUCKET/PREFIX`, to keep build logs there instead of
-`janitor_home/data/logs`. For a server other than AWS, also set
-`janitor_s3_endpoint_url` (e.g. `https://s3.example.com`). The
-runner and site sign their requests with `janitor_s3_access_key_id` and
-`janitor_s3_secret_access_key`, written to `janitor_home/s3.env` (mode
-0600). Artifacts stay in a local
-directory.
-`enable_garage: true` runs Garage, an S3 server, on the control host's
-loopback with the bucket `debian-janitor` and a key of its own, made once
-in `garage_home/secrets`. To try it out, also set `janitor_logs_location`
-to `s3://debian-janitor/logs` and `janitor_s3_endpoint_url` to
-`http://127.0.0.1:3900` (`garage_s3_port`) as in
-`group_vars/vagrant.yml`. Leave the S3 key unset then: a
-key passed with `-e` overrides Garage's.
+Build logs in an S3 bucket instead of a local directory
+(`janitor_home/data/logs`). Artifacts stay in a local directory.
+
+- **Switch**: set `janitor_logs_location` to the bucket, as
+  `s3://BUCKET` or `s3://BUCKET/PREFIX`, and for a server other than AWS
+  `janitor_s3_endpoint_url` to its URL (e.g. `https://s3.example.com`).
+  There is no `enable_*` switch. To try it out, `enable_garage: true`
+  instead, with `janitor_logs_location` set to `s3://debian-janitor/logs` and
+  `janitor_s3_endpoint_url` to `http://127.0.0.1:3900` (`garage_s3_port`)
+  as in `group_vars/vagrant.yml`.
+- **Needs**: the bucket, and a key for it in `janitor_s3_access_key_id`
+  and `janitor_s3_secret_access_key` (written to `janitor_home/s3.env`,
+  mode 0600, which the runner and site sign their requests with).
+  `enable_garage` instead runs Garage, an S3 server, on the control
+  host's loopback with the bucket `debian-janitor` and a key of its own,
+  created once in `garage_home/secrets`. Leave the S3 key unset then: a
+  key passed with `-e` overrides Garage's.
+- **Check**: `curl -s http://127.0.0.1:9911/health` lists `logs` as
+  healthy; with Garage, `podman exec garage /garage bucket info
+  debian-janitor` counts more objects after each build.
 
 ### Tracing (optional)
 
-`enable_tracing: true` runs Jaeger on the control host's loopback, with
-the spans in memory (at most `jaeger_max_traces` traces), and sets
-`zipkin_address`. The runner, git_store and archive send OTLP there and
-the site sends Zipkin JSON to `/api/v2/spans` on the same server; Caddy
-hands each to Jaeger's receiver for it. The other services send no
-spans. 1 in 10 traces is sampled. The UI and its API are at
-`http://127.0.0.1:16686/` on the control host (e.g. through
-`ssh -L 16686:127.0.0.1:16686`).
+Jaeger on the control host's loopback, with the spans in memory (at most
+`jaeger_max_traces` traces). The runner, git_store and archive send
+OTLP to janitor.conf's `zipkin_address`, and the site sends Zipkin JSON
+to `/api/v2/spans` on the same server; Caddy passes each to the matching
+Jaeger receiver. The other services send no spans. One in 10 traces is
+sampled.
+
+- **Switch**: `enable_tracing: true`.
+- **Needs**: nothing else.
+- **Check**: `curl -s http://127.0.0.1:16686/api/v3/services` lists
+  `janitor.runner`, `janitor.site` and the others once they have had
+  traffic. The UI is at `http://127.0.0.1:16686/` on the control host
+  (e.g. through `ssh -L 16686:127.0.0.1:16686`).
 
 ### Mail filter (optional)
 
-`enable_mail_filter: true` builds the `mail_filter` image and installs
-`mail_filter_command`, which hands one mail read from stdin to a socket
-of the deploy user's systemd; that runs `janitor-mail-filter` on it
-(an MTA's own unit may not allow rootless podman). When the mail is a
-forge's notification about a proposal, the filter has publish refresh
-that proposal's status at once, through `mail_filter_refresh_url`
-(publish's own `/refresh-status`). The filter's
+`janitor-mail-filter` reads a forge's notification mail about a proposal
+and has publish refresh that proposal's status at once, through
+`mail_filter_refresh_url` (publish's own `/refresh-status`). The playbook
+installs `mail_filter_command`. It reads one mail from stdin and passes
+it to a socket of `ansible_user`'s systemd, which runs the filter on it
+(an MTA's own systemd unit may not allow rootless podman). The filter's
 container can reach only this host (`mail_filter_network`), runs
 read-only as nobody with no capabilities, under memory and time caps.
-The command waits for the filter, and at most `mail_filter_max_instances`
-run at once.
-Pipe the forge mail for the bot's address into the command from
-your MTA, as the deploy user, with fewer deliveries at once than that
-(`sieve/README` shows a Dovecot setup).
-`enable_mta: true` instead runs Postfix on the control host for
-`mta_domains`, taking mail from that host only and sending nothing out:
-mail for `mta_mail_filter_recipients` goes into the filter, all of them
-together at most half of `mail_filter_max_instances` at once
-(`local_destination_concurrency_limit`), the rest to the deploy user's
-mailbox (up to `mta_mailbox_size_limit`). With Gitea on, Gitea sends its
-mail there.
 
-## Vagrant
+- **Switch**: `enable_mail_filter: true`; to try it out, also
+  `enable_mta: true`.
+- **Needs**: an MTA that pipes the forge mail for the bot's address into
+  `mail_filter_command`, as `ansible_user`, with fewer deliveries at
+  once than `mail_filter_max_instances` (`sieve/README` shows a Dovecot
+  setup).
+  `enable_mta` instead runs Postfix on the control host for
+  `mta_domains`, taking mail from that host only and sending none to
+  other hosts. Mail for `mta_mail_filter_recipients` goes to the
+  filter, with at most half of `mail_filter_max_instances` running at
+  once (`local_destination_concurrency_limit`); all other mail goes to
+  `ansible_user`'s mailbox (up to `mta_mailbox_size_limit`). With Gitea
+  on, Gitea sends its mail there.
+- **Check**: after the forge mails the bot about a proposal, `journalctl
+  --user -u 'janitor-mail-filter@*'` shows `Found merge proposal URL`.
 
-Needs vagrant with the libvirt provider. The VMs run the playbook
-themselves (`ansible_local`).
+## Vagrant (optional)
+
+Local VMs to try the playbook on; not needed to deploy. Needs vagrant
+with the libvirt provider. The VMs run the playbook themselves
+(`ansible_local`).
 
 ```
 vagrant up                                         # one VM with everything
@@ -261,14 +386,16 @@ vagrant destroy -f
 
 The site is at `https://<control IP>/` (`192.168.56.10` for one VM,
 `192.168.60.11` for several), with the self-signed certificate. Both
-Vagrantfiles turn on Gitea, at `https://gitea.janitor.test/`: each VM
-has an /etc/hosts entry for it, and the machine your browser runs on
-needs one too (`<control IP> gitea.janitor.test`), or the site login
-cannot reach Gitea. They also turn on auto-upload of lintian-fixes
-builds to the local test target, and the mail filter with Postfix,
-which gets Gitea's mail for the bot, keep the build logs in Garage and
-send the spans to Jaeger.
-With several VMs, each worker gets its own password, made once in
+Vagrantfiles turn on every optional feature, with the test servers:
+Gitea at `https://gitea.janitor.test/`, auto-upload of lintian-fixes
+builds to the local test target, the mail filter with Postfix (which
+gets Gitea's mail for the bot), the build logs in Garage, the spans in
+Jaeger, the dependency server and the generic campaign. Each VM has an
+/etc/hosts entry for Gitea, and the machine your browser runs on needs
+one too (`<control IP> gitea.janitor.test`), or the site login cannot
+reach Gitea.
+
+With several VMs, each worker gets its own password, created once in
 `.vagrant/worker-passwords.json`.
 
 Environment variables:

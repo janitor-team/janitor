@@ -65,6 +65,11 @@ janitor_worker_password: "{{ (janitor_workers | selectattr('name', 'equalto', wo
 # The lintian-fixes campaign's build distribution, also in the worker's sbuild chroot name.
 janitor_lintian_fixes_build_distribution: lintian-fixes
 
+# Optional: a "generic" campaign, which builds a codebase's branch with
+# ognibuild on the worker, without a chroot or a Debian package. Its
+# builds get the dependency server's URL when enable_ognibuild_dep is on.
+enable_generic_campaign: false
+
 # Enough connections for every service's pool.
 postgres_max_connections: 300
 
