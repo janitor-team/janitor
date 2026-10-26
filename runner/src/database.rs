@@ -935,15 +935,15 @@ INSERT INTO run (
     }
 
     /// Upload/update codebases in the database.
-    pub async fn upload_codebases(&self, codebases: &[CodebaseUpload]) -> Result<(), sqlx::Error> {
+    pub async fn upload_codebases(
+        &self,
+        codebases: &[CodebaseUpload],
+    ) -> Result<(), UploadCodebasesError> {
         let mut tx = self.pool().begin().await?;
 
         for codebase in codebases {
-            // TODO: split segment parameters out of branch_url (and join
-            // them into it when only url and branch are given).
-            let url = codebase.branch_url.as_ref().or(codebase.url.as_ref());
-            // A branch without a URL is meaningless; drop it.
-            let branch = url.and(codebase.branch.as_ref());
+            let (branch_url, url, branch) =
+                normalize_urls(codebase).map_err(UploadCodebasesError::Invalid)?;
 
             sqlx::query(
                 r#"
@@ -962,8 +962,8 @@ INSERT INTO run (
                 "#
             )
             .bind(&codebase.name)
-            .bind(url)
-            .bind(url)
+            .bind(branch_url.as_ref().map(url::Url::as_str))
+            .bind(url.as_ref().map(url::Url::as_str))
             .bind(branch)
             // Store an empty subpath as "" rather than NULL when unset, so
             // downstream consumers get a string.
@@ -1085,6 +1085,84 @@ pub struct CodebaseRow {
     pub vcs_last_revision: Option<String>,
     /// Value of the codebase.
     pub value: Option<i32>,
+}
+
+/// Error from `RunnerDatabase::upload_codebases`.
+#[derive(Debug, thiserror::Error)]
+pub enum UploadCodebasesError {
+    /// An entry has an invalid or contradictory branch_url, url or branch.
+    #[error("{0}")]
+    Invalid(String),
+    /// The database failed.
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+}
+
+/// The branch_url, url and branch to store for a codebase.
+type CodebaseUrls = (Option<url::Url>, Option<url::Url>, Option<String>);
+
+/// Parse branch_url and url, and derive whichever of branch_url, url and branch is missing.
+fn normalize_urls(codebase: &CodebaseUpload) -> Result<CodebaseUrls, String> {
+    let parse = |field: &str, value: &Option<String>| {
+        value
+            .as_deref()
+            .map(|v| url::Url::parse(v).map_err(|e| format!("Invalid {} {:?}: {}", field, v, e)))
+            .transpose()
+    };
+    let branch_url = parse("branch_url", &codebase.branch_url)?;
+    let url = parse("url", &codebase.url)?;
+    match (branch_url, url) {
+        (Some(branch_url), url) => {
+            let (base, params) = breezyshim::urlutils::try_split_segment_parameters(&branch_url)
+                .map_err(|e| format!("Invalid branch_url: {}", e))?;
+            if let Some(url) = url.filter(|url| url != &base) {
+                return Err(format!(
+                    "url {} does not match {} from branch_url {}",
+                    url, base, branch_url
+                ));
+            }
+            let branch = match params.get("branch") {
+                Some(b) => Some(
+                    percent_encoding::percent_decode_str(b)
+                        .decode_utf8()
+                        .map_err(|e| format!("Invalid branch in branch_url {}: {}", branch_url, e))?
+                        .into_owned(),
+                ),
+                None => codebase.branch.clone(),
+            };
+            if let Some(b) = codebase
+                .branch
+                .as_ref()
+                .filter(|b| Some(*b) != branch.as_ref())
+            {
+                return Err(format!(
+                    "branch {:?} does not match branch_url {}",
+                    b, branch_url
+                ));
+            }
+            Ok((Some(branch_url), Some(base), branch))
+        }
+        (None, Some(url)) => {
+            let (_, params) = breezyshim::urlutils::try_split_segment_parameters(&url)
+                .map_err(|e| format!("Invalid url: {}", e))?;
+            if !params.is_empty() {
+                return Err(format!(
+                    "url {} has segment parameters; use branch_url",
+                    url
+                ));
+            }
+            let branch_url = match &codebase.branch {
+                Some(branch) => janitor::vcs::try_join_branch_parameter(&url, branch)
+                    .map_err(|e| format!("Invalid url: {}", e))?,
+                None => url.clone(),
+            };
+            Ok((Some(branch_url), Some(url), codebase.branch.clone()))
+        }
+        (None, None) => match &codebase.branch {
+            Some(branch) => Err(format!("branch {:?} needs a branch_url or url", branch)),
+            None => Ok((None, None, None)),
+        },
+    }
 }
 
 /// Entry in a `POST /codebases` request body.
