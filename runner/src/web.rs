@@ -886,14 +886,14 @@ fn is_linkable_url(url: &url::Url) -> bool {
 }
 
 /// `POST /codebases` -- bulk upsert codebases. Returns 200 with an
-/// empty object on success, or 400 for a `web_url` the site cannot link to.
+/// empty object on success, or 400 with a reason for an invalid entry.
 #[utoipa::path(
     post,
     path = "/codebases",
     request_body = Vec<crate::database::CodebaseUpload>,
     responses(
         (status = 200, description = "Codebases were stored", body = EmptyResponse),
-        (status = 400, description = "A `web_url` the site cannot link to, or a codebase with no name and no URL", body = ReasonResponse),
+        (status = 400, description = "Invalid codebase entry", body = ReasonResponse),
         (status = 500, description = "Database error", body = ErrorResponse),
     )
 )]
@@ -928,6 +928,9 @@ async fn update_codebases(
 
     match state.database.upload_codebases(&codebases).await {
         Ok(()) => Json(EmptyResponse {}).into_response(),
+        Err(crate::database::UploadCodebasesError::Invalid(reason)) => {
+            (StatusCode::BAD_REQUEST, Json(ReasonResponse::new(reason))).into_response()
+        }
         Err(e) => {
             log::error!("Failed to upload codebases: {}", e);
             db_error()
