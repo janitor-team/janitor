@@ -45,6 +45,18 @@ campaign {
     base_distribution: "unstable"
   }
 }
+{% if enable_generic_campaign | bool %}
+
+# Builds the branch as it is with ognibuild, outside any chroot.
+campaign {
+  name: "generic"
+  command: "true"
+  branch_name: "generic"
+  force_build: true
+  generic_build {
+  }
+}
+{% endif %}
 
 apt_repository {
   name: "lintian-fixes"
