@@ -15,12 +15,12 @@ use tower::ServiceExt;
 use apt_repository::hash::{hash_data, HashAlgorithm};
 use deb822_fast::{Deb822, Paragraph};
 
-fn lintian_fixes_repo(archive: &Path) -> AptRepositoryConfig {
+fn apt_repo(name: &str, archive: &Path) -> AptRepositoryConfig {
     AptRepositoryConfig::new(
-        "lintian-fixes".to_string(),
-        "lintian-fixes".to_string(),
+        name.to_string(),
+        name.to_string(),
         vec!["amd64".to_string()],
-        archive.join("lintian-fixes"),
+        archive.join(name),
     )
 }
 
@@ -39,9 +39,11 @@ async fn build_app(pool: sqlx::PgPool) -> (axum::Router, TempDir) {
         archive_path: tmp.path().to_path_buf(),
         ..Default::default()
     };
-    config
-        .repositories
-        .insert("lintian-fixes".to_string(), lintian_fixes_repo(tmp.path()));
+    for name in ["lintian-fixes", "unchanged"] {
+        config
+            .repositories
+            .insert(name.to_string(), apt_repo(name, tmp.path()));
+    }
     let location = tmp.path().join("artifacts").display().to_string();
 
     let service = ArchiveWebService::new(
@@ -215,9 +217,10 @@ test_with_database! {
             .execute(pool)
             .await
             .unwrap();
+        // The lintian-fixes campaign builds for the unchanged distribution.
         sqlx::query(
             "INSERT INTO debian_build (run_id, version, distribution, source)
-             VALUES ('run-1', '2.10-3', 'lintian-fixes', 'hello')",
+             VALUES ('run-1', '2.10-3', 'unchanged', 'hello')",
         )
         .execute(pool)
         .await
@@ -231,7 +234,7 @@ test_with_database! {
         }
         generator(pool, tmp.path())
             .await
-            .generate_repository(&lintian_fixes_repo(tmp.path()))
+            .generate_repository(&apt_repo("unchanged", tmp.path()))
             .await
             .unwrap();
 
@@ -246,7 +249,7 @@ test_with_database! {
         let contents = ["main/Contents-amd64", "main/Contents-amd64.gz"];
         let files = [&indices[..], &contents[..]].concat();
         for (prefix, suite) in [
-            ("/dists/lintian-fixes", "lintian-fixes"),
+            ("/dists/unchanged", "unchanged"),
             ("/dists/run/run-1", "run/run-1"),
             ("/dists/cs/cs-1", "cs/cs-1"),
             ("/dists/lintian-fixes/hello", "lintian-fixes/hello"),

@@ -26,13 +26,15 @@ use janitor::{CodebaseName, RunId};
 ///     retrieval and pool-path construction
 ///   * `codebase` -- codebase name from `run.codebase`
 ///   * `source_package` -- `debian_build.source`. The pool layout
-///     is `<suite>/pkg/<source_package>/<run_id>/`, keyed on the
+///     is `<campaign>/pkg/<source_package>/<run_id>/`, keyed on the
 ///     *source* package name, not the codebase. Keeping both fields
 ///     lets consumers pick the right identifier for the operation
 ///     at hand.
 ///   * `suite` -- `debian_build.distribution` (the build target
 ///     distribution, i.e. `campaign_config.debian_build.build_distribution`),
-///     used verbatim as the leading path segment of the pool.
+///     which selects the apt_repository the build lands in.
+///   * `campaign` -- `run.suite`, the campaign that produced the
+///     build, used verbatim as the leading path segment of the pool.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(missing_docs)]
 pub struct BuildInfo {
@@ -41,6 +43,7 @@ pub struct BuildInfo {
     pub codebase: CodebaseName,
     pub source_package: String,
     pub suite: String,
+    pub campaign: String,
     pub architecture: String,
     pub component: String,
     pub binary_files: Vec<String>,
@@ -50,7 +53,7 @@ pub struct BuildInfo {
 /// Retrieves build artifacts into a fresh tempdir, runs
 /// `dpkg-scanpackages`/`dpkg-scansources` over them, and rewrites
 /// `Filename`/`Directory` entries into the archive's pool layout
-/// (`<suite>/pkg/<package>/<run_id>/`).
+/// (`<campaign>/pkg/<package>/<run_id>/`).
 ///
 /// Each retrieval uses a fresh tempdir so re-running a scan
 /// re-downloads its artifacts. Sharing one tempdir would leak
@@ -111,14 +114,14 @@ impl PackageScanner {
     ///
     /// The returned stream yields `Package` values with their
     /// `Filename` field rewritten to the pool location
-    /// `<suite_name>/pkg/<package>/<run_id>/<basename>`.
+    /// `<campaign>/pkg/<package>/<run_id>/<basename>`.
     pub async fn scan_packages_for_build<'a>(
         &'a self,
         build_info: &BuildInfo,
         arch: Option<&'a str>,
     ) -> impl Stream<Item = ArchiveResult<Package>> + 'a {
         let run_id = build_info.run_id.clone();
-        let suite_name = build_info.suite.clone();
+        let campaign = build_info.campaign.clone();
         let source_package = build_info.source_package.clone();
 
         async_stream::try_stream! {
@@ -133,7 +136,7 @@ impl PackageScanner {
                     // dpkg-scanpackages didn't emit a filename
                     // (shouldn't happen in practice).
                     .unwrap_or_else(|| format!("{}_{}_{}.deb", package.name, package.version, package.architecture));
-                package.filename = Some(pool_filename(&suite_name, &source_package, &run_id, &basename));
+                package.filename = Some(pool_filename(&campaign, &source_package, &run_id, &basename));
                 yield package;
             }
         }
@@ -249,20 +252,20 @@ impl PackageScanner {
     ///
     /// The returned stream yields `Source` values with their
     /// `Directory` field rewritten to
-    /// `<suite_name>/pkg/<package>/<run_id>/`.
+    /// `<campaign>/pkg/<package>/<run_id>/`.
     pub async fn scan_sources_for_build<'a>(
         &'a self,
         build_info: &BuildInfo,
     ) -> impl Stream<Item = ArchiveResult<Source>> + 'a {
         let run_id = build_info.run_id.clone();
-        let suite_name = build_info.suite.clone();
+        let campaign = build_info.campaign.clone();
         let source_package = build_info.source_package.clone();
 
         async_stream::try_stream! {
             let raw = self.load_or_scan_sources(&run_id).await?;
             let sources = parse_sources_bytes(&raw)?;
             for mut source in sources.into_iter() {
-                source.directory = pool_directory(&suite_name, &source_package, &run_id);
+                source.directory = pool_directory(&campaign, &source_package, &run_id);
                 yield source;
             }
         }
@@ -350,19 +353,19 @@ impl PackageScanner {
 }
 
 /// Build the archive-pool filename for a binary package:
-/// `<suite>/pkg/<package>/<run_id>/<basename>`.
+/// `<campaign>/pkg/<package>/<run_id>/<basename>`.
 pub(crate) fn pool_filename(
-    suite_name: &str,
+    campaign: &str,
     package: &str,
     run_id: &RunId,
     basename: &str,
 ) -> String {
-    format!("{}/pkg/{}/{}/{}", suite_name, package, run_id, basename)
+    format!("{}/pkg/{}/{}/{}", campaign, package, run_id, basename)
 }
 
 /// Build the archive-pool directory path for a source package.
-pub(crate) fn pool_directory(suite_name: &str, package: &str, run_id: &RunId) -> String {
-    format!("{}/pkg/{}/{}", suite_name, package, run_id)
+pub(crate) fn pool_directory(campaign: &str, package: &str, run_id: &RunId) -> String {
+    format!("{}/pkg/{}/{}", campaign, package, run_id)
 }
 
 /// File listings of the `.deb`s in `dir` whose architecture is `arch`
@@ -571,7 +574,7 @@ mod tests {
 
     /// Apt clients follow the `Filename:` field verbatim, so the
     /// pool-filename layout must be exactly
-    /// `<suite>/pkg/<package>/<run_id>/<basename>`. Any drift
+    /// `<campaign>/pkg/<package>/<run_id>/<basename>`. Any drift
     /// breaks package downloads.
     #[test]
     fn pool_filename_layout_is_stable() {
@@ -585,7 +588,7 @@ mod tests {
     }
 
     /// Pool directory layout for sources:
-    /// `<suite>/pkg/<package>/<run_id>`.
+    /// `<campaign>/pkg/<package>/<run_id>`.
     #[test]
     fn pool_directory_layout_is_stable() {
         let got = super::pool_directory("unstable", "hello", &RunId::new("abc-123").unwrap());
@@ -704,7 +707,7 @@ mod tests {
             .is_none());
     }
 
-    /// Suite/source names may contain dashes; the layout must
+    /// Campaign/source names may contain dashes; the layout must
     /// pass them through unchanged (no encoding). Regression
     /// guard against a future "sanitize" helper.
     #[test]
@@ -864,6 +867,7 @@ mod tests {
             codebase: CodebaseName::new("hello").unwrap(),
             source_package: "hello".to_string(),
             suite: "unstable".to_string(),
+            campaign: "lintian-fixes".to_string(),
             architecture: "amd64".to_string(),
             component: "main".to_string(),
             binary_files: vec![],
@@ -933,6 +937,7 @@ mod tests {
             codebase: CodebaseName::new("hello").unwrap(),
             source_package: "hello".to_string(),
             suite: "unstable".to_string(),
+            campaign: "lintian-fixes".to_string(),
             architecture: "amd64".to_string(),
             component: "main".to_string(),
             binary_files: vec![],
@@ -971,6 +976,7 @@ mod tests {
             codebase: CodebaseName::new("hello").unwrap(),
             source_package: "hello".to_string(),
             suite: "unstable".to_string(),
+            campaign: "lintian-fixes".to_string(),
             architecture: "amd64".to_string(),
             component: "main".to_string(),
             binary_files: vec![],

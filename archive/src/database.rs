@@ -30,6 +30,8 @@ pub struct BuildRecord {
     pub codebase: CodebaseName,
     /// `debian_build.distribution` (the build target).
     pub suite: String,
+    /// `run.suite`, the campaign that made the build.
+    pub campaign: String,
     /// `debian_build.source` (used as `package` in the projection too).
     pub package: String,
     /// `debian_build.source`.
@@ -98,6 +100,7 @@ impl ArchiveDatabase {
         // not on `run.suite`. This is the query that decides which
         // .deb files are considered for an apt_repository, so getting
         // it wrong silently ships stale binaries into the wrong suite.
+        // `run.suite` (the campaign) only sets the pool path.
         //
         // `DISTINCT ON (source) ... ORDER BY source, version DESC`
         // picks the newest version per source. Without it, multiple
@@ -114,6 +117,7 @@ impl ArchiveDatabase {
                 debian_build.run_id,
                 r.codebase,
                 debian_build.distribution AS suite,
+                r.suite AS campaign,
                 debian_build.source AS package,
                 debian_build.source AS source_package,
                 'amd64' AS architecture,
@@ -158,6 +162,7 @@ impl ArchiveDatabase {
                 debian_build.run_id,
                 r.codebase,
                 debian_build.distribution AS suite,
+                r.suite AS campaign,
                 debian_build.source AS package,
                 debian_build.source AS source_package,
                 'amd64' AS architecture,
@@ -194,6 +199,7 @@ impl ArchiveDatabase {
                 debian_build.run_id,
                 r.codebase,
                 debian_build.distribution AS suite,
+                r.suite AS campaign,
                 debian_build.source AS package,
                 debian_build.source AS source_package,
                 'amd64' AS architecture,
@@ -231,6 +237,7 @@ impl From<BuildRecord> for BuildInfo {
             codebase: record.codebase,
             source_package: record.source_package,
             suite: record.suite,
+            campaign: record.campaign,
             architecture: record.architecture,
             component: record.component,
             binary_files: record.binary_files,
