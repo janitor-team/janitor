@@ -16,7 +16,7 @@ use axum::{
 };
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use janitor::{Campaign, CodebaseName};
+use janitor::{Campaign, CodebaseName, Role};
 use serde::{Deserialize, Serialize};
 use tera::{Context, Tera};
 use tokio::fs;
@@ -395,7 +395,7 @@ async fn bzr_smart_sub_dispatcher(
                 state,
                 codebase,
                 Some(parse_campaign(campaign)?),
-                Some(role.to_string()),
+                Some(parse_role(role)?),
                 headers,
                 body,
             )
@@ -407,6 +407,10 @@ async fn bzr_smart_sub_dispatcher(
 
 fn parse_campaign(campaign: &str) -> Result<Campaign> {
     Campaign::new(campaign).map_err(|e| BzrError::invalid_request(e.to_string()))
+}
+
+fn parse_role(role: &str) -> Result<Role> {
+    Role::new(role).map_err(|e| BzrError::invalid_request(e.to_string()))
 }
 
 /// `GET /` on the public app — matches
