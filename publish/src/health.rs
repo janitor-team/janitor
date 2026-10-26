@@ -188,9 +188,11 @@ impl ComponentChecker for RedisHealthChecker {
     }
 
     async fn check(&self) -> ComponentHealth {
-        match self.client.get_connection() {
+        // The async client has default connect and reply timeouts; the blocking one has none.
+        match self.client.get_multiplexed_async_connection().await {
             Ok(mut conn) => {
-                let result: Result<String, redis::RedisError> = redis::cmd("PING").query(&mut conn);
+                let result: Result<String, redis::RedisError> =
+                    redis::cmd("PING").query_async(&mut conn).await;
                 match result {
                     Ok(_) => ComponentHealth {
                         name: self.name().to_string(),
@@ -258,5 +260,29 @@ pub async fn readiness_handler<S: BaseAppState>(State(state): State<S>) -> impl 
         (StatusCode::OK, "ready")
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, "not ready")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn test_redis_check_does_not_hang() {
+        // The kernel completes the TCP handshake, but nothing ever reads or answers.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("redis://{}/", listener.local_addr().unwrap());
+        let checker = RedisHealthChecker::new(redis::Client::open(url).unwrap());
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            tx.send(rt.block_on(checker.check())).unwrap();
+        });
+        let health = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        assert_eq!(health.status, HealthStatus::Unhealthy);
+        assert_eq!(health.error.as_deref(), Some("timed out"));
+        drop(listener);
     }
 }
