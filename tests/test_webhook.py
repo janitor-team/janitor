@@ -50,3 +50,72 @@ async def test_main_tries_each_codebase_with_a_branch(aiohttp_server, caplog, tm
 
     assert requests == ["/codebases"]
     assert caplog.messages == [f"Ignoring branch with unknown forge: {branch.user_url}"]
+
+
+def _launchpad_git_push(repository, path, ref_changes):
+    # Shape of GitRefScanJob.composeWebhookPayload in Launchpad.
+    body = {
+        "git_repository": repository,
+        "git_repository_path": path,
+        "ref_changes": ref_changes,
+    }
+    return [
+        (change.urls, change.after)
+        for change in webhook.get_git_changes_from_launchpad_webhook(body)
+    ]
+
+
+def test_launchpad_git_push_updates_creates_and_deletes_refs():
+    changes = _launchpad_git_push(
+        "/~user/project/+git/repo",
+        "~user/project/+git/repo",
+        {
+            "refs/heads/master": {
+                "old": {"commit_sha1": "a" * 40},
+                "new": {"commit_sha1": "b" * 40},
+            },
+            "refs/tags/1.0": {"old": {"commit_sha1": "c" * 40}, "new": None},
+            "refs/tags/2.0": {"old": None, "new": {"commit_sha1": "d" * 40}},
+        },
+    )
+    assert changes == [
+        (
+            [
+                "https://git.launchpad.net/~user/project/+git/repo,branch=master",
+                "git+ssh://git.launchpad.net/~user/project/+git/repo,branch=master",
+            ],
+            b"b" * 40,
+        ),
+        (
+            [
+                "https://git.launchpad.net/~user/project/+git/repo,ref=refs%2Ftags%2F2.0",
+                "git+ssh://git.launchpad.net/~user/project/+git/repo,ref=refs%2Ftags%2F2.0",
+            ],
+            b"d" * 40,
+        ),
+        (["https://git.launchpad.net/~user/project/+git/repo"], None),
+        (["git+ssh://git.launchpad.net/~user/project/+git/repo"], None),
+    ]
+
+
+def test_launchpad_git_push_to_default_repository():
+    changes = _launchpad_git_push(
+        "/~user/project/+git/project",
+        "project",
+        {"refs/heads/main": {"old": None, "new": {"commit_sha1": "e" * 40}}},
+    )
+    assert changes == [
+        (
+            [
+                "https://git.launchpad.net/~user/project/+git/project,branch=main",
+                "git+ssh://git.launchpad.net/~user/project/+git/project,branch=main",
+                "https://git.launchpad.net/project,branch=main",
+                "git+ssh://git.launchpad.net/project,branch=main",
+            ],
+            b"e" * 40,
+        ),
+        (["https://git.launchpad.net/~user/project/+git/project"], None),
+        (["git+ssh://git.launchpad.net/~user/project/+git/project"], None),
+        (["https://git.launchpad.net/project"], None),
+        (["git+ssh://git.launchpad.net/project"], None),
+    ]

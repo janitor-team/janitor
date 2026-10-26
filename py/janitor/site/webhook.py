@@ -183,21 +183,28 @@ def get_bzr_changes_from_launchpad_webhook(body):
 
 
 def get_git_changes_from_launchpad_webhook(body):
-    path = body["git_repository_path"]
-    base_urls = body["git_repository"] + [
-        "https://git.launchpad.net/" + path,
-        "git+ssh://git.launchpad.net/" + path,
-    ]
+    # See composeWebhookPayload in Launchpad's lib/lp/code/model/gitjob.py.
+    paths = [body["git_repository"].lstrip("/"), body["git_repository_path"]]
+    base_urls = []
+    for path in dict.fromkeys(paths):
+        base_urls.extend(
+            [
+                "https://git.launchpad.net/" + path,
+                "git+ssh://git.launchpad.net/" + path,
+            ]
+        )
     ret = []
     for ref, changes in body["ref_changes"].items():
+        if changes["new"] is None:
+            continue
         urls = []
         for base_url in base_urls:
             urls.append(git_url_to_bzr_url(base_url, ref=ref.encode()))
-        ret.append(GitChange(urls, after=changes["new"]["commit_sha1"]))
+        ret.append(GitChange(urls, after=changes["new"]["commit_sha1"].encode()))
     # No idea what the default branch is, so let's trigger on everything
     # for now:
     for base_url in base_urls:
-        ret.append(GitChange(git_url_to_bzr_url(base_url), after=None))
+        ret.append(GitChange([git_url_to_bzr_url(base_url)], after=None))
     return ret
 
 
