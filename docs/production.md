@@ -106,6 +106,30 @@ codemods your campaigns need installed.
 See "Custom worker tooling" in [Dockerfiles_.md](Dockerfiles_.md) for the
 Dockerfile to start from, then run your image in place of the published one.
 
+## sbuild chroots
+
+Workers build Debian packages with `sbuild` in unshare mode. For each build,
+`sbuild` unpacks a tarball from `~/.cache/sbuild` named after the campaign's
+`build_distribution`, such as `lintian-fixes-amd64-sbuild.tar.xz`.
+
+`create-sbuild-chroot-unshare.py` creates the tarball for a distribution
+defined in `janitor.conf` with `mmdebstrap`, and links it under the
+`build_distribution` of each campaign based on that distribution. Run it on
+the host, from a checkout set up as in [CONTRIBUTING.md](../CONTRIBUTING.md):
+
+```console
+$ sudo apt install mmdebstrap dpkg-dev
+$ ./create-sbuild-chroot-unshare.py --config janitor.conf unstable
+```
+
+Without a distribution name it does every distribution in `janitor.conf`. The
+worker container looks in `/root/.cache/sbuild`, so mount the directory there
+with `--volume ~/.cache/sbuild:/root/.cache/sbuild`.
+
+Run the script again after adding a campaign, and at least once a week:
+`sbuild` stops using a tarball older than `$unshare_mmdebstrap_max_age` (one
+week by default).
+
 ## Registering workers
 
 Workers authenticate to the site with a name and password stored in the `worker`

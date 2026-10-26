@@ -39,15 +39,19 @@ def create_chroot(
     for setup_hook in setup_hooks:
         cmd.append("--setup-hook=" + setup_hook)
 
+    dirname, basename = os.path.split(sbuild_path)
+    os.makedirs(dirname, exist_ok=True)
+
     print(shlex.join(cmd))
     subprocess.check_call(cmd)
 
-    ext = os.path.splitext(sbuild_path)[1]
-    dirname, basename = os.path.split(sbuild_path)
     for suite in suites:
-        os.symlink(
-            basename, os.path.join(dirname, f"{suite}-{sbuild_arch}-sbuild{ext}")
-        )
+        link = os.path.join(dirname, f"{suite}-{sbuild_arch}-sbuild.tar.xz")
+        if os.path.realpath(link) == os.path.realpath(sbuild_path):
+            continue
+        if os.path.islink(link):
+            os.unlink(link)
+        os.symlink(basename, link)
 
 
 def get_sbuild_architecture():
