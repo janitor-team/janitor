@@ -45,6 +45,17 @@ WORKER_LOG_FILENAME = "worker.log"
 CODEMOD_LOG_FILENAME = "codemod.log"
 
 
+def primary_log_filename(primary_log):
+    if primary_log is None:
+        return None
+    return {
+        "build": BUILD_LOG_FILENAME,
+        "codemod": CODEMOD_LOG_FILENAME,
+        "dist": DIST_LOG_FILENAME,
+        "worker": WORKER_LOG_FILENAME,
+    }[primary_log]
+
+
 def in_line_boundaries(i, boundaries):
     if boundaries is None:
         return True
@@ -322,6 +333,7 @@ WHERE followup.origin = $1""",
         kwargs["build_log_highlight_lines"] = highlight_lines
 
     kwargs["primary_log"] = primary_log
+    kwargs["primary_log_name"] = primary_log_filename(primary_log)
 
     return kwargs
 
