@@ -7,6 +7,9 @@ git_location: "http://127.0.0.1:9923/"
 bzr_location: "http://127.0.0.1:9929/"
 committer: "Janitor Bot <noreply@{{ janitor_domain }}>"
 origin: "{{ janitor_github_org }}"
+{% if enable_tracing | bool %}
+zipkin_address: "http://127.0.0.1:{{ tracing_port }}/v1/traces"
+{% endif %}
 
 distribution {
   name: "unstable"

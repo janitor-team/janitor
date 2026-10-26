@@ -91,6 +91,7 @@
     - { role: gitea, when: enable_gitea | bool }
     # Before janitor_config, which writes the S3 key Garage hands it.
     - { role: garage, when: enable_garage | bool }
+    - { role: jaeger, when: enable_tracing | bool }
     - { role: auto_upload_target, when: enable_auto_upload | bool and enable_auto_upload_target | bool }
     - janitor_config
     - janitor_quadlet
