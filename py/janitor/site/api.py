@@ -287,6 +287,19 @@ async def handle_queue(request):
 
 
 @docs()
+@routes.get("/codebase-names", name="codebase-names")
+async def handle_codebase_names(request):
+    async with request.app["pool"].acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT name FROM codebase WHERE name IS NOT NULL AND NOT inactive "
+            "ORDER BY name"
+        )
+    return web.json_response(
+        [row["name"] for row in rows], headers={"Cache-Control": "max-age=600"}
+    )
+
+
+@docs()
 @routes.get("/run/{run_id}/diff", name="run-diff")
 @routes.get("/run/{run_id}/diff/{role}", name="run-diff-role")
 async def handle_diff(request):

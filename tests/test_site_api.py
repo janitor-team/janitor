@@ -124,6 +124,32 @@ async def test_handle_queue_bad_limit(aiohttp_client, db, limit):
     assert runner_calls == []
 
 
+async def test_codebase_names(aiohttp_client, db):
+    client = await create_client(aiohttp_client, db)
+
+    resp = await client.get("/codebase-names")
+    assert resp.status == 200
+    assert await resp.json() == []
+
+    async with db.acquire() as conn:
+        for name in ["sl", "pv", "asciijump"]:
+            await _insert_codebase(conn, name)
+        await conn.execute(
+            "INSERT INTO codebase (name, branch_url, url, inactive) "
+            "VALUES ('hello', 'https://example.com/hello.git', "
+            "'https://example.com/hello.git', true)"
+        )
+        await conn.execute(
+            "INSERT INTO codebase (branch_url, url) VALUES "
+            "('https://example.com/unnamed.git', 'https://example.com/unnamed.git')"
+        )
+
+    resp = await client.get("/codebase-names")
+    assert resp.status == 200
+    assert resp.headers["Cache-Control"] == "max-age=600"
+    assert await resp.json() == ["asciijump", "pv", "sl"]
+
+
 async def test_publish_mode_needs_admin(aiohttp_client, db):
     publisher_calls: list[str] = []
     publisher_app = web.Application()
