@@ -31,6 +31,7 @@ BUG_ERROR_RESULT_CODES = [
     "worker-clone-malformed-transform",
     "chroot-not-found",
     "missing-dependency",
+    "session-missing-binary",
     "worker-killed",
 ]
 
