@@ -3418,6 +3418,7 @@ dependencies = [
  "metrics",
  "nix",
  "pyo3",
+ "select",
  "serde",
  "serde_json",
  "serde_urlencoded",
