@@ -1,0 +1,9 @@
+# Managed by ansible (roles/monitoring).
+global:
+  scrape_interval: 30s
+scrape_configs:
+{% for job in prometheus_jobs %}
+  - job_name: {{ job }}
+    static_configs:
+      - targets: ["{{ janitor_health_urls[job] | urlsplit('netloc') }}"]
+{% endfor %}
