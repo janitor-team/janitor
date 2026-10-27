@@ -1861,6 +1861,64 @@ async fn scan(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     (StatusCode::ACCEPTED, "Scan started.")
 }
 
+/// Whether `forge` says our own bot opened `mp`.
+fn proposal_opened_by_us(
+    forge: &breezyshim::forge::Forge,
+    mp: &breezyshim::forge::MergeProposal,
+) -> Result<bool, BrzError> {
+    match mp.get_author()? {
+        Some(author) => Ok(forge.get_current_user()?.as_deref() == Some(author.as_str())),
+        None => Ok(false),
+    }
+}
+
+/// Whether the forge that has the proposal at `url` says our own bot opened it.
+fn proposal_at_url_opened_by_us(url: &url::Url) -> Result<bool, BrzError> {
+    let mp = match breezyshim::forge::get_proposal_by_url(url) {
+        Ok(mp) => mp,
+        Err(BrzError::UnsupportedForge(..)) => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    let host = url.host_str().expect("a forge proposal URL has a host");
+    let forge = breezyshim::forge::get_forge_by_hostname(host)?;
+    proposal_opened_by_us(&forge, &mp)
+}
+
+/// Why `ensure_claimable` turned a proposal URL down.
+#[derive(Debug)]
+enum ClaimError {
+    /// Not recorded, and its forge does not say our bot opened it.
+    NotOurs,
+    Database(sqlx::Error),
+    Forge(BrzError),
+    Join(tokio::task::JoinError),
+}
+
+/// Rejects `url` unless it is recorded or the forge says our bot opened it.
+async fn ensure_claimable(
+    proposal_info_manager: &crate::proposal_info::ProposalInfoManager,
+    url: &url::Url,
+) -> Result<(), ClaimError> {
+    if proposal_info_manager
+        .proposal_exists(url)
+        .await
+        .map_err(ClaimError::Database)?
+    {
+        return Ok(());
+    }
+    let check_url = url.clone();
+    let opened_by_us =
+        tokio::task::spawn_blocking(move || proposal_at_url_opened_by_us(&check_url))
+            .await
+            .map_err(ClaimError::Join)?
+            .map_err(ClaimError::Forge)?;
+    if !opened_by_us {
+        return Err(ClaimError::NotOurs);
+    }
+    log::info!("Proposal {} is not recorded yet, but we opened it", url);
+    Ok(())
+}
+
 /// Form body for `POST /refresh-status`: a urlencoded `url=...`.
 #[derive(serde::Deserialize, utoipa::ToSchema)]
 struct RefreshStatusForm {
@@ -1876,6 +1934,9 @@ struct RefreshStatusForm {
     responses(
         (status = 202, description = "Refresh was started", body = String, content_type = "text/plain"),
         (status = 400, description = "Invalid URL", body = ErrorResponse),
+        (status = 404, description = "No such merge proposal", body = NotFoundResponse),
+        (status = 500, description = "Database or internal error", body = ErrorResponse),
+        (status = 503, description = "Unable to check the proposal with the forge", body = ErrorResponse),
     )
 )]
 async fn refresh_status(
@@ -1893,6 +1954,40 @@ async fn refresh_status(
         }
     };
     log::info!("Request to refresh proposal status for {}", url);
+    let proposal_info_manager =
+        crate::proposal_info::ProposalInfoManager::new(state.conn.clone(), state.redis.clone())
+            .await;
+    match ensure_claimable(&proposal_info_manager, &url).await {
+        Ok(()) => {}
+        Err(ClaimError::NotOurs) => {
+            log::info!("Not refreshing unrecorded proposal {}", url);
+            return not_found(NotFoundResponse {
+                reason: "No such merge proposal".to_string(),
+                url: Some(url.to_string()),
+                name: None,
+                id: None,
+                bucket: None,
+                run_id: None,
+                campaign: None,
+                codebase: None,
+            });
+        }
+        Err(ClaimError::Database(e)) => {
+            log::error!("Error looking up proposal {}: {}", url, e);
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+        }
+        Err(ClaimError::Forge(e)) => {
+            log::warn!("Unable to check the author of {}: {}", url, e);
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Unable to check the proposal with the forge",
+            );
+        }
+        Err(ClaimError::Join(e)) => {
+            log::error!("Task join error checking the author of {}: {}", url, e);
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error");
+        }
+    }
 
     async fn scan(state: Arc<AppState>, url: url::Url) {
         // get_proposal_by_url and is_merged/is_closed are PyO3 calls
@@ -2689,6 +2784,30 @@ mod tests {
     };
     use serde_json::json;
     use std::collections::HashMap;
+
+    janitor::test_with_database! {
+        schema = Core;
+        async fn test_ensure_claimable(test_db: TestDatabase) {
+            let recorded = url::Url::parse("https://example.invalid/proposal/1").unwrap();
+            sqlx::query("INSERT INTO merge_proposal (url, status) VALUES ($1, 'open')")
+                .bind(recorded.as_str())
+                .execute(test_db.pool())
+                .await
+                .unwrap();
+            let manager =
+                crate::proposal_info::ProposalInfoManager::new(test_db.pool().clone(), None).await;
+
+            assert!(matches!(
+                super::ensure_claimable(&manager, &recorded).await,
+                Ok(())
+            ));
+            let unrecorded = url::Url::parse("https://example.invalid/proposal/2").unwrap();
+            assert!(matches!(
+                super::ensure_claimable(&manager, &unrecorded).await,
+                Err(super::ClaimError::NotOurs)
+            ));
+        }
+    }
 
     fn collect_refs<'a>(value: &'a serde_json::Value, refs: &mut Vec<&'a str>) {
         match value {
