@@ -141,14 +141,7 @@ fn build(
         log::info!("Using schroot {:?}", schroot);
         Box::new(
             ognibuild::session::schroot::SchrootSession::new(schroot, Some("janitor-worker"))
-                .map_err(|e| match e {
-                    ognibuild::session::Error::SetupFailure(_n, e) => WorkerFailure::new(
-                        "session-setup-failure",
-                        format!("Failed to setup session: {}", e),
-                        ["build"],
-                    ),
-                    _e => unreachable!(),
-                })?,
+                .map_err(|e| crate::session_failure(e, &["build"]))?,
         ) as Box<dyn Session>
     } else {
         Box::new(ognibuild::session::plain::PlainSession::new()) as Box<dyn Session>
@@ -168,13 +161,7 @@ fn build(
     let scope = ognibuild::installer::InstallationScope::Global;
     let project = session
         .project_from_vcs(local_tree, None, None)
-        .map_err(|e| {
-            WorkerFailure::new(
-                "session-setup-failure",
-                format!("Failed to setup session: {}", e),
-                ["build"],
-            )
-        })?;
+        .map_err(|e| crate::session_failure(e, &["build"]))?;
     if let Err(e) = session.chdir(project.internal_path()) {
         return Err(WorkerFailure::io_error(
             "Failed to change directory",
