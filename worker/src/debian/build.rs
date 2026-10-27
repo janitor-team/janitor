@@ -24,6 +24,64 @@ impl std::fmt::Display for BuildFailure {
 
 impl std::error::Error for BuildFailure {}
 
+fn phase_stage(phase: Phase) -> Vec<String> {
+    match phase {
+        Phase::Build => vec!["build".to_string()],
+        Phase::BuildEnv => vec!["build-env".to_string()],
+        Phase::AutoPkgTest(name) => vec!["autopkgtest".to_string(), name],
+        Phase::CreateSession => vec!["create-session".to_string()],
+        Phase::Unpack => vec!["unpack".to_string()],
+        Phase::AptGetUpdate => vec!["apt-get-update".to_string()],
+    }
+}
+
+/// Stages are relative to the "build" stage that `build_from_config` adds.
+fn build_failure(e: IterateBuildError) -> BuildFailure {
+    match e {
+        IterateBuildError::ResetTree(e) => BuildFailure {
+            code: "reset-tree".to_string(),
+            description: format!("Error resetting tree: {}", e),
+            stage: vec![],
+            details: None,
+        },
+        IterateBuildError::Persistent(phase, e) => BuildFailure {
+            code: e.kind().to_string(),
+            description: e.to_string(),
+            stage: phase_stage(phase),
+            details: None,
+        },
+        IterateBuildError::MissingPhase => BuildFailure {
+            code: "missing-phase".to_string(),
+            description: "Missing phase".to_string(),
+            stage: vec![],
+            details: None,
+        },
+        IterateBuildError::FixerLimitReached(n) => BuildFailure {
+            code: "fixer-limit-reached".to_string(),
+            description: format!("Fixer limit reached: {}", n),
+            stage: vec![],
+            details: None,
+        },
+        IterateBuildError::Other(o) => BuildFailure {
+            code: "other".to_string(),
+            description: format!("Other error: {}", o),
+            stage: vec![],
+            details: None,
+        },
+        IterateBuildError::Unidentified {
+            retcode: _,
+            lines,
+            secondary: _,
+            phase,
+        } => BuildFailure {
+            code: "unidentified".to_string(),
+            description: format!("Unidentified error: {}", lines.join("\n")),
+            stage: phase.map(phase_stage).unwrap_or_default(),
+            details: None,
+        },
+    }
+}
+
 pub(crate) fn build(
     local_tree: &breezyshim::workingtree::GenericWorkingTree,
     subpath: &std::path::Path,
@@ -104,7 +162,7 @@ pub(crate) fn build(
                         code: "fixers-unavailable".to_string(),
                         description: e.to_string(),
                         details: None,
-                        stage: vec!["build".to_string()],
+                        stage: vec![],
                     })?;
 
                 ognibuild::debian::fix_build::build_incrementally(
@@ -170,74 +228,7 @@ pub(crate) fn build(
                 })
             };
 
-        let build_result = match result {
-            Ok(result) => result,
-            Err(IterateBuildError::ResetTree(e)) => {
-                return Err(BuildFailure {
-                    code: "reset-tree".to_string(),
-                    description: format!("Error resetting tree: {}", e),
-                    stage: vec!["build".to_string()],
-                    details: None,
-                });
-            }
-            Err(IterateBuildError::Persistent(phase, e)) => {
-                let mut stage = vec!["build".to_string()];
-                match phase {
-                    Phase::Build => stage.push("build".to_string()),
-                    Phase::BuildEnv => stage.push("build-env".to_string()),
-                    Phase::AutoPkgTest(name) => {
-                        stage.push("autopkgtest".to_string());
-                        stage.push(name);
-                    }
-                    Phase::CreateSession => stage.push("create-session".to_string()),
-                    Phase::Unpack => stage.push("unpack".to_string()),
-                    Phase::AptGetUpdate => stage.push("apt-get-update".to_string()),
-                }
-                return Err(BuildFailure {
-                    code: e.kind().to_string(),
-                    description: e.to_string(),
-                    stage,
-                    details: None,
-                });
-            }
-            Err(IterateBuildError::MissingPhase) => {
-                return Err(BuildFailure {
-                    code: "missing-phase".to_string(),
-                    description: "Missing phase".to_string(),
-                    stage: vec!["build".to_string()],
-                    details: None,
-                });
-            }
-            Err(IterateBuildError::FixerLimitReached(n)) => {
-                return Err(BuildFailure {
-                    code: "fixer-limit-reached".to_string(),
-                    description: format!("Fixer limit reached: {}", n),
-                    stage: vec!["build".to_string()],
-                    details: None,
-                });
-            }
-            Err(IterateBuildError::Other(o)) => {
-                return Err(BuildFailure {
-                    code: "other".to_string(),
-                    description: format!("Other error: {}", o),
-                    stage: vec!["build".to_string()],
-                    details: None,
-                });
-            }
-            Err(IterateBuildError::Unidentified {
-                retcode: _,
-                lines,
-                secondary: _,
-                phase: _,
-            }) => {
-                return Err(BuildFailure {
-                    code: "unidentified".to_string(),
-                    description: format!("Unidentified error: {}", lines.join("\n")),
-                    stage: vec!["build".to_string()],
-                    details: None,
-                });
-            }
-        };
+        let build_result = result.map_err(build_failure)?;
         log::info!("Built {:?}.", build_result.changes_names);
 
         let lintian_result = crate::debian::lintian::run_lintian(
@@ -273,4 +264,75 @@ pub(crate) fn build(
 #[derive(serde::Serialize)]
 pub struct DebianBuildResult {
     lintian: crate::debian::lintian::LintianResult,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use buildlog_consultant::problems::debian::UnsatisfiedAptDependencies;
+
+    fn failure(e: IterateBuildError) -> (String, String, Vec<String>) {
+        let f = build_failure(e);
+        (f.code, f.description, f.stage)
+    }
+
+    #[test]
+    fn test_build_failure() {
+        let missing = || Box::new(UnsatisfiedAptDependencies("no-such-package".to_string()));
+        assert_eq!(
+            vec![
+                failure(IterateBuildError::Persistent(Phase::Build, missing())),
+                failure(IterateBuildError::Persistent(
+                    Phase::AutoPkgTest("smoke".to_string()),
+                    missing()
+                )),
+                failure(IterateBuildError::MissingPhase),
+                failure(IterateBuildError::FixerLimitReached(10)),
+                failure(IterateBuildError::Unidentified {
+                    retcode: 2,
+                    lines: vec!["make: *** [all] Error 1".to_string(), "end".to_string()],
+                    secondary: None,
+                    phase: Some(Phase::Build),
+                }),
+                failure(IterateBuildError::Unidentified {
+                    retcode: 1,
+                    lines: vec![],
+                    secondary: None,
+                    phase: None,
+                }),
+            ],
+            vec![
+                (
+                    "unsatisfied-apt-dependencies".to_string(),
+                    "unsatisfied apt dependencies: no-such-package".to_string(),
+                    vec!["build".to_string()]
+                ),
+                (
+                    "unsatisfied-apt-dependencies".to_string(),
+                    "unsatisfied apt dependencies: no-such-package".to_string(),
+                    vec!["autopkgtest".to_string(), "smoke".to_string()]
+                ),
+                (
+                    "missing-phase".to_string(),
+                    "Missing phase".to_string(),
+                    vec![]
+                ),
+                (
+                    "fixer-limit-reached".to_string(),
+                    "Fixer limit reached: 10".to_string(),
+                    vec![]
+                ),
+                (
+                    "unidentified".to_string(),
+                    "Unidentified error: make: *** [all] Error 1\nend".to_string(),
+                    vec!["build".to_string()]
+                ),
+                (
+                    "unidentified".to_string(),
+                    "Unidentified error: ".to_string(),
+                    vec![]
+                ),
+            ]
+        );
+    }
 }

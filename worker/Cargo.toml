@@ -43,6 +43,7 @@ debian = ["dep:debversion", "dep:debian-analyzer", "dep:debian-changelog", "jani
 cli = ["dep:clap"]
 
 [dev-dependencies]
+buildlog-consultant = { workspace = true }
 http-body-util = "0.1.3"
 hyper = "1.6.0"
 pyo3 = { workspace = true }

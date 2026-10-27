@@ -3561,6 +3561,7 @@ dependencies = [
  "axum",
  "backoff",
  "breezyshim",
+ "buildlog-consultant",
  "chrono",
  "clap",
  "debian-analyzer",
