@@ -785,7 +785,7 @@ async fn update_merge_proposal(
     };
 
     let row: Option<(String,)> =
-        match sqlx::query_as("SELECT status FROM merge_proposal WHERE url = $1")
+        match sqlx::query_as("SELECT status::text FROM merge_proposal WHERE url = $1")
             .bind(&form.url)
             .fetch_optional(&mut *tx)
             .await

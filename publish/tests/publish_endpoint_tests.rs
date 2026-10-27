@@ -84,6 +84,93 @@ async fn build_app(pool: PgPool) -> axum::Router {
     janitor_publish::web::app(state)
 }
 
+async fn post_merge_proposal_status(
+    app: &axum::Router,
+    url: &str,
+    status: &str,
+) -> (StatusCode, serde_json::Value) {
+    let body = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("url", url)
+        .append_pair("status", status)
+        .finish();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/merge-proposal")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(body))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+async fn merge_proposal_status(pool: &PgPool, url: &str) -> String {
+    sqlx::query_scalar("SELECT status::text FROM merge_proposal WHERE url = $1")
+        .bind(url)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+test_with_database! {
+    async fn merge_proposal_status_transitions(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        let open_url = "https://forge.invalid/pv/pulls/1";
+        let closed_url = "https://forge.invalid/sl/pulls/2";
+        sqlx::query(
+            "INSERT INTO merge_proposal (url, status)
+             VALUES ($1, 'open'), ($2, 'closed')",
+        )
+        .bind(open_url)
+        .bind(closed_url)
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+
+        let app = build_app(test_db.pool().clone()).await;
+
+        let missing_url = "https://forge.invalid/hello/pulls/3";
+        assert_eq!(
+            post_merge_proposal_status(&app, missing_url, "closed").await,
+            (
+                StatusCode::NOT_FOUND,
+                serde_json::json!({"reason": "No such merge proposal", "url": missing_url}),
+            )
+        );
+
+        assert_eq!(
+            post_merge_proposal_status(&app, open_url, "open").await,
+            (
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({"error": "no transition from open to open"}),
+            )
+        );
+        assert_eq!(
+            post_merge_proposal_status(&app, closed_url, "open").await,
+            (
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({"error": "no transition from closed to open"}),
+            )
+        );
+        assert_eq!(merge_proposal_status(test_db.pool(), open_url).await, "open");
+
+        assert_eq!(
+            post_merge_proposal_status(&app, closed_url, "abandoned").await,
+            (
+                StatusCode::OK,
+                serde_json::json!({"status": "success", "url": closed_url}),
+            )
+        );
+        assert_eq!(
+            merge_proposal_status(test_db.pool(), closed_url).await,
+            "abandoned"
+        );
+    }
+}
+
 test_with_database! {
     async fn publish_endpoint_returns_404_when_no_policy_and_no_mode(test_db: TestDatabase) {
         setup_test_database(test_db.pool()).await.unwrap();
