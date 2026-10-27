@@ -48,7 +48,7 @@ fn build_failure(e: IterateBuildError) -> BuildFailure {
             code: e.kind().to_string(),
             description: e.to_string(),
             stage: phase_stage(phase),
-            details: None,
+            details: Some(e.json()),
         },
         IterateBuildError::MissingPhase => BuildFailure {
             code: "missing-phase".to_string(),
@@ -218,10 +218,10 @@ pub(crate) fn build(
                         phase,
                         retcode,
                         command: _,
-                        description: _,
+                        description,
                     } => IterateBuildError::Unidentified {
                         retcode,
-                        lines: Vec::new(),
+                        lines: vec![description],
                         secondary: None,
                         phase,
                     },
