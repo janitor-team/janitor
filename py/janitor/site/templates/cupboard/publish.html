@@ -12,7 +12,7 @@
         <ul>
             <li>Timestamp: {{ format_timestamp(publish.timestamp) }}</li>
             <li>
-                Codebase: <a class="reference external" href="c/{{ publish.codebase }}">{{ publish.codebase }}</a>
+                Codebase: <a class="reference external" href="/cupboard/c/{{ publish.codebase }}/">{{ publish.codebase }}</a>
             </li>
             {% if publish.branch_name %}<li>Branch Name: {{ publish.branch_name }}</li>{% endif %}
             <li>Mode: {{ publish.mode }}</li>
