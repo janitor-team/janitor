@@ -15,6 +15,7 @@
 #   oauth_client_id      OAuth2 client for the site login; omit both
 #   oauth_client_secret  to run the site without login
 #   janitor_s3_secret_access_key  S3 key for janitor_logs_location
+#   grafana_admin_password  Grafana's admin password, with enable_monitoring
 # With a login, also set oauth_base_url (an OpenID Connect provider;
 # GitHub is not one), oauth_qa_reviewer_group and oauth_admin_group
 # (OpenID groups).
@@ -202,6 +203,25 @@ jaeger_ui_port: 16686
 jaeger_health_port: 13133
 jaeger_max_traces: 10000
 jaeger_memory: 512m
+# Optional, for watching janitor's metrics: Prometheus on the control
+# host scrapes the services in prometheus_jobs, and Grafana shows them
+# with the Publishing and Runner dashboards of janitor.debian.net; both
+# on loopback only.
+enable_monitoring: false
+prometheus_image: docker.io/prom/prometheus:v3.15.0
+prometheus_home: "/home/{{ ansible_user }}/prometheus"
+prometheus_port: 9090
+prometheus_retention: 15d
+# The worker and the dependency server have no /metrics.
+prometheus_jobs: "{{ janitor_services | reject('in', ['worker', 'ognibuild_dep']) | list }}"
+grafana_image: docker.io/grafana/grafana:13.2.4
+grafana_home: "/home/{{ ansible_user }}/grafana"
+grafana_port: 3300
+# The dashboards come from janitor.debian.net's repository at this commit.
+grafana_dashboards_url: https://salsa.debian.org/janitor-team/janitor.debian.net/-/raw/354a701bca7b5c8bc6b71572b19088e5dfba9e2f/grafana
+grafana_dashboards:
+  - {name: publisher, checksum: "sha256:03292a5246cc31e8945a8a4731b750b4fef9bc4628c95b68c83cb77213c66405"}
+  - {name: runner, checksum: "sha256:ab25a1d2785c984167c10359c4dce461c87622bfe2fd60ddc1ba3c251ea6318c"}
 # Optional: janitor-mail-filter reads a forge's notification mail on
 # stdin and has publish refresh that proposal's status at once.
 # roles/mail_filter installs mail_filter_command for an MTA to pipe mail

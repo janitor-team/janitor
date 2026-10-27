@@ -108,6 +108,7 @@ first merge proposal.
 | [Generic campaign](#generic-campaign-optional) | `enable_generic_campaign` (defined in `janitor.conf.j2`) |
 | [S3 log storage](#s3-log-storage-optional) | `janitor_logs_location` and `janitor_s3_*` (test server: `enable_garage`) |
 | [Tracing](#tracing-optional) | `enable_tracing` and the `jaeger_*` variables |
+| [Monitoring](#monitoring-optional) | `enable_monitoring` and the `prometheus_*` and `grafana_*` variables |
 | [Mail filter](#mail-filter-optional) | `enable_mail_filter` (test MTA: `enable_mta`) and `mail_filter_*` |
 | [The Vagrant VMs](#vagrant-optional) | `ansible/group_vars/vagrant.yml`; their sizes in the Vagrantfiles |
 
@@ -240,6 +241,7 @@ outside this table.
 | Uploads | the test target (`enable_auto_upload_target`) | a `dput` host reached without SSH, e.g. ftp ([Auto-upload](#auto-upload-optional)) |
 | Mail | test Postfix, or your own MTA on the control host ([Mail filter](#mail-filter-optional)) | |
 | Tracing | test [Jaeger](#tracing-optional) | |
+| Monitoring | [Prometheus and Grafana](#monitoring-optional) on the control host | |
 | Images | built from source (default) | pulled from ghcr.io (`use_prebuilt_images: true`) |
 | PostgreSQL, Redis, git and bzr stores | on the control host | |
 
@@ -263,7 +265,7 @@ outside this table.
     `archive_signing_key`, `gitea` (optional), `garage` (optional),
     `jaeger` (optional), `auto_upload_target` (optional),
     `janitor_config`, `janitor_quadlet`, `mail_filter` (optional), `mta`
-    (optional).
+    (optional), `monitoring` (optional).
   - `worker`: `base`, `worker_firewall`, `janitor_source`,
     `janitor_config`, `janitor_quadlet`.
 
@@ -346,7 +348,7 @@ builds a derived image with them.
 Each feature is off by default. Each section says what it is, then gives
 the **Switch**, what it **Needs**, and how to **Check** it (on the
 control host, as `ansible_user`, unless the line says otherwise). The
-Vagrant VMs turn them all on.
+Vagrant VMs turn them all on but monitoring.
 
 ### Gitea (optional)
 
@@ -458,6 +460,23 @@ sampled.
   traffic. The UI is at `http://127.0.0.1:16686/` on the control host
   (e.g. through `ssh -L 16686:127.0.0.1:16686`).
 
+### Monitoring (optional)
+
+Prometheus and Grafana on the control host's loopback. Prometheus
+scrapes `/metrics` of each service in `prometheus_jobs`: every janitor
+service on the control host but the dependency server and the worker,
+which have no `/metrics`. Grafana gets Prometheus as its datasource and
+two dashboards of janitor.debian.net, Publishing and Runner, which the
+playbook fetches from `grafana_dashboards_url` (a fixed commit of
+https://salsa.debian.org/janitor-team/janitor.debian.net).
+
+- **Switch**: `enable_monitoring: true`.
+- **Needs**: the secret `grafana_admin_password`. Grafana reads it only
+  when it first creates its database; change it later in Grafana.
+- **Check**: `curl -s http://127.0.0.1:9090/api/v1/targets` shows every
+  target `"health":"up"`. Grafana is at `http://127.0.0.1:3300/` on the
+  control host (e.g. through `ssh -L 3300:127.0.0.1:3300`), as `admin`.
+
 ### Mail filter (optional)
 
 `janitor-mail-filter` reads a forge's notification mail about a proposal
@@ -501,14 +520,14 @@ vagrant destroy -f
 
 The site is at `https://<control IP>/` (`192.168.56.10` for one VM,
 `192.168.60.11` for several), with the self-signed certificate. Both
-Vagrantfiles turn on every optional feature, with the test servers:
-Gitea at `https://gitea.janitor.test/`, auto-upload of lintian-fixes
-builds to the local test target, the mail filter with Postfix (which
-gets Gitea's mail for the bot), the build logs in Garage, the spans in
-Jaeger, the dependency server and the generic campaign. Each VM has an
-/etc/hosts entry for Gitea, and the machine your browser runs on needs
-one too (`<control IP> gitea.janitor.test`), or the site login cannot
-reach Gitea.
+Vagrantfiles turn on every optional feature but monitoring, with the
+test servers: Gitea at `https://gitea.janitor.test/`, auto-upload of
+lintian-fixes builds to the local test target, the mail filter with
+Postfix (which gets Gitea's mail for the bot), the build logs in Garage,
+the spans in Jaeger, the dependency server and the generic campaign.
+Each VM has an /etc/hosts entry for Gitea, and the machine your browser
+runs on needs one too (`<control IP> gitea.janitor.test`), or the site
+login cannot reach Gitea.
 
 With several VMs, each worker gets its own password, created once in
 `.vagrant/worker-passwords.json`.
