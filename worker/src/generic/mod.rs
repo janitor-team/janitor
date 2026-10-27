@@ -126,16 +126,12 @@ fn build(
     dep_server_url: Option<&url::Url>,
 ) -> Result<serde_json::Value, WorkerFailure> {
     use ognibuild::session::Session;
+    if let Some(schroot) = schroot {
+        log::info!("Using session {:?}", schroot);
+    }
     #[cfg(target_os = "linux")]
-    let mut session: Box<dyn Session> = if let Some(schroot) = schroot {
-        log::info!("Using schroot {:?}", schroot);
-        Box::new(
-            ognibuild::session::schroot::SchrootSession::new(schroot, Some("janitor-worker"))
-                .map_err(|e| crate::session_failure(e, &["build"]))?,
-        ) as Box<dyn Session>
-    } else {
-        Box::new(ognibuild::session::plain::PlainSession::new()) as Box<dyn Session>
-    };
+    let mut session: Box<dyn Session> =
+        crate::open_session(schroot, Some("janitor-worker"), &["build"])?;
 
     #[cfg(not(target_os = "linux"))]
     let mut session: Box<dyn Session> = if schroot.is_some() {

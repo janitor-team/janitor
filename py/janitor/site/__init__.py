@@ -30,6 +30,7 @@ BUG_ERROR_RESULT_CODES = [
     "worker-clone-incomplete-read",
     "worker-clone-malformed-transform",
     "chroot-not-found",
+    "invalid-chroot",
     "missing-dependency",
     "session-missing-binary",
     "worker-killed",

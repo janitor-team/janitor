@@ -33,6 +33,48 @@ pub mod web;
 
 mod tee;
 
+/// Session backend for a `chroot` value. `plain`, `unshare` and values starting with
+/// `schroot:` or `unshare:` go to ognibuild's parser, anything else is a schroot name.
+#[cfg(target_os = "linux")]
+fn session_kind(chroot: Option<&str>) -> Result<ognibuild::session::SessionKind, String> {
+    use ognibuild::session::SessionKind;
+    match chroot {
+        None => Ok(SessionKind::Plain),
+        Some("") => Err("empty chroot value".to_string()),
+        Some(c)
+            if c == "plain"
+                || c == "unshare"
+                || c.starts_with("schroot:")
+                || c.starts_with("unshare:") =>
+        {
+            c.parse()
+        }
+        Some(c) => Ok(SessionKind::Schroot(c.to_string())),
+    }
+}
+
+/// Open the session for a `chroot` value.
+#[cfg(target_os = "linux")]
+pub fn open_session(
+    chroot: Option<&str>,
+    session_prefix: Option<&str>,
+    stage: &[&str],
+) -> Result<Box<dyn ognibuild::session::Session>, WorkerFailure> {
+    let kind = session_kind(chroot).map_err(|e| WorkerFailure {
+        code: "invalid-chroot".to_string(),
+        description: format!("invalid chroot {:?}: {}", chroot.unwrap_or_default(), e),
+        details: None,
+        stage: stage.iter().map(|s| s.to_string()).collect(),
+        transient: Some(false),
+    })?;
+    let session = kind
+        .build(session_prefix)
+        .map_err(|e| session_failure(e, stage))?;
+    // Builds fetch apt dependencies, and unshare's default would isolate them.
+    session.set_isolate_network(false);
+    Ok(session)
+}
+
 #[derive(Clone, Default)]
 pub struct AppState {
     pub output_directory: Option<std::path::PathBuf>,
@@ -1251,6 +1293,54 @@ mod tests {
             assert_eq!(f.details, None, "{}", code);
             assert!(f.description.contains(text), "{}", f.description);
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_session_kind() {
+        use ognibuild::session::SessionKind;
+        let schroot = |name: &str| Ok(SessionKind::Schroot(name.to_string()));
+        let unshare = |suite: &str| Ok(SessionKind::Unshare(suite.to_string()));
+        assert_eq!(session_kind(None), Ok(SessionKind::Plain));
+        assert_eq!(session_kind(Some("plain")), Ok(SessionKind::Plain));
+        assert_eq!(
+            session_kind(Some("unstable-amd64-sbuild")),
+            schroot("unstable-amd64-sbuild")
+        );
+        assert_eq!(session_kind(Some("schroot:x")), schroot("x"));
+        assert_eq!(session_kind(Some("session:x")), schroot("session:x"));
+        assert_eq!(session_kind(Some("unshare")), unshare("sid"));
+        assert_eq!(session_kind(Some("unshare:sid")), unshare("sid"));
+        assert_eq!(session_kind(Some("unshare:trixie")), unshare("trixie"));
+        assert!(session_kind(Some("unshare:")).is_err());
+        assert_eq!(
+            session_kind(Some("")),
+            Err("empty chroot value".to_string())
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_open_session_invalid_chroot() {
+        let f = open_session(Some("unshare:"), None, &[]).err().unwrap();
+        assert_eq!(f.code, "invalid-chroot");
+        assert_eq!(f.transient, Some(false));
+        assert!(
+            f.description.starts_with("invalid chroot \"unshare:\": "),
+            "{}",
+            f.description
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_open_session_missing_image() {
+        let f = open_session(Some("unshare:no-such-suite"), None, &[])
+            .err()
+            .unwrap();
+        assert_eq!(f.code, "session-image-error");
+        assert!(f.description.contains("no-such-suite"), "{}", f.description);
+        assert!(f.description.contains("Cached image"), "{}", f.description);
     }
 
     #[test]
