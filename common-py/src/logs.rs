@@ -1,5 +1,6 @@
 use crate::io::AsyncReader;
 use futures::{StreamExt, TryStreamExt};
+use janitor::identifiers::LogFilename;
 use janitor::{CodebaseName, RunId};
 use pyo3::create_exception;
 use pyo3::exceptions::{
@@ -62,7 +63,7 @@ impl LogFileManager {
         py: Python<'a>,
         codebase: CodebaseName,
         run_id: RunId,
-        name: String,
+        name: LogFilename,
         timeout: Option<Duration>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let z = self.0.clone();

@@ -1,5 +1,6 @@
 //! Move run logs from one log store to another.
 
+use crate::identifiers::LogFilename;
 use crate::logs::LogFileManager;
 use crate::{CodebaseName, RunId};
 use futures::{StreamExt, TryStreamExt};
@@ -53,12 +54,14 @@ pub async fn migrate_run_logs(
     log::info!("Processing {} ({:?})", run_id, logfilenames);
     let td = tempfile::tempdir()?;
     for name in logfilenames {
-        let mut stream = match from.get_log(codebase, run_id, name).await {
+        let name = LogFilename::new(name.as_str())
+            .map_err(|_| crate::logs::Error::InvalidName(name.clone()))?;
+        let mut stream = match from.get_log(codebase, run_id, &name).await {
             Ok(stream) => stream,
             Err(crate::logs::Error::NotFound) => continue,
             Err(e) => return Err(e.into()),
         };
-        let path = td.path().join(name);
+        let path = td.path().join(&name);
         let mut f = tokio::fs::File::create(&path).await?;
         while let Some(chunk) = stream.try_next().await? {
             f.write_all(&chunk).await?;
@@ -67,9 +70,9 @@ pub async fn migrate_run_logs(
         drop(f);
         let path = path
             .to_str()
-            .ok_or_else(|| crate::logs::Error::InvalidName(name.clone()))?;
+            .ok_or_else(|| crate::logs::Error::InvalidName(name.to_string()))?;
         to.import_log(codebase, run_id, path, None).await?;
-        from.delete_log(codebase, run_id, name).await?;
+        from.delete_log(codebase, run_id, &name).await?;
     }
     Ok(())
 }
@@ -105,7 +108,7 @@ mod tests {
         run_id: &RunId,
         name: &str,
     ) -> Vec<u8> {
-        mgr.get_log(codebase, run_id, name)
+        mgr.get_log(codebase, run_id, &LogFilename::new(name).unwrap())
             .await
             .unwrap()
             .map_ok(|chunk| chunk.to_vec())
