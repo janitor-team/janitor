@@ -1,3 +1,4 @@
+use crate::identifiers::LogFilename;
 use crate::{CodebaseName, RunId};
 use std::io;
 
@@ -132,17 +133,8 @@ pub async fn import_log(
     codebase: &CodebaseName,
     run_id: &RunId,
     path: &str,
-    basename: Option<&str>,
+    basename: Option<&LogFilename>,
 ) -> Result<(), Error> {
-    // Validate input path (no slashes in components)
-    if let Some(basename) = basename {
-        if basename.contains('/') {
-            return Err(Error::Other(
-                "Basename cannot contain '/' characters".to_string(),
-            ));
-        }
-    }
-
     // Attempt with primary log manager
     match primary_log_manager
         .import_log(codebase, run_id, path, basename)
@@ -183,10 +175,13 @@ pub async fn import_log(
             log::warn!("Permission denied error while uploading logfile {}", path);
             // Try with timestamp-based alternative basename
             let suffix = chrono::Utc::now().format("%Y%m%dT%H%M%S").to_string();
-            let alt_basename = basename.map(|b| format!("{}.{}", b, suffix));
+            let alt_basename = basename.map(|b| {
+                LogFilename::new(format!("{}.{}", b, suffix))
+                    .expect("a log filename plus a suffix is valid")
+            });
 
             match primary_log_manager
-                .import_log(codebase, run_id, path, alt_basename.as_deref())
+                .import_log(codebase, run_id, path, alt_basename.as_ref())
                 .await
             {
                 Ok(()) => {
@@ -236,7 +231,7 @@ pub async fn import_log(
 pub async fn import_logs(
     primary_log_manager: &LogFileManager,
     backup_log_manager: Option<&LogFileManager>,
-    logs: Vec<(CodebaseName, RunId, String, Option<String>)>, // (codebase, run_id, path, basename)
+    logs: Vec<(CodebaseName, RunId, String, Option<LogFilename>)>, // (codebase, run_id, path, basename)
 ) -> Vec<Result<(), Error>> {
     use futures::future::join_all;
 
@@ -249,7 +244,7 @@ pub async fn import_logs(
                 &codebase,
                 &run_id,
                 &path,
-                basename.as_deref(),
+                basename.as_ref(),
             )
             .await
         });
@@ -260,7 +255,7 @@ pub async fn import_logs(
 /// Log entry structure for Python compatibility
 #[derive(Debug, Clone)]
 pub struct LogEntry {
-    pub name: String,
+    pub name: LogFilename,
     pub path: String,
 }
 

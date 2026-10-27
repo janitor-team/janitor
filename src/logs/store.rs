@@ -1,3 +1,4 @@
+use crate::identifiers::LogFilename;
 use crate::{CodebaseName, RunId};
 use async_compression::tokio::bufread::{GzipDecoder, GzipEncoder};
 use chrono::{DateTime, Utc};
@@ -38,7 +39,7 @@ fn run_prefix(codebase: &CodebaseName, run_id: &RunId) -> Result<ObjectPath, Err
 fn log_paths(
     codebase: &CodebaseName,
     run_id: &RunId,
-    name: &str,
+    name: &LogFilename,
 ) -> Result<[(ObjectPath, bool); 2], Error> {
     let prefix = run_prefix(codebase, run_id)?;
     let plain = PathPart::parse(name).map_err(|_| Error::InvalidName(name.to_string()))?;
@@ -109,7 +110,7 @@ impl LogFileManager {
         &self,
         codebase: &CodebaseName,
         run_id: &RunId,
-        name: &str,
+        name: &LogFilename,
     ) -> Result<(ObjectPath, object_store::ObjectMeta), Error> {
         for (location, _) in log_paths(codebase, run_id, name)? {
             match self.store.head(&location).await {
@@ -126,7 +127,7 @@ impl LogFileManager {
         &self,
         codebase: &CodebaseName,
         run_id: &RunId,
-        name: &str,
+        name: &LogFilename,
     ) -> Result<bool, Error> {
         match self.find_log(codebase, run_id, name).await {
             Ok(_) => Ok(true),
@@ -140,7 +141,7 @@ impl LogFileManager {
         &self,
         codebase: &CodebaseName,
         run_id: &RunId,
-        name: &str,
+        name: &LogFilename,
     ) -> Result<LogStream, Error> {
         for (location, compressed) in log_paths(codebase, run_id, name)? {
             let result = match self.store.get(&location).await {
@@ -170,14 +171,19 @@ impl LogFileManager {
         codebase: &CodebaseName,
         run_id: &RunId,
         orig_path: &str,
-        basename: Option<&str>,
+        basename: Option<&LogFilename>,
     ) -> Result<(), Error> {
+        let file_name;
         let basename = match basename {
             Some(basename) => basename,
-            None => Path::new(orig_path)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or_else(|| Error::InvalidName(orig_path.to_string()))?,
+            None => {
+                file_name = Path::new(orig_path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| LogFilename::new(name).ok())
+                    .ok_or_else(|| Error::InvalidName(orig_path.to_string()))?;
+                &file_name
+            }
         };
         let [(location, _), _] = log_paths(codebase, run_id, basename)?;
 
@@ -197,7 +203,7 @@ impl LogFileManager {
         &self,
         codebase: &CodebaseName,
         run_id: &RunId,
-        name: &str,
+        name: &LogFilename,
     ) -> Result<(), Error> {
         // Look the log up first: some stores report success when deleting a
         // missing object.
@@ -237,7 +243,7 @@ impl LogFileManager {
         &self,
         codebase: &CodebaseName,
         run_id: &RunId,
-        name: &str,
+        name: &LogFilename,
     ) -> Result<DateTime<Utc>, Error> {
         let (_, meta) = self.find_log(codebase, run_id, name).await?;
         Ok(meta.last_modified)
@@ -271,6 +277,10 @@ mod tests {
         RunId::new(id).unwrap()
     }
 
+    fn log_filename(name: &str) -> LogFilename {
+        LogFilename::new(name).unwrap()
+    }
+
     fn write_source(content: &[u8]) -> (TempDir, String) {
         let td = TempDir::new().unwrap();
         let path = td.path().join("build.log");
@@ -280,7 +290,7 @@ mod tests {
     }
 
     async fn read_log(mgr: &LogFileManager, run: &str, name: &str) -> Result<Vec<u8>, Error> {
-        mgr.get_log(&codebase(), &run_id(run), name)
+        mgr.get_log(&codebase(), &run_id(run), &log_filename(name))
             .await?
             .map_ok(|chunk| chunk.to_vec())
             .try_concat()
@@ -291,7 +301,7 @@ mod tests {
     async fn test_has_log_not_found() {
         let (_td, mgr) = setup();
         assert!(!mgr
-            .has_log(&codebase(), &run_id("run-1"), "build.log")
+            .has_log(&codebase(), &run_id("run-1"), &log_filename("build.log"))
             .await
             .unwrap());
     }
@@ -331,7 +341,7 @@ mod tests {
         let stored = std::fs::read(td.path().join("codebase/run-1/build.log.gz")).unwrap();
         assert_eq!(&stored[..2], b"\x1f\x8b");
         assert!(mgr
-            .has_log(&codebase(), &run_id("run-1"), "build.log")
+            .has_log(&codebase(), &run_id("run-1"), &log_filename("build.log"))
             .await
             .unwrap());
         assert_eq!(
@@ -360,16 +370,21 @@ mod tests {
         let (_td, mgr) = setup();
         let (_src, path) = write_source(b"content");
 
-        mgr.import_log(&codebase(), &run_id("run-1"), &path, Some("custom.log"))
-            .await
-            .unwrap();
+        mgr.import_log(
+            &codebase(),
+            &run_id("run-1"),
+            &path,
+            Some(&log_filename("custom.log")),
+        )
+        .await
+        .unwrap();
 
         assert!(mgr
-            .has_log(&codebase(), &run_id("run-1"), "custom.log")
+            .has_log(&codebase(), &run_id("run-1"), &log_filename("custom.log"))
             .await
             .unwrap());
         assert!(!mgr
-            .has_log(&codebase(), &run_id("run-1"), "build.log")
+            .has_log(&codebase(), &run_id("run-1"), &log_filename("build.log"))
             .await
             .unwrap());
     }
@@ -382,7 +397,7 @@ mod tests {
         std::fs::write(run_dir.join("build.log"), b"plain").unwrap();
 
         assert!(mgr
-            .has_log(&codebase(), &run_id("run-1"), "build.log")
+            .has_log(&codebase(), &run_id("run-1"), &log_filename("build.log"))
             .await
             .unwrap());
         assert_eq!(
@@ -390,7 +405,7 @@ mod tests {
             b"plain"
         );
 
-        mgr.delete_log(&codebase(), &run_id("run-1"), "build.log")
+        mgr.delete_log(&codebase(), &run_id("run-1"), &log_filename("build.log"))
             .await
             .unwrap();
         assert!(!run_dir.join("build.log").exists());
@@ -404,12 +419,12 @@ mod tests {
             .await
             .unwrap();
 
-        mgr.delete_log(&codebase(), &run_id("run-1"), "build.log")
+        mgr.delete_log(&codebase(), &run_id("run-1"), &log_filename("build.log"))
             .await
             .unwrap();
 
         assert!(!mgr
-            .has_log(&codebase(), &run_id("run-1"), "build.log")
+            .has_log(&codebase(), &run_id("run-1"), &log_filename("build.log"))
             .await
             .unwrap());
     }
@@ -418,7 +433,7 @@ mod tests {
     async fn test_delete_log_not_found() {
         let mgr = LogFileManager::in_memory();
         let result = mgr
-            .delete_log(&codebase(), &run_id("run-1"), "build.log")
+            .delete_log(&codebase(), &run_id("run-1"), &log_filename("build.log"))
             .await;
         assert!(matches!(result, Err(Error::NotFound)), "got {result:?}");
     }
@@ -434,7 +449,7 @@ mod tests {
             .unwrap();
 
         let ctime = mgr
-            .get_ctime(&codebase(), &run_id("run-1"), "build.log")
+            .get_ctime(&codebase(), &run_id("run-1"), &log_filename("build.log"))
             .await
             .unwrap();
         assert!(ctime >= before, "{ctime} < {before}");
@@ -444,7 +459,7 @@ mod tests {
     async fn test_get_ctime_not_found() {
         let (_td, mgr) = setup();
         let result = mgr
-            .get_ctime(&codebase(), &run_id("run-1"), "build.log")
+            .get_ctime(&codebase(), &run_id("run-1"), &log_filename("build.log"))
             .await;
         assert!(matches!(result, Err(Error::NotFound)), "got {result:?}");
     }
@@ -459,7 +474,7 @@ mod tests {
                 ("run-1", "worker.log"),
                 ("run-2", "build.log"),
             ] {
-                mgr.import_log(&codebase(), &run_id(run), &path, Some(name))
+                mgr.import_log(&codebase(), &run_id(run), &path, Some(&log_filename(name)))
                     .await
                     .unwrap();
             }
@@ -489,21 +504,5 @@ mod tests {
     async fn test_health_check() {
         let (_td, mgr) = setup();
         mgr.health_check().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_invalid_name_rejected() {
-        let (_td, mgr) = setup();
-        // Codebase and run id can't contain '/' at all; the log name is
-        // checked by the manager.
-        assert!(CodebaseName::new("code/base").is_err());
-        assert!(RunId::new("run/1").is_err());
-        for name in ["build/log", "..", "."] {
-            let result = mgr.has_log(&codebase(), &run_id("run-1"), name).await;
-            assert!(
-                matches!(result, Err(Error::InvalidName(_))),
-                "got {result:?}"
-            );
-        }
     }
 }
