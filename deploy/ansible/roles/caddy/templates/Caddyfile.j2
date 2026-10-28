@@ -1,5 +1,6 @@
 # Managed by ansible (roles/caddy).
 {# Headers on every public site; Strict-Transport-Security only on HTTPS. #}
+{# Every public site also has an access log: JSON lines on stderr, in caddy's journal. #}
 {% macro security_headers(https, frame_options='DENY', csp="frame-ancestors 'none'; object-src 'none'; base-uri 'self'") %}
 	header {
 		X-Content-Type-Options nosniff
@@ -45,6 +46,7 @@
 {# A bare port serves plain HTTP for any host name, with no ACME attempt. #}
 :80 {
 {{ security_headers(false) }}
+	log
 {{ janitor_routes() }}}
 {% else %}
 {{ ':443' if caddy_self_signed | default(false) | bool else janitor_domain }} {
@@ -52,6 +54,7 @@
 	tls /etc/caddy/janitor.crt /etc/caddy/janitor.key
 {% endif %}
 {{ security_headers(true) }}
+	log
 {{ janitor_routes() }}}
 {% if enable_gitea | bool %}
 
@@ -61,6 +64,7 @@
 {% endif %}
 	# Gitea's PDF viewer frames the file from Gitea itself.
 {{ security_headers(true, 'SAMEORIGIN', "frame-ancestors 'self'") }}
+	log
 	reverse_proxy 127.0.0.1:{{ gitea_http_port }}
 }
 {% endif %}
@@ -69,6 +73,7 @@
 # sends everything else, worker logins included, to HTTPS.
 {{ ':80' if caddy_self_signed | default(false) | bool else 'http://' + janitor_domain }} {
 {{ security_headers(false) }}
+	log
 	handle /dists/* {
 		reverse_proxy 127.0.0.1:9914
 	}

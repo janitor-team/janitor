@@ -329,6 +329,10 @@ framing by other sites (inline scripts still run); they drop the
 `Server` header. Over HTTPS they also send `Strict-Transport-Security`
 (`caddy_hsts_max_age`).
 
+Each public site logs every request as one JSON line (Caddy's default)
+to the journal, which rotates it; the playbook adds `ansible_user` to
+`systemd-journal`, so `journalctl -u caddy` shows them.
+
 Each unit sets `Entrypoint=` and its whole command line.
 Every unit but the worker's, whose image has its own init, sets
 `RunInit=true`.

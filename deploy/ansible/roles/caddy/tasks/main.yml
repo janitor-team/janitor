@@ -52,6 +52,13 @@
     validate: caddy validate --adapter caddyfile --config %s
   notify: Restart caddy
 
+- name: Let the deploy user read Caddy's access log in the journal
+  # It runs the playbook with sudo already; this is only for reading logs.
+  ansible.builtin.user:
+    name: "{{ ansible_user }}"
+    groups: systemd-journal
+    append: true
+
 - name: Start caddy
   ansible.builtin.service:
     name: caddy
