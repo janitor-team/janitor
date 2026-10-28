@@ -102,6 +102,7 @@ first merge proposal.
 | Builds a worker host runs at once (one `janitor-worker` container each) | `janitor_worker_concurrency` |
 | Secrets, and the workers (`janitor_workers`) | a file passed with `-e @file`, never one in the repository |
 | Campaigns | `ansible/roles/janitor_config/templates/janitor.conf.j2` |
+| [Publish policies](#check-that-it-works) that candidates name | `janitor_publish_policies` |
 | [Gitea](#gitea-optional) | `enable_gitea` and the `gitea_*` variables |
 | [Auto-upload](#auto-upload-optional) | `enable_auto_upload` (test target: `enable_auto_upload_target`) and `auto_upload_*` |
 | [ognibuild dependency server](#ognibuild-dependency-server-optional) | `enable_ognibuild_dep` and `ognibuild_dep_clients` |
@@ -127,6 +128,22 @@ The other ports are in the unit table under
 [What runs where](#what-runs-where). The site is then at
 `janitor_external_url`. How codebases and candidates get in is in
 [docs/flow.md](../docs/flow.md).
+
+A candidate publishes when its `publish-policy` names a policy that
+publish knows; the playbook makes those in `janitor_publish_policies`
+(`propose`, and `build-only`, which never publishes). For example, to
+build sysvbanner:
+
+```
+curl -s -X POST -H 'Content-Type: application/json' http://127.0.0.1:9911/codebases \
+  -d '[{"name": "sysvbanner", "vcs_type": "git", "branch": "master",
+        "url": "https://salsa.debian.org/debian/sysvbanner.git",
+        "branch_url": "https://salsa.debian.org/debian/sysvbanner.git,branch=master"}]'
+curl -s -X POST -H 'Content-Type: application/json' http://127.0.0.1:9911/candidates \
+  -d '[{"codebase": "sysvbanner", "campaign": "lintian-fixes", "publish-policy": "build-only"}]'
+curl -s -X POST -H 'Content-Type: application/json' http://127.0.0.1:9911/schedule \
+  -d '{"codebase": "sysvbanner", "campaign": "lintian-fixes"}'
+```
 
 ### Upgrades, own campaigns, backups
 

@@ -66,6 +66,15 @@ janitor_worker_password: "{{ (janitor_workers | selectattr('name', 'equalto', wo
 # The lintian-fixes campaign's build distribution, also in the worker's sbuild chroot name.
 janitor_lintian_fixes_build_distribution: lintian-fixes
 
+# Named publish policies the playbook makes through publish:
+# {name: {branch role: {mode: <publish_mode in schema/state.sql>}}}.
+# A candidate publishes when its "publish-policy" names one of these.
+janitor_publish_policies:
+  propose:
+    main: {mode: propose}
+  build-only:
+    main: {mode: build-only}
+
 # Optional: a "generic" campaign, which builds a codebase's branch with
 # ognibuild on the worker, without a chroot or a Debian package. Its
 # builds get the dependency server's URL when enable_ognibuild_dep is on.

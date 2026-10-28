@@ -125,6 +125,28 @@
   delay: 5
   loop: "{{ janitor_units }}"
 
+- name: Read the named publish policies
+  ansible.builtin.uri:
+    url: http://127.0.0.1:9912/policy
+  register: janitor_policies_now
+  when: "'publish' in janitor_services"
+
+- name: Make the named publish policies that candidates refer to
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:9912/policy/{{ item.key }}"
+    method: PUT
+    body_format: json
+    body:
+      per_branch: "{{ item.value }}"
+  changed_when: true
+  loop: "{{ janitor_publish_policies | dict2items }}"
+  vars:
+    # publish adds max_frequency_days to each role, so compare only what is set here.
+    policy_now: "{{ janitor_policies_now.json[item.key].per_branch | default({}) }}"
+  when:
+    - "'publish' in janitor_services"
+    - policy_now | list | sort != item.value | list | sort or policy_now | combine(item.value, recursive=true) != policy_now
+
 # The worker's build session image, made inside the worker container.
 - name: Cache the build session image (ogni cache-env, a few minutes)
   become: true
