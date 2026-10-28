@@ -35,7 +35,7 @@ SELECT
     publish.merge_proposal_url AS merge_proposal_url,
     publish.result_code AS result_code,
     publish.description AS description,
-    codebase.web_url AS vcs_browse,
+    publish.target_branch_web_url AS target_branch_web_url,
     codebase.name AS codebase
 FROM
     publish

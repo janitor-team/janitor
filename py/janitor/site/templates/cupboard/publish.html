@@ -26,8 +26,8 @@
                 {% if publish.mode == 'propose' %}
                     {% if publish.merge_proposal_url %}- <a href="{{ publish.merge_proposal_url }}">Merge Proposal</a>{% endif %}
                 {% endif %}
-                {% if publish.mode == 'push' and result_code == 'success' %}
-                    {% if publish.vcs_browse %}- <a href="{{ publish.vcs_browse }}">Branch</a>{% endif %}
+                {% if publish.mode == 'push' and publish.result_code == 'success' %}
+                    {% if publish.target_branch_web_url %}- <a href="{{ publish.target_branch_web_url }}">Branch</a>{% endif %}
                 {% endif %}
             </li>
         </ul>

@@ -1263,13 +1263,8 @@ async fn publish(
     };
 
     // Spawn one publish_and_store per active (role, mode) pair.
-    // Skip/build-only roles get recorded in publish_ids without
-    // queuing any work.
     let mut publish_ids: HashMap<String, PublishId> = HashMap::new();
     for (role, mode_str) in branches {
-        let publish_id = crate::new_publish_id();
-        publish_ids.insert(role.clone(), publish_id.clone());
-
         log::info!(".. publishing for role {}: {}", role, mode_str);
 
         if mode_str == "skip" || mode_str == "build-only" {
@@ -1288,6 +1283,9 @@ async fn publish(
                 continue;
             }
         };
+
+        let publish_id = crate::new_publish_id();
+        publish_ids.insert(role.clone(), publish_id.clone());
 
         let state = state.clone();
         let run = run.clone();
