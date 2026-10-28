@@ -91,7 +91,8 @@ fn increment_upload_success() {
 /// Supported location formats:
 /// - Local filesystem path (e.g., "/var/log/janitor")
 /// - Google Cloud Storage URL (e.g., "gs://bucket-name")
-/// - S3 endpoint URL (e.g., "https://s3.amazonaws.com", "http://minio:9000")
+/// - S3 URL (e.g., "s3://bucket-name", "s3://bucket-name/logs"), with the
+///   endpoint in `AWS_ENDPOINT_URL` for servers other than AWS
 /// - None/empty: Uses temporary directory
 pub fn create_log_manager(location: Option<&str>) -> Result<LogFileManager, Error> {
     match location {
@@ -111,9 +112,11 @@ pub fn create_log_manager(location: Option<&str>) -> Result<LogFileManager, Erro
                 Err(Error::Other("GCS support not compiled in".to_string()))
             }
         }
-        Some(loc) if loc.starts_with("http://") || loc.starts_with("https://") => {
-            LogFileManager::s3(loc, None)
-        }
+        Some(loc) if loc.starts_with("s3://") => LogFileManager::s3(loc),
+        Some(loc) if loc.contains("://") => Err(Error::Other(format!(
+            "Unsupported logs location {}: use a local path, gs:// or s3://",
+            loc
+        ))),
         Some(loc) => LogFileManager::local(loc),
     }
 }
@@ -284,4 +287,20 @@ pub async fn import_logs_from_entries(
     });
 
     join_all(import_futures).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_create_log_manager_s3() {
+        create_log_manager(Some("s3://janitor-logs")).unwrap();
+        create_log_manager(Some("s3://janitor-logs/logs")).unwrap();
+        for location in ["s3://", "https://s3.example.com/janitor-logs"] {
+            let err = create_log_manager(Some(location)).unwrap_err();
+            assert!(matches!(err, Error::Other(_)), "got {err:?}");
+            assert!(err.to_string().contains(location), "got {err}");
+        }
+    }
 }

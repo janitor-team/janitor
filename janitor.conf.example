@@ -1,10 +1,10 @@
 # Logs location; can be:
 #  + a local file path
 #  + a GCS location (gs://BUCKET-NAME/)
-#  + a S3 location (https://...); credentials and region are read from the
-#    AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_REGION environment
-#    variables
-logs_location: "https://s3.nl-ams.scw.cloud"
+#  + a S3 location (s3://BUCKET-NAME[/PREFIX]), with the endpoint,
+#    credentials and region read from the AWS_ENDPOINT_URL,
+#    AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_REGION variables
+logs_location: "s3://janitor-logs"
 
 # Artifact location: used to store build results. Can be:
 #  + a local file path

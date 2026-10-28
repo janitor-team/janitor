@@ -212,10 +212,8 @@ pub struct S3LogFileManager;
 #[pymethods]
 impl S3LogFileManager {
     #[new]
-    #[pyo3(signature = (endpoint_url, bucket_name=None))]
-    fn new(endpoint_url: &str, bucket_name: Option<&str>) -> PyResult<PyClassInitializer<Self>> {
-        let z = janitor::logs::LogFileManager::s3(endpoint_url, bucket_name)
-            .map_err(convert_logs_error_to_py)?;
+    fn new(location: &str) -> PyResult<PyClassInitializer<Self>> {
+        let z = janitor::logs::LogFileManager::s3(location).map_err(convert_logs_error_to_py)?;
         Ok(PyClassInitializer::from(LogFileManager(Arc::new(z))).add_subclass(S3LogFileManager))
     }
 }

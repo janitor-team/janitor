@@ -30,7 +30,7 @@ from janitor.logs import (
 
 
 def test_s3_log_file_manager():
-    S3LogFileManager("https://some-url/")
+    S3LogFileManager("s3://some-bucket/")
 
 
 def test_gcs_log_file_manager():
