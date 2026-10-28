@@ -47,6 +47,11 @@ pub fn is_git_client_request(req: &Request) -> bool {
     false
 }
 
+/// Decode the UTF-8 bytes of `s` as latin-1, one char per byte.
+fn latin1_from_utf8(s: &str) -> String {
+    s.bytes().map(char::from).collect()
+}
+
 /// Render `/git/<codebase>/<sub_path>` via klaus.
 pub async fn handle_klaus(
     State(state): State<AppState>,
@@ -72,7 +77,8 @@ pub async fn handle_klaus(
         .map_err(|e| GitStoreError::HttpError(format!("read request body: {}", e)))?;
 
     let method = parts.method.as_str().to_string();
-    let path_info = format!("/{}", sub_path);
+    // PEP 3333: PATH_INFO carries the path's bytes decoded as latin-1.
+    let path_info = latin1_from_utf8(&format!("/{}", sub_path));
     let query_string = parts.uri.query().unwrap_or("").to_string();
     let headers = parts.headers;
 

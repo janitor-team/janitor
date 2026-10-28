@@ -1449,6 +1449,69 @@ db_test! {
 }
 
 db_test! {
+    async fn test_public_klaus_file_pages(test_db: TestDatabase) {
+        if !klaus_available() {
+            eprintln!("skipping: klaus not importable");
+            return;
+        }
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase(test_db.pool(), "files").await;
+
+        let tmp = TempDir::new().unwrap();
+        let repo = git2::Repository::init_bare(tmp.path().join("files")).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let files = [
+            ("control", "Source: files\n"),
+            ("ünïcode.txt", "unicode\n"),
+            ("€uro.txt", "euro\n"),
+        ];
+        let tree_id = {
+            let mut debian = repo.treebuilder(None).unwrap();
+            for (name, content) in files {
+                let blob = repo.blob(content.as_bytes()).unwrap();
+                debian.insert(name, blob, 0o100644).unwrap();
+            }
+            let mut tb = repo.treebuilder(None).unwrap();
+            tb.insert("debian", debian.write().unwrap(), 0o040000)
+                .unwrap();
+            tb.write().unwrap()
+        };
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+
+        let state = build_state(&tmp, &test_db, AppRole::Public).await;
+        let app = web::create_public_app(state, 0);
+        let (addr, handle) = spawn(app).await;
+
+        let client = reqwest::Client::new();
+        for (name, content) in files {
+            for view in ["blob", "raw", "blame", "tree"] {
+                let path = format!("/git/files/{}/main/debian/{}", view, name);
+                let resp = client
+                    .get(format!("http://{}{}", addr, path))
+                    .header("User-Agent", "Mozilla/5.0 (test)")
+                    .header("Accept", "text/html")
+                    .send()
+                    .await
+                    .unwrap();
+                let status = resp.status().as_u16();
+                let raw = view == "raw";
+                let body = if raw { Some(resp.text().await.unwrap()) } else { None };
+                assert_eq!(
+                    (status, body),
+                    (200, raw.then(|| content.to_string())),
+                    "{}",
+                    path
+                );
+            }
+        }
+
+        handle.abort();
+    }
+}
+
+db_test! {
     async fn test_public_klaus_static_assets_served(test_db: TestDatabase) {
         // klaus.rs mounts klaus's bundled static dir at /git/_static/.
         // Fetch one of its shipped files to prove the ServeDir mount
