@@ -6,7 +6,7 @@
 {% from "run_util.html" import local_command, merge_command, reschedule_button, schedule_control_button, publish_buttons, install_commands, display_result_code, result_code_explanation, display_branch_url, display_upstream_branch_url, display_vcs_diffs, display_publish_result, file_bug_buttons, display_publish_blockers with context %}
 {% from "cupboard/util.html" import reprocess_logs_button %}
 {% from "lintian_util.html" import display_lintian_result with context %}
-{% from "review_util.html" import display_reviews_table %}
+{% from "review_util.html" import display_reviews_table with context %}
 {% block page_title %}
     Cupboard - Run Details - {{ run.codebase }}
 {% endblock page_title %}
