@@ -2731,6 +2731,19 @@ async fn authenticate_worker(
                 req.extensions_mut().insert(worker_auth.name);
                 Ok(next.run(req).await)
             }
+            Err(crate::auth::AuthError::Database(
+                e @ (sqlx::Error::PoolTimedOut
+                | sqlx::Error::PoolClosed
+                | sqlx::Error::Io(_)
+                | sqlx::Error::Tls(_)),
+            )) => {
+                log::error!("Cannot check worker credentials: {}", e);
+                Ok((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({"reason": "database unavailable"})),
+                )
+                    .into_response())
+            }
             Err(_) => {
                 log::warn!("Invalid worker credentials provided");
                 Err(StatusCode::UNAUTHORIZED)
@@ -4860,6 +4873,48 @@ distribution {
         assert_eq!(
             offline_request(Method::POST, "/kill/a;b", None).await,
             StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
+    async fn test_public_worker_auth_failures() {
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+        let state = crate::test_utils::create_offline_test_app_state();
+        // A closed pool fails at once, like an unreachable database after its timeout.
+        state.database.pool().close().await;
+        let app = super::public_app(state.clone()).with_state(state);
+        let basic = format!(
+            "Basic {}",
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"w:pw")
+        );
+        let mut got = Vec::new();
+        for auth in [None, Some("Bearer x"), Some(basic.as_str())] {
+            let mut req = Request::post("/active-runs");
+            if let Some(auth) = auth {
+                req = req.header("authorization", auth);
+            }
+            let resp = app
+                .clone()
+                .oneshot(req.body(axum::body::Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let status = resp.status();
+            let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            got.push((status, String::from_utf8(body.to_vec()).unwrap()));
+        }
+        assert_eq!(
+            got,
+            vec![
+                (StatusCode::UNAUTHORIZED, String::new()),
+                (StatusCode::UNAUTHORIZED, String::new()),
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    r#"{"reason":"database unavailable"}"#.to_string()
+                ),
+            ]
         );
     }
 
