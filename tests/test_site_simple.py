@@ -90,13 +90,19 @@ async def test_ws_notifications_forwards_redis_channels(
             if app["topic_notifications"].subscriptions:
                 break
             await asyncio.sleep(0.01)
+        link = "http://192.168.1.5:8080/"
+        queue = {"processing": [{"worker_link": link, "backchannel": {"my_url": link}}]}
+        hidden = {
+            "processing": [{"worker_link": None, "backchannel": {"my_url": None}}]
+        }
         for channel in ["publish", "merge-proposal", "queue", "result"]:
-            payload = json.dumps({"channel": channel})
+            expected = hidden if channel == "queue" else queue
+            payload = json.dumps(queue)
             for _ in range(100):
                 if await redis.publish(channel, payload):
                     break
                 await asyncio.sleep(0.01)
-            assert await ws.receive_json(timeout=5) == [channel, {"channel": channel}]
+            assert await ws.receive_json(timeout=5) == [channel, expected]
 
 
 async def test_codebase_query_redirect_legacy_package_param(

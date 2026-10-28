@@ -232,6 +232,15 @@ def check_logged_in(request: web.Request) -> None:
         raise web.HTTPUnauthorized()
 
 
+def hide_private_worker_links(entry):
+    if not worker_link_is_global(entry.get("worker_link")):
+        entry["worker_link"] = None
+    backchannel = entry.get("backchannel") or {}
+    if "my_url" in backchannel and not worker_link_is_global(backchannel["my_url"]):
+        backchannel["my_url"] = None
+    return entry
+
+
 def worker_link_is_global(url):
     import ipaddress
     from urllib.parse import urlparse

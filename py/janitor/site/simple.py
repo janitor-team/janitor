@@ -41,7 +41,7 @@ from ..artifacts import ArtifactsMissing
 from ..config import Config
 from ..schedule import do_schedule
 from ..vcs import VcsManager, get_vcs_managers_from_config
-from . import TEMPLATE_ENV, template_loader
+from . import TEMPLATE_ENV, hide_private_worker_links, template_loader
 from .common import html_template, render_template_for_request
 from .openid import setup_openid
 from .pubsub import Topic, pubsub_handler
@@ -465,16 +465,16 @@ async def create_app(
     listeners: list[asyncio.Task] = []
 
     async def start_pubsub_forwarder(app):
+        def forward(name, msg):
+            data = json.loads(msg["data"])
+            if name == "queue":
+                for entry in data.get("processing", []):
+                    hide_private_worker_links(entry)
+            app["topic_notifications"].publish([name, data])
+
         async def forward_redis(app, name):
             async with app["redis"].pubsub(ignore_subscribe_messages=True) as ch:
-                await ch.subscribe(
-                    name,
-                    **{
-                        name: lambda msg: app["topic_notifications"].publish(
-                            [name, json.loads(msg["data"])]
-                        )
-                    },
-                )
+                await ch.subscribe(name, **{name: functools.partial(forward, name)})
                 await ch.run()
 
         for name, title in [

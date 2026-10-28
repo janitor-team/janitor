@@ -44,6 +44,7 @@ from . import (
     check_admin,
     check_logged_in,
     get_archive_diff,
+    hide_private_worker_links,
     highlight_diff,
     is_qa_reviewer,
 )
@@ -499,7 +500,12 @@ async def handle_runner_status(request):
     with span.new_child("runner:status"):
         try:
             async with request.app["http_client_session"].get(url) as resp:
-                return web.json_response(await resp.json(), status=resp.status)
+                status = await resp.json()
+                if resp.status == 200:
+                    status["processing"] = [
+                        hide_private_worker_links(e) for e in status["processing"]
+                    ]
+                return web.json_response(status, status=resp.status)
         except ContentTypeError as e:
             return web.json_response(
                 {"reason": f"runner returned error {e}"}, status=400
@@ -676,7 +682,10 @@ async def handle_list_active_runs(request):
             if resp.status != 200:
                 return web.json_response(await resp.json(), status=resp.status)
             status = await resp.json()
-            return web.json_response(status["processing"], status=200)
+            return web.json_response(
+                [hide_private_worker_links(e) for e in status["processing"]],
+                status=200,
+            )
 
 
 @docs()
@@ -692,7 +701,9 @@ async def handle_get_active_run(request):
             processing = (await resp.json())["processing"]
             for entry in processing:
                 if entry["id"] == run_id:
-                    return web.json_response(entry, status=200)
+                    return web.json_response(
+                        hide_private_worker_links(entry), status=200
+                    )
             return web.json_response({}, status=404)
 
 

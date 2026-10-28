@@ -124,6 +124,70 @@ async def test_handle_queue_bad_limit(aiohttp_client, db, limit):
     assert runner_calls == []
 
 
+async def test_active_runs_and_runner_status(aiohttp_client, db):
+    def entry(run_id, link):
+        return {
+            "id": run_id,
+            "worker": run_id,
+            "worker_link": link,
+            "backchannel": {"my_url": link},
+        }
+
+    no_backchannel: dict = {
+        "id": "none",
+        "worker": "none",
+        "worker_link": None,
+        "backchannel": {},
+    }
+    runner_app = web.Application()
+
+    async def _handle_status(request):
+        return web.json_response(
+            {
+                "processing": [
+                    entry("public", "https://worker.example.com/"),
+                    entry("private", "http://192.168.1.5:8080/"),
+                    no_backchannel,
+                ],
+                "avoid_hosts": ["example.org"],
+                "rate_limit_hosts": {},
+            }
+        )
+
+    runner_app.router.add_get("/status", _handle_status)
+    runner_client = await aiohttp_client(runner_app)
+
+    client = await create_client(
+        aiohttp_client, db, runner_url=str(runner_client.make_url("/"))
+    )
+
+    processing = [
+        entry("public", "https://worker.example.com/"),
+        entry("private", None),
+        no_backchannel,
+    ]
+
+    resp = await client.get("/runner/status")
+    assert resp.status == 200
+    assert await resp.json() == {
+        "processing": processing,
+        "avoid_hosts": ["example.org"],
+        "rate_limit_hosts": {},
+    }
+
+    resp = await client.get("/active-runs")
+    assert resp.status == 200
+    assert await resp.json() == processing
+
+    resp = await client.get("/active-runs/private")
+    assert resp.status == 200
+    assert await resp.json() == processing[1]
+
+    resp = await client.get("/active-runs/unknown")
+    assert resp.status == 404
+    assert await resp.json() == {}
+
+
 async def test_codebase_names(aiohttp_client, db):
     client = await create_client(aiohttp_client, db)
 
