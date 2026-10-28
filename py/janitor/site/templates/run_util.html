@@ -164,51 +164,57 @@ cd {{ codebase }}
     {% endif %}
     <script>
         $(function() {
-            $("#{{ publish_id }}").click(function() {
-                $.post('/api/{{ campaign }}/c/{{ codebase }}/publish', {}, function(data) {
-                        if (data) {
-                            $("#{{ publish_id }}").replaceWith("<span>Publishing...</span>");
+            var pending = {};
+            registerHandler('publish', function(msg) {
+                var item = pending[msg.id];
+                if (!item) {
+                    return;
+                }
+                delete pending[msg.id];
+                var result = $('<span/>').text('done');
+                if (msg.result_code != 'success') {
+                    result.text('failed: ' + msg.result_code + ' - ' + msg.description);
+                } else if (msg.proposal_url) {
+                    result = $('<a/>').attr('href', msg.proposal_url).text('merge proposal');
+                } else if (msg.mode == 'push' && msg.main_branch_browse_url) {
+                    result = $('<a/>').attr('href', msg.main_branch_browse_url).text('branch');
+                }
+                var link = $('<a/>').attr('href', '/cupboard/publish/' + msg.id).text('details');
+                item.text(item.data('role') + ': ').append(result, ' (', link, ') ');
+            });
+
+            function publish(button, mode) {
+                $.post('/api/{{ campaign }}/c/{{ codebase }}/publish', mode ? {'mode': mode} : {}, function(data) {
+                        var status = $('<span/>');
+                        if ($.isEmptyObject(data.publish_ids)) {
+                            status.text(data.description);
                         }
+                        $.each(data.publish_ids || {}, function(role, id) {
+                            pending[id] = $('<span/>').data('role', role).text(role + ': publishing... ');
+                            status.append(pending[id]);
+                        });
+                        $(button).replaceWith(status);
                     }, 'json')
                     .fail(function(response) {
-                        $("#{{ publish_id }}").replaceWith("<span>Failed to publish: " + response.responseText + "</span>");
+                        $(button).replaceWith($('<span/>').text('Failed to publish: ' + response.responseText));
                     });
+            }
+
+            $("#{{ publish_id }}").click(function() {
+                publish(this);
             });
         
             {% if is_admin %}
             $("#{{ propose_id }}").click(function() {
-                $.post('/api/{{ campaign }}/c/{{ codebase }}/publish', {
-                        'mode': 'propose'
-                    }, function(data) {
-                        if (data) {
-                            $("#{{ propose_id }}").replaceWith("<span>Publishing merge proposal...</span>");
-                        }
-                    }, 'json')
-                    .fail(function(response) {
-                        $("#{{ propose_id }}").replaceWith("<span>Failed to publish: " + response.responseText + "</span>");
-                    });
+                publish(this, 'propose');
             });
         
             $("#{{ fork_id }}").click(function() {
-                $.post('/api/{{ campaign }}/c/{{ codebase }}/publish', {
-                        'mode': 'push-derived'
-                    }, function(data) {
-                        $("#{{ fork_id }}").replaceWith("<span>Creating fork.</span>");
-                    }, 'json')
-                    .fail(function(response) {
-                        $("#{{ fork_id }}").replaceWith("<span>Failed: " + response.responseText + "</span>");
-                    });
+                publish(this, 'push-derived');
             });
         
             $("#{{ push_id }}").click(function() {
-                $.post('/api/{{ campaign }}/c/{{ codebase }}/publish', {
-                        'mode': 'push'
-                    }, function(data) {
-                        $("#{{ push_id }}").replaceWith("<span>Pushing.</span>");
-                    }, 'json')
-                    .fail(function(response) {
-                        $("#{{ push_id }}").replaceWith("<span>Failed: " + response.responseText + "</span>");
-                    });
+                publish(this, 'push');
             }); {% endif %}
         });
     </script>
