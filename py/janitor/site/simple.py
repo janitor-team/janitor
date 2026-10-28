@@ -130,7 +130,10 @@ async def handle_merge_proposal(request):
         url = request.query["url"]
     except KeyError as e:
         raise web.HTTPBadRequest(text="no url specified") from e
-    return await write_merge_proposal(request.app["pool"], url)
+    return {
+        **await write_merge_proposal(request.app["pool"], url),
+        "campaign": request.match_info["suite"],
+    }
 
 
 @html_template("credentials.html", headers={"Vary": "Cookie"})
