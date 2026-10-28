@@ -1893,26 +1893,36 @@ async fn get_all_rate_limits(State(state): State<Arc<AppState>>) -> impl IntoRes
     )
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct Blocker<D> {
-    result: bool,
-    details: D,
+/// One entry of the `GET /blockers/{run_id}` response.
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Blocker<D> {
+    /// Whether this check allows publishing.
+    pub result: bool,
+    /// What the check looked at.
+    pub details: D,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct BlockerSuccessDetails {
-    result_code: String,
+/// Details of the `success` blocker.
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BlockerSuccessDetails {
+    /// Result code of the run.
+    pub result_code: String,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct BlockerInactiveDetails {
-    inactive: bool,
+/// Details of the `inactive` blocker.
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BlockerInactiveDetails {
+    /// Whether the codebase is marked inactive.
+    pub inactive: bool,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct BlockerCommandDetails {
-    correct: String,
-    actual: String,
+/// Details of the `command` blocker.
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BlockerCommandDetails {
+    /// Command of the candidate.
+    pub correct: String,
+    /// Command the run used.
+    pub actual: String,
 }
 
 /// Inner value of the `reviews` map in
@@ -1920,44 +1930,65 @@ struct BlockerCommandDetails {
 /// outer map key, not a field on this value, and the `reviewed_at`
 /// timestamp is serialized as `timestamp` to match
 /// py/janitor/publish.py::blockers_request.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct ReviewSummary {
-    timestamp: chrono::DateTime<chrono::Utc>,
-    comment: Option<String>,
-    verdict: String,
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ReviewSummary {
+    /// When the review was made.
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    /// Comment of the reviewer.
+    pub comment: Option<String>,
+    /// Verdict of the reviewer.
+    pub verdict: String,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct BlockerPublishStatusDetails {
-    status: String,
-    reviews: HashMap<String, ReviewSummary>,
+/// Details of the `publish_status` blocker.
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BlockerPublishStatusDetails {
+    /// Publish status of the run.
+    pub status: String,
+    /// Reviews of the run, by reviewer.
+    pub reviews: HashMap<String, ReviewSummary>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct BlockerBackoffDetails {
-    attempt_count: usize,
-    next_try_time: chrono::DateTime<chrono::Utc>,
+/// Details of the `backoff` blocker.
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BlockerBackoffDetails {
+    /// Number of earlier publish attempts.
+    pub attempt_count: usize,
+    /// Earliest time of the next publish attempt.
+    pub next_try_time: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct BlockerChangeSetDetails {
-    change_set_id: ChangeSetId,
-    change_set_state: String,
+/// Details of the `change_set` blocker.
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BlockerChangeSetDetails {
+    /// Change set of the run.
+    pub change_set_id: ChangeSetId,
+    /// State of the change set.
+    pub change_set_state: String,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct BlockerPreviousMpDetails {
-    url: String,
-    status: String,
+/// One earlier merge proposal in the `previous_mp` blocker.
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BlockerPreviousMpDetails {
+    /// URL of the merge proposal.
+    pub url: String,
+    /// Status of the merge proposal.
+    pub status: String,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct BlockerInfo {
-    success: Blocker<BlockerSuccessDetails>,
-    inactive: Blocker<BlockerInactiveDetails>,
-    command: Blocker<BlockerCommandDetails>,
-    publish_status: Blocker<BlockerPublishStatusDetails>,
-    backoff: Blocker<BlockerBackoffDetails>,
+/// Response of `GET /blockers/{run_id}`.
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BlockerInfo {
+    /// Whether the run succeeded.
+    pub success: Blocker<BlockerSuccessDetails>,
+    /// Whether the codebase is active.
+    pub inactive: Blocker<BlockerInactiveDetails>,
+    /// Whether the run used the candidate's command.
+    pub command: Blocker<BlockerCommandDetails>,
+    /// Whether the run is approved.
+    pub publish_status: Blocker<BlockerPublishStatusDetails>,
+    /// Whether the backoff after failed attempts is over.
+    pub backoff: Blocker<BlockerBackoffDetails>,
     /// `details` here is shape-flexible because Python emits two
     /// different shapes:
     ///
@@ -1968,9 +1999,11 @@ struct BlockerInfo {
     ///
     /// Match by emitting a serde_json::Value rather than a fixed
     /// struct.
-    propose_rate_limit: Blocker<serde_json::Value>,
-    change_set: Blocker<BlockerChangeSetDetails>,
-    previous_mp: Blocker<Vec<BlockerPreviousMpDetails>>,
+    pub propose_rate_limit: Blocker<serde_json::Value>,
+    /// Whether the change set can be published.
+    pub change_set: Blocker<BlockerChangeSetDetails>,
+    /// Whether no earlier merge proposal blocks publishing.
+    pub previous_mp: Blocker<Vec<BlockerPreviousMpDetails>>,
 }
 
 #[derive(sqlx::FromRow)]
