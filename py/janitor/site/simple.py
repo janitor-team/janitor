@@ -414,6 +414,8 @@ async def handle_repo_list(request):
 
 @private_routes.get("/health", name="health")
 async def handle_health(request):
+    if not request.app["openid_ready"].is_set():
+        return web.Response(status=503, text="openid discovery pending")
     return web.Response(text="ok")
 
 
@@ -739,6 +741,7 @@ async def create_app(
         app, config.oauth2_provider.base_url if config.oauth2_provider else None
     )
     setup_api_tokens(app)
+    private_app["openid_ready"] = app["openid_ready"]
     app.router.add_post("/", handle_post_root, name="root-post")
 
     app.add_subapp(
