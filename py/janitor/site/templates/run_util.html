@@ -133,10 +133,8 @@ cd {{ codebase }}
         });
     </script>
 {% endmacro %}
-{% macro schedule_control_button(run_id, title="Schedule control run", id="schedule-control", data={}, accesskey="c") %}
-    <button id="{{ id }}"
-            {% if accesskey %}accesskey="{{ accesskey }}"{% endif %}>{{ title }}</button>
-    <script>
+{% macro schedule_control_button(run_id, title="Schedule control run", id="schedule-control", data={}, accesskey="c") -%}
+    <button id="{{ id }}" {% if accesskey %}accesskey="{{ accesskey }}"{% endif %}>{{ title }}</button><script>
         $(function() {
             $("#{{ id }}").click(function() {
                 $.post('/api/run/{{ run_id }}/schedule-control', {{ data | tojson }}, function(data) {
@@ -149,7 +147,7 @@ cd {{ codebase }}
             });
         });
     </script>
-{% endmacro %}
+{%- endmacro %}
 {% macro publish_buttons(campaign, codebase, id_suffix="", accesskey="p") %}
     {% set propose_id = "propose" + id_suffix %}
     {% set fork_id = "push-derived" + id_suffix %}
@@ -254,18 +252,18 @@ cd {{ codebase }}
 {% macro display_publish_result_code(code) %}
     {% if code == 'success' %}
         <span class="publish-success">{{ code }}</span>
-    {% elif code == 'nothing-to-do' %}
+    {%- elif code == 'nothing-to-do' %}
         <span class="publish-nothing-to-do">{{ code }}</span>
-    {% elif code in ('differ-unreachable') %}
+    {%- elif code in ('differ-unreachable') %}
         <span class="publish-transient">{{ code }}</span>
-    {% elif code in ('missing-build-diff-control') %}
+    {%- elif code in ('missing-build-diff-control') %}
         <span class="publish-missing">{{ code }}</span>
-    {% elif code in ('publisher-invalid-response') %}
+    {%- elif code in ('publisher-invalid-response') %}
         <span class="publish-bug">{{ code }}</span>
-    {% else %}
+    {%- else %}
         <span class="publish-failure">{{ code }}</span>
-    {% endif %}
-{% endmacro %}
+    {%- endif %}
+{%- endmacro %}
 {% macro display_publish_result(mode, code, description, mp_url) %}
     {% if mode == 'push' %}
         {% if code == 'success' %}
@@ -285,20 +283,22 @@ cd {{ codebase }}
         {% endif %}
     {% endif %}
     (
-    {% if '\n' in description %}
+    {%- if '\n' in description -%}
         <pre>{{ description }}</pre>
-    {% else %}
-        {{ description }}
-    {% endif %}
+    {%- else -%}
+        {%- set d = description[:-1] if description.endswith('.') else description -%}
+        {%- set w = d.split(' ')[0][1:] -%}
+        {{ d[:1]|lower ~ d[1:] if w == w|lower else d }}
+    {%- endif -%}
     )
 {% endmacro %}
 {% macro describe_publish_policy(publish_policy) %}
     {% for pp in publish_policy %}
         {% if publish_policy|length > 1 %}{{ pp['role'] }}:{% endif %}
         <b>{{ pp['mode'] }}
-            {% if pp['frequency_days'] %}(every {{ pp['frequency_days'] }} days){% endif %}
+            {%- if pp['frequency_days'] %} (every {{ pp['frequency_days'] }} days){% endif -%}
         </b>
-        {% if not loop.last %},{% endif %}
+        {%- if not loop.last %},{% endif %}
     {% endfor %}
 {% endmacro %}
 {% macro display_vcs_diffs(show_diff, branches, tags=None) %}
