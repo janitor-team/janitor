@@ -149,7 +149,7 @@ impl ComponentChecker for DatabaseHealthChecker {
     }
 
     async fn check(&self) -> ComponentHealth {
-        match sqlx::query("SELECT 1").fetch_one(&self.pool).await {
+        match janitor::database::health_check(&self.pool).await {
             Ok(_) => ComponentHealth {
                 name: self.name().to_string(),
                 status: HealthStatus::Healthy,

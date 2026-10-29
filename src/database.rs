@@ -10,6 +10,7 @@ pub enum DatabaseError {
     Connection(sqlx::Error),
     Config(String),
     Migration(String),
+    Timeout,
 }
 
 impl std::fmt::Display for DatabaseError {
@@ -18,6 +19,7 @@ impl std::fmt::Display for DatabaseError {
             Self::Connection(e) => write!(f, "Database connection error: {}", e),
             Self::Config(msg) => write!(f, "Configuration error: {}", msg),
             Self::Migration(msg) => write!(f, "Migration error: {}", msg),
+            Self::Timeout => write!(f, "timed out"),
         }
     }
 }
@@ -28,6 +30,18 @@ impl From<sqlx::Error> for DatabaseError {
     fn from(e: sqlx::Error) -> Self {
         Self::Connection(e)
     }
+}
+
+/// How long [`health_check`] waits for `SELECT 1`.
+const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Run `SELECT 1`, failing after [`HEALTH_CHECK_TIMEOUT`] rather than the pool's acquire timeout.
+pub async fn health_check(pool: &PgPool) -> Result<(), DatabaseError> {
+    let query = sqlx::query("SELECT 1").execute(pool);
+    tokio::time::timeout(HEALTH_CHECK_TIMEOUT, query)
+        .await
+        .map_err(|_| DatabaseError::Timeout)??;
+    Ok(())
 }
 
 /// Shared database connection pool configuration
@@ -191,14 +205,8 @@ impl Database {
     }
 
     /// Execute a health check query
-    pub async fn health_check(&self) -> Result<bool, DatabaseError> {
-        match sqlx::query_scalar::<_, i32>("SELECT 1 as health")
-            .fetch_one(&self.pool)
-            .await
-        {
-            Ok(health) => Ok(health == 1),
-            Err(_) => Ok(false),
-        }
+    pub async fn health_check(&self) -> Result<(), DatabaseError> {
+        health_check(&self.pool).await
     }
 
     /// Close the database connection pool
@@ -262,5 +270,20 @@ mod tests {
         assert_eq!(config.max_connections, 10);
         assert_eq!(config.connect_timeout, Duration::from_secs(30));
         assert_eq!(config.idle_timeout, Some(Duration::from_secs(600)));
+    }
+
+    #[tokio::test]
+    async fn test_health_check_unresponsive_server() {
+        // The kernel completes the TCP handshake, but nothing ever answers.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!(
+            "postgres://nobody@{}/janitor",
+            listener.local_addr().unwrap()
+        );
+        let pool = PgPool::connect_lazy(&url).unwrap();
+        assert!(matches!(
+            health_check(&pool).await,
+            Err(DatabaseError::Timeout)
+        ));
     }
 }

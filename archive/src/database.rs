@@ -70,7 +70,7 @@ impl ArchiveDatabase {
     }
 
     /// `SELECT 1` roundtrip. Used by `/ready`/`/health` handlers.
-    pub async fn health_check(&self) -> Result<bool, DatabaseError> {
+    pub async fn health_check(&self) -> Result<(), DatabaseError> {
         self.shared_db.health_check().await
     }
 

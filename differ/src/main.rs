@@ -369,7 +369,9 @@ fn build_router(state: Arc<AppState>) -> axum::Router {
 }
 
 async fn handle_health(State(state): State<Arc<AppState>>) -> Result<&'static str> {
-    sqlx::query("SELECT 1").execute(&state.pool).await?;
+    janitor::database::health_check(&state.pool)
+        .await
+        .map_err(Error::DatabaseUnavailable)?;
     Ok("ok")
 }
 
@@ -2011,15 +2013,8 @@ mod tests {
             });
             let router = build_router(state);
 
-            // SELECT 1 against the unreachable pool fails; Error::Database
-            // maps to 500 (or 503 for pool-timeout / SQLSTATE 53 — both
-            // are acceptable).
             let resp = router.oneshot(get("/health")).await.unwrap();
-            let status = resp.status();
-            assert!(
-                status.is_server_error(),
-                "expected 5xx from /health without a real DB, got {status}"
-            );
+            assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
             assert_eq!(body_json(resp).await["reason"], "database-error");
         }
 

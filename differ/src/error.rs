@@ -50,6 +50,9 @@ pub enum Error {
     #[error("database error: {0}")]
     Database(#[source] sqlx::Error),
 
+    #[error("database unavailable: {0}")]
+    DatabaseUnavailable(#[source] janitor::database::DatabaseError),
+
     #[error(transparent)]
     Diffoscope(#[from] crate::diffoscope::DiffoscopeError),
 
@@ -93,7 +96,7 @@ impl Error {
             Error::DiffCommandError { .. } => "diff-command-error",
             Error::ContentNegotiationFailed { .. } => "not-acceptable",
             Error::InvalidRunId(_) => "invalid-run-id",
-            Error::Database(_) => "database-error",
+            Error::Database(_) | Error::DatabaseUnavailable(_) => "database-error",
             Error::Diffoscope(_) => "diffoscope-error",
             Error::Artifacts(_) => "artifact-error",
             Error::Io(_) => "internal-error",
@@ -126,6 +129,7 @@ impl Error {
                     StatusCode::INTERNAL_SERVER_ERROR
                 }
             }
+            Error::DatabaseUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Error::Diffoscope(e) => match e {
                 crate::diffoscope::DiffoscopeError::Timeout => StatusCode::GATEWAY_TIMEOUT,
                 crate::diffoscope::DiffoscopeError::Io(io)

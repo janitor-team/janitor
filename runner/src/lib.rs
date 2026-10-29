@@ -1796,10 +1796,7 @@ impl HealthChecker {
 
     /// Full report across every component.
     pub async fn report(&self) -> HealthReport {
-        let db = match sqlx::query("SELECT 1")
-            .fetch_one(self.database.pool())
-            .await
-        {
+        let db = match janitor::database::health_check(self.database.pool()).await {
             Ok(_) => ComponentHealth {
                 name: "database".to_string(),
                 status: ServiceHealthStatus::Healthy,

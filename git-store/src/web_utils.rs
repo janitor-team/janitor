@@ -98,7 +98,7 @@ impl HealthChecker {
 
     async fn is_ready(&self) -> bool {
         match &self.db {
-            Some(pool) => sqlx::query("SELECT 1").fetch_one(pool).await.is_ok(),
+            Some(pool) => janitor::database::health_check(pool).await.is_ok(),
             None => true,
         }
     }
