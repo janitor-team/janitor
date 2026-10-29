@@ -85,6 +85,10 @@ async fn assignment(State(state): State<Arc<RwLock<AppState>>>) -> Json<Option<A
     Json(state.read().unwrap().assignment.clone())
 }
 
+async fn intermediate_result(State(state): State<Arc<RwLock<AppState>>>) -> Json<Option<Metadata>> {
+    Json(state.read().unwrap().metadata.clone())
+}
+
 async fn get_logs(State(state): State<Arc<RwLock<AppState>>>, headers: HeaderMap) -> Response {
     let output_directory = &state.read().unwrap().output_directory;
     if output_directory.is_none() {
@@ -281,6 +285,7 @@ pub fn app(state: Arc<RwLock<AppState>>) -> Router {
         .route("/health", get(health))
         .route("/kill", post(kill))
         .route("/assignment", get(assignment))
+        .route("/intermediate-result", get(intermediate_result))
         .route("/logs", get(get_logs))
         .route("/logs/{filename}", get(get_log_file))
         .route("/log-id", get(get_log_id))
