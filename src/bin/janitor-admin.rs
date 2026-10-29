@@ -8,6 +8,7 @@ use reqwest::{Client, RequestBuilder, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::io::Write;
 use std::process::ExitCode;
 
 #[derive(Parser)]
@@ -50,6 +51,13 @@ enum Command {
     Run {
         #[command(subcommand)]
         cmd: RunCmd,
+    },
+    /// Print a log file of a run.
+    Logs {
+        /// Run ID.
+        run_id: RunId,
+        /// Log file to print (e.g. worker.log).
+        name: String,
     },
 }
 
@@ -361,6 +369,23 @@ async fn cmd_run_list(client: &ApiClient) -> Result<(), String> {
     Ok(())
 }
 
+async fn cmd_logs(client: &ApiClient, run_id: &RunId, name: &str) -> Result<(), String> {
+    let path = format!("api/run/{}/logs/{}", run_id, name);
+    let resp = client
+        .request(reqwest::Method::GET, &path)?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let body = expect_success(resp)
+        .await?
+        .bytes()
+        .await
+        .map_err(|e| e.to_string())?;
+    std::io::stdout()
+        .write_all(&body)
+        .map_err(|e| e.to_string())
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -388,6 +413,7 @@ async fn main() -> ExitCode {
             RunCmd::Kill { run_id } => cmd_run_kill(&client, &run_id).await,
             RunCmd::List => cmd_run_list(&client).await,
         },
+        Command::Logs { run_id, name } => cmd_logs(&client, &run_id, &name).await,
     };
 
     match result {

@@ -2,7 +2,7 @@
 
 - `./reschedule.py` - a tool for users of the janitor and can be run by anybody locally
 - `./helpers/*` - all need to run inside of a janitor deployment (and talk to the database, etc) by an admin.
-- `janitor-admin` - admin CLI that talks to a running janitor site over its public HTTP API (`--url` or `JANITOR_URL`, required). Mutating subcommands need `--user`/`--password` (or `JANITOR_USER`/`JANITOR_PASSWORD`) for HTTP basic auth. Run with `cargo run --bin janitor-admin -- <args>`.
+- `janitor-admin` - admin CLI that talks to a running janitor site over its public HTTP API. Run with `cargo run --bin janitor-admin -- <args>`.
   - `worker list` - list registered workers with their run counts
   - `worker add <name> [--link <url>]` - register a new worker; prints the generated password, shown once
   - `worker delete <name>` - remove a worker
@@ -16,3 +16,4 @@
   - `reprocess-logs bulk [--run-id <id>...] [--dry-run] [--reschedule]` - reprocess stored build logs in bulk, restricted to the given run IDs if any are passed
   - `publish autopublish` - trigger an autopublish pass
   - `publish scan` - rescan merge proposal statuses
+  - `logs <run-id> <name>` - print a log file of a run, e.g. `worker.log`
