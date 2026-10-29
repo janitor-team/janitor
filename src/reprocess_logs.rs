@@ -44,9 +44,16 @@ pub async fn reprocess_run_logs(
         };
         match timeout(log_timeout.to_std().unwrap(), fetch).await {
             Ok(r) => match r {
-                Ok(contents) => {
-                    break f(Box::new(std::io::Cursor::new(contents)));
-                }
+                Ok(contents) => match f(Box::new(std::io::Cursor::new(contents))) {
+                    Ok(analysis) => break analysis,
+                    Err(e) => {
+                        error!(
+                            "{}/{}: Failed to analyze log {}: {}",
+                            codebase, log_id, logname, e
+                        );
+                        return None;
+                    }
+                },
                 Err(crate::logs::Error::NotFound) => {
                     return None;
                 }

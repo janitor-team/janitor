@@ -1,18 +1,20 @@
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+type FailureLines = (usize, (usize, usize), Option<Vec<usize>>);
+
 #[pyfunction]
-fn find_dist_log_failure(logf: &str, length: usize) -> (usize, (usize, usize), Option<Vec<usize>>) {
-    let r = janitor_site::analyze::find_dist_log_failure(logf, length);
-    (r.total_lines, r.include_lines, r.highlight_lines)
+fn find_dist_log_failure(logf: &str, length: usize) -> PyResult<FailureLines> {
+    let r = janitor_site::analyze::find_dist_log_failure(logf, length)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok((r.total_lines, r.include_lines, r.highlight_lines))
 }
 
 #[pyfunction]
-fn find_build_log_failure(
-    logf: &[u8],
-    length: usize,
-) -> (usize, (usize, usize), Option<Vec<usize>>) {
-    let r = janitor_site::analyze::find_build_log_failure(logf, length);
-    (r.total_lines, r.include_lines, r.highlight_lines)
+fn find_build_log_failure(logf: &[u8], length: usize) -> PyResult<FailureLines> {
+    let r = janitor_site::analyze::find_build_log_failure(logf, length)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok((r.total_lines, r.include_lines, r.highlight_lines))
 }
 
 #[pymodule]

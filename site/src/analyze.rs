@@ -1,4 +1,5 @@
 use buildlog_consultant::common::find_build_failure_description;
+use buildlog_consultant::r#match::Error;
 
 /// The result of analyzing a build log.
 pub struct AnalyzeResult {
@@ -13,18 +14,18 @@ pub struct AnalyzeResult {
 }
 
 /// Find the failure in a dist.log file.
-pub fn find_dist_log_failure(logf: &str, length: usize) -> AnalyzeResult {
+pub fn find_dist_log_failure(logf: &str, length: usize) -> Result<AnalyzeResult, Error> {
     let lines = logf.lines().collect::<Vec<&str>>();
-    let (r#match, _unused_err) = find_build_failure_description(lines.clone());
-    let highlight_lines = r#match.map(|r#match| r#match.linenos());
+    let failure = find_build_failure_description(&lines)?;
+    let highlight_lines = failure.map(|f| f.r#match.linenos());
 
     let include_lines = (std::cmp::max(1, lines.len() - length), lines.len());
 
-    AnalyzeResult {
+    Ok(AnalyzeResult {
         total_lines: lines.len(),
         include_lines,
         highlight_lines,
-    }
+    })
 }
 
 /// Find the build failure in the given build log.
@@ -33,11 +34,14 @@ pub fn find_dist_log_failure(logf: &str, length: usize) -> AnalyzeResult {
 /// - The total number of lines in the build log.
 /// - The range of lines to include in the output.
 /// - The line numbers to highlight in the output.
-pub fn find_build_log_failure<R: std::io::Read>(logf: R, length: usize) -> AnalyzeResult {
+pub fn find_build_log_failure<R: std::io::Read>(
+    logf: R,
+    length: usize,
+) -> Result<AnalyzeResult, Error> {
     let bufread = std::io::BufReader::new(logf);
     let sbuildlog = buildlog_consultant::sbuild::SbuildLog::try_from(bufread).unwrap();
     let linecount = sbuildlog.sections().last().map(|s| s.offsets.1).unwrap();
-    let failure = buildlog_consultant::sbuild::worker_failure_from_sbuild_log(&sbuildlog);
+    let failure = buildlog_consultant::sbuild::worker_failure_from_sbuild_log(&sbuildlog)?;
 
     if failure.r#match.is_some() && failure.section.is_some() {
         let section = failure.section.as_ref().unwrap();
@@ -48,11 +52,11 @@ pub fn find_build_log_failure<R: std::io::Read>(logf: R, length: usize) -> Analy
             abs_offset + std::cmp::min(length / 2, section.lines.len()),
         );
         let highlight_lines = vec![abs_offset];
-        return AnalyzeResult {
+        return Ok(AnalyzeResult {
             total_lines: linecount,
             include_lines,
             highlight_lines: Some(highlight_lines),
-        };
+        });
     }
 
     if let Some(r#match) = failure.r#match.as_ref() {
@@ -61,11 +65,11 @@ pub fn find_build_log_failure<R: std::io::Read>(logf: R, length: usize) -> Analy
             r#match.lineno() + std::cmp::min(length / 2, linecount),
         );
         let highlight_lines = vec![r#match.lineno()];
-        return AnalyzeResult {
+        return Ok(AnalyzeResult {
             total_lines: linecount,
             include_lines,
             highlight_lines: Some(highlight_lines),
-        };
+        });
     }
 
     let include_lines = if let Some(section) = failure.section.as_ref() {
@@ -79,9 +83,9 @@ pub fn find_build_log_failure<R: std::io::Read>(logf: R, length: usize) -> Analy
         (1, Some(linecount))
     };
 
-    AnalyzeResult {
+    Ok(AnalyzeResult {
         total_lines: linecount,
         include_lines: (include_lines.0, include_lines.1.unwrap_or(linecount)),
         highlight_lines: None,
-    }
+    })
 }

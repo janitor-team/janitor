@@ -278,7 +278,11 @@ mod tests {
 
     #[test]
     fn test_build_failure() {
-        let missing = || Box::new(UnsatisfiedAptDependencies("no-such-package".to_string()));
+        let missing = || {
+            Box::new(UnsatisfiedAptDependencies {
+                relations: "no-such-package".to_string(),
+            })
+        };
         assert_eq!(
             vec![
                 failure(IterateBuildError::Persistent(Phase::Build, missing())),
