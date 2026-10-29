@@ -32,6 +32,7 @@ from yarl import URL
 
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
+from janitor.site.openid import discover_openid_config
 from janitor.site.simple import create_app, main_async
 
 from .conftest import _insert_run
@@ -348,10 +349,12 @@ async def test_merge_proposal_without_url_returns_400(
     assert await resp.text() == "no url specified"
 
 
-async def _start_provider(aiohttp_server, *, discovery=None, userinfo=None):
+async def _start_provider(aiohttp_server, *, discovery=None, userinfo=None, up=None):
     """A local server standing in for the OpenID provider."""
 
     async def handle_discovery(request):
+        if up is not None and not up.is_set():
+            raise web.HTTPServiceUnavailable()
         if discovery is not None:
             return web.json_response(discovery)
         base = request.url.origin()
@@ -398,12 +401,16 @@ async def _openid_site(
   {base_url}
   {groups}
 }}"""
-    _private_app, app = await create_app(
+    private_app, app = await create_app(
         config=create_config(database_location, oauth2_provider),
         external_url=external_url,
         redis=FakeRedis(),
     )
-    return await aiohttp_client(app)
+    client = await aiohttp_client(app)
+    if provider:
+        # Discovery runs in the background; do one attempt before the test.
+        await discover_openid_config(app, str(provider.make_url("/")))
+    return private_app, client
 
 
 def _login_links(html):
@@ -415,20 +422,24 @@ async def test_oauth_callback_without_state(
     aiohttp_client, aiohttp_server, database_location
 ):
     provider = await _start_provider(aiohttp_server)
-    client = await _openid_site(aiohttp_client, database_location, provider)
+    _private_app, client = await _openid_site(
+        aiohttp_client, database_location, provider
+    )
     resp = await client.get("/oauth/callback", params={"code": "some-code"})
     assert (resp.status, await resp.text()) == (400, "state variable mismatch")
 
 
 @pytest.mark.parametrize(
     "discovery, links",
-    [(None, ["Login"]), ({}, [])],
+    [(None, ["Login"]), ({}, []), ([1], [])],
 )
 async def test_login_link_with_provider(
     aiohttp_client, aiohttp_server, database_location, discovery, links
 ):
     provider = await _start_provider(aiohttp_server, discovery=discovery)
-    client = await _openid_site(aiohttp_client, database_location, provider)
+    _private_app, client = await _openid_site(
+        aiohttp_client, database_location, provider
+    )
     resp = await client.get("/lintian-fixes/candidates")
     assert (resp.status, _login_links(await resp.text())) == (200, links)
 
@@ -438,7 +449,7 @@ async def test_login_redirects_to_provider(
     aiohttp_client, aiohttp_server, database_location, external_url
 ):
     provider = await _start_provider(aiohttp_server)
-    client = await _openid_site(
+    _private_app, client = await _openid_site(
         aiohttp_client, database_location, provider, external_url=external_url
     )
     resp = await client.get("/login", allow_redirects=False)
@@ -456,9 +467,46 @@ async def test_login_redirects_to_provider(
     }
 
 
+async def _openid_state(private_client, client):
+    health = await private_client.get("/health")
+    metrics = await (await private_client.get("/metrics")).text()
+    login = await client.get("/login", allow_redirects=False)
+    return (
+        health.status,
+        await health.text(),
+        [m for m in metrics.splitlines() if m.startswith("openid_discovery_pending ")],
+        login.status,
+    )
+
+
+async def test_openid_discovery_state(
+    aiohttp_client, aiohttp_server, database_location
+):
+    up = asyncio.Event()
+    provider = await _start_provider(aiohttp_server, up=up)
+    private_app, client = await _openid_site(
+        aiohttp_client, database_location, provider
+    )
+    private_client = await aiohttp_client(private_app)
+    assert await _openid_state(private_client, client) == (
+        503,
+        "openid discovery pending",
+        ["openid_discovery_pending 1.0"],
+        404,
+    )
+    up.set()
+    assert await discover_openid_config(client.app, str(provider.make_url("/")))
+    assert await _openid_state(private_client, client) == (
+        200,
+        "ok",
+        ["openid_discovery_pending 0.0"],
+        302,
+    )
+
+
 async def test_login_link_hidden_without_provider(aiohttp_client, database_location):
     # app["openid_config"] is always set, to None when login is disabled.
-    client = await _openid_site(aiohttp_client, database_location)
+    _private_app, client = await _openid_site(aiohttp_client, database_location)
     resp = await client.get("/lintian-fixes/candidates")
     assert (resp.status, _login_links(await resp.text())) == (200, [])
 
@@ -500,7 +548,7 @@ async def test_oauth_callback_defaults_missing_groups_claim(
     aiohttp_client, aiohttp_server, database_location, userinfo, groups
 ):
     provider = await _start_provider(aiohttp_server, userinfo=userinfo)
-    client = await _openid_site(
+    _private_app, client = await _openid_site(
         aiohttp_client, database_location, provider, groups='admin_group: "admins"'
     )
     resp = await _callback(client)
@@ -599,7 +647,9 @@ async def test_oauth_callback_clears_state_cookie_with_matching_path(
     provider = await _start_provider(
         aiohttp_server, userinfo={"email": "alice@example.com", "groups": []}
     )
-    client = await _openid_site(aiohttp_client, database_location, provider)
+    _private_app, client = await _openid_site(
+        aiohttp_client, database_location, provider
+    )
     resp = await _callback(client)
     state = resp.cookies["state"]
     assert (resp.status, state.value, state["path"], state["max-age"]) == (
@@ -616,7 +666,7 @@ ALICE = {"name": "Alice", "email": "alice@example.com", "groups": []}
 async def test_logout_deletes_session_and_redirects_home(
     aiohttp_client, database_location
 ):
-    client = await _openid_site(aiohttp_client, database_location)
+    _private_app, client = await _openid_site(aiohttp_client, database_location)
     await _add_session(client, "mysession", ALICE)
     resp = await client.post(
         "/logout", cookies={"session_id": "mysession"}, allow_redirects=False
@@ -629,7 +679,7 @@ async def test_logout_deletes_session_and_redirects_home(
 
 async def test_logout_get_keeps_session(aiohttp_client, database_location):
     # A plain GET, as from a link or image on another site, must not log out.
-    client = await _openid_site(aiohttp_client, database_location)
+    _private_app, client = await _openid_site(aiohttp_client, database_location)
     await _add_session(client, "mysession", ALICE)
     resp = await client.get(
         "/logout", cookies={"session_id": "mysession"}, allow_redirects=False
@@ -641,7 +691,7 @@ async def test_logout_get_keeps_session(aiohttp_client, database_location):
 async def test_logout_without_session_cookie_still_redirects(
     aiohttp_client, database_location
 ):
-    client = await _openid_site(aiohttp_client, database_location)
+    _private_app, client = await _openid_site(aiohttp_client, database_location)
     resp = await client.post("/logout", allow_redirects=False)
     assert resp.status == 302
     assert resp.headers["Location"] == "/"
@@ -825,7 +875,9 @@ async def test_login_keeps_only_a_url_the_site_serves(
     aiohttp_client, aiohttp_server, database_location
 ):
     provider = await _start_provider(aiohttp_server)
-    client = await _openid_site(aiohttp_client, database_location, provider)
+    _private_app, client = await _openid_site(
+        aiohttp_client, database_location, provider
+    )
     answers = {}
     for url in [
         "/cupboard/queue",
@@ -861,7 +913,9 @@ async def test_oauth_callback_goes_back_only_to_a_url_the_site_serves(
     provider = await _start_provider(
         aiohttp_server, userinfo={"email": "alice@example.com", "groups": []}
     )
-    client = await _openid_site(aiohttp_client, database_location, provider)
+    _private_app, client = await _openid_site(
+        aiohttp_client, database_location, provider
+    )
     locations = {}
     for back_url in ["/cupboard/queue", "//evil.example", "https://evil.example/"]:
         resp = await _callback(client, back_url=back_url)
