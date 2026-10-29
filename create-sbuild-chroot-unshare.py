@@ -108,7 +108,7 @@ for distribution in args.distribution:
     setup_hooks = []
     if args.user:
         setup_hooks.append(
-            f"install -d --owner={args.user} {pwd.getpwname(args.user).pw_dir}"
+            f"install -d --owner={args.user} {pwd.getpwnam(args.user).pw_dir}"
         )
     create_chroot(
         distro_config,
