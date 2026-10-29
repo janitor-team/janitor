@@ -151,7 +151,7 @@
             {% endif %}
         {% endif %}
         {% if publish_history %}
-            <h2>Publish History</h2>
+            <h2>Publish history</h2>
             <ul>
                 {% for pmode, mp_url, pdesc, pcode, requester, timestamp in publish_history[:10] %}
                     <li>
@@ -161,7 +161,7 @@
                 {% endfor %}
             </ul>
         {% else %}
-            <h2>Publish Blockers</h2>
+            <h2>Publish blockers</h2>
             {% set blockers = publish_blockers() %}
             <!-- {{ blockers|tojson(indent=4) }}<-->
             {{ display_publish_blockers(blockers) }}
@@ -171,7 +171,7 @@
             {{ install_commands(binary_packages, build_distribution) }}
         {% endif %}
         {% if lintian_result %}
-            <h2>Lintian Result</h2>
+            <h2>Lintian result</h2>
             {{ display_lintian_result(lintian_result) }}
         {% endif %}
         {% if followups %}

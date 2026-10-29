@@ -11,7 +11,7 @@
 {% endblock page_title %}
 {% block body %}
     <div class="section" id="merge-proposal-status">
-        <h1>Merge Proposal Status</h1>
+        <h1>Merge proposal status</h1>
         <p><em>Status of merge proposals opened for this campaign.</em></p>
         {% macro display_merge_proposal(proposal) %}
             <a class="reference external" href="{{ proposal.url }}">
@@ -31,7 +31,7 @@
         {% endif %}
         {% if open_proposals %}
             <div class="section" id="open-proposals">
-                <h2>Open Proposals</h2>
+                <h2>Open proposals</h2>
                 <p>These proposals are currently waiting for review.</p>
                 <ul class="simple">
                     {% for proposal in open_proposals %}<li>{{ display_merge_proposal(proposal) }}</li>{% endfor %}
@@ -40,7 +40,7 @@
         {% endif %}
         {% if merged_proposals %}
             <div class="section" id="merged-proposals">
-                <h2>Merged Proposals</h2>
+                <h2>Merged proposals</h2>
                 <p>These proposals have been merged in the past.</p>
                 <ul class="simple">
                     {% for proposal in merged_proposals %}<li>{{ display_merge_proposal(proposal) }}</li>{% endfor %}
@@ -49,7 +49,7 @@
         {% endif %}
         {% if closed_proposals %}
             <div class="section" id="closed-proposals">
-                <h2>Closed Proposals</h2>
+                <h2>Closed proposals</h2>
                 <p>
                     Proposals can be closed without being merged for a number of reasons - a
                     similar change has already been applied, the change was rejected or the change
@@ -63,7 +63,7 @@
         {% endif %}
         {% if abandoned_proposals %}
             <div class="section" id="abandoned-proposals">
-                <h2>Abandoned Proposals</h2>
+                <h2>Abandoned proposals</h2>
                 <p>
                     Proposals can be abandoned by the bot for a number of reasons. In some
                     cases, the relevant branch changes (e.g. if it is named after the active release),
@@ -76,7 +76,7 @@
         {% endif %}
         {% if rejected_proposals %}
             <div class="section" id="rejected-proposals">
-                <h2>Rejected Proposals</h2>
+                <h2>Rejected proposals</h2>
                 <p>
                     Rejected proposals are proposals that are closed by somebody other than the
                     bot itself, e.g. because the maintainer didn't think the change was correct.
