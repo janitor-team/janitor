@@ -29,7 +29,7 @@ from yarl import URL
 
 from janitor import CAMPAIGN_REGEX, utcnow
 
-from .. import check_admin, worker_link_is_global
+from .. import check_admin, check_logged_in, worker_link_is_global
 from ..setup import setup_logfile_manager, setup_postgres
 
 BUILD_LOG_FILENAME = "build.log"
@@ -209,7 +209,7 @@ async def handle_run_reprocess_logs(request):
         reprocess_run_logs,
     )
 
-    check_admin(request)
+    check_logged_in(request)
     post = await request.post()
     run_id = request.match_info["run_id"]
     dry_run = "dry_run" in post
