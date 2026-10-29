@@ -16,7 +16,7 @@ import breezy.plugins
 import breezy.plugins.github  # noqa: F401
 import breezy.plugins.gitlab  # noqa: F401
 import breezy.plugins.launchpad  # noqa: F401
-from breezy.forge import UnsupportedForge, iter_forge_instances
+from breezy.forge import ForgeLoginRequired, UnsupportedForge, iter_forge_instances
 
 
 def projects_to_remove(instance):
@@ -47,6 +47,8 @@ def main(argv=None):
                     instance.delete_project(project)
         except UnsupportedForge as e:
             logging.warning("Ignoring unsupported instance %s: %s", instance, e)
+        except ForgeLoginRequired as e:
+            logging.warning("Ignoring instance %s: %s", instance, e)
 
 
 if __name__ == "__main__":
