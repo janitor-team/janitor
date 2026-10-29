@@ -24,7 +24,7 @@
         <ul>
             {% for candidate in todo %}
                 <li>
-                    <a class="/cupboard/c/{{ candidate.codebase }}/">{{ candidate.codebase }}</a> / <a class="/{{ candidate.suite }}">{{ candidate.suite }}</a>
+                    <a href="/cupboard/c/{{ candidate.codebase }}/">{{ candidate.codebase }}</a> / <a href="/{{ candidate.suite }}">{{ candidate.suite }}</a>
                 </li>
             {% endfor %}
         </ul>
