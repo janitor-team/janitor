@@ -123,7 +123,9 @@ impl TestDatabase {
     }
 
     /// Turn this test database into a janitor `Database`.
-    pub fn into_janitor_database(self) -> Database {
+    pub fn into_janitor_database(mut self) -> Database {
+        // The pool outlives `self`; a DROP DATABASE now would block its new connections.
+        self.should_cleanup = false;
         let config = DatabaseConfig {
             url: format!("postgresql://localhost/{}", self.database_name),
             max_connections: 5,
