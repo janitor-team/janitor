@@ -248,6 +248,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             {
                 Err(janitor_worker::SingleItemError::AssignmentFailure(e)) => {
                     log::error!("failed to get assignment: {}", e);
+                    if args.r#loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
                     1
                 }
                 Err(janitor_worker::SingleItemError::ResultUploadFailure(e)) => {

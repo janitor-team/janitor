@@ -115,13 +115,16 @@ pub async fn get_assignment_raw(
                         format!("Failed to get assignment: {:?}", resp),
                     )))
                 } else {
+                    let status = resp.status();
                     let data = resp.text().await.map_err(|e| {
                         backoff::Error::permanent(AssignmentError::Failure(format!(
                             "Failed to read assignment response: {}",
                             e
                         )))
                     })?;
-                    Err(backoff::Error::permanent(AssignmentError::Failure(data)))
+                    Err(backoff::Error::permanent(AssignmentError::Failure(
+                        format!("{}: {}", status, data),
+                    )))
                 }
             }
             Err(e) => Err(backoff::Error::transient(AssignmentError::Failure(
