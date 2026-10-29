@@ -111,7 +111,6 @@
                                     <button id="kill-{{ entry['id'] }}" onclick="kill('{{ entry['id'] }}')">Kill</button>
                                 </td>
                             {% endif %}
-                            <!-- TODO(jelmer): Link to logs -->
                         </tr>
                     {% else %}
                         <tr><td colspan="{%- if is_admin -%}8{%- else -%}7{%- endif -%}">Nothing is currently being processed.</td></tr>

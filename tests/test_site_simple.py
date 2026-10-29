@@ -30,6 +30,7 @@ from fakeredis.aioredis import FakeRedis
 
 from janitor.config import read_string as read_config_string
 from janitor.logs import get_log_manager
+from janitor.site.openid import discover_openid_config
 from janitor.site.simple import create_app, handle_result_file
 
 
@@ -272,10 +273,12 @@ async def test_merge_proposal_without_url_returns_400(
     assert await resp.text() == "no url specified"
 
 
-async def _start_provider(aiohttp_server, *, discovery=None, userinfo=None):
+async def _start_provider(aiohttp_server, *, discovery=None, userinfo=None, up=None):
     """A local server standing in for the OpenID provider."""
 
     async def handle_discovery(request):
+        if up is not None and not up.is_set():
+            raise web.HTTPServiceUnavailable()
         if discovery is not None:
             return web.json_response(discovery)
         base = request.url.origin()
@@ -317,12 +320,16 @@ async def _openid_site(aiohttp_client, database_location, provider=None, groups=
   {base_url}
   {groups}
 }}"""
-    _private_app, app = await create_app(
+    private_app, app = await create_app(
         config=create_config(database_location, oauth2_provider),
         external_url="https://example.com/",
         redis=FakeRedis(),
     )
-    return await aiohttp_client(app)
+    client = await aiohttp_client(app)
+    if provider:
+        # Discovery runs in the background; do one attempt before the test.
+        await discover_openid_config(app, str(provider.make_url("/")))
+    return private_app, client
 
 
 def _login_links(html):
@@ -334,27 +341,68 @@ async def test_oauth_callback_without_state(
     aiohttp_client, aiohttp_server, database_location
 ):
     provider = await _start_provider(aiohttp_server)
-    client = await _openid_site(aiohttp_client, database_location, provider)
+    _private_app, client = await _openid_site(
+        aiohttp_client, database_location, provider
+    )
     resp = await client.get("/oauth/callback", params={"code": "some-code"})
     assert (resp.status, await resp.text()) == (400, "state variable mismatch")
 
 
 @pytest.mark.parametrize(
     "discovery, links",
-    [(None, ["Login"]), ({}, [])],
+    [(None, ["Login"]), ({}, []), ([1], [])],
 )
 async def test_login_link_with_provider(
     aiohttp_client, aiohttp_server, database_location, discovery, links
 ):
     provider = await _start_provider(aiohttp_server, discovery=discovery)
-    client = await _openid_site(aiohttp_client, database_location, provider)
+    _private_app, client = await _openid_site(
+        aiohttp_client, database_location, provider
+    )
     resp = await client.get("/lintian-fixes/candidates")
     assert (resp.status, _login_links(await resp.text())) == (200, links)
 
 
+async def _openid_state(private_client, client):
+    health = await private_client.get("/health")
+    metrics = await (await private_client.get("/metrics")).text()
+    login = await client.get("/login", allow_redirects=False)
+    return (
+        health.status,
+        await health.text(),
+        [m for m in metrics.splitlines() if m.startswith("openid_discovery_pending ")],
+        login.status,
+    )
+
+
+async def test_openid_discovery_state(
+    aiohttp_client, aiohttp_server, database_location
+):
+    up = asyncio.Event()
+    provider = await _start_provider(aiohttp_server, up=up)
+    private_app, client = await _openid_site(
+        aiohttp_client, database_location, provider
+    )
+    private_client = await aiohttp_client(private_app)
+    assert await _openid_state(private_client, client) == (
+        503,
+        "openid discovery pending",
+        ["openid_discovery_pending 1.0"],
+        404,
+    )
+    up.set()
+    assert await discover_openid_config(client.app, str(provider.make_url("/")))
+    assert await _openid_state(private_client, client) == (
+        200,
+        "ok",
+        ["openid_discovery_pending 0.0"],
+        302,
+    )
+
+
 async def test_login_link_hidden_without_provider(aiohttp_client, database_location):
     # app["openid_config"] is always set, to None when login is disabled.
-    client = await _openid_site(aiohttp_client, database_location)
+    _private_app, client = await _openid_site(aiohttp_client, database_location)
     resp = await client.get("/lintian-fixes/candidates")
     assert (resp.status, _login_links(await resp.text())) == (200, [])
 
@@ -387,7 +435,7 @@ async def test_oauth_callback_defaults_missing_groups_claim(
     aiohttp_client, aiohttp_server, database_location, userinfo, groups
 ):
     provider = await _start_provider(aiohttp_server, userinfo=userinfo)
-    client = await _openid_site(
+    _private_app, client = await _openid_site(
         aiohttp_client, database_location, provider, groups='admin_group: "admins"'
     )
     resp = await _callback(client)
