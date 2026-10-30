@@ -2569,13 +2569,21 @@ async fn finish_run_multipart_internal(
             log::warn!("Invalid UTF-8 in log file path: {:?}", log_file.stored_path);
             continue;
         };
+        let Ok(name) = janitor::identifiers::LogFilename::new(log_file.filename.as_str()) else {
+            log::warn!(
+                "Invalid log file name {:?} from run {}",
+                log_file.filename,
+                run_id
+            );
+            continue;
+        };
         if let Err(e) = janitor::logs::import_log(
             state.log_manager.as_ref(),
             state.backup_log_manager.as_deref(),
             &active_run.codebase,
             &run_id,
             path_str,
-            Some(&log_file.filename),
+            Some(&name),
         )
         .await
         {

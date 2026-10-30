@@ -56,6 +56,12 @@ fn is_valid_id(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
 }
 
+/// A single path component: not empty, `.` or `..`, and no `/` or control
+/// characters.
+fn is_valid_log_filename(s: &str) -> bool {
+    !matches!(s, "" | "." | "..") && !s.contains(|c: char| c == '/' || c.is_ascii_control())
+}
+
 macro_rules! identifier {
     ($(#[$meta:meta])* $name:ident, $kind:literal, $check:path) => {
         $(#[$meta])*
@@ -249,6 +255,13 @@ identifier!(
     is_valid_id
 );
 
+identifier!(
+    /// Name of a log file of a run, such as `build.log`.
+    LogFilename,
+    "log filename",
+    is_valid_log_filename
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,6 +318,16 @@ mod tests {
         let id = "2f1c7a4e-9b3d-4e5f-8a6b-0c1d2e3f4a5b";
         assert_eq!(PublishId::new(id).unwrap().as_str(), id);
         assert!(PublishId::new("../x").is_err());
+    }
+
+    #[test]
+    fn test_log_filename() {
+        for name in ["build.log", "worker.log", "dist.log.gz"] {
+            assert_eq!(LogFilename::new(name).unwrap().as_str(), name);
+        }
+        for name in ["", ".", "..", "a/b", "../build.log", "a\nb"] {
+            assert!(LogFilename::new(name).is_err(), "{:?}", name);
+        }
     }
 
     #[test]

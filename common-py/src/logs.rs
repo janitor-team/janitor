@@ -1,6 +1,7 @@
 use crate::io::AsyncReader;
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
+use janitor::identifiers::LogFilename;
 use janitor::{CodebaseName, RunId};
 use pyo3::create_exception;
 use pyo3::exceptions::{
@@ -66,7 +67,7 @@ impl LogFileManager {
         py: Python<'a>,
         codebase: CodebaseName,
         run_id: RunId,
-        name: String,
+        name: LogFilename,
         timeout: Option<Duration>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let z = self.0.clone();
@@ -81,7 +82,7 @@ impl LogFileManager {
         py: Python<'a>,
         codebase: CodebaseName,
         run_id: RunId,
-        name: String,
+        name: LogFilename,
         timeout: Option<Duration>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let z = self.0.clone();
@@ -101,13 +102,13 @@ impl LogFileManager {
         run_id: RunId,
         orig_path: String,
         timeout: Option<Duration>,
-        basename: Option<String>,
+        basename: Option<LogFilename>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let z = self.0.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             with_timeout(
                 timeout,
-                z.import_log(&codebase, &run_id, &orig_path, basename.as_deref()),
+                z.import_log(&codebase, &run_id, &orig_path, basename.as_ref()),
             )
             .await
         })
@@ -119,7 +120,7 @@ impl LogFileManager {
         py: Python<'a>,
         codebase: CodebaseName,
         run_id: RunId,
-        name: String,
+        name: LogFilename,
     ) -> PyResult<Bound<'a, PyAny>> {
         let z = self.0.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -135,7 +136,7 @@ impl LogFileManager {
         py: Python<'a>,
         codebase: CodebaseName,
         run_id: RunId,
-        name: String,
+        name: LogFilename,
     ) -> PyResult<Bound<'a, PyAny>> {
         let z = self.0.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
