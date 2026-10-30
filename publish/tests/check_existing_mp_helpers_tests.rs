@@ -1,19 +1,6 @@
 //! Integration tests for the database helpers `check_existing_mp`
 //! depends on.
 //!
-//! End-to-end testing of `check_existing_mp` itself is structurally
-//! infeasible right now: the function takes a
-//! `breezyshim::forge::MergeProposal` which is a thin wrapper around a
-//! Python forge object, and there is no test fixture that builds one
-//! without a real forge connection. Instead this file exercises the
-//! pieces that *don't* need a MergeProposal, since those are where the
-//! recent bugs were:
-//!
-//! * `state::get_merge_proposal_run` / `get_last_effective_run`
-//!   (both queried previously-broken `r#"""..."""#` SQL strings).
-//! * `state::guess_proposal_info_from_revision` (newly ported).
-//! * `derived_branch_name` (newly ported, uses `state::has_cotenants`).
-//!
 //! All tests load the production schema via the
 //! `test_with_database! { schema = Core; ... }` fast path, so the
 //! columns and types are exactly what `check_existing_mp` will see in
