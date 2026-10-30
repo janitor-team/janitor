@@ -16,6 +16,7 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
 import asyncio
+import json
 import logging
 from typing import Optional
 
@@ -714,21 +715,10 @@ async def handle_runner_log_index(request):
     url = URL(request.app["runner_url"]) / "log" / run_id
     span = aiozipkin.request_span(request)
     with span.new_child("runner:log-list"):
-        try:
-            async with request.app["http_client_session"].get(url) as resp:
-                ret = await resp.json()
-        except ContentTypeError as e:
-            return web.json_response(
-                {"reason": f"runner returned error {e}"}, status=400
-            )
-        except ClientConnectorError as e:
-            return web.json_response(
-                {"reason": "unable to contact runner", "details": repr(e)}, status=502
-            )
-        except asyncio.TimeoutError:
-            return web.json_response(
-                {"reason": "timeout contacting runner"}, status=502
-            )
+        resp = await request_backend(request, "GET", url, "runner")
+    if resp.status != 200:
+        return resp
+    ret = json.loads(resp.body)
 
     best_match = mimeparse.best_match(
         ["text/html", "application/json", "text/plain"],

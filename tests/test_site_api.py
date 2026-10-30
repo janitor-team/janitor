@@ -599,3 +599,31 @@ async def test_archive_diff(aiohttp_client, db):
         ("r3", {"jquery_url": "/_static/jquery.js"}),
         ("r4", {"jquery_url": "/_static/jquery.js"}),
     ]
+
+
+async def test_runner_log_index(aiohttp_client, db):
+    runner_app = web.Application()
+
+    async def _handle_log_index(request):
+        run_id = request.match_info["run_id"]
+        if run_id == "r1":
+            return web.json_response(["worker.log", "build.log"])
+        return web.json_response({"reason": f"No such run: {run_id}"}, status=404)
+
+    runner_app.router.add_get("/log/{run_id}", _handle_log_index)
+    runner_client = await aiohttp_client(runner_app)
+
+    client = await create_client(
+        aiohttp_client, db, runner_url=str(runner_client.make_url("/"))
+    )
+
+    resp = await client.get(
+        "/active-runs/r1/log/", headers={"Accept": "application/json"}
+    )
+    assert resp.status == 200
+    assert await resp.json() == ["worker.log", "build.log"]
+    resp = await client.get("/active-runs/r1/log/", headers={"Accept": "text/plain"})
+    assert await resp.text() == "worker.log\nbuild.log\n"
+    resp = await client.get("/active-runs/r2/log/")
+    assert resp.status == 404
+    assert await resp.json() == {"reason": "No such run: r2"}
