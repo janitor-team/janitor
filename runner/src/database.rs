@@ -520,7 +520,7 @@ INSERT INTO run (
                 source,
                 build_version,
                 build_distribution,
-                changes_filenames: _,
+                changes_filenames,
                 lintian_result,
                 binary_packages,
             } => {
@@ -543,8 +543,9 @@ INSERT INTO run (
                 sqlx::query(
                     r#"
                     INSERT INTO debian_build (
-                        run_id, source, version, distribution, lintian_result, binary_packages
-                    ) VALUES ($1, $2, $3, $4, $5, $6)
+                        run_id, source, version, distribution, lintian_result, binary_packages,
+                        changes_filenames
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
                     "#,
                 )
                 .bind(run_id)
@@ -553,6 +554,7 @@ INSERT INTO run (
                 .bind(build_distribution)
                 .bind(lintian_result)
                 .bind(binary_packages)
+                .bind(changes_filenames)
                 .execute(&mut **tx)
                 .await?;
             }
@@ -1053,7 +1055,8 @@ INSERT INTO run (
     ) -> Result<Option<DebianBuildRow>, sqlx::Error> {
         sqlx::query_as(
             r#"
-            SELECT source, version::text AS version, distribution, binary_packages, lintian_result
+            SELECT source, version::text AS version, distribution, binary_packages,
+                   changes_filenames, lintian_result
             FROM debian_build
             WHERE run_id = $1
             "#,
@@ -1145,6 +1148,8 @@ pub struct DebianBuildRow {
     pub distribution: String,
     /// Binary packages produced.
     pub binary_packages: Option<Vec<String>>,
+    /// Names of the .changes files produced.
+    pub changes_filenames: Option<Vec<String>>,
     /// Lintian result.
     pub lintian_result: Option<serde_json::Value>,
 }
@@ -1155,8 +1160,7 @@ impl From<DebianBuildRow> for BuilderResult {
             source: Some(row.source),
             build_version: Some(row.version),
             build_distribution: Some(row.distribution),
-            // TODO: changes_filenames are not stored in debian_build.
-            changes_filenames: None,
+            changes_filenames: row.changes_filenames,
             lintian_result: row.lintian_result,
             binary_packages: row.binary_packages,
         }

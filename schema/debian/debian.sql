@@ -7,6 +7,7 @@ CREATE TABLE debian_build (
  distribution text not null,
  source text not null,
  binary_packages text[],
+ changes_filenames text[],
  lintian_result json
 );
 CREATE INDEX ON debian_build (run_id);

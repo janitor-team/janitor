@@ -97,6 +97,7 @@ async fn test_get_run_debian_build() {
             version: "1.0-1".to_string(),
             distribution: "unstable".to_string(),
             binary_packages: Some(vec!["foo".to_string()]),
+            changes_filenames: None,
             lintian_result: None,
         })
     );
