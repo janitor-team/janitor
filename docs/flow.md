@@ -53,3 +53,7 @@ inserts new entries into the queue, taking into account a variety of factors:
 The queue consists of prioritized buckets. Manually requested runs, runs triggered
 by the publisher (e.g. to resolve merge conflicts) and retried runs are always
 executed before runs that were scheduled by the scheduler.
+
+See [walkthrough.md](walkthrough.md) for a full walkthrough of submitting a
+codebase and candidate, watching it move through the queue and get
+processed, and finding its logs.
