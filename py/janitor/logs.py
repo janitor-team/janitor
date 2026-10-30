@@ -19,10 +19,6 @@
 
 from ._common import logs  # type: ignore
 
-LogFileManager = logs.LogFileManager
-FileSystemLogFileManager = logs.FileSystemLogFileManager
-S3LogFileManager = logs.S3LogFileManager
-GCSLogFileManager = logs.GCSLogFileManager
 ServiceUnavailable = logs.ServiceUnavailable
 LogRetrievalError = logs.LogRetrievalError
 get_log_manager = logs.get_log_manager
