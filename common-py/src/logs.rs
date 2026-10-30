@@ -213,7 +213,8 @@ pub struct S3LogFileManager;
 impl S3LogFileManager {
     #[new]
     fn new(location: &str) -> PyResult<PyClassInitializer<Self>> {
-        let z = janitor::logs::LogFileManager::s3(location).map_err(convert_logs_error_to_py)?;
+        let z =
+            janitor::logs::create_log_manager(Some(location)).map_err(convert_logs_error_to_py)?;
         Ok(PyClassInitializer::from(LogFileManager(Arc::new(z))).add_subclass(S3LogFileManager))
     }
 }

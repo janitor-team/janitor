@@ -28,8 +28,8 @@ message Distribution {
 }
 
 message Config {
-  // Location to store logs. Can be a filesystem path, a gs:// URL for GCS
-  // or an s3:// URL for S3.
+  // Location to store logs. Can be a filesystem path or an object store
+  // URL, such as gs:// for GCS or s3:// for S3.
   optional string logs_location = 2;
 
   // postgresql URL for database connection
@@ -45,7 +45,8 @@ message Config {
 
   optional OAuth2Provider oauth2_provider = 9;
 
-  // Location to store build results
+  // Location to store build results. Can be a filesystem path or an
+  // object store URL, such as gs:// for GCS or s3:// for S3.
   optional string artifact_location = 10;
 
   // Location for zipkin server
