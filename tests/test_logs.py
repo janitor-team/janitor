@@ -17,68 +17,30 @@
 
 import os
 import tempfile
-from datetime import datetime
 
 import pytest
 
-from janitor.logs import (
-    FileSystemLogFileManager,
-    GCSLogFileManager,
-    S3LogFileManager,
-    get_log_manager,
-)
+from janitor.logs import get_log_manager
 
 
-def test_s3_log_file_manager():
-    S3LogFileManager("s3://some-bucket/")
-
-
-def test_gcs_log_file_manager():
-    GCSLogFileManager("gs://foo/")
-
-
-async def test_file_log_file_manager():
+async def test_get_log():
     with tempfile.TemporaryDirectory() as td:
-        async with FileSystemLogFileManager(td) as lm:
-            assert not await lm.has_log("mypkg", "run-id", "foo.log")
+        os.makedirs(os.path.join(td, "mypkg", "run-id"))
+        with open(os.path.join(td, "mypkg", "run-id", "build.log"), "wb") as f:
+            f.write(b"foo bar\n")
+        async with get_log_manager(td) as lm:
+            logf = await lm.get_log("mypkg", "run-id", "build.log")
+            assert await logf.read() == b"foo bar\n"
             with pytest.raises(FileNotFoundError):
                 await lm.get_log("mypkg", "run-id", "foo.log")
-            with pytest.raises(FileNotFoundError):
-                await lm.get_ctime("mypkg", "run-id", "foo.log")
-            with pytest.raises(FileNotFoundError):
-                await lm.delete_log("mypkg", "run-id", "foo.log")
-            with tempfile.NamedTemporaryFile(suffix=".log") as f:
-                f.write(b"foo bar\n")
-                f.flush()
-                await lm.import_log("mypkg", "run-id", f.name)
-                logname = os.path.basename(f.name)
-            assert await lm.has_log("mypkg", "run-id", logname)
-            assert await (await lm.get_log("mypkg", "run-id", logname)).read() == (
-                b"foo bar\n"
-            )
-            assert isinstance(await lm.get_ctime("mypkg", "run-id", logname), datetime)
-            assert [x async for x in lm.iter_logs()] == [("mypkg", "run-id", logname)]
-            await lm.delete_log("mypkg", "run-id", logname)
-            assert not await lm.has_log("mypkg", "run-id", logname)
-
-
-async def test_get_log_manager_filesystem():
-    with tempfile.TemporaryDirectory() as td:
-        lm = get_log_manager(td)
-        with tempfile.NamedTemporaryFile(suffix=".log") as f:
-            f.write(b"foo bar\n")
-            f.flush()
-            await lm.import_log("mypkg", "run-id", f.name, basename="build.log")
-        logf = await lm.get_log("mypkg", "run-id", "build.log")
-        assert await logf.read() == b"foo bar\n"
 
 
 async def test_invalid_identifiers_rejected():
     with tempfile.TemporaryDirectory() as td:
-        async with FileSystemLogFileManager(td) as lm:
+        async with get_log_manager(td) as lm:
             with pytest.raises(ValueError):
-                await lm.has_log("../etc", "run-id", "foo.log")
+                await lm.get_log("../etc", "run-id", "foo.log")
             with pytest.raises(ValueError):
-                await lm.has_log("mypkg", "run/../id", "foo.log")
+                await lm.get_log("mypkg", "run/../id", "foo.log")
             with pytest.raises(ValueError):
-                await lm.has_log("mypkg", "run-id", "foo/log")
+                await lm.get_log("mypkg", "run-id", "foo/log")
