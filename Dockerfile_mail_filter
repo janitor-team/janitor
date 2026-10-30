@@ -18,7 +18,9 @@ RUN apt-get update --yes \
 
 COPY . /code
 
-RUN cargo build --release --manifest-path /code/mail-filter/Cargo.toml
+RUN --mount=type=cache,target=/root/.cargo --mount=type=cache,id=janitor-mail-filter-target,target=/code/target \
+    cargo build --release --manifest-path /code/mail-filter/Cargo.toml \
+ && cp /code/target/release/janitor-mail-filter /usr/local/bin/
 
 FROM docker.io/debian:testing-slim
 
@@ -30,6 +32,6 @@ RUN apt-get update --yes \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /code/target/release/janitor-mail-filter /usr/local/bin/janitor-mail-filter
+COPY --from=build /usr/local/bin/janitor-mail-filter /usr/local/bin/janitor-mail-filter
 
 ENTRYPOINT ["janitor-mail-filter"]
