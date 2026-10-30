@@ -6,20 +6,19 @@ import os
 import tempfile
 
 import silver_platter  # noqa: E402, F401
-from ognibuild.debian.build import BUILD_LOG_FILENAME
 
 from janitor import state  # noqa: E402
 from janitor.config import read_config  # noqa: E402
 from janitor.logs import get_log_manager  # noqa: E402
 
-loop = asyncio.get_event_loop()
+BUILD_LOG_FILENAME = "build.log"
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
     "--config", type=str, default="janitor.conf", help="Path to configuration."
 )
-parser.add_argument("from_location", type=str, nargs=1)
-parser.add_argument("to_location", type=str, nargs=1)
+parser.add_argument("from_location", type=str)
+parser.add_argument("to_location", type=str)
 args = parser.parse_args()
 
 try:
@@ -59,7 +58,7 @@ async def reprocess_run(pool, codebase, log_id, logfilenames):
                 continue
             path = os.path.join(d, name)
             with open(path, "wb") as f:
-                f.write(log.read())
+                f.write(await log.read())
             await to_manager.import_log(codebase, log_id, path)
             await from_manager.delete_log(codebase, log_id, name)
 
@@ -76,4 +75,4 @@ async def process_all_build_failures(db_location):
         await asyncio.gather(*todo[i : i + 100])
 
 
-loop.run_until_complete(process_all_build_failures(config.database_location))
+asyncio.run(process_all_build_failures(config.database_location))
