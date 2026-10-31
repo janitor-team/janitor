@@ -20,14 +20,16 @@ import types
 from datetime import timedelta
 
 import aiohttp_jinja2
+import aiozipkin
 import pytest
 from aiohttp import web
+from bs4 import BeautifulSoup
 from jinja2 import Environment
 from yarl import URL
 
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
-from janitor.logs import LogRetrievalError
+from janitor.logs import FileSystemLogFileManager, LogRetrievalError
 from janitor.site import (
     TEMPLATE_ENV,
     classify_result_code,
@@ -54,16 +56,21 @@ def _user_middleware(user):
     return middleware
 
 
-async def create_client(aiohttp_client, db, *, user=None, config=""):
+async def create_client(
+    aiohttp_client, db, *, user=None, config="", logfile_manager=None
+):
     config = read_config_string(config)
     app = create_app(
         config=config, publisher_url=None, runner_url=None, differ_url=None, db=db
     )
     app["external_url"] = URL("http://example.com/")
+    app["logfile_manager"] = logfile_manager
     # create_app leaves the jinja globals to its caller, and the production
     # caller is py/janitor/site/simple.py.
     aiohttp_jinja2.get_env(app).globals.update(TEMPLATE_ENV)
     app.middlewares.insert(0, _user_middleware(user))
+    tracer = await aiozipkin.create_custom(aiozipkin.create_endpoint("test"))
+    aiozipkin.setup(app, tracer)
     return await aiohttp_client(app)
 
 
@@ -228,6 +235,35 @@ def test_publish():
 def test_run():
     env = Environment(loader=template_loader)
     env.get_template("cupboard/run.html")
+
+
+async def test_run_page_log_links(aiohttp_client, db, tmp_path):
+    async with db.acquire() as conn:
+        await _insert_codebase(conn, "foo")
+        now = utcnow()
+        await _insert_run(
+            conn,
+            run_id="somerun",
+            codebase="foo",
+            start_time=now - timedelta(minutes=30),
+            finish_time=now,
+            result_code="worker-failure",
+        )
+        await conn.execute(
+            "UPDATE run SET failure_stage = 'worker', "
+            "logfilenames = '{codemod.log,worker.log}'"
+        )
+    client = await create_client(
+        aiohttp_client, db, logfile_manager=FileSystemLogFileManager(str(tmp_path))
+    )
+
+    resp = await client.get("/cupboard/c/foo/somerun/")
+    assert resp.status == 200
+    soup = BeautifulSoup(await resp.text(), "html.parser")
+    assert [
+        (a["href"], a.b is not None)
+        for a in soup.find_all("a", href=["worker.log", "codemod.log"])
+    ] == [("worker.log", True), ("codemod.log", False)]
 
 
 async def test_codebase_redirect_to_latest_run(aiohttp_client, db):
