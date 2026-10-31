@@ -281,10 +281,16 @@ async def test_merge_proposal_without_url_returns_400(
     assert await resp.text() == "no url specified"
 
 
-async def _start_provider(aiohttp_server, *, discovery=None, userinfo=None):
+async def _start_provider(
+    aiohttp_server, *, discovery=None, userinfo=None, discovery_failures=0
+):
     """A local server standing in for the OpenID provider."""
 
     async def handle_discovery(request):
+        nonlocal discovery_failures
+        if discovery_failures:
+            discovery_failures -= 1
+            raise web.HTTPServiceUnavailable()
         if discovery is not None:
             return web.json_response(discovery)
         base = request.url.origin()
@@ -350,7 +356,7 @@ async def test_oauth_callback_without_state(
 
 @pytest.mark.parametrize(
     "discovery, links",
-    [(None, ["Login"]), ({}, [])],
+    [(None, ["Login"]), ({}, []), ([1], [])],
 )
 async def test_login_link_with_provider(
     aiohttp_client, aiohttp_server, database_location, discovery, links
@@ -361,8 +367,21 @@ async def test_login_link_with_provider(
     assert (resp.status, _login_links(await resp.text())) == (200, links)
 
 
+async def test_login_after_failed_discovery(
+    aiohttp_client, aiohttp_server, database_location
+):
+    provider = await _start_provider(aiohttp_server, discovery_failures=1)
+    client = await _openid_site(aiohttp_client, database_location, provider)
+    for _ in range(50):
+        resp = await client.get("/login", allow_redirects=False)
+        if resp.status != 404:
+            break
+        await asyncio.sleep(0.1)
+    assert resp.status == 302
+
+
 async def test_login_link_hidden_without_provider(aiohttp_client, database_location):
-    # app["openid_config"] is always set, to None when login is disabled.
+    # app["openid_config"] is always set, to {} when login is disabled.
     client = await _openid_site(aiohttp_client, database_location)
     resp = await client.get("/lintian-fixes/candidates")
     assert (resp.status, _login_links(await resp.text())) == (200, [])
