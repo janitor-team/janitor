@@ -1,7 +1,7 @@
 use crate::{CodebaseName, RunId};
 use async_compression::tokio::bufread::{GzipDecoder, GzipEncoder};
 use chrono::{DateTime, Utc};
-use futures::stream::{BoxStream, StreamExt, TryStreamExt};
+use futures::stream::{BoxStream, Stream, StreamExt, TryStreamExt};
 use object_store::buffered::BufWriter;
 use object_store::local::LocalFileSystem;
 use object_store::path::{Path as ObjectPath, PathPart};
@@ -173,10 +173,22 @@ impl LogFileManager {
                 .and_then(|name| name.to_str())
                 .ok_or_else(|| Error::InvalidName(orig_path.to_string()))?,
         };
-        let [(location, _), _] = log_paths(codebase, run_id, basename)?;
-
         let file = tokio::fs::File::open(orig_path).await?;
-        let mut encoder = GzipEncoder::new(tokio::io::BufReader::new(file));
+        self.import_log_stream(codebase, run_id, basename, ReaderStream::new(file))
+            .await
+    }
+
+    /// Store the chunks of `stream` compressed, as `name`.
+    pub async fn import_log_stream(
+        &self,
+        codebase: &CodebaseName,
+        run_id: &RunId,
+        name: &str,
+        stream: impl Stream<Item = std::io::Result<bytes::Bytes>> + Unpin,
+    ) -> Result<(), Error> {
+        let [(location, _), _] = log_paths(codebase, run_id, name)?;
+
+        let mut encoder = GzipEncoder::new(StreamReader::new(stream));
         let mut writer = BufWriter::new(self.store.clone(), location);
         if let Err(e) = tokio::io::copy(&mut encoder, &mut writer).await {
             writer.abort().await?;
