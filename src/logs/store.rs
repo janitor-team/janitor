@@ -146,7 +146,13 @@ impl LogFileManager {
             let result = match self.store.get(&location).await {
                 Ok(result) => result,
                 Err(object_store::Error::NotFound { .. }) => continue,
-                Err(e) => return Err(e.into()),
+                Err(object_store::Error::PermissionDenied { .. }) => {
+                    return Err(Error::PermissionDenied)
+                }
+                Err(e) => {
+                    log::warn!("Unable to read log {}/{}/{}: {}", codebase, run_id, name, e);
+                    return Err(Error::LogRetrieval(format!("Unable to read {}", name)));
+                }
             };
             return Ok(if compressed {
                 decompressed_stream(result)
@@ -295,6 +301,21 @@ mod tests {
         let (_td, mgr) = setup();
         let result = read_log(&mgr, "run-1", "build.log").await;
         assert!(matches!(result, Err(Error::NotFound)), "got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn test_get_log_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+        let (td, mgr) = setup();
+        let path = td.path().join("codebase/run-1/build.log");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"log content").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let result = read_log(&mgr, "run-1", "build.log").await;
+        match result {
+            Err(Error::LogRetrieval(msg)) => assert_eq!(msg, "Unable to read build.log"),
+            other => panic!("got {other:?}"),
+        }
     }
 
     #[tokio::test]

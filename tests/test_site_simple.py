@@ -26,11 +26,13 @@ import pytest
 import pytest_asyncio
 import testing.postgresql
 from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
 from bs4 import BeautifulSoup
 from fakeredis.aioredis import FakeRedis
 
 from janitor.config import read_string as read_config_string
-from janitor.site.simple import create_app
+from janitor.logs import FileSystemLogFileManager
+from janitor.site.simple import create_app, handle_result_file
 
 _SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schema"
 
@@ -406,3 +408,21 @@ async def test_oauth_callback_defaults_missing_groups_claim(
     )
     stored = await _get_session(client, session_id)
     assert (resp.status, page.status, stored["groups"]) == (302, 200, groups)
+
+
+async def test_result_file_unreadable_log_returns_502(tmp_path):
+    log = tmp_path / "pkg" / "run-id" / "build.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("log")
+    log.chmod(0)
+    app = web.Application()
+    app["logfile_manager"] = FileSystemLogFileManager(str(tmp_path))
+    request = make_mocked_request(
+        "GET",
+        "/",
+        app=app,
+        match_info={"pkg": "pkg", "run_id": "run-id", "filename": "build.log"},
+    )
+    with pytest.raises(web.HTTPBadGateway) as e:
+        await handle_result_file(request)
+    assert str(e.value.__cause__) == "Unable to read build.log"
