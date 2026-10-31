@@ -117,7 +117,7 @@ INSERT INTO site_session (id, userinfo) VALUES ($1, $2)
 
 
 async def discover_openid_config(app, oauth2_provider_base_url):
-    url = URL(oauth2_provider_base_url).join(URL("/.well-known/openid-configuration"))
+    url = URL(oauth2_provider_base_url) / ".well-known" / "openid-configuration"
     try:
         async with app["http_client_session"].get(url) as resp:
             if resp.status != 200:
