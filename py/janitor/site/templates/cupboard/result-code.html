@@ -67,12 +67,12 @@
                             <a class="reference external" href="../c/{{ run.codebase }}/">{{ run.codebase }}</a>
                         </td>
                         <td>{{ run.campaign }}</td>
-                        <td>{{ run.failure_stage }}</td>
+                        <td>{% if run.failure_stage %}{{ run.failure_stage }}{% endif %}</td>
                         <td>{{ format_timestamp(run.start_time) }}</td>
                         <td>{{ format_duration(run.finish_time - run.start_time) }}</td>
                         <td>
                             <a class="reference external"
-                               href="../c/{{ run.codebase }}/{{ run.id }}">{{ run.description }}</a>
+                               href="../c/{{ run.codebase }}/{{ run.id }}">{{ run.description or run.id }}</a>
                         </td>
                     </tr>
                 {% endfor %}
