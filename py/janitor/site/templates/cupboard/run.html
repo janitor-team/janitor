@@ -107,13 +107,9 @@
                 {% endif %}
             {% endif %}
         {% endif %}
-        {% macro display_log_link(name, description) %}
-            <a href="{{ name }}">
-                {% if primary_log == name %}<b>{% endif %}
-                    {{ description }}
-                    {% if primary_log == name %}</b>{% endif %}
-            </a>
-        {% endmacro %}
+        {% macro display_log_link(name, description) -%}
+            <a href="{{ name }}">{% if primary_log == name %}<b>{% endif %}{{ description }}{% if primary_log == name %}</b>{% endif %}</a>
+        {%- endmacro %}
         {% if worker_log_name %}{{ display_log_link(worker_log_name, "Full worker log") }}{% endif %}
         <ul>
             {% if codemod_log_name %}<li>{{ display_log_link(codemod_log_name, "Full codemod log") }}</li>{% endif %}
@@ -121,12 +117,7 @@
                 <li>
                     {{ display_log_link(build_log_name, "Full build log") }}
                     {% if earlier_build_log_names %}
-                        (
-                        {% for i, name in earlier_build_log_names %}
-                            {{ display_log_link(name, i) }}
-                            {% if not loop.last %},{% endif %}
-                        {% endfor %}
-                        )
+                        ({% for i, name in earlier_build_log_names %}{{ display_log_link(name, i) }}{% if not loop.last %}, {% endif %}{% endfor %})
                     {% endif %}
                 </li>
             {% endif %}
