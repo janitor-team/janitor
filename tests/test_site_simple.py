@@ -159,6 +159,13 @@ async def test_codebase_query_redirect_empty_param_returns_404(
     assert resp.status == 404
 
 
+async def test_private_ready(aiohttp_client):
+    private_app, _app = await create_app(config=create_config(), redis=FakeRedis())
+    client = await aiohttp_client(private_app)
+    resp = await client.get("/ready")
+    assert (resp.status, await resp.text()) == (200, "ok")
+
+
 async def test_webhook_github_push_reschedules_without_crashing(
     aiohttp_client, database_location
 ):
