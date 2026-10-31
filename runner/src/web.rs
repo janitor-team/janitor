@@ -3741,12 +3741,25 @@ async fn public_finish_multipart(
 
 async fn public_get_active_run(
     State(state): State<Arc<AppState>>,
+    Extension(worker_name): Extension<String>,
     Path(id): Path<RunId>,
 ) -> impl IntoResponse {
     // Returns the full ActiveRun.json() shape (same as the private
     // endpoint) and 404s on missing -- there's no "public view"
     // stripping.
     match state.active_runs.get(&id).await {
+        Some(active_run) if active_run.worker_name != worker_name => {
+            log::warn!(
+                "Worker {} attempted to read run {} assigned to worker {}",
+                worker_name,
+                id,
+                active_run.worker_name
+            );
+            (
+                StatusCode::FORBIDDEN,
+                Json(json!({"error": "Not authorized to read this run"})),
+            )
+        }
         Some(active_run) => (StatusCode::OK, Json(active_run.to_json())),
         None => (
             StatusCode::NOT_FOUND,

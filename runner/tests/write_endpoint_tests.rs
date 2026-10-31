@@ -1186,6 +1186,79 @@ async fn public_finish_returns_403_when_worker_does_not_own_run() {
         .await;
 }
 
+/// `GET /active-runs/{id}` on the public router only shows a run to its worker.
+#[tokio::test]
+async fn public_get_active_run_returns_403_when_worker_does_not_own_run() {
+    let Some((app, state)) = test_utils::create_public_test_app_with_state_if_available()
+        .await
+        .expect("public app setup should either succeed or return None cleanly")
+    else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    for (name, password) in [("alice", "alice-pw"), ("bob", "bob-pw")] {
+        state
+            .auth_service
+            .create_worker(name, password, None)
+            .await
+            .expect("create worker");
+    }
+
+    let active_run = ActiveRun {
+        worker_name: "alice".to_string(),
+        worker_link: None,
+        queue_id: 1,
+        log_id: janitor::RunId::new("run-get-owned-by-alice").unwrap(),
+        start_time: Utc::now(),
+        finish_time: None,
+        estimated_duration: None,
+        campaign: janitor::Campaign::new("test-campaign").unwrap(),
+        change_set: None,
+        command: "true".to_string(),
+        codebase: janitor::CodebaseName::new("auth-test-cb").unwrap(),
+        backchannel: Backchannel::None {},
+        vcs_info: VcsInfo::default(),
+        instigated_context: None,
+        resume_from: None,
+    };
+    let expected = active_run.to_json();
+    state.active_runs.store(active_run).await;
+
+    let get_as = |credentials: &'static [u8]| {
+        let auth = format!(
+            "Basic {}",
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, credentials)
+        );
+        Request::builder()
+            .method(Method::GET)
+            .uri("/active-runs/run-get-owned-by-alice")
+            .header("authorization", auth)
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let response = app
+        .clone()
+        .oneshot(get_as(b"alice:alice-pw"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(get_body(response).await, expected);
+
+    let response = app.oneshot(get_as(b"bob:bob-pw")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        get_body(response).await,
+        json!({"error": "Not authorized to read this run"})
+    );
+
+    let _ = state
+        .active_runs
+        .remove(&janitor::RunId::new("run-get-owned-by-alice").unwrap())
+        .await;
+}
+
 /// End-to-end lifecycle test: seed a codebase and campaign, enqueue
 /// via POST /candidates, assign via POST /active-runs, then finish
 /// via POST /active-runs/{id}/finish. Verifies the four handlers
