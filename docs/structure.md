@@ -1,6 +1,5 @@
 ## Structure 
 
-- `./reschedule.py` - a tool for users of the janitor and can be run by anybody locally
 - `./helpers/*` - all need to run inside of a janitor deployment (and talk to the database, etc) by an admin.
 - `janitor-admin` - admin CLI that talks to a running janitor site over its public HTTP API. Run with `cargo run --bin janitor-admin -- <args>`.
   - `worker list` - list registered workers with their run counts
@@ -8,12 +7,12 @@
   - `worker delete <name>` - remove a worker
   - `reschedule --run-id <id> [--refresh] [--offset <secs>]` - reschedule a single run
   - `reschedule --result-code <code> [--description-re <re>] [--campaign <name>] [--rejected] [--min-age <days>] [--include-transient] [--refresh] [--offset <secs>]` - mass-reschedule runs matching the given result code
+  - `reprocess-logs [--run-id <id>]... [--campaign <name>] [--description-re <re>] [--min-age <days>] [--dry-run] [--reschedule]` - reprocess the build logs of finished runs
   - `queue list [--limit <n>]` - show queue items, default limit 100
   - `run list` - list active runs
   - `run kill <run-id>` - kill an active run
+  - `run reprocess-logs <run-id> [--dry-run] [--reschedule]` - reprocess the build log of a single run
   - `merge-proposal set-status <url> <status>` - set a merge proposal's status (closed/abandoned/applied/rejected)
-  - `reprocess-logs run <run-id> [--dry-run] [--reschedule]` - reprocess a single run's stored build log
-  - `reprocess-logs bulk [--run-id <id>...] [--dry-run] [--reschedule]` - reprocess stored build logs in bulk, restricted to the given run IDs if any are passed
   - `publish autopublish` - trigger an autopublish pass
   - `publish scan` - rescan merge proposal statuses
   - `logs <run-id> <name>` - print a log file of a run, e.g. `worker.log`
