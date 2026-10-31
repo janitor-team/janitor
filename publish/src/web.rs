@@ -1624,6 +1624,96 @@ async fn scan(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     (StatusCode::ACCEPTED, "Scan started.")
 }
 
+/// Whether the forge that has the proposal at `url` says our own bot opened it.
+fn proposal_at_url_opened_by_us(url: &url::Url) -> Result<bool, BrzError> {
+    for forge in breezyshim::forge::try_iter_forge_instances()? {
+        let forge = match forge {
+            Ok(forge) => forge,
+            Err((kind, e)) => {
+                log::warn!("Unable to list {} forge instances: {}", kind, e);
+                continue;
+            }
+        };
+        let mp = match forge.get_proposal_by_url(url) {
+            Ok(mp) => mp,
+            Err(BrzError::UnsupportedForge(..)) => continue,
+            Err(e) => return Err(e),
+        };
+        let Some(author) = mp.get_author()? else {
+            return Ok(false);
+        };
+        return Ok(forge.get_current_user()?.as_deref() == Some(author.as_str()));
+    }
+    Ok(false)
+}
+
+/// Rejects `url` unless it is recorded or the forge says our bot opened it.
+async fn ensure_claimable(
+    state: &AppState,
+    url: &url::Url,
+) -> Result<(), axum::response::Response> {
+    let proposal_info_manager =
+        crate::proposal_info::ProposalInfoManager::new(state.conn.clone(), state.redis.clone())
+            .await;
+    match proposal_info_manager.proposal_exists(url).await {
+        Ok(true) => return Ok(()),
+        Ok(false) => {}
+        Err(e) => {
+            log::error!("Error looking up proposal {}: {}", url, e);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_response("Database error"),
+            )
+                .into_response());
+        }
+    }
+    let check_url = url.clone();
+    let opened_by_us =
+        tokio::task::spawn_blocking(move || proposal_at_url_opened_by_us(&check_url)).await;
+    match opened_by_us {
+        Ok(Ok(true)) => {
+            log::info!("Proposal {} is not recorded yet, but we opened it", url);
+            Ok(())
+        }
+        Ok(Ok(false)) => {
+            log::info!("Not refreshing unrecorded proposal {}", url);
+            Err((
+                StatusCode::NOT_FOUND,
+                Json(
+                    serde_json::to_value(NotFoundResponse {
+                        reason: "No such merge proposal".to_string(),
+                        url: Some(url.to_string()),
+                        name: None,
+                        id: None,
+                        bucket: None,
+                        run_id: None,
+                        campaign: None,
+                        codebase: None,
+                    })
+                    .unwrap(),
+                ),
+            )
+                .into_response())
+        }
+        Ok(Err(e)) => {
+            log::warn!("Unable to check the author of {}: {}", url, e);
+            Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                error_response("Unable to check the proposal with the forge"),
+            )
+                .into_response())
+        }
+        Err(e) => {
+            log::error!("Task join error checking the author of {}: {}", url, e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_response("Internal error"),
+            )
+                .into_response())
+        }
+    }
+}
+
 /// Form body for `POST /refresh-status`: a urlencoded `url=...`.
 #[derive(serde::Deserialize)]
 struct RefreshStatusForm {
@@ -1631,22 +1721,24 @@ struct RefreshStatusForm {
 }
 
 /// `POST /refresh-status`: re-run `check_existing_mp` against a single
-/// proposal URL in the background.
+/// proposal URL in the background. Only proposals that are already
+/// recorded, or that the forge says our bot opened, are refreshed.
 async fn refresh_status(
     State(state): State<Arc<AppState>>,
     axum::extract::Form(form): axum::extract::Form<RefreshStatusForm>,
-) -> axum::response::Response {
+) -> Result<axum::response::Response, axum::response::Response> {
     let url: url::Url = match form.url.parse() {
         Ok(u) => u,
         Err(e) => {
-            return (
+            return Err((
                 StatusCode::BAD_REQUEST,
                 error_response(&format!("Invalid url parameter: {}", e)),
             )
-                .into_response();
+                .into_response());
         }
     };
     log::info!("Request to refresh proposal status for {}", url);
+    ensure_claimable(&state, &url).await?;
 
     async fn scan(state: Arc<AppState>, url: url::Url) {
         // get_proposal_by_url and is_merged/is_closed are PyO3 calls
@@ -1727,7 +1819,7 @@ async fn refresh_status(
     }
 
     tokio::spawn(scan(state.clone(), url));
-    (
+    Ok((
         StatusCode::ACCEPTED,
         [(
             axum::http::header::CONTENT_TYPE,
@@ -1735,7 +1827,7 @@ async fn refresh_status(
         )],
         "Refresh of proposal started.",
     )
-        .into_response()
+        .into_response())
 }
 
 /// `POST /autopublish`: kick off a background `publish_pending_ready`

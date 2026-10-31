@@ -239,3 +239,115 @@ test_with_database! {
         }
     }
 }
+
+async fn post_refresh_status(app: axum::Router, url: &str) -> (StatusCode, String) {
+    let body = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("url", url)
+        .finish();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/refresh-status")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(body))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+test_with_database! {
+    async fn refresh_status_404s_a_proposal_we_cannot_claim(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+
+        let url = "https://example.invalid/proposal/1";
+        let app = build_app(test_db.pool().clone()).await;
+        let (status, body) = post_refresh_status(app, url).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+            serde_json::json!({"reason": "No such merge proposal", "url": url}),
+        );
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM merge_proposal")
+            .fetch_one(test_db.pool())
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+}
+
+test_with_database! {
+    async fn refresh_status_accepts_a_recorded_proposal(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        let url = "https://example.invalid/proposal/1";
+        sqlx::query("INSERT INTO merge_proposal (url, status) VALUES ($1, 'open')")
+            .bind(url)
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+
+        let app = build_app(test_db.pool().clone()).await;
+        let (status, _) = post_refresh_status(app, url).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+    }
+}
+
+const FAKE_FORGES: &std::ffi::CStr = cr#"
+from breezy.forge import UnsupportedForge, forges
+
+
+class Proposal:
+    def __init__(self, author):
+        self.author = author
+
+    def get_author(self):
+        return self.author
+
+
+class FakeForge:
+    @classmethod
+    def iter_instances(cls):
+        yield cls()
+
+    def get_current_user(self):
+        return "janitor-bot"
+
+    def get_proposal_by_url(self, url):
+        prefix = "https://fake.example.invalid/"
+        if not url.startswith(prefix):
+            raise UnsupportedForge(url)
+        if url == prefix + "down":
+            raise ConnectionError("forge is down")
+        return Proposal(url[len(prefix):])
+
+
+class BrokenForge:
+    @classmethod
+    def iter_instances(cls):
+        raise RuntimeError("cannot list instances")
+
+
+forges.register("broken-test", BrokenForge)
+forges.register("fake-test", FakeForge)
+"#;
+
+test_with_database! {
+    async fn refresh_status_asks_the_forge_about_an_unrecorded_proposal(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        pyo3::Python::attach(|py| py.run(FAKE_FORGES, None, None)).unwrap();
+
+        for (url, expected) in [
+            ("https://fake.example.invalid/janitor-bot", StatusCode::ACCEPTED),
+            ("https://fake.example.invalid/someone-else", StatusCode::NOT_FOUND),
+            ("https://fake.example.invalid/down", StatusCode::SERVICE_UNAVAILABLE),
+            ("https://other.example.invalid/1", StatusCode::NOT_FOUND),
+        ] {
+            let app = build_app(test_db.pool().clone()).await;
+            let (status, body) = post_refresh_status(app, url).await;
+            assert_eq!(status, expected, "{}: {}", url, body);
+        }
+    }
+}
