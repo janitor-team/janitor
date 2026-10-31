@@ -5,7 +5,7 @@ use pyo3::basic::CompareOp;
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBytes};
+use pyo3::types::{PyAny, PyBytes, PyList};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -319,14 +319,26 @@ create_exception!(janitor.vcs, UnsupportedVcs, pyo3::exceptions::PyException);
 #[pyo3(signature = (vcs_url, possible_transports=None, probers=None))]
 pub fn open_branch_ext(
     vcs_url: &str,
-    possible_transports: Option<Vec<Py<PyAny>>>,
-    probers: Option<Vec<Py<PyAny>>>,
+    possible_transports: Option<Bound<PyList>>,
+    probers: Option<Vec<breezyshim::controldir::GenericProber>>,
 ) -> Result<breezyshim::branch::GenericBranch, PyErr> {
     let vcs_url = url::Url::parse(vcs_url).map_err(|e| PyValueError::new_err(format!("{}", e)))?;
-    // TODO: support possible_transports
-    // TODO: support probers
-    janitor::vcs::open_branch_ext(&vcs_url, None, None)
-        .map_err(|e| BranchOpenFailure::new_err((e.code, e.description, e.retry_after)))
+    let mut transports = possible_transports
+        .as_ref()
+        .map(|list| list.extract::<Vec<breezyshim::transport::Transport>>())
+        .transpose()?;
+    let probers = probers.as_ref().map(|probers| {
+        probers
+            .iter()
+            .map(|p| p as &dyn breezyshim::controldir::PyProber)
+            .collect::<Vec<_>>()
+    });
+    let result = janitor::vcs::open_branch_ext(&vcs_url, transports.as_mut(), probers.as_deref());
+    // Give the caller's list the transports the open added, like breezy does.
+    if let (Some(list), Some(transports)) = (possible_transports, transports) {
+        list.set_slice(0, list.len(), PyList::new(list.py(), transports)?.as_any())?;
+    }
+    result.map_err(|e| BranchOpenFailure::new_err((e.code, e.description, e.retry_after)))
 }
 
 pub(crate) fn init(py: Python, module: &Bound<PyModule>) -> PyResult<()> {

@@ -15,10 +15,14 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
-from breezy import controldir
+from breezy import controldir, urlutils
+from breezy.bzr import BzrProber
+from breezy.git import LocalGitProber
 from breezy.tests import TestCaseWithTransport
+from breezy.transport import Transport
 
 from janitor.vcs import (
+    BranchOpenFailure,
     LocalBzrVcsManager,
     RemoteBzrVcsManager,
     RemoteGitVcsManager,
@@ -26,6 +30,7 @@ from janitor.vcs import (
     get_vcs_managers,
     is_alioth_url,
     is_authenticated_url,
+    open_branch_ext,
 )
 
 
@@ -75,6 +80,25 @@ File b
         self.assertEqual(b" File a", lines[4])
         self.assertEqual(b"+File b", lines[5])
         self.assertEqual(b"", lines[6])
+
+
+class OpenBranchExtTests(TestCaseWithTransport):
+    def test_probers(self):
+        self.make_branch("branch")
+        url = urlutils.local_path_to_url("branch")
+        open_branch_ext(url, probers=[BzrProber])
+        self.assertRaises(
+            BranchOpenFailure, open_branch_ext, url, probers=[LocalGitProber]
+        )
+
+    def test_possible_transports(self):
+        self.make_branch("branch")
+        possible_transports: list[Transport] = []
+        branch = open_branch_ext(
+            urlutils.local_path_to_url("branch"),
+            possible_transports=possible_transports,
+        )
+        self.assertEqual([branch.user_url], [t.base for t in possible_transports])
 
 
 def test_authenticated():
