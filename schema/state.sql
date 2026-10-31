@@ -304,16 +304,22 @@ CREATE OR REPLACE FUNCTION refresh_change_set_state(change_set_id text)
     END;
 $$;
 
-CREATE OR REPLACE FUNCTION new_result_branch_trigger_refresh_change_set_state()
+CREATE OR REPLACE FUNCTION new_result_branch_trigger_refresh()
   RETURNS TRIGGER
   LANGUAGE PLPGSQL
   AS $$
     DECLARE change_set_id TEXT;
     BEGIN
+    -- last_run first: the change set state is computed from it.
 
     if (TG_OP = 'INSERT' AND NEW.absorbed) then
-        SELECT change_set INTO STRICT change_set_id FROM run WHERE id = OLD.run_id;
+        perform refresh_last_run(new.run_id);
+        SELECT change_set INTO STRICT change_set_id FROM run WHERE id = NEW.run_id;
         perform refresh_change_set_state(change_set_id);
+    end if;
+
+    if (TG_OP = 'UPDATE' AND NEW.absorbed AND NOT OLD.absorbed) then
+        perform refresh_last_run(new.run_id);
     end if;
 
     if (TG_OP = 'UPDATE' AND NEW.absorbed != OLD.absorbed) then
@@ -325,30 +331,6 @@ CREATE OR REPLACE FUNCTION new_result_branch_trigger_refresh_change_set_state()
         END IF;
     end if;
 
-    RETURN NEW;
-    END;
-$$;
-
-CREATE OR REPLACE TRIGGER new_result_branch_refresh_change_set_state
-  AFTER INSERT OR UPDATE OR DELETE
-  ON new_result_branch
-  FOR EACH ROW
-  EXECUTE FUNCTION new_result_branch_trigger_refresh_change_set_state();
-
-CREATE OR REPLACE FUNCTION new_result_branch_trigger_refresh_last_run()
-  RETURNS TRIGGER
-  LANGUAGE PLPGSQL
-  AS $$
-    BEGIN
-
-    if (TG_OP = 'INSERT' AND NEW.absorbed) then
-        perform refresh_last_run(new.run_id);
-    end if;
-
-    if (TG_OP = 'UPDATE' AND NEW.absorbed AND NOT OLD.absorbed) then
-        perform refresh_last_run(new.run_id);
-    end if;
-
     IF (TG_OP = 'DELETE' AND old.absorbed) THEN
         perform refresh_last_run(old.run_id);
     END IF;
@@ -357,11 +339,16 @@ CREATE OR REPLACE FUNCTION new_result_branch_trigger_refresh_last_run()
     END;
 $$;
 
-CREATE OR REPLACE TRIGGER new_result_branch_refresh_last_run
+DROP TRIGGER IF EXISTS new_result_branch_refresh_change_set_state ON new_result_branch;
+DROP TRIGGER IF EXISTS new_result_branch_refresh_last_run ON new_result_branch;
+DROP FUNCTION IF EXISTS new_result_branch_trigger_refresh_change_set_state();
+DROP FUNCTION IF EXISTS new_result_branch_trigger_refresh_last_run();
+
+CREATE OR REPLACE TRIGGER new_result_branch_refresh
   AFTER INSERT OR UPDATE OR DELETE
   ON new_result_branch
   FOR EACH ROW
-  EXECUTE FUNCTION new_result_branch_trigger_refresh_last_run();
+  EXECUTE FUNCTION new_result_branch_trigger_refresh();
 
 -- The last "unabsorbed" change. An unabsorbed change is the last change that
 -- was not yet merged or pushed.
@@ -430,43 +417,23 @@ CREATE OR REPLACE FUNCTION refresh_last_run(_codebase text, _campaign text)
 $$;
 
 
-CREATE OR REPLACE FUNCTION run_trigger_refresh_last_run()
-  RETURNS TRIGGER
-  LANGUAGE PLPGSQL
-  AS $$
-    DECLARE row RECORD;
-    BEGIN
-    -- Checking the Operation Type
-    IF (TG_OP = 'DELETE') THEN
-      row = OLD;
-    ELSE
-      row = NEW;
-    END IF;
-
-    PERFORM refresh_last_run(row.codebase, row.suite::text);
-    RETURN NEW;
-    END;
-$$;
-
-CREATE OR REPLACE TRIGGER run_refresh_last_run
-  AFTER INSERT OR UPDATE OR DELETE
-  ON run
-  FOR EACH ROW
-  EXECUTE FUNCTION run_trigger_refresh_last_run();
-
-CREATE OR REPLACE FUNCTION run_trigger_refresh_change_set_state()
+CREATE OR REPLACE FUNCTION run_trigger_refresh()
   RETURNS TRIGGER
   LANGUAGE PLPGSQL
   AS $$
     BEGIN
+    -- last_run first: the change set state is computed from it.
     IF TG_OP = 'DELETE' THEN
+      PERFORM refresh_last_run(OLD.codebase, OLD.suite::text);
       PERFORM refresh_change_set_state(OLD.change_set);
     ELSIF TG_OP = 'UPDATE' THEN
+      PERFORM refresh_last_run(NEW.codebase, NEW.suite::text);
       PERFORM refresh_change_set_state(OLD.change_set);
       IF OLD.change_set != NEW.change_set THEN
          PERFORM refresh_change_set_state(NEW.change_set);
       END IF;
     ELSE
+      PERFORM refresh_last_run(NEW.codebase, NEW.suite::text);
       PERFORM refresh_change_set_state(NEW.change_set);
     END IF;
 
@@ -474,11 +441,16 @@ CREATE OR REPLACE FUNCTION run_trigger_refresh_change_set_state()
     END;
 $$;
 
-CREATE OR REPLACE TRIGGER run_refresh_change_set_state
+DROP TRIGGER IF EXISTS run_refresh_last_run ON run;
+DROP TRIGGER IF EXISTS run_refresh_change_set_state ON run;
+DROP FUNCTION IF EXISTS run_trigger_refresh_last_run();
+DROP FUNCTION IF EXISTS run_trigger_refresh_change_set_state();
+
+CREATE OR REPLACE TRIGGER run_refresh
   AFTER INSERT OR UPDATE OR DELETE
   ON run
   FOR EACH ROW
-  EXECUTE FUNCTION run_trigger_refresh_change_set_state();
+  EXECUTE FUNCTION run_trigger_refresh();
 
 create or replace view campaigns as select distinct suite as name from run;
 
