@@ -217,7 +217,7 @@ impl AppState {
     }
 }
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug, PartialEq, sqlx::FromRow)]
 struct Run {
     result_code: String,
     /// LEFT JOIN debian_build makes this NULL for runs that never
@@ -2051,6 +2051,49 @@ mod tests {
                 .with_label_values(&["request"])
                 .get();
             assert_eq!(after, before, "invalid id must not bump precache counter");
+        }
+    }
+
+    janitor::test_with_database! {
+        async fn finds_control_run_with_its_own_change_set(db: TestDatabase) {
+            janitor::schema::setup_debian_test_database(db.pool())
+                .await
+                .unwrap();
+            // The control run has its own change set; the later run is in another one.
+            sqlx::raw_sql(
+                "INSERT INTO codebase (name, branch_url, url, vcs_type) \
+                 VALUES ('pkg', 'https://example.com/pkg', 'https://example.com/pkg', 'git'); \
+                 INSERT INTO change_set (id, campaign) \
+                 VALUES ('control-run', 'control'), ('cs-other', 'unchanged'); \
+                 INSERT INTO run (id, codebase, suite, change_set, result_code, revision, \
+                                  main_branch_revision, start_time, finish_time, logfilenames) \
+                 VALUES ('control-run', 'pkg', 'control', 'control-run', 'success', 'base-rev', \
+                         'base-rev', now() - interval '2 hours', now() - interval '1 hour', '{}'), \
+                        ('other-run', 'pkg', 'unchanged', 'cs-other', 'success', 'base-rev', \
+                         'base-rev', now() - interval '30 minutes', now(), '{}'); \
+                 INSERT INTO debian_build (run_id, version, distribution, source) \
+                 VALUES ('control-run', '1.0-1~jan+unchanged1', 'unchanged', 'pkg')",
+            )
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+            let base = RevisionId::from(b"base-rev".to_vec());
+            let other = RevisionId::from(b"other-rev".to_vec());
+            assert_eq!(
+                get_unchanged_run(db.pool(), "pkg", &base).await.unwrap(),
+                Some(Run {
+                    result_code: "success".to_string(),
+                    build_source: Some("pkg".to_string()),
+                    campaign: "control".to_string(),
+                    id: "control-run".to_string(),
+                    build_version: Some("1.0-1~jan+unchanged1".parse().unwrap()),
+                })
+            );
+            assert_eq!(
+                get_unchanged_run(db.pool(), "pkg", &other).await.unwrap(),
+                None
+            );
         }
     }
 }
