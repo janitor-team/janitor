@@ -59,13 +59,11 @@ pub fn debian_make_changes(
     update_changelog: DebUpdateChangelog,
 ) -> std::result::Result<DebianCommandResult, WorkerFailure> {
     if argv.is_empty() {
-        return Err(WorkerFailure {
-            code: "no-changes".to_string(),
-            description: "No change build".to_string(),
-            details: None,
-            stage: vec!["codemod".to_string()],
-            transient: None,
-        });
+        return Err(WorkerFailure::new(
+            "no-changes",
+            "No change build",
+            ["codemod"],
+        ));
     }
 
     log::info!("Running {:?}", argv);
@@ -140,34 +138,30 @@ pub fn debian_make_changes(
         },
     ) {
         Ok(r) => Ok(r),
-        Err(DebianCodemodError::ScriptMadeNoChanges) => Err(WorkerFailure {
-            code: "nothing-to-do".to_string(),
-            description: "No changes made".to_string(),
-            details: None,
-            stage: vec!["codemod".to_string()],
-            transient: Some(false),
-        }),
-        Err(DebianCodemodError::MissingChangelog(p)) => Err(WorkerFailure {
-            code: "missing-changelog".to_string(),
-            description: format!("No changelog present: {}", p.display()),
-            details: None,
-            stage: vec!["codemod".to_string()],
-            transient: Some(false),
-        }),
+        Err(DebianCodemodError::ScriptMadeNoChanges) => {
+            Err(
+                WorkerFailure::new("nothing-to-do", "No changes made", ["codemod"])
+                    .with_transient(false),
+            )
+        }
+        Err(DebianCodemodError::MissingChangelog(p)) => Err(WorkerFailure::new(
+            "missing-changelog",
+            format!("No changelog present: {}", p.display()),
+            ["codemod"],
+        )
+        .with_transient(false)),
         Err(DebianCodemodError::ExitCode(i)) => Err(convert_codemod_script_failed(
             i,
             shlex::try_join(argv.to_vec()).unwrap().as_str(),
         )),
-        Err(DebianCodemodError::ScriptNotFound) => Err(WorkerFailure {
-            code: "codemod-not-found".to_string(),
-            description: format!(
+        Err(DebianCodemodError::ScriptNotFound) => Err(WorkerFailure::new(
+            "codemod-not-found",
+            format!(
                 "Codemod script {} not found",
                 shlex::try_join(argv.to_vec()).unwrap()
             ),
-            details: None,
-            stage: vec!["codemod".to_string()],
-            transient: None,
-        }),
+            ["codemod"],
+        )),
         Err(DebianCodemodError::Detailed(f)) => {
             let mut stage = vec!["codemod".to_string()];
             if let Some(extra_stage) = f.stage {
@@ -183,41 +177,31 @@ pub fn debian_make_changes(
                 transient: None,
             })
         }
-        Err(DebianCodemodError::Io(e)) => Err(WorkerFailure {
-            code: "io-error".to_string(),
-            description: format!("IO error: {}", e),
-            details: None,
-            stage: vec!["codemod".to_string()],
-            transient: None,
-        }),
-        Err(DebianCodemodError::Json(e)) => Err(WorkerFailure {
-            code: "result-file-format".to_string(),
-            description: format!("JSON error: {}", e),
-            details: None,
-            stage: vec!["codemod".to_string()],
-            transient: None,
-        }),
-        Err(DebianCodemodError::Utf8(e)) => Err(WorkerFailure {
-            code: "utf8-error".to_string(),
-            description: format!("UTF8 error: {}", e),
-            details: None,
-            stage: vec!["codemod".to_string()],
-            transient: None,
-        }),
-        Err(DebianCodemodError::ChangelogParse(e)) => Err(WorkerFailure {
-            code: "changelog-parse-error".to_string(),
-            description: format!("Changelog parse error: {}", e),
-            details: None,
-            stage: vec!["codemod".to_string()],
-            transient: None,
-        }),
-        Err(DebianCodemodError::Other(e)) => Err(WorkerFailure {
-            code: "unknown-error".to_string(),
-            description: format!("Unknown error: {}", e),
-            details: None,
-            stage: vec!["codemod".to_string()],
-            transient: None,
-        }),
+        Err(DebianCodemodError::Io(e)) => Err(WorkerFailure::new(
+            "io-error",
+            format!("IO error: {}", e),
+            ["codemod"],
+        )),
+        Err(DebianCodemodError::Json(e)) => Err(WorkerFailure::new(
+            "result-file-format",
+            format!("JSON error: {}", e),
+            ["codemod"],
+        )),
+        Err(DebianCodemodError::Utf8(e)) => Err(WorkerFailure::new(
+            "utf8-error",
+            format!("UTF8 error: {}", e),
+            ["codemod"],
+        )),
+        Err(DebianCodemodError::ChangelogParse(e)) => Err(WorkerFailure::new(
+            "changelog-parse-error",
+            format!("Changelog parse error: {}", e),
+            ["codemod"],
+        )),
+        Err(DebianCodemodError::Other(e)) => Err(WorkerFailure::new(
+            "unknown-error",
+            format!("Unknown error: {}", e),
+            ["codemod"],
+        )),
     }
 }
 
@@ -228,14 +212,14 @@ pub fn build_from_config(
     config: &serde_json::Value,
     env: &std::collections::HashMap<String, String>,
 ) -> Result<serde_json::Value, WorkerFailure> {
-    let config: DebianBuildConfig =
-        serde_json::from_value(config.clone()).map_err(|e| WorkerFailure {
-            code: "build-config-parse-failure".to_string(),
-            description: format!("Failed to parse config: {}", e),
-            details: None,
-            stage: vec!["build".to_string()],
-            transient: Some(false),
-        })?;
+    let config: DebianBuildConfig = serde_json::from_value(config.clone()).map_err(|e| {
+        WorkerFailure::new(
+            "build-config-parse-failure",
+            format!("Failed to parse config: {}", e),
+            ["build"],
+        )
+        .with_transient(false)
+    })?;
     let committer = env.get("COMMITTER");
     let update_changelog: DebUpdateChangelog = match env
         .get("DEB_UPDATE_CHANGELOG")
@@ -356,23 +340,20 @@ fn apt_repository_failure(apt_repository: &str, e: breezyshim::error::Error) -> 
         breezyshim::error::Error::DependencyNotPresent(..) => "missing-dependency",
         _ => "apt-repository-setup-failure",
     };
-    WorkerFailure {
-        code: code.to_string(),
-        description: format!("Failed to set up apt repository: {}", e),
-        details: Some(serde_json::json!({"apt_repository": apt_repository})),
-        stage: vec!["validate".to_string()],
-        transient: None,
-    }
+    WorkerFailure::new(
+        code.to_string(),
+        format!("Failed to set up apt repository: {}", e),
+        ["validate"],
+    )
+    .with_details(serde_json::json!({"apt_repository": apt_repository}))
 }
 
 fn up_to_date_check_failure(e: impl std::fmt::Display) -> WorkerFailure {
-    WorkerFailure {
-        code: "vcs-up-to-date-check-failed".to_string(),
-        description: format!("Failed to check whether the tree is up to date: {}", e),
-        details: None,
-        stage: vec!["validate".to_string()],
-        transient: None,
-    }
+    WorkerFailure::new(
+        "vcs-up-to-date-check-failed",
+        format!("Failed to check whether the tree is up to date: {}", e),
+        ["validate"],
+    )
 }
 
 /// Check an up-to-date outcome, returning the warning to log for an outcome
@@ -387,21 +368,17 @@ fn validate_up_to_date_status<E: std::fmt::Display>(
         UpToDateStatus::UpToDate => Ok(None), // codespell:ignore
         UpToDateStatus::MissingChangelog => {
             if !local_tree.has_filename(&subpath.join("debian")) {
-                Err(WorkerFailure {
-                    code: "not-debian-package".to_string(),
-                    description: "Not a Debian package".to_string(),
-                    details: None,
-                    stage: vec!["validate".to_string()],
-                    transient: None,
-                })
+                Err(WorkerFailure::new(
+                    "not-debian-package",
+                    "Not a Debian package",
+                    ["validate"],
+                ))
             } else {
-                Err(WorkerFailure {
-                    code: "missing-changelog".to_string(),
-                    description: "Missing changelog".to_string(),
-                    details: None,
-                    stage: vec!["validate".to_string()],
-                    transient: None,
-                })
+                Err(WorkerFailure::new(
+                    "missing-changelog",
+                    "Missing changelog",
+                    ["validate"],
+                ))
             }
         }
         UpToDateStatus::PackageMissingInArchive { package } => Ok(Some(format!(
@@ -415,16 +392,14 @@ fn validate_up_to_date_status<E: std::fmt::Display>(
         UpToDateStatus::NewArchiveVersion {
             archive_version,
             tree_version,
-        } => Err(WorkerFailure {
-            code: "new-archive-version".to_string(),
-            description: format!(
+        } => Err(WorkerFailure::new(
+            "new-archive-version",
+            format!(
                 "New archive version {} (last tree version {})",
                 archive_version, tree_version
             ),
-            details: None,
-            stage: vec!["validate".to_string()],
-            transient: None,
-        }),
+            ["validate"],
+        )),
     }
 }
 
@@ -445,14 +420,14 @@ fn validate_from_config(
     subpath: &std::path::Path,
     config: &serde_json::Value,
 ) -> Result<(), WorkerFailure> {
-    let config: DebianBuildConfig =
-        serde_json::from_value(config.clone()).map_err(|e| WorkerFailure {
-            code: "build-config-parse-failure".to_string(),
-            description: format!("Failed to parse config: {}", e),
-            details: None,
-            stage: vec!["validate".to_string()],
-            transient: Some(false),
-        })?;
+    let config: DebianBuildConfig = serde_json::from_value(config.clone()).map_err(|e| {
+        WorkerFailure::new(
+            "build-config-parse-failure",
+            format!("Failed to parse config: {}", e),
+            ["validate"],
+        )
+        .with_transient(false)
+    })?;
     if let Some(apt_repository) = config.apt_repository.as_ref() {
         let apt = breezyshim::debian::apt::RemoteApt::from_string(
             apt_repository,
