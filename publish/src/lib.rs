@@ -44,8 +44,6 @@ pub mod state;
 /// Axum router and HTTP handlers.
 pub mod web;
 
-use rate_limiter::RateLimiter;
-
 // Re-export from redis module to avoid import issues
 pub use crate::redis::RedisConnectionManager;
 // Import pyo3 for PyErr
@@ -863,20 +861,14 @@ impl PublishWorker {
         log_id: &RunId,
         unchanged_id: Option<&RunId>,
         derived_branch_name: &str,
-        rate_limit_bucket: Option<&str>,
         vcs_manager: &dyn VcsManager,
-        mut bucket_rate_limiter: Option<&mut dyn RateLimiter>,
         require_binary_diff: bool,
         allow_create_proposal: bool,
-        reviewers: Option<Vec<&str>>,
         tags: Option<Vec<(String, RevisionId)>>,
         commit_message_template: Option<&str>,
         title_template: Option<&str>,
         codemod_result: &serde_json::Value,
         existing_mp_url: Option<&url::Url>,
-        extra_context: Option<&serde_json::Value>,
-        derived_owner: Option<&str>,
-        auto_merge: Option<bool>,
     ) -> Result<PublishOneResult, PublishError> {
         let local_branch_url =
             vcs_manager.get_branch_url(codebase, &format!("{}/{}", campaign, role));
@@ -898,13 +890,13 @@ impl PublishWorker {
             external_url: self.external_url.clone(),
             differ_url: self.differ_url.clone(),
             revision_id: revision.clone(),
-            reviewers: reviewers.map(|r| r.iter().map(|s| s.to_string()).collect()),
+            reviewers: None,
             commit_message_template: commit_message_template.map(|s| s.to_string()),
             title_template: title_template.map(|s| s.to_string()),
-            extra_context: extra_context.cloned(),
+            extra_context: None,
             tags: tags.map(|t| t.into_iter().collect()),
-            derived_owner: derived_owner.map(|s| s.to_string()),
-            auto_merge,
+            derived_owner: None,
+            auto_merge: None,
         };
 
         let mut args = vec!["janitor-publish-one".to_string()];
@@ -996,12 +988,6 @@ impl PublishWorker {
                     let publisher = crate::redis::RedisPublisher::new(redis_manager.clone());
                     if let Err(e) = publisher.publish_merge_proposal(&event).await {
                         log::warn!("Failed to publish merge proposal event to Redis: {}", e);
-                    }
-                }
-
-                if let Some(bucket) = rate_limit_bucket {
-                    if let Some(rate_limiter) = bucket_rate_limiter.as_mut() {
-                        rate_limiter.inc(bucket);
                     }
                 }
             }
@@ -2731,37 +2717,15 @@ pub async fn publish_from_policy(
 
     let derived_name = derived_branch_name(conn, campaign_config, run, role).await?;
 
-    let vcs_type_parsed = match <VcsType as std::str::FromStr>::from_str(&run.vcs_type) {
-        Ok(v) => v,
+    let vcs_manager = match vcs_manager_for(vcs_managers, run) {
+        Ok(m) => m,
         Err(e) => {
-            log::warn!(
-                "publish_from_policy: unknown vcs_type {:?} for run {}: {}",
-                run.vcs_type,
-                run.id,
-                e
-            );
-            return Ok(None);
-        }
-    };
-    let vcs_manager = match vcs_managers.get(&vcs_type_parsed) {
-        Some(m) => m.as_ref(),
-        None => {
-            log::warn!(
-                "publish_from_policy: no VcsManager registered for vcs_type {:?}",
-                vcs_type_parsed
-            );
+            log::warn!("publish_from_policy: {}", e);
             return Ok(None);
         }
     };
 
-    let tags: Option<Vec<(String, RevisionId)>> = run.result_tags.as_ref().map(|t| {
-        t.iter()
-            .map(|(name, rev)| (name.clone(), RevisionId::from(rev.as_bytes().to_vec())))
-            .collect()
-    });
     let codemod_result = run.result.clone().unwrap_or(serde_json::Value::Null);
-    let extra_context = serde_json::json!({});
-
     log::info!(
         "Publishing {} / {:?} / {} (mode: {})",
         run.codebase,
@@ -2782,20 +2746,14 @@ pub async fn publish_from_policy(
             &run.id,
             unchanged_run.as_ref().map(|(id, _)| id),
             &derived_name,
-            rate_limit_bucket,
             vcs_manager,
-            None, // bucket_rate_limiter: !Send guard would poison the future
             require_binary_diff,
             run_sufficient_for_proposal(campaign_config, run.value),
-            None, // reviewers
-            tags,
+            result_tags(run),
             campaign_config.merge_proposal.commit_message.as_deref(),
             campaign_config.merge_proposal.title.as_deref(),
             &codemod_result,
             None, // existing_mp_url
-            Some(&extra_context),
-            None, // derived_owner
-            None, // auto_merge
         )
         .await;
 
@@ -2825,21 +2783,13 @@ pub async fn publish_from_policy(
         Err(other) => return Err(Box::new(other)),
     };
 
-    // MODE_ATTEMPT_PUSH collapses now that we know whether a
-    // proposal was created.
-    let effective_mode = if mode == Mode::AttemptPush {
-        if publish_result_opt
+    let effective_mode = effective_mode(
+        mode,
+        publish_result_opt
             .as_ref()
             .and_then(|r| r.proposal_url())
-            .is_some()
-        {
-            Mode::Propose
-        } else {
-            Mode::Push
-        }
-    } else {
-        mode
-    };
+            .is_some(),
+    );
 
     // Persist the outcome. Fields that only exist on a real
     // PublishOneResult are pulled from it when available; otherwise
@@ -2931,11 +2881,7 @@ pub async fn publish_from_policy(
             "run_id": run.id,
             "publish_delay": publish_delay_secs,
         });
-        let payload = serde_json::to_string(&entry)?;
-        manager
-            .publisher()
-            .publish_to_channel("publish", &payload)
-            .await?;
+        announce_publish(manager, entry).await?;
     }
 
     if code == "success" {
@@ -2943,6 +2889,55 @@ pub async fn publish_from_policy(
     } else {
         Ok(None)
     }
+}
+
+/// Look up the VCS manager for the VCS type of `run`.
+fn vcs_manager_for<'a>(
+    vcs_managers: &'a HashMap<VcsType, Box<dyn VcsManager>>,
+    run: &janitor::state::Run,
+) -> Result<&'a dyn VcsManager, String> {
+    let vcs_type: VcsType = run.vcs_type.parse().map_err(|e| {
+        format!(
+            "unknown vcs_type {:?} for run {}: {}",
+            run.vcs_type, run.id, e
+        )
+    })?;
+    vcs_managers
+        .get(&vcs_type)
+        .map(|m| m.as_ref())
+        .ok_or_else(|| format!("no VcsManager registered for vcs_type {:?}", vcs_type))
+}
+
+/// The result tags of `run`, in the form `publish_one` takes them.
+fn result_tags(run: &janitor::state::Run) -> Option<Vec<(String, RevisionId)>> {
+    run.result_tags.as_ref().map(|t| {
+        t.iter()
+            .map(|(name, rev)| (name.clone(), RevisionId::from(rev.as_bytes().to_vec())))
+            .collect()
+    })
+}
+
+/// Collapse `Mode::AttemptPush` to propose or push, depending on
+/// whether a merge proposal was created.
+fn effective_mode(mode: Mode, created_proposal: bool) -> Mode {
+    match mode {
+        Mode::AttemptPush if created_proposal => Mode::Propose,
+        Mode::AttemptPush => Mode::Push,
+        mode => mode,
+    }
+}
+
+/// Announce a publish attempt on the `publish` Redis channel.
+async fn announce_publish(
+    manager: &janitor::redis::RedisManager,
+    entry: serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let payload = serde_json::to_string(&entry)?;
+    manager
+        .publisher()
+        .publish_to_channel("publish", &payload)
+        .await?;
+    Ok(())
 }
 
 /// Publish a single run under a given mode/role and persist the result.
@@ -2999,49 +2994,17 @@ pub async fn publish_and_store(
     // main-branch revision. Used as `unchanged_id` so the publisher
     // can diff against the pre-codemod tree. Matches the inline SQL
     // in py/janitor/publish.py::publish_and_store.
-    let unchanged_run_id: Option<RunId> = if let Some(main_rev) = run.main_branch_revision.as_ref()
-    {
-        sqlx::query_scalar::<_, RunId>(
-            "SELECT id FROM run \
-                 WHERE codebase = $1 AND revision = $2 AND result_code = 'success' \
-                 ORDER BY finish_time DESC LIMIT 1",
-        )
-        .bind(&run.codebase)
-        .bind(main_rev.to_string())
-        .fetch_optional(conn)
-        .await?
-    } else {
-        None
-    };
+    let unchanged_run_id = crate::state::get_unchanged_run_id(conn, run).await?;
 
     let derived_name = derived_branch_name(conn, campaign_config, run, role).await?;
 
-    let vcs_type: VcsType = run.vcs_type.parse().map_err(|e| {
-        format!(
-            "unknown vcs_type {:?} for run {}: {}",
-            run.vcs_type, run.id, e
-        )
-    })?;
-    let vcs_manager = vcs_managers
-        .get(&vcs_type)
-        .ok_or_else(|| format!("no VcsManager registered for vcs_type {:?}", vcs_type))?
-        .as_ref();
-
-    // Convert result_tags from (String, String) -> (String, RevisionId).
-    let tags: Option<Vec<(String, RevisionId)>> = run.result_tags.as_ref().map(|t| {
-        t.iter()
-            .map(|(name, rev)| (name.clone(), RevisionId::from(rev.as_bytes().to_vec())))
-            .collect()
-    });
+    let vcs_manager = vcs_manager_for(vcs_managers, run)?;
 
     let codemod_result = run.result.clone().unwrap_or(serde_json::Value::Null);
-    let extra_context = serde_json::json!({});
-
-    // Don't pass the bucket_rate_limiter through publish_one: its
+    // On a successful publish that created a new proposal, the bucket
+    // counter is incremented below in a tight sync scope: its
     // std::sync::Mutex guard is !Send and can't be held across the
-    // publish_one .await without poisoning the surrounding future.
-    // Instead, on a successful publish that created a new proposal,
-    // increment the bucket counter below in a tight sync scope.
+    // publish_one .await.
     let publish_outcome = publish_worker
         .publish_one(
             &run.suite,
@@ -3054,20 +3017,14 @@ pub async fn publish_and_store(
             &run.id,
             unchanged_run_id.as_ref(),
             &derived_name,
-            rate_limit_bucket,
             vcs_manager,
-            None, // bucket_rate_limiter: bumped below on success
             require_binary_diff,
             allow_create_proposal,
-            None, // reviewers
-            tags,
+            result_tags(run),
             campaign_config.merge_proposal.commit_message.as_deref(),
             campaign_config.merge_proposal.title.as_deref(),
             &codemod_result,
             None, // existing_mp_url
-            Some(&extra_context),
-            None, // derived_owner
-            None, // auto_merge
         )
         .await;
 
@@ -3108,27 +3065,13 @@ pub async fn publish_and_store(
                     "result": run.result.clone().unwrap_or(serde_json::Value::Null),
                     "codebase": run.codebase,
                 });
-                let payload = serde_json::to_string(&entry)?;
-                manager
-                    .publisher()
-                    .publish_to_channel("publish", &payload)
-                    .await?;
+                announce_publish(manager, entry).await?;
             }
             Ok(())
         }
         Err(other) => Err(Box::new(other)),
         Ok(publish_result) => {
-            // MODE_ATTEMPT_PUSH collapses to propose or push based on
-            // whether publish_one ended up creating a proposal.
-            let effective_mode = if mode == Mode::AttemptPush {
-                if publish_result.proposal_url().is_some() {
-                    Mode::Propose
-                } else {
-                    Mode::Push
-                }
-            } else {
-                mode
-            };
+            let effective_mode = effective_mode(mode, publish_result.proposal_url().is_some());
 
             crate::state::store_publish(
                 conn,
@@ -3182,11 +3125,7 @@ pub async fn publish_and_store(
                     "run_id": run.id,
                     "codebase": run.codebase,
                 });
-                let payload = serde_json::to_string(&entry)?;
-                manager
-                    .publisher()
-                    .publish_to_channel("publish", &payload)
-                    .await?;
+                announce_publish(manager, entry).await?;
             }
             Ok(())
         }
@@ -4049,71 +3988,21 @@ async fn check_existing_mp(
 
         // unchanged_run_id: most recent successful run on the same
         // codebase + main_branch_revision.
-        let unchanged_run_id: Option<RunId> =
-            if let Some(main_rev) = last_run.main_branch_revision.as_ref() {
-                sqlx::query_scalar::<_, RunId>(
-                    "SELECT id FROM run \
-                     WHERE codebase = $1 AND revision = $2 AND result_code = 'success' \
-                     ORDER BY finish_time DESC LIMIT 1",
-                )
-                .bind(&last_run.codebase)
-                .bind(main_rev.to_string())
-                .fetch_optional(conn)
-                .await?
-            } else {
-                None
-            };
+        let unchanged_run_id = crate::state::get_unchanged_run_id(conn, &last_run).await?;
 
-        // Resolve the right VcsManager for the new run's vcs_type.
-        let vcs_type_for_publish =
-            match <VcsType as std::str::FromStr>::from_str(&last_run.vcs_type) {
-                Ok(v) => v,
-                Err(e) => {
-                    log::warn!(
-                        "{}: unknown vcs_type {:?} for new run {}: {}",
-                        mp_url,
-                        last_run.vcs_type,
-                        last_run.id,
-                        e
-                    );
-                    return Ok(false);
-                }
-            };
-        let vcs_manager_for_publish = match vcs_managers.get(&vcs_type_for_publish) {
-            Some(m) => m.as_ref(),
-            None => {
-                log::warn!(
-                    "{}: no VcsManager registered for vcs_type {:?}",
-                    mp_url,
-                    vcs_type_for_publish
-                );
+        let vcs_manager_for_publish = match vcs_manager_for(vcs_managers, &last_run) {
+            Ok(m) => m,
+            Err(e) => {
+                log::warn!("{}: {}", mp_url, e);
                 return Ok(false);
             }
         };
 
-        // Convert the run's result_tags from Vec<(String, String)> to
-        // Vec<(String, RevisionId)> the way publish_one wants them.
-        let tags_for_publish: Option<Vec<(String, RevisionId)>> =
-            last_run.result_tags.as_ref().map(|tags| {
-                tags.iter()
-                    .map(|(name, rev)| (name.clone(), RevisionId::from(rev.as_bytes().to_vec())))
-                    .collect()
-            });
-
         let codemod_result = last_run.result.clone().unwrap_or(serde_json::Value::Null);
-        let extra_context = serde_json::json!({});
-
-        // Don't pass the bucket_rate_limiter through publish_one
-        // here: the std::sync::Mutex guard around it is !Send and
-        // can't be held across the publish_one .await without making
-        // the entire check_existing_mp future !Send. publish_one
-        // only ever increments the rate limiter when it creates a
-        // brand-new proposal (is_new=true), which in the
-        // check_existing_mp republish path is the rare "default
-        // branch changed" edge case rather than the common path.
-        // Skipping the increment here means that one edge case
-        // doesn't count toward the rate-limit budget; the regular
-        // open-new-proposal path elsewhere still does.
+        // The bucket rate limiter isn't incremented here even if this
+        // creates a brand-new proposal (the rare "default branch
+        // changed" case); the regular open-new-proposal path still
+        // counts toward the rate-limit budget.
         let publish_outcome = publish_worker
             .publish_one(
                 &last_run.suite,
@@ -4126,20 +4015,14 @@ async fn check_existing_mp(
                 &last_run.id,
                 unchanged_run_id.as_ref(),
                 &derived_name,
-                rate_limit_bucket.as_deref(),
                 vcs_manager_for_publish,
-                None,  // bucket_rate_limiter: see comment above
                 false, // require_binary_diff
                 true,  // allow_create_proposal
-                None,  // reviewers
-                tags_for_publish,
+                result_tags(&last_run),
                 campaign_config.merge_proposal.commit_message.as_deref(),
                 campaign_config.merge_proposal.title.as_deref(),
                 &codemod_result,
                 Some(&mp_url),
-                Some(&extra_context),
-                None, // derived_owner
-                None, // auto_merge
             )
             .await;
 
