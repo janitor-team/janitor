@@ -2,7 +2,7 @@
 
 use janitor::schema::setup_debian_test_database;
 use janitor::test_utils::TestDatabase;
-use janitor_runner::database::{DebianBuildRow, RunnerDatabase};
+use janitor_runner::database::{CodebaseUpload, DebianBuildRow, RunnerDatabase};
 use serde_json::json;
 
 async fn setup() -> Option<TestDatabase> {
@@ -42,6 +42,73 @@ async fn test_get_codebases() {
             "vcs_last_revision": null,
             "value": 10,
         }])
+    );
+}
+
+#[tokio::test]
+async fn test_upload_codebases() {
+    let Some(db) = setup().await else { return };
+    let runner_db = RunnerDatabase::new(db.pool.clone());
+    let upload = |entries| serde_json::from_value::<Vec<CodebaseUpload>>(entries).unwrap();
+
+    runner_db
+        .upload_codebases(&upload(json!([
+            {"name": "bar", "branch_url": "https://example.com/bar,branch=debian%2Fmain"},
+            {"name": "baz", "url": "https://example.com/baz", "branch": "debian/main"},
+        ])))
+        .await
+        .unwrap();
+    let err = runner_db
+        .upload_codebases(&upload(json!([
+            {"name": "qux", "url": "https://example.com/qux"},
+            {"name": "quux", "branch_url": "/srv/git/quux"},
+        ])))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        r#"Invalid branch_url "/srv/git/quux": relative URL without a base"#
+    );
+
+    let mut rows = runner_db.get_codebases().await.unwrap();
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+    assert_eq!(
+        serde_json::to_value(rows).unwrap(),
+        json!([
+            {
+                "name": "bar",
+                "branch_url": "https://example.com/bar,branch=debian%2Fmain",
+                "url": "https://example.com/bar",
+                "branch": "debian/main",
+                "subpath": "",
+                "vcs_type": null,
+                "web_url": null,
+                "vcs_last_revision": null,
+                "value": null,
+            },
+            {
+                "name": "baz",
+                "branch_url": "https://example.com/baz,branch=debian%2Fmain",
+                "url": "https://example.com/baz",
+                "branch": "debian/main",
+                "subpath": "",
+                "vcs_type": null,
+                "web_url": null,
+                "vcs_last_revision": null,
+                "value": null,
+            },
+            {
+                "name": "foo",
+                "branch_url": "https://example.com/foo",
+                "url": "https://example.com/foo",
+                "branch": null,
+                "subpath": "",
+                "vcs_type": "git",
+                "web_url": null,
+                "vcs_last_revision": null,
+                "value": 10,
+            },
+        ])
     );
 }
 

@@ -495,11 +495,17 @@ mod tests {
 /// Add a `,branch=` segment parameter for a colocated git branch. The
 /// name is escaped like breezy does, since it may contain slashes.
 fn join_branch_parameter(url: &Url, branch_name: &str) -> Url {
+    try_join_branch_parameter(url, branch_name).unwrap()
+}
+
+/// Like `join_branch_parameter`, but fails if `url` has malformed segment parameters.
+#[allow(clippy::result_large_err)]
+pub fn try_join_branch_parameter(url: &Url, branch_name: &str) -> Result<Url, BrzError> {
     let params = HashMap::from([(
         "branch".to_string(),
         breezyshim::urlutils::escape_utf8(branch_name, Some("")),
     )]);
-    breezyshim::urlutils::join_segment_parameters(url, params)
+    breezyshim::urlutils::try_join_segment_parameters(url, params)
 }
 
 #[derive(Debug)]
