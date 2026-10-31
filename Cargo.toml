@@ -127,7 +127,3 @@ gcs = ["object_store/gcp"]
 testing = ["sqlx/postgres", "sqlx/runtime-tokio", "sqlx/tls-rustls-aws-lc-rs"]
 otlp = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 
-[patch.crates-io]
-# TODO: Drop once pyo3-log has a release with pyo3 0.30 support
-# (https://github.com/vorner/pyo3-log/pull/81).
-pyo3-log = { git = "https://github.com/edenhaus/pyo3-log", rev = "064b6dff35ebe9e6e0f98adc5c87018b476843b8" }
