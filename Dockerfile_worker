@@ -22,7 +22,9 @@ RUN apt-get update --yes \
 
 COPY . /code
 
-RUN cargo build --verbose --release --manifest-path /code/worker/Cargo.toml
+RUN --mount=type=cache,target=/root/.cargo --mount=type=cache,id=janitor-worker-target,target=/code/target \
+    cargo build --verbose --release --manifest-path /code/worker/Cargo.toml \
+ && cp /code/target/release/janitor-worker /usr/local/bin/
 
 
 
@@ -58,7 +60,7 @@ RUN echo "root:1:65535" > /etc/subuid \
  && echo "root:1:65535" > /etc/subgid \
  && echo '$chroot_mode = "unshare";' >> /etc/sbuild/sbuild.conf
 
-COPY --from=build /code/target/release/janitor-worker /usr/local/bin/janitor-worker
+COPY --from=build /usr/local/bin/janitor-worker /usr/local/bin/janitor-worker
 
 COPY autopkgtest-wrapper /usr/local/bin/autopkgtest-wrapper
 

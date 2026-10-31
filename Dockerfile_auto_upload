@@ -27,7 +27,9 @@ RUN apt-get update --yes \
 
 COPY . /code
 
-RUN cargo build --release --manifest-path /code/auto-upload/Cargo.toml --bin janitor-auto-upload
+RUN --mount=type=cache,target=/root/.cargo --mount=type=cache,id=janitor-auto-upload-target,target=/code/target \
+    cargo build --release --manifest-path /code/auto-upload/Cargo.toml --bin janitor-auto-upload \
+ && cp /code/target/release/janitor-auto-upload /usr/local/bin/
 
 FROM docker.io/debian:testing-slim
 MAINTAINER Jelmer Vernooij <jelmer@jelmer.uk>
@@ -51,7 +53,7 @@ RUN apt-get update --yes \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /code/target/release/janitor-auto-upload /usr/local/bin/janitor-auto-upload
+COPY --from=build /usr/local/bin/janitor-auto-upload /usr/local/bin/janitor-auto-upload
 
 EXPOSE 9933
 

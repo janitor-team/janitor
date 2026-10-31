@@ -27,7 +27,9 @@ RUN apt-get update --yes \
 
 COPY . /code
 
-RUN cargo build --release --manifest-path /code/bzr-store/Cargo.toml --bin janitor-bzr-store
+RUN --mount=type=cache,target=/root/.cargo --mount=type=cache,id=janitor-bzr-store-target,target=/code/target \
+    cargo build --release --manifest-path /code/bzr-store/Cargo.toml --bin janitor-bzr-store \
+ && cp /code/target/release/janitor-bzr-store /usr/local/bin/
 
 FROM docker.io/debian:testing-slim
 MAINTAINER Jelmer Vernooij <jelmer@jelmer.uk>
@@ -48,7 +50,7 @@ RUN apt-get update --yes \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /code/target/release/janitor-bzr-store /usr/local/bin/janitor-bzr-store
+COPY --from=build /usr/local/bin/janitor-bzr-store /usr/local/bin/janitor-bzr-store
 
 VOLUME /bzr
 
