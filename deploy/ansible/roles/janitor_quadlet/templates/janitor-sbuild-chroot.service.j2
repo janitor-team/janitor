@@ -1,0 +1,9 @@
+[Unit]
+Description=Remake the sbuild chroot tarball (mmdebstrap)
+After=janitor-worker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/podman exec janitor-worker sh -c "{{ janitor_quadlet_sbuild_chroot_build }}"
+Restart=on-failure
+RestartSec=1h

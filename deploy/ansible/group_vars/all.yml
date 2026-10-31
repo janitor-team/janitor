@@ -1,0 +1,278 @@
+---
+# Deployment variables. Secret values are never written here: pass them
+# with ansible-vault or -e, for example:
+#   ansible-playbook site.yml --ask-vault-pass -e @secrets/instance.vault.yml
+#
+# Required secrets:
+#   janitor_db_password  password of the "janitor" PostgreSQL role
+#   worker_password      password of the worker in janitor_workers below;
+#                        with several workers, give each entry its own
+#   breezy_whoami        "Name <email>", the commit author the worker uses
+# Optional secrets:
+#   breezy_github_token  GitHub token publish pushes and opens pull
+#                        requests with (repo and workflow scopes); the
+#                        runner lists proposals with it; never the worker
+#   oauth_client_id      OAuth2 client for the site login; omit both
+#   oauth_client_secret  to run the site without login
+#   janitor_s3_secret_access_key  S3 key for janitor_logs_location
+#   grafana_admin_password  Grafana's admin password, with enable_monitoring
+# With a login, also set oauth_base_url (an OpenID Connect provider;
+# GitHub is not one), oauth_qa_reviewer_group and oauth_admin_group
+# (OpenID groups).
+# Secrets may not contain @ : / % quotes or whitespace (checked by
+# site.yml).
+
+janitor_repo: https://github.com/janitor-team/janitor.git
+janitor_branch: main
+janitor_home: "/home/{{ ansible_user }}/janitor"
+janitor_domain: CHANGEME        # e.g. janitor.example.com
+janitor_github_org: CHANGEME    # GitHub user or org the bot works as
+# http: Caddy serves everything over plain HTTP, worker logins included,
+# so only on a network nobody else can read.
+janitor_scheme: https
+# HSTS max-age in seconds; browsers keep it that long, so start low on a new domain.
+caddy_hsts_max_age: 31536000
+# Workers reach the runner, git_store and bzr_store through Caddy here.
+janitor_external_url: "{{ janitor_scheme }}://{{ janitor_domain }}/"
+# The build chroots read the apt repository over plain HTTP: they have no
+# CA certificates. Caddy serves only the repository there, no login.
+janitor_apt_archive_url: "http://{{ janitor_domain }}/"
+
+# Address this worker listens on and that the runner reaches it on.
+janitor_worker_address: 127.0.0.1
+# Builds this worker host runs at once: janitor-worker on port 9821, and
+# janitor-worker-<n> on port 9820 + n for n up to this, with one login.
+janitor_worker_concurrency: 1
+janitor_worker_instances: >-
+  {{ dict((['worker'] + range(2, janitor_worker_concurrency | int + 1) | map('regex_replace', '^', 'worker-') | list)
+          | zip(range(9821, 9821 + janitor_worker_concurrency | int))) }}
+janitor_worker_ports: "{{ '9821' if janitor_worker_concurrency | int == 1 else '9821-%d' % (9820 + janitor_worker_concurrency | int) }}"
+# On hosts only in [worker], an nftables table lets only the control
+# host and the host itself reach those ports.
+enable_worker_firewall: true
+# Names or addresses, resolved on the worker: each [control] host's
+# ansible_host, or janitor_domain for one without.
+worker_firewall_sources: "{{ groups['control'] | map('extract', hostvars) | map(attribute='ansible_host', default=janitor_domain) | list }}"
+
+# Every worker gets a row in the worker table on the control host, each
+# with its own password.
+worker_name: worker-1
+janitor_workers:
+  - name: "{{ worker_name }}"
+    password: "{{ worker_password }}"
+# A worker host logs in with its own entry.
+janitor_worker_password: "{{ (janitor_workers | selectattr('name', 'equalto', worker_name) | first).password }}"
+
+# The lintian-fixes campaign's build distribution, also in the worker's sbuild chroot name.
+janitor_lintian_fixes_build_distribution: lintian-fixes
+
+# Named publish policies the playbook makes through publish:
+# {name: {branch role: {mode: <publish_mode in schema/state.sql>}}}.
+# A candidate publishes when its "publish-policy" names one of these.
+janitor_publish_policies:
+  propose:
+    main: {mode: propose}
+  build-only:
+    main: {mode: build-only}
+
+# Optional: a "generic" campaign, which builds a codebase's branch with
+# ognibuild on the worker, without a chroot or a Debian package. Its
+# builds get the dependency server's URL when enable_ognibuild_dep is on.
+enable_generic_campaign: false
+
+# Enough connections for every service's pool.
+postgres_max_connections: 300
+
+# Services on a [control] host, in start order.
+janitor_control_services:
+  - git_store
+  - bzr_store
+  - differ
+  - archive
+  - runner
+  - publish
+  - site
+# Long-running services on this host, from its groups.
+janitor_services: >-
+  {{ (janitor_control_services + (['auto_upload'] if enable_auto_upload | bool else [])
+      + (['ognibuild_dep'] if enable_ognibuild_dep | bool else [])
+      if 'control' in group_names else [])
+     + (['worker'] if 'worker' in group_names else []) }}
+# The systemd units of janitor_services, one per worker instance.
+janitor_units: >-
+  {{ janitor_services | difference(['worker'])
+     + (janitor_worker_instances | list if 'worker' in janitor_services else []) }}
+# Services that use breezy each get their own config dir under here.
+janitor_breezy_dir: "/home/{{ ansible_user }}/.config/janitor-breezy"
+janitor_breezy_services: "{{ janitor_services | intersect(['runner', 'publish', 'worker']) }}"
+# The bot's SSH key and pinned host keys; publish mounts only this directory.
+janitor_ssh_dir: "/home/{{ ansible_user }}/.config/janitor-ssh"
+# Images this host needs (Dockerfile_<name>).
+janitor_images: >-
+  {{ janitor_services
+     + (['mail_filter'] if enable_mail_filter | bool and 'control' in group_names else []) }}
+
+# false: build janitor_images from this host's checkout (make build-<name>).
+# true: pull ghcr.io/jelmer/janitor/<name>:latest instead of building
+# janitor_branch.
+use_prebuilt_images: false
+
+# The worker's build session: an unshare session in the image that
+# "ogni cache-env <suite>" makes (janitor.conf's distribution chroot).
+janitor_worker_session_suite: sid
+# sbuild's own unshare-mode tarball; keep in step with janitor.conf's distribution.
+janitor_sbuild_chroot: unstable-amd64-sbuild
+# sbuild finds a campaign's chroot by <build_distribution>-amd64-sbuild.
+janitor_sbuild_chroot_aliases:
+  - "{{ janitor_lintian_fixes_build_distribution }}-amd64-sbuild"
+  - unchanged-amd64-sbuild
+# The published worker image has no codemods (docs/production.md, "Worker
+# images"); list the packages your campaigns need and the playbook builds
+# a derived image with them.
+janitor_worker_extra_packages: []
+janitor_worker_image: >-
+  {{ 'localhost/janitor-worker-custom:latest' if janitor_worker_extra_packages | length > 0
+     else 'ghcr.io/jelmer/janitor/worker:latest' }}
+
+# Where the runner and site keep build logs: a path inside the containers,
+# or an S3 bucket as s3://BUCKET or s3://BUCKET/PREFIX, with
+# janitor_s3_endpoint_url set for a server other than AWS. They sign S3
+# requests with this key when it is set. Artifacts stay in a local
+# directory.
+janitor_logs_location: /mnt/janitor/data/logs
+janitor_s3_endpoint_url: ""
+janitor_s3_access_key_id: ""
+janitor_s3_secret_access_key: ""
+janitor_s3_region: us-east-1
+
+# Optional: Gitea on the control host, served by Caddy at
+# https://<gitea_domain>/ (its own host name). publish and the runner use
+# the bot's token; publish pushes over SSH on 127.0.0.1:gitea_ssh_port.
+enable_gitea: false
+gitea_domain: CHANGEME
+gitea_image: docker.io/gitea/gitea:1.27.3-rootless
+gitea_home: "/home/{{ ansible_user }}/gitea"
+gitea_http_port: 3000
+gitea_ssh_port: 2222
+gitea_admin_user: gitea-admin
+gitea_bot_user: janitor-bot
+gitea_bot_token_scopes: write:repository,write:issue,read:user,read:organization
+# Test accounts, an organisation owned by the first one, and repositories
+# copied into it once ({name, clone_url}).
+gitea_test_users: []
+gitea_test_token_scopes: write:repository,write:issue,write:organization,read:user
+gitea_test_org: ""
+gitea_test_repos: []
+# Register the site with Gitea and log in to it there (OAuth2).
+gitea_site_login: false
+# Optional: janitor-auto-upload debsigns every successful Debian build
+# with auto_upload_debsign_keyid (a key in auto_upload_gnupg_home) and
+# dputs it to auto_upload_dput_host (a section of auto_upload_dput_cf).
+enable_auto_upload: false
+auto_upload_dput_host: ""
+auto_upload_debsign_keyid: ""
+auto_upload_gnupg_home: "{{ janitor_home }}/gnupg-auto-upload"
+auto_upload_dput_cf: "{{ janitor_home }}/dput.cf"
+# Only builds for these build distributions; empty uploads them all.
+auto_upload_distributions: []
+# Optional, for trying auto_upload: a local incoming directory and a
+# test-only signing key made on the control host (roles/auto_upload_target).
+enable_auto_upload_target: false
+auto_upload_incoming: "{{ janitor_home }}/data/upload-incoming"
+# Optional: ognibuild's dependency server (image ognibuild_dep) on the
+# control host. It has no login; Caddy serves it under /ognibuild-dep/
+# to ognibuild_dep_clients (Caddy remote_ip ranges; 403 for the rest), and
+# the runner hands that URL to generic builds.
+enable_ognibuild_dep: false
+ognibuild_dep_clients: [private_ranges]
+# Optional, for trying S3 log storage: Garage, an S3 server, on the
+# control host (loopback only). It makes the bucket and a key and sets
+# janitor_s3_access_key_id and janitor_s3_secret_access_key from it.
+enable_garage: false
+garage_image: docker.io/dxflrs/garage:v2.4.1
+garage_home: "/home/{{ ansible_user }}/garage"
+garage_s3_port: 3900
+garage_rpc_port: 3901
+garage_admin_port: 3903
+garage_capacity: 10G
+# Optional, for trying janitor's tracing: Jaeger on the control host
+# (loopback only), keeping up to jaeger_max_traces traces in memory.
+# janitor.conf's zipkin_address is then
+# http://127.0.0.1:<tracing_port>/v1/traces, where roles/caddy sends the
+# site's Zipkin JSON (/api/v2/spans) to Jaeger's Zipkin receiver and the
+# rest (OTLP) to its OTLP one. The services sample 1 in 10 traces.
+enable_tracing: false
+jaeger_image: docker.io/jaegertracing/jaeger:2.22.0
+jaeger_home: "/home/{{ ansible_user }}/jaeger"
+tracing_port: 9411
+jaeger_otlp_port: 4318
+jaeger_zipkin_port: 9412
+# The UI and its HTTP API; its gRPC API listens one port below.
+jaeger_ui_port: 16686
+jaeger_health_port: 13133
+jaeger_max_traces: 10000
+jaeger_memory: 512m
+# Optional, for watching janitor's metrics: Prometheus on the control
+# host scrapes the services in prometheus_jobs, and Grafana shows them
+# with the Publishing and Runner dashboards of janitor.debian.net; both
+# on loopback only.
+enable_monitoring: false
+prometheus_image: docker.io/prom/prometheus:v3.15.0
+prometheus_home: "/home/{{ ansible_user }}/prometheus"
+prometheus_port: 9090
+prometheus_retention: 15d
+# The worker and the dependency server have no /metrics.
+prometheus_jobs: "{{ janitor_services | reject('in', ['worker', 'ognibuild_dep']) | list }}"
+grafana_image: docker.io/grafana/grafana:13.2.4
+grafana_home: "/home/{{ ansible_user }}/grafana"
+grafana_port: 3300
+# The dashboards come from janitor.debian.net's repository at this commit.
+grafana_dashboards_url: https://salsa.debian.org/janitor-team/janitor.debian.net/-/raw/354a701bca7b5c8bc6b71572b19088e5dfba9e2f/grafana
+grafana_dashboards:
+  - {name: publisher, checksum: "sha256:03292a5246cc31e8945a8a4731b750b4fef9bc4628c95b68c83cb77213c66405"}
+  - {name: runner, checksum: "sha256:ab25a1d2785c984167c10359c4dce461c87622bfe2fd60ddc1ba3c251ea6318c"}
+# Optional: janitor-mail-filter reads a forge's notification mail on
+# stdin and has publish refresh that proposal's status at once.
+# roles/mail_filter installs mail_filter_command for an MTA to pipe mail
+# into as the deploy user; it hands the mail to the user's systemd.
+enable_mail_filter: false
+mail_filter_command: /usr/local/bin/janitor-mail-filter
+# publish's own /refresh-status route.
+mail_filter_refresh_url: http://127.0.0.1:9912/refresh-status
+# The filter parses untrusted mail: its container can reach only this
+# host (set e.g. "host" for a refresh URL elsewhere), runs read-only as
+# nobody with no capabilities, and is killed after mail_filter_timeout
+# seconds.
+mail_filter_network: >-
+  pasta:-T,{{ mail_filter_refresh_url | urlsplit('port')
+  or (443 if mail_filter_refresh_url | urlsplit('scheme') == 'https' else 80)
+  }},-o,127.0.0.1,-4,--no-udp,--no-icmp
+mail_filter_memory: 128m
+mail_filter_timeout: 60
+mail_filter_max_instances: 8
+# Optional, for trying the mail filter: Postfix on the control host
+# (roles/mta), which takes mail only from this host for mta_domains,
+# delivers it locally and sends nothing out. Mail for
+# mta_mail_filter_recipients (local parts) goes into mail_filter_command,
+# the rest to the deploy user's mailbox.
+enable_mta: false
+mta_domains: []
+mta_mail_filter_recipients: []
+# Cap on the deploy user's mailbox (bytes), which takes all other mail.
+mta_mailbox_size_limit: 268435456
+# Extra /etc/hosts entries ({name: address}) on every host.
+janitor_extra_hosts: {}
+
+# Health routes the playbook waits for after starting each service.
+janitor_health_urls:
+  git_store: http://127.0.0.1:9923/health
+  bzr_store: http://127.0.0.1:9929/health
+  differ: http://127.0.0.1:9920/health
+  archive: http://127.0.0.1:9914/health
+  runner: http://127.0.0.1:9911/health
+  publish: http://127.0.0.1:9912/health
+  site: http://127.0.0.1:8080/health
+  # auto-upload has no /health.
+  auto_upload: http://127.0.0.1:9933/metrics
+  ognibuild_dep: http://127.0.0.1:9934/health
+  worker: "http://{{ janitor_worker_address }}:9821/health"

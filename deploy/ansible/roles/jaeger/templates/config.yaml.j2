@@ -1,0 +1,48 @@
+# Managed by ansible (roles/jaeger). Every port is on loopback.
+service:
+  extensions: [jaeger_storage, jaeger_query, healthcheckv2]
+  pipelines:
+    traces:
+      receivers: [otlp, zipkin]
+      processors: [batch]
+      exporters: [jaeger_storage_exporter]
+  telemetry:
+    metrics:
+      level: none
+    logs:
+      level: info
+
+extensions:
+  jaeger_storage:
+    backends:
+      memstore:
+        memory:
+          max_traces: {{ jaeger_max_traces }}
+  jaeger_query:
+    # Jaeger sends no spans of its own.
+    enable_tracing: false
+    storage:
+      traces: memstore
+    http:
+      endpoint: "127.0.0.1:{{ jaeger_ui_port | int }}"
+    grpc:
+      endpoint: "127.0.0.1:{{ jaeger_ui_port | int - 1 }}"
+  healthcheckv2:
+    use_v2: true
+    http:
+      endpoint: "127.0.0.1:{{ jaeger_health_port }}"
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: "127.0.0.1:{{ jaeger_otlp_port }}"
+  zipkin:
+    endpoint: "127.0.0.1:{{ jaeger_zipkin_port }}"
+
+processors:
+  batch: {}
+
+exporters:
+  jaeger_storage_exporter:
+    trace_storage: memstore

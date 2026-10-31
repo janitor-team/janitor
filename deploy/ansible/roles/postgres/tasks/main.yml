@@ -1,0 +1,129 @@
+---
+# A managed PostgreSQL will not do: the schema needs the debversion
+# extension, which is a Debian package. pgcrypto ships in postgresql-<N>.
+- name: Install PostgreSQL
+  ansible.builtin.apt:
+    name:
+      - postgresql
+      # community.postgresql's modules need it on the target.
+      - python3-psycopg2
+    state: present
+
+- name: Find the installed PostgreSQL major version
+  ansible.builtin.shell: |
+    set -o pipefail
+    pg_lsclusters --no-header | awk '{print $1}' | head -1
+  args:
+    executable: /bin/bash
+  register: pg_version
+  changed_when: false
+
+- name: Install debversion for that version
+  ansible.builtin.apt:
+    name: "postgresql-{{ pg_version.stdout }}-debversion"
+    state: present
+
+- name: Raise max_connections
+  ansible.builtin.lineinfile:
+    path: "/etc/postgresql/{{ pg_version.stdout }}/main/postgresql.conf"
+    regexp: "^max_connections ="
+    line: "max_connections = {{ postgres_max_connections }}"
+  notify: Restart postgresql
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Let postgres traverse into the deploy user's home directory
+  # postgresql_script below reads schema/*.sql from the checkout as postgres.
+  ansible.posix.acl:
+    path: "/home/{{ ansible_user }}"
+    entity: postgres
+    etype: user
+    permissions: x
+    state: present
+
+- name: Create the janitor PostgreSQL role
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_user:
+    name: janitor
+    password: "{{ janitor_db_password }}"
+    role_attr_flags: CREATEDB
+
+- name: Create the janitor database
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_db:
+    name: janitor
+    owner: janitor
+
+- name: Check whether the schema is already loaded
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_db: janitor
+    query: "SELECT to_regclass('public.codebase') IS NOT NULL AS loaded"
+  register: schema_check
+
+- name: Load the state schema
+  # As postgres: CREATE EXTENSION needs it.
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_script:
+    login_db: janitor
+    path: "{{ janitor_home }}/schema/state.sql"
+  when: not schema_check.query_result[0].loaded
+
+- name: Load the Debian schema
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_script:
+    login_db: janitor
+    path: "{{ janitor_home }}/schema/debian/debian.sql"
+  when: not schema_check.query_result[0].loaded
+
+- name: Grant janitor the tables the schema created
+  # They belong to postgres, which loaded them.
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_privs:
+    login_db: janitor
+    type: table
+    objs: ALL_IN_SCHEMA
+    schema: public
+    role: janitor
+    privs: ALL
+    state: present
+
+- name: Grant janitor the sequences the schema created
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_privs:
+    login_db: janitor
+    type: sequence
+    objs: ALL_IN_SCHEMA
+    schema: public
+    role: janitor
+    privs: ALL
+    state: present
+
+- name: Register the workers
+  # See docs/production.md, "Registering workers". The WHERE keeps an
+  # unchanged password from rewriting the row (gen_salt differs each time).
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_db: janitor
+    query: >
+      INSERT INTO worker (name, password)
+      VALUES (%s, crypt(%s, gen_salt('bf')))
+      ON CONFLICT (name) DO UPDATE SET password = EXCLUDED.password
+      WHERE worker.password <> crypt(%s, worker.password)
+    positional_args:
+      - "{{ item.name }}"
+      - "{{ item.password }}"
+      - "{{ item.password }}"
+  loop: "{{ janitor_workers }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true

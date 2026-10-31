@@ -1,0 +1,11 @@
+[Unit]
+Description=Remake the sbuild chroot tarball before sbuild finds it 7 days old
+
+[Timer]
+# 3 to 4 days apart and the service retries hourly, well inside sbuild's 7 days.
+OnCalendar=Mon,Thu 03:00
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

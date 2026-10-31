@@ -1,0 +1,217 @@
+---
+- name: Create the data directories
+  # Only the control host reads janitor.conf and the data directories.
+  ansible.builtin.file:
+    path: "{{ janitor_home }}/data/{{ item }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0755"
+  loop:
+    - logs
+    - artifacts
+    - cache
+    - cache/archive
+    - cache/differ
+    - dists
+    - git
+    - bzr
+  when: "'control' in group_names"
+
+- name: Deploy janitor.conf
+  # Holds the database password and OAuth secret in plain text.
+  ansible.builtin.template:
+    src: janitor.conf.j2
+    dest: "{{ janitor_home }}/janitor.conf"
+    owner: "{{ ansible_user }}"
+    mode: "0600"
+  register: janitor_conf
+  no_log: true
+  when: "'control' in group_names"
+
+- name: Deploy the S3 key for the runner and site
+  ansible.builtin.template:
+    src: s3.env.j2
+    dest: "{{ janitor_home }}/s3.env"
+    owner: "{{ ansible_user }}"
+    mode: "0600"
+  register: janitor_s3_env
+  no_log: true
+  when:
+    - "'control' in group_names"
+    - janitor_s3_access_key_id | length > 0
+
+- name: Wait for the control host's HTTPS port
+  # Brought up together, a worker gets here long before control's Caddy.
+  ansible.builtin.wait_for:
+    host: "{{ janitor_domain }}"
+    port: 443
+    timeout: 7200
+  when:
+    - caddy_self_signed | default(false) | bool
+    - "'control' not in group_names"
+
+# Test hosts only (caddy_self_signed): every host trusts whatever
+# certificate the control host's HTTPS port shows when the playbook runs.
+- name: Fetch the control host's self-signed certificate
+  ansible.builtin.shell: >-
+    set -o pipefail &&
+    openssl s_client -connect {{ janitor_domain }}:443 </dev/null 2>/dev/null
+    | openssl x509
+  args:
+    executable: /bin/bash
+  register: control_cert
+  changed_when: false
+  when: caddy_self_signed | default(false) | bool
+
+- name: Trust the control host's self-signed certificate
+  ansible.builtin.copy:
+    content: "{{ control_cert.stdout }}\n"
+    dest: /usr/local/share/ca-certificates/janitor-control.crt
+    owner: root
+    group: root
+    mode: "0644"
+  register: control_cert_trust
+  notify: Update the host's CA bundle
+  when: caddy_self_signed | default(false) | bool
+
+- name: Update the CA bundle before the services start
+  ansible.builtin.meta: flush_handlers
+
+- name: Create a breezy config directory per service
+  # The worker runs untrusted code as root; :ro does not stop it reading.
+  ansible.builtin.file:
+    path: "{{ janitor_breezy_dir }}/{{ item }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0700"
+  loop: "{{ janitor_breezy_services }}"
+
+- name: Deploy each service's breezy authentication.conf
+  # runner and publish get the forge token; the worker logs in with --credentials.
+  ansible.builtin.template:
+    src: authentication.conf.j2
+    dest: "{{ janitor_breezy_dir }}/{{ breezy_service }}/authentication.conf"
+    owner: "{{ ansible_user }}"
+    mode: "0600"
+  loop: "{{ janitor_breezy_services }}"
+  loop_control:
+    loop_var: breezy_service
+  no_log: true
+
+- name: Deploy breezy's ignore file for the services that make working trees
+  # Mounted read-only, and breezy writes this file on first use if missing.
+  ansible.builtin.copy:
+    src: breezy-ignore
+    dest: "{{ janitor_breezy_dir }}/{{ item }}/ignore"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  loop: "{{ janitor_breezy_services | intersect(['publish', 'worker']) }}"
+
+- name: Deploy breezy's whoami for the services that make working trees
+  ansible.builtin.template:
+    src: breezy.conf.j2
+    dest: "{{ janitor_breezy_dir }}/{{ item }}/breezy.conf"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  loop: "{{ janitor_breezy_services | intersect(['publish', 'worker']) }}"
+
+# publish pushes over git+ssh with a key of its own, not the deploy user's.
+- name: Create the bot's SSH directory
+  ansible.builtin.file:
+    path: "{{ janitor_ssh_dir }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0700"
+  when: "'publish' in janitor_services"
+
+- name: Generate the bot's SSH key
+  become: true
+  become_user: "{{ ansible_user }}"
+  ansible.builtin.command:
+    cmd: >-
+      ssh-keygen -t ed25519 -f {{ janitor_ssh_dir }}/id_ed25519
+      -N "" -C "{{ janitor_github_org }}-publish"
+    creates: "{{ janitor_ssh_dir }}/id_ed25519"
+  when: "'publish' in janitor_services"
+
+- name: Read the bot's SSH public key
+  ansible.builtin.slurp:
+    src: "{{ janitor_ssh_dir }}/id_ed25519.pub"
+  register: bot_ssh_pubkey
+  when: "'publish' in janitor_services"
+
+- name: Fetch GitHub's SSH host keys
+  # From GitHub's API over HTTPS rather than trusting ssh-keyscan.
+  ansible.builtin.uri:
+    url: https://api.github.com/meta
+    return_content: true
+  register: github_meta
+  when:
+    - "'publish' in janitor_services"
+    - breezy_github_token is defined
+
+- name: Pin GitHub's SSH host keys
+  ansible.builtin.known_hosts:
+    path: "{{ janitor_ssh_dir }}/known_hosts"
+    name: github.com
+    key: "{{ github_meta.json.ssh_keys | map('regex_replace', '^', 'github.com ') | join('\n') }}"
+  when:
+    - "'publish' in janitor_services"
+    - breezy_github_token is defined
+
+- name: Remind the operator to register the bot's SSH key with GitHub
+  # Not automated: it needs a wider token scope, and a person should look first.
+  ansible.builtin.debug:
+    msg: >-
+      Add this key to the {{ janitor_github_org }} account
+      (https://github.com/settings/keys) so publish can push merge
+      proposal branches: {{ bot_ssh_pubkey.content | b64decode | trim }}
+  when:
+    - "'publish' in janitor_services"
+    - breezy_github_token is defined
+
+- name: Give the bot's SSH key to its Gitea account
+  # As the admin, so the bot's token needs no write:user scope.
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ gitea_http_port }}/api/v1/admin/users/{{ gitea_bot_user }}/keys"
+    method: POST
+    url_username: "{{ gitea_admin_user }}"
+    url_password: "{{ gitea_secrets[gitea_admin_user + '.password'] }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      title: janitor-publish
+      key: "{{ bot_ssh_pubkey.content | b64decode | trim }}"
+    status_code: [201, 422]
+  register: gitea_bot_key
+  changed_when: gitea_bot_key.status == 201
+  when:
+    - "'publish' in janitor_services"
+    - enable_gitea | bool
+  no_log: true
+
+- name: Read Gitea's SSH host key
+  ansible.builtin.slurp:
+    src: "{{ gitea_home }}/data/data/ssh/gitea.ed25519.pub"
+  register: gitea_host_key
+  when:
+    - "'publish' in janitor_services"
+    - enable_gitea | bool
+
+- name: Pin Gitea's SSH host key
+  ansible.builtin.known_hosts:
+    path: "{{ janitor_ssh_dir }}/known_hosts"
+    name: "[{{ gitea_domain }}]:{{ gitea_ssh_port }}"
+    key: "[{{ gitea_domain }}]:{{ gitea_ssh_port }} {{ gitea_host_key.content | b64decode | trim }}"
+  when:
+    - "'publish' in janitor_services"
+    - enable_gitea | bool
+
+- name: Hand the bot's known_hosts to the deploy user
+  ansible.builtin.file:
+    path: "{{ janitor_ssh_dir }}/known_hosts"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  when:
+    - "'publish' in janitor_services"
+    - breezy_github_token is defined or enable_gitea | bool

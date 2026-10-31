@@ -1,0 +1,5 @@
+#!/bin/sh
+# Managed by ansible (roles/mail_filter). Pipe one mail into it as
+# {{ ansible_user }}; it waits for the filter. 75 (EX_TEMPFAIL) has the
+# MTA try again later.
+socat -t {{ mail_filter_timeout | int + 30 }} - UNIX-CONNECT:/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}/janitor-mail-filter.sock || exit 75
