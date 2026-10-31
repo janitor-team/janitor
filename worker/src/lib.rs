@@ -8,8 +8,10 @@ pub use breezyshim::RevisionId;
 use reqwest::header::{HeaderMap, HeaderValue};
 use std::collections::HashMap;
 
+use nix::sys::signal::Signal;
 use std::net::IpAddr;
 use tokio::net::lookup_host;
+use tokio_util::sync::CancellationToken;
 
 use janitor::api::worker::{Metadata, TargetDetails, WorkerFailure};
 use janitor::prometheus::push_to_gateway;
@@ -38,7 +40,11 @@ pub struct AppState {
     pub output_directory: Option<std::path::PathBuf>,
     pub assignment: Option<janitor::api::worker::Assignment>,
     pub metadata: Option<Metadata>,
+    pub kill: CancellationToken,
 }
+
+/// How long a killed run gets to stop after SIGTERM, before SIGKILL.
+const KILL_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(10);
 
 pub async fn is_gce_instance() -> bool {
     match lookup_host("metadata.google.internal").await {
@@ -109,6 +115,50 @@ pub fn get_build_arch() -> Result<String, DpkgArchitectureError> {
     };
 
     Ok(String::from_utf8(output.stdout).unwrap().trim().to_owned())
+}
+
+fn killed_failure(stage: Vec<String>) -> WorkerFailure {
+    WorkerFailure {
+        code: "killed".to_string(),
+        description: "Run was manually terminated".to_string(),
+        details: None,
+        stage,
+        transient: Some(false),
+    }
+}
+
+/// Send `signal` to every process this worker started, except `tee`.
+fn signal_children(signal: Signal) {
+    let processes = match procfs::process::all_processes() {
+        Ok(processes) => processes,
+        Err(e) => {
+            log::error!("Unable to list processes: {}", e);
+            return;
+        }
+    };
+    let parents: Vec<(i32, i32)> = processes
+        .filter_map(|p| p.ok()?.stat().ok())
+        .map(|stat| (stat.pid, stat.ppid))
+        .collect();
+    let tee = crate::tee::TEE_PID.load(std::sync::atomic::Ordering::SeqCst) as i32;
+    let mut pids = vec![std::process::id() as i32];
+    let mut i = 0;
+    while i < pids.len() {
+        let parent = pids[i];
+        pids.extend(
+            parents
+                .iter()
+                .filter(|(pid, ppid)| *ppid == parent && *pid != tee)
+                .map(|(pid, _)| *pid),
+        );
+        i += 1;
+    }
+    for pid in &pids[1..] {
+        match nix::sys::signal::kill(nix::unistd::Pid::from_raw(*pid), signal) {
+            Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
+            Err(e) => log::warn!("Unable to send {} to process {}: {}", signal, pid, e),
+        }
+    }
 }
 
 pub fn convert_codemod_script_failed(i: i32, command: &str) -> WorkerFailure {
@@ -194,6 +244,7 @@ pub fn run_worker(
     additional_colocated_branches: Option<HashMap<String, String>>,
     skip_setup_validation: Option<bool>,
     default_empty: Option<bool>,
+    kill: &CancellationToken,
 ) -> Result<(), WorkerFailure> {
     let force_build = force_build.unwrap_or(false);
     let tee = tee.unwrap_or(false);
@@ -663,6 +714,10 @@ pub fn run_worker(
         metadata.add_remote("origin".to_string(), main_branch.get_user_url());
     }
 
+    if kill.is_cancelled() {
+        return Err(killed_failure(vec!["codemod".to_owned()]));
+    }
+
     let r = build_target.make_changes(
         ws.local_tree(),
         subpath,
@@ -822,6 +877,9 @@ pub fn run_worker(
     };
 
     let target_details = if should_build {
+        if kill.is_cancelled() {
+            return Err(killed_failure(vec!["build".to_owned()]));
+        }
         build_target.build(ws.local_tree(), subpath, output_directory, build_config)?
     } else {
         serde_json::Value::Null
@@ -949,7 +1007,12 @@ pub async fn process_single_item(
         .get_assignment(my_url, node_name, jenkins_build_url, codebase, campaign)
         .await?;
 
-    state.write().unwrap().assignment = Some(assignment.clone());
+    let kill = CancellationToken::new();
+    {
+        let mut state = state.write().unwrap();
+        state.assignment = Some(assignment.clone());
+        state.kill = kill.clone();
+    }
 
     log::debug!("Got back assignment: {:?}", &assignment);
 
@@ -1000,7 +1063,8 @@ pub async fn process_single_item(
 
     let output_directory_ = output_directory.path().to_path_buf();
 
-    let metadata = tokio::task::spawn_blocking(move || {
+    let kill_ = kill.clone();
+    let mut job = tokio::task::spawn_blocking(move || {
         let mut metadata = Metadata {
             queue_id: Some(assignment.queue_id),
             start_time: Some(start_time),
@@ -1051,7 +1115,15 @@ pub async fn process_single_item(
             }),
             Some(assignment_.skip_setup_validation),
             Some(assignment_.branch.default_empty),
-        );
+            &kill_,
+        )
+        .map_err(|e| {
+            if kill_.is_cancelled() {
+                killed_failure(e.stage)
+            } else {
+                e
+            }
+        });
 
         match result {
             Ok(_) => {
@@ -1081,8 +1153,22 @@ pub async fn process_single_item(
         log::info!("Elapsed time: {}", finish_time - start_time);
 
         metadata
-    })
-    .await
+    });
+
+    let metadata = tokio::select! {
+        result = &mut job => result,
+        _ = kill.cancelled() => {
+            log::info!("Kill requested, stopping child processes");
+            signal_children(Signal::SIGTERM);
+            match tokio::time::timeout(KILL_GRACE_PERIOD, &mut job).await {
+                Ok(result) => result,
+                Err(_) => {
+                    signal_children(Signal::SIGKILL);
+                    job.await
+                }
+            }
+        }
+    }
     .map_err(|e| SingleItemError::JobPanicked(e.to_string()))?;
 
     let result = client
@@ -1271,6 +1357,57 @@ mod tests {
 
     #[serial]
     #[test]
+    fn test_run_worker_killed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = breezyshim::controldir::create_standalone_workingtree(
+            &tmp.path().join("main"),
+            &breezyshim::controldir::FORMAT_REGISTRY
+                .make_controldir("git")
+                .unwrap(),
+        )
+        .unwrap();
+        wt.build_commit().message("Initial").commit().unwrap();
+        std::fs::create_dir(tmp.path().join("target")).unwrap();
+        let output_dir = tmp.path().join("output");
+        std::fs::create_dir(&output_dir).unwrap();
+        let kill = CancellationToken::new();
+        kill.cancel();
+        let result = run_worker(
+            &CodebaseName::new("mycodebase").unwrap(),
+            &Campaign::new("mycampaign").unwrap(),
+            Some(&Url::from_directory_path(tmp.path().join("main")).unwrap()),
+            &RunId::new("run-id").unwrap(),
+            &serde_json::json!({
+                "chroot": serde_json::Value::Null,
+                "dep_server_url": serde_json::Value::Null,
+            }),
+            HashMap::new(),
+            vec!["sh", "-c", "echo foo > bar"],
+            &output_dir,
+            &mut Metadata::default(),
+            &Url::from_directory_path(tmp.path().join("target")).unwrap(),
+            "foo",
+            "generic",
+            Some(VcsType::Git),
+            Path::new(""),
+            None,
+            None,
+            None,
+            None,
+            &mut None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &kill,
+        );
+        assert_eq!(result, Err(killed_failure(vec!["codemod".to_string()])));
+        assert!(!output_dir.join("codemod.log").exists());
+    }
+
+    #[serial]
+    #[test]
     fn test_run_worker_existing_git() {
         test_run_worker_existing(tempfile::tempdir().unwrap().path(), VcsType::Git);
     }
@@ -1335,6 +1472,7 @@ check:
             None,
             None,
             None,
+            &CancellationToken::new(),
         )
         .unwrap();
         let found_logfiles = std::fs::read_dir(&output_dir)

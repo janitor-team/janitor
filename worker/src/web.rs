@@ -63,18 +63,15 @@ async fn index(State(state): State<Arc<RwLock<AppState>>>) -> Response {
 }
 
 async fn kill(State(state): State<Arc<RwLock<AppState>>>) -> Response {
-    // There is no cancellation handle threaded through run_worker's actual
-    // command execution yet, so an in-progress build cannot be forcibly
-    // stopped from here. Reporting this honestly (501) rather than 404ing
-    // lets the runner's existing "kill not supported" handling deal with
-    // it cleanly instead of crashing on an unexpected response.
-    if state.read().unwrap().assignment.is_none() {
+    let state = state.read().unwrap();
+    if state.assignment.is_none() {
         // The run existed but is gone now (e.g. this worker restarted
         // since the run was assigned) - GONE fits that better than
         // NOT_FOUND.
         return (StatusCode::GONE, "no run in progress").into_response();
     }
-    (StatusCode::NOT_IMPLEMENTED, "kill is not yet supported").into_response()
+    state.kill.cancel();
+    (StatusCode::ACCEPTED, "kill requested").into_response()
 }
 
 async fn health() -> String {
@@ -435,10 +432,8 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let response = app.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), 501);
-
-        let body = get_body(response).await;
-        assert_eq!(body, "kill is not yet supported");
+        assert_eq!(response.status(), 202);
+        assert!(state.read().unwrap().kill.is_cancelled());
     }
 
     #[tokio::test]

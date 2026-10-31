@@ -6,7 +6,7 @@ use chrono::{DateTime, Duration, Utc};
 use janitor::RunId;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::time::{interval, sleep};
+use tokio::time::interval;
 
 /// Reasons why a run might be terminated.
 #[derive(Debug, Clone)]
@@ -534,18 +534,6 @@ impl Watchdog {
             run.worker_name,
             reason.description()
         );
-
-        // Try to signal the worker to stop via backchannel
-        if let Err(e) = run.backchannel.terminate(&run.log_id).await {
-            log::warn!(
-                "Failed to signal worker termination for run {}: {}",
-                run.log_id,
-                e
-            );
-        }
-
-        // Wait a bit for graceful shutdown
-        sleep(std::time::Duration::from_secs(5)).await;
 
         // Build a synthetic JanitorResult for the failed run and run
         // the same finish_run transaction the worker would have run

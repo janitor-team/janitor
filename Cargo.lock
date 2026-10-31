@@ -3576,6 +3576,7 @@ dependencies = [
  "nix",
  "ognibuild",
  "percent-encoding",
+ "procfs 0.17.0",
  "prometheus 0.14.0",
  "pyo3",
  "reqwest 0.13.5",
