@@ -11,9 +11,9 @@ use janitor_archive::{
     database::ArchiveDatabase,
     error::ArchiveResult,
     manager::GeneratorManager,
-    periodic::{PeriodicConfig, PeriodicServices},
+    periodic::spawn_republish_loop,
     redis::RedisSubscriber,
-    repository::{RepositoryGenerationConfig, RepositoryGenerator},
+    repository::RepositoryGenerator,
     scanner::PackageScanner,
     tracing_setup,
     web::ArchiveWebService,
@@ -139,7 +139,7 @@ async fn main() -> ArchiveResult<()> {
             start_web_server(&cli, &config, &locations).await?;
         }
         Some(Cmd::Cleanup) => {
-            cleanup_repositories(&config, &locations).await?;
+            cleanup_repositories(&config).await?;
         }
     }
 
@@ -192,11 +192,7 @@ async fn build_generator(
     let scanner =
         Arc::new(PackageScanner::with_cache(&locations.artifacts, cache_directory).await?);
     let database = Arc::new(ArchiveDatabase::new(db_pool));
-    let repo_config = RepositoryGenerationConfig::default();
-    let mut generator = match config.gpg.clone() {
-        Some(gpg) => RepositoryGenerator::with_gpg(scanner, database, repo_config, gpg),
-        None => RepositoryGenerator::new(scanner, database, repo_config),
-    };
+    let mut generator = RepositoryGenerator::new(scanner, database, config.gpg.clone());
     if let Some(runtime) = config.runtime_config.as_ref() {
         generator = generator.with_runtime_config(runtime.clone());
     }
@@ -248,35 +244,18 @@ async fn start_web_server(
 
     let db_pool = locations.connect_database().await?;
 
-    // Build shared components for the GeneratorManager and the web service.
-    // All scanners share the same cache directory so a Packages/
-    // Sources scan performed by one code path is reusable by the
-    // others.
-    let scanner_for_manager =
-        PackageScanner::with_cache(&locations.artifacts, cli.cache_directory.clone()).await?;
-    let database_for_manager = ArchiveDatabase::new(db_pool.clone());
     // Build a RepositoryGenerator that signs Release when GPG is
     // configured. `--no-gpg` has already stripped `config.gpg` at
     // this point, so a value of None means the operator explicitly
     // opted out.
-    let generator_for_manager = build_generator(
+    let generator = build_generator(
         config,
         locations,
         db_pool.clone(),
         cli.cache_directory.clone(),
     )
     .await?;
-
-    let generator_manager = Arc::new(
-        GeneratorManager::new(
-            config.clone(),
-            generator_for_manager,
-            scanner_for_manager,
-            database_for_manager,
-            janitor_archive::manager::GeneratorManagerConfig::default(),
-        )
-        .await?,
-    );
+    let generator_manager = Arc::new(GeneratorManager::new(config.clone(), generator)?);
 
     // Track last-publish times in a shared map so the web /ready and
     // /last-publish handlers can report accurately.
@@ -302,61 +281,29 @@ async fn start_web_server(
         );
     }
 
-    // Kick off the 12-hour periodic republish loop, alongside the web
-    // server and the runner listener.
-    let mut periodic =
-        PeriodicServices::new(PeriodicConfig::default(), generator_manager.clone(), None);
-    if let Err(e) = periodic.start().await {
-        error!("Failed to start periodic services: {}", e);
-    }
-    // `PeriodicServices` owns its JoinHandles internally; keep the value
-    // alive for the process lifetime by handing it to a detached task
-    // that idles on the first shutdown signal. Dropping `periodic` here
-    // would abort the loops via its Drop impl.
-    tokio::spawn(async move {
-        let _keep_alive = periodic;
-        // Park forever; when the process exits, the tokio runtime tears
-        // this task down along with everything else.
-        std::future::pending::<()>().await;
-    });
-
-    // Build a separate RepositoryGenerator for the web service (the
-    // manager already owns the other instances). Must be GPG-aware
-    // for the same reason as the manager's generator: on-demand and
-    // /publish paths call through it too.
-    let generator = build_generator(
-        config,
-        locations,
-        db_pool.clone(),
-        cli.cache_directory.clone(),
-    )
-    .await?;
+    spawn_republish_loop(generator_manager.clone());
 
     // Initialize web service
     let web_service = ArchiveWebService::with_publish_observer(
         config.clone(),
-        generator,
         PackageScanner::with_cache(&locations.artifacts, cli.cache_directory.clone()).await?,
         ArchiveDatabase::new(db_pool),
         generator_manager,
         last_publish_times,
-    )
-    .await?;
+    );
 
     web_service.serve(&bind_address).await
 }
 
 /// Clean up old repository files.
-async fn cleanup_repositories(config: &ArchiveConfig, locations: &Locations) -> ArchiveResult<()> {
-    let db_pool = locations.connect_database().await?;
-    let database = Arc::new(ArchiveDatabase::new(db_pool));
-    let scanner = Arc::new(PackageScanner::new(&locations.artifacts).await?);
-    let repo_config = RepositoryGenerationConfig::default();
-    let generator = RepositoryGenerator::new(scanner, database, repo_config);
-
+async fn cleanup_repositories(config: &ArchiveConfig) -> ArchiveResult<()> {
     for (name, repo_config) in &config.repositories {
         info!("Cleaning up repository: {}", name);
-        generator.cleanup_repository(repo_config).await?;
+        match tokio::fs::remove_dir_all(&repo_config.base_path).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
     }
 
     Ok(())
