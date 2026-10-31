@@ -406,3 +406,20 @@ async def test_oauth_callback_defaults_missing_groups_claim(
     )
     stored = await _get_session(client, session_id)
     assert (resp.status, page.status, stored["groups"]) == (302, 200, groups)
+
+
+async def test_oauth_callback_clears_state_cookie_with_matching_path(
+    aiohttp_client, aiohttp_server, database_location
+):
+    provider = await _start_provider(
+        aiohttp_server, userinfo={"email": "alice@example.com", "groups": []}
+    )
+    client = await _openid_site(aiohttp_client, database_location, provider)
+    resp = await _callback(client)
+    state = resp.cookies["state"]
+    assert (resp.status, state.value, state["path"], state["max-age"]) == (
+        302,
+        "",
+        "/oauth/callback",
+        "0",
+    )
