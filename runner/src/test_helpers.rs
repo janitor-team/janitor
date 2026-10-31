@@ -13,21 +13,6 @@ pub fn create_test_runner_db(test_db: &TestDatabase) -> Arc<RunnerDatabase> {
     Arc::new(RunnerDatabase::new(test_db.pool().clone()))
 }
 
-/// Load the production janitor schema (`schema/state.sql`) into
-/// the given test database. Matches the shape of every production
-/// table rather than an invented test-only subset, so tests that
-/// exercise the real database code paths actually see the columns,
-/// types, and constraints they'll hit in production.
-///
-/// A previous version of this helper created a severely stripped-down
-/// `run` table with a made-up `branch_name` column and no dependencies
-/// on `codebase`, `change_set`, `worker`, or the `result_tag` /
-/// `vcs_type` types, which meant tests happily passed against a schema
-/// that bore no resemblance to production.
-pub async fn setup_runner_tables(test_db: &TestDatabase) -> Result<(), sqlx::Error> {
-    janitor::schema::setup_test_database(test_db.pool()).await
-}
-
 /// Insert a minimal run row for tests, matching the production
 /// `run` schema in `schema/state.sql`. Creates the upstream
 /// `codebase` and `change_set` rows on demand so callers don't have
@@ -116,12 +101,11 @@ pub async fn insert_test_result_branch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_with_database;
+    use janitor::test_with_database;
 
     test_with_database! {
+        schema = Core;
         async fn test_check_resume_result_finds_matching_revision(test_db: TestDatabase) {
-            setup_runner_tables(&test_db).await.unwrap();
-
             let runner_db = create_test_runner_db(&test_db);
             let resume_service = ResumeService::new((*runner_db).clone());
 
@@ -173,12 +157,11 @@ mod tests {
     }
 
     test_with_database! {
+        schema = Core;
         async fn test_finish_run_inserts_run_and_result_branches(test_db: TestDatabase) {
             use crate::{JanitorResult, ResultResume};
             use breezyshim::RevisionId;
             use chrono::{Duration as ChronoDuration, Utc};
-
-            setup_runner_tables(&test_db).await.unwrap();
 
             // Seed the upstream FK dependencies that store_run needs:
             // a codebase (referenced by run.codebase), the worker
@@ -368,9 +351,8 @@ mod tests {
     }
 
     test_with_database! {
+        schema = Core;
         async fn test_check_resume_result_skips_rejected_runs(test_db: TestDatabase) {
-            setup_runner_tables(&test_db).await.unwrap();
-
             let runner_db = create_test_runner_db(&test_db);
             let resume_service = ResumeService::new((*runner_db).clone());
 

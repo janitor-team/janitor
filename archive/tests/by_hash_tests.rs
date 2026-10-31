@@ -1,15 +1,15 @@
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
-use janitor::{schema::setup_debian_test_database, test_with_database};
+use janitor::test_with_database;
 use janitor_archive::config::AptRepositoryConfig;
 use janitor_archive::database::ArchiveDatabase;
 use janitor_archive::repository::{RepositoryGenerationConfig, RepositoryGenerator};
 use janitor_archive::scanner::PackageScanner;
 
 test_with_database! {
+    schema = Debian;
     async fn generate_repository_fails_on_by_hash_cleanup_error(test_db: TestDatabase) {
-        setup_debian_test_database(test_db.pool()).await.unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let scanner = PackageScanner::new(tmp.path().join("artifacts").to_str().unwrap())
             .await

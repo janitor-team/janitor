@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
-use janitor::{schema::setup_debian_test_database, test_with_database};
+use janitor::test_with_database;
 use janitor_archive::config::{AptRepositoryConfig, ArchiveConfig};
 use janitor_archive::database::ArchiveDatabase;
 use janitor_archive::repository::{RepositoryGenerationConfig, RepositoryGenerator};
@@ -99,8 +99,8 @@ async fn insert_run(pool: &sqlx::PgPool, run_id: &str) {
 }
 
 test_with_database! {
+    schema = Debian;
     async fn suite_binary_by_hash_is_served(test_db: TestDatabase) {
-        setup_debian_test_database(test_db.pool()).await.unwrap();
         let (app, tmp) = build_app(test_db.pool().clone()).await;
         let base = tmp.path().join("lintian-fixes/main");
         write_file(&base.join("binary-amd64/by-hash/SHA256/abcd"), b"binary");
@@ -118,8 +118,8 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Debian;
     async fn on_demand_binary_indices_are_served(test_db: TestDatabase) {
-        setup_debian_test_database(test_db.pool()).await.unwrap();
         insert_run(test_db.pool(), "run-1").await;
         let (app, tmp) = build_app(test_db.pool().clone()).await;
 
@@ -209,9 +209,9 @@ async fn check_release(app: &axum::Router, prefix: &str) -> (Paragraph, Vec<Stri
 }
 
 test_with_database! {
+    schema = Debian;
     async fn repositories_are_served_with_their_packages(test_db: TestDatabase) {
         let pool = test_db.pool();
-        setup_debian_test_database(pool).await.unwrap();
         insert_run(pool, "run-1").await;
         sqlx::query("UPDATE change_set SET state = 'ready' WHERE id = 'cs-1'")
             .execute(pool)
@@ -292,8 +292,8 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Debian;
     async fn request_paths_stay_in_the_archive(test_db: TestDatabase) {
-        setup_debian_test_database(test_db.pool()).await.unwrap();
         insert_run(test_db.pool(), "run-1").await;
         let (app, tmp) = build_app(test_db.pool().clone()).await;
         write_file(&tmp.path().join("secret"), b"secret");
