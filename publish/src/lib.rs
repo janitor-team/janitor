@@ -1946,21 +1946,21 @@ mod tests {
 
     #[test]
     fn test_previous_mp_blocks_publish_rejected() {
-        let statuses = vec![("main".to_string(), "rejected".to_string())];
+        let statuses = vec![("https://mp/1".to_string(), MergeProposalStatus::Rejected)];
         assert!(previous_mp_blocks_publish(&statuses));
     }
 
     #[test]
     fn test_previous_mp_blocks_publish_closed() {
-        let statuses = vec![("main".to_string(), "closed".to_string())];
+        let statuses = vec![("https://mp/1".to_string(), MergeProposalStatus::Closed)];
         assert!(previous_mp_blocks_publish(&statuses));
     }
 
     #[test]
     fn test_previous_mp_blocks_publish_open_does_not_block() {
         let statuses = vec![
-            ("main".to_string(), "open".to_string()),
-            ("aux".to_string(), "merged".to_string()),
+            ("https://mp/1".to_string(), MergeProposalStatus::Open),
+            ("https://mp/2".to_string(), MergeProposalStatus::Merged),
         ];
         assert!(!previous_mp_blocks_publish(&statuses));
     }
@@ -1970,8 +1970,8 @@ mod tests {
         // If one MP was rejected and another is still open, we
         // should still skip - Python checks `any`.
         let statuses = vec![
-            ("main".to_string(), "open".to_string()),
-            ("aux".to_string(), "rejected".to_string()),
+            ("https://mp/1".to_string(), MergeProposalStatus::Open),
+            ("https://mp/2".to_string(), MergeProposalStatus::Rejected),
         ];
         assert!(previous_mp_blocks_publish(&statuses));
     }
@@ -4898,10 +4898,13 @@ pub(crate) fn rate_limit_remaining(
 /// Does the previous merge-proposal status block a republish? Any prior
 /// MP marked `rejected` or `closed` blocks. Empty input returns false.
 #[must_use]
-pub(crate) fn previous_mp_blocks_publish(statuses: &[(String, String)]) -> bool {
-    statuses
-        .iter()
-        .any(|(_role, status)| status == "rejected" || status == "closed")
+pub(crate) fn previous_mp_blocks_publish(statuses: &[(String, MergeProposalStatus)]) -> bool {
+    statuses.iter().any(|(_url, status)| {
+        matches!(
+            status,
+            MergeProposalStatus::Rejected | MergeProposalStatus::Closed
+        )
+    })
 }
 
 /// What a per-forge backoff entry means at the moment of the check.

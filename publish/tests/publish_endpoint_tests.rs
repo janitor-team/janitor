@@ -239,3 +239,32 @@ test_with_database! {
         }
     }
 }
+
+test_with_database! {
+    async fn previous_mp_status_reads_a_closed_merge_proposal(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase_and_run(test_db.pool(), "cb-1", "lintian-fixes").await;
+        sqlx::query(
+            "INSERT INTO merge_proposal (codebase, url, status, revision) \
+             VALUES ('cb-1', 'https://example.invalid/mp/1', 'closed', 'rev-tip')",
+        )
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+
+        let status = janitor_publish::state::get_previous_mp_status(
+            test_db.pool(),
+            &janitor::CodebaseName::new("cb-1").unwrap(),
+            &janitor::Campaign::new("lintian-fixes").unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            status,
+            vec![(
+                "https://example.invalid/mp/1".to_string(),
+                janitor::publish::MergeProposalStatus::Closed
+            )]
+        );
+    }
+}
