@@ -439,9 +439,9 @@ async def create_app(
 
     endpoint = aiozipkin.create_endpoint("janitor.site", ipv4=listen_address, port=port)
     if config.zipkin_address:
-        tracer = await aiozipkin.create(
-            config.zipkin_address, endpoint, sample_rate=0.1
-        )
+        # zipkin_address is the OTLP URL. Zipkin takes its own format here.
+        zipkin_url = re.sub(r"/v1/traces$", "/api/v2/spans", config.zipkin_address)
+        tracer = await aiozipkin.create(zipkin_url, endpoint, sample_rate=0.1)
     else:
         tracer = await aiozipkin.create_custom(endpoint)
     trace_configs = [aiozipkin.make_trace_config(tracer)]

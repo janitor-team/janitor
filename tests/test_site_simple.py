@@ -21,6 +21,7 @@ import tempfile
 from pathlib import Path
 
 import aiohttp
+import aiozipkin
 import asyncpg
 import pytest
 import pytest_asyncio
@@ -103,6 +104,29 @@ async def test_ws_notifications_forwards_redis_channels(
                     break
                 await asyncio.sleep(0.01)
             assert await ws.receive_json(timeout=5) == [channel, expected]
+
+
+async def test_spans_sent_to_zipkin_v2_path(aiohttp_server):
+    received = []
+
+    async def handle_spans(request):
+        received.append([span["name"] for span in await request.json()])
+        return web.Response(status=202)
+
+    zipkin = web.Application()
+    zipkin.router.add_post("/proxy/api/v2/spans", handle_spans)
+    server = await aiohttp_server(zipkin)
+    _private_app, app = await create_app(
+        config=create_config(
+            extra=f'zipkin_address: "{server.make_url("/proxy/v1/traces")}"'
+        ),
+        redis=FakeRedis(),
+    )
+    tracer = aiozipkin.get_tracer(app)
+    tracer.new_trace(sampled=True).name("GET /about").start().finish()
+    await tracer.close()
+
+    assert received == [["GET /about"]]
 
 
 async def test_codebase_query_redirect_legacy_package_param(
