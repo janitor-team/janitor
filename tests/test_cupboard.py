@@ -22,12 +22,13 @@ from datetime import timedelta
 import aiohttp_jinja2
 import pytest
 from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
 from jinja2 import Environment
 from yarl import URL
 
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
-from janitor.logs import LogRetrievalError
+from janitor.logs import FileSystemLogFileManager, LogRetrievalError
 from janitor.site import (
     TEMPLATE_ENV,
     classify_result_code,
@@ -36,7 +37,7 @@ from janitor.site import (
     template_loader,
     worker_link_is_global,
 )
-from janitor.site.cupboard import create_app
+from janitor.site.cupboard import create_app, handle_result_file
 from janitor.site.cupboard.api import create_app as create_api_app
 from janitor.site.cupboard.api import select_runs_to_reprocess
 from janitor.site.cupboard.publish import iter_publish_history
@@ -658,3 +659,21 @@ async def test_reprocess_logs_bulk_selects_every_unpack_code(db):
         rows = await select_runs_to_reprocess(conn)
 
     assert sorted(row["id"] for row in rows) == ["patch", "upstream"]
+
+
+async def test_result_file_unreadable_log_returns_502(tmp_path):
+    log = tmp_path / "pkg" / "run-id" / "build.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("log")
+    log.chmod(0)
+    app = web.Application()
+    app["logfile_manager"] = FileSystemLogFileManager(str(tmp_path))
+    request = make_mocked_request(
+        "GET",
+        "/",
+        app=app,
+        match_info={"codebase": "pkg", "run_id": "run-id", "filename": "build.log"},
+    )
+    with pytest.raises(web.HTTPBadGateway) as e:
+        await handle_result_file(request)
+    assert str(e.value.__cause__) == "Unable to read build.log"

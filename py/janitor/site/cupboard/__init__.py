@@ -17,6 +17,7 @@
 
 """Serve the Janitor cupboard site."""
 
+import logging
 import re
 from datetime import date, datetime
 from typing import Any, Optional
@@ -29,6 +30,7 @@ from aiohttp.web_middlewares import normalize_path_middleware
 from jinja2 import select_autoescape
 
 from janitor.artifacts import ArtifactsMissing
+from janitor.logs import LogRetrievalError
 from janitor.site import template_loader
 from janitor.vcs import get_vcs_managers_from_config
 
@@ -550,6 +552,11 @@ async def handle_result_file(request):
         except FileNotFoundError as e:
             raise web.HTTPNotFound(
                 text=f"No log file {filename} for run {run_id}"
+            ) from e
+        except (PermissionError, LogRetrievalError) as e:
+            logging.warning("Unable to read log %s for run %s: %s", filename, run_id, e)
+            raise web.HTTPBadGateway(
+                text=f"Unable to read log file {filename} for run {run_id}"
             ) from e
         return web.Response(
             content_type="text/plain",
