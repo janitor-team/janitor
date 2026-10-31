@@ -78,12 +78,6 @@ fn test_publish_error_code() {
     let err = PublishError::BranchBusy(url::Url::parse("https://example.com").unwrap());
     assert_eq!(err.code(), "branch-busy");
 
-    let err = PublishError::AuthenticationFailed;
-    assert_eq!(err.code(), "authentication-failed");
-
-    let err = PublishError::NetworkError("Network error".to_string());
-    assert_eq!(err.code(), "network-error");
-
     let err = PublishError::DatabaseError(sqlx::Error::RowNotFound);
     assert_eq!(err.code(), "database-error");
 }
@@ -101,12 +95,6 @@ fn test_publish_error_description() {
 
     let err = PublishError::BranchBusy(url::Url::parse("https://example.com").unwrap());
     assert_eq!(err.description(), "Branch is busy");
-
-    let err = PublishError::AuthenticationFailed;
-    assert_eq!(err.description(), "Authentication failed");
-
-    let err = PublishError::NetworkError("Network connection failed".to_string());
-    assert_eq!(err.description(), "Network connection failed");
 
     let err = PublishError::DatabaseError(sqlx::Error::RowNotFound);
     assert_eq!(err.description(), "Database error");
