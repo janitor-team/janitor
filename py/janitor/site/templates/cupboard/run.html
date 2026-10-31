@@ -81,7 +81,7 @@
             {{ reschedule_button(suite, codebase, "Reschedule (from scratch)", data={"refresh": "1"}, id="reschedule-refresh") }}
             {% if run.result_branches %}{{ publish_buttons(suite, run.codebase) }}{% endif %}
         {% endif %}
-        {{ reprocess_logs_button(run_id) }}
+        {% if is_admin %}{{ reprocess_logs_button(run_id) }}{% endif %}
         {{ file_bug_buttons(config.bugtracker, run_id, result_code, verbatim_id="#log") }}
         {{ file_bug_buttons(campaign.bugtracker, run_id, result_code, verbatim_id="#log") }}
         {% if run.result_branches %}
