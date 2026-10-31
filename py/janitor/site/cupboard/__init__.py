@@ -211,7 +211,7 @@ async def handle_failure_stages(request):
         return {
             "include_transient": include_transient,
             "include_historical": include_historical,
-            "failure_stages": await conn.fetch(query, *args),
+            "failure_stages": [row for row in await conn.fetch(query, *args) if row[1]],
             "campaign": campaign,
             "all_campaigns": all_campaigns,
         }
