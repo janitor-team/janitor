@@ -762,13 +762,6 @@ pub fn run_worker(
         result_branches
     );
 
-    for (f, n, br, r) in result_branches.iter() {
-        metadata.add_branch(f.to_string(), n.to_string(), br.clone(), r.clone());
-    }
-    for (n, r) in changer_result.tags().iter() {
-        metadata.add_tag(n.to_string(), r.clone());
-    }
-
     let actual_vcs_type =
         janitor::vcs::get_branch_vcs_type(&ws.local_tree().branch()).map_err(|e| {
             WorkerFailure {
@@ -812,6 +805,13 @@ pub fn run_worker(
         false,
     )
     .map_err(|e| push_error_to_worker_failure(e, vec!["result-push".to_string()]))?;
+
+    for (f, n, br, r) in result_branches.iter() {
+        metadata.add_branch(f.to_string(), n.to_string(), br.clone(), r.clone());
+    }
+    for (n, r) in changer_result.tags().iter() {
+        metadata.add_tag(n.to_string(), r.clone());
+    }
 
     let should_build = if force_build {
         true
@@ -1416,6 +1416,70 @@ check:
                 vcs_type: Some(vcs_type),
             }
         );
+    }
+
+    #[serial]
+    #[test]
+    fn test_run_worker_push_failure_git() {
+        test_run_worker_push_failure(tempfile::tempdir().unwrap().path(), VcsType::Git);
+    }
+
+    #[serial]
+    #[test]
+    fn test_run_worker_push_failure_bzr() {
+        test_run_worker_push_failure(tempfile::tempdir().unwrap().path(), VcsType::Bzr);
+    }
+
+    fn test_run_worker_push_failure(tmp_path: &std::path::Path, vcs_type: VcsType) {
+        let wt = breezyshim::controldir::create_standalone_workingtree(
+            &tmp_path.join("main"),
+            vcs_type.to_string().as_str(),
+        )
+        .unwrap();
+        wt.build_commit()
+            .message("Initial commit")
+            .allow_pointless(true)
+            .commit()
+            .unwrap();
+        // A file where the VCS store should be, so the push fails.
+        std::fs::write(tmp_path.join("target"), "").unwrap();
+        let output_dir = tmp_path.join("output");
+        std::fs::create_dir(&output_dir).unwrap();
+        let mut metadata = Metadata::default();
+        let failure = run_worker(
+            &CodebaseName::new("mycodebase").unwrap(),
+            &Campaign::new("mycampaign").unwrap(),
+            Some(&wt.branch().get_user_url()),
+            &RunId::new("run-id").unwrap(),
+            &serde_json::json!({
+                "chroot": serde_json::Value::Null,
+                "dep_server_url": serde_json::Value::Null,
+            }),
+            HashMap::new(),
+            vec!["sh", "-c", "echo foo > bar"],
+            &output_dir,
+            &mut metadata,
+            &Url::from_directory_path(tmp_path.join("target")).unwrap(),
+            "foo",
+            "generic",
+            Some(vcs_type),
+            Path::new(""),
+            None,
+            None,
+            None,
+            None,
+            &mut None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(failure.code, "unexpected-error");
+        assert_eq!(failure.stage, vec!["result-push".to_string()]);
+        assert_eq!(metadata.branches, vec![]);
+        assert_eq!(metadata.tags, vec![]);
     }
 
     /*
