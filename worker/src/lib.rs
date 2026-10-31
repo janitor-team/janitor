@@ -179,7 +179,7 @@ pub fn run_worker(
     command: Vec<&str>,
     output_directory: &std::path::Path,
     metadata: &mut Metadata,
-    target_repo_url: &Url,
+    target_repo_url: Option<&Url>,
     vendor: &str,
     target: &str,
     vcs_type: Option<VcsType>,
@@ -218,15 +218,33 @@ pub fn run_worker(
         }
     };
 
+    let Some(target_repo_url) = target_repo_url else {
+        return Err(WorkerFailure {
+            code: "no-target-repository".to_owned(),
+            description: "No target repository to upload the result to".to_owned(),
+            stage: vec!["setup".to_owned()],
+            transient: Some(false),
+            details: None,
+        });
+    };
+
     let main_branch: Option<breezyshim::branch::GenericBranch>;
     let empty_format: Option<ControlDirFormat>;
 
     if let Some(main_branch_url) = main_branch_url {
         log::info!("Opening branch at {}", main_branch_url);
+        let probers =
+            silver_platter::probers::select_probers(vcs_type.map(|v| v.to_string()).as_deref());
         main_branch = match janitor::vcs::open_branch_ext(
             main_branch_url,
             possible_transports.as_mut(),
-            None,
+            Some(
+                probers
+                    .iter()
+                    .map(|p| p.as_ref())
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+            ),
         ) {
             Ok(b) => Some(b),
             Err(janitor::vcs::BranchOpenFailure {
@@ -261,19 +279,27 @@ pub fn run_worker(
         metadata.subpath = Some(subpath.to_string_lossy().to_string());
         empty_format = None;
     } else {
-        assert!(vcs_type.is_some());
+        let Some(vcs_type) = vcs_type else {
+            return Err(WorkerFailure {
+                code: "branch-missing".to_owned(),
+                description: "No branch URL and no VCS type to create a branch with".to_owned(),
+                stage: vec!["setup".to_owned()],
+                transient: Some(false),
+                details: None,
+            });
+        };
         main_branch = None;
         metadata.branch_url = None;
-        metadata.vcs_type = vcs_type;
+        metadata.vcs_type = Some(vcs_type);
         metadata.subpath = Some("".to_string());
         empty_format = if let Some(f) =
-            breezyshim::controldir::FORMAT_REGISTRY.make_controldir(&vcs_type.unwrap().to_string())
+            breezyshim::controldir::FORMAT_REGISTRY.make_controldir(&vcs_type.to_string())
         {
             Some(f)
         } else {
             return Err(WorkerFailure {
                 code: "vcs-type-unsupported".to_string(),
-                description: format!("Unable to find format for vcs type {}", vcs_type.unwrap()),
+                description: format!("Unable to find format for vcs type {}", vcs_type),
                 stage: vec!["setup".to_owned()],
                 transient: Some(false),
                 details: Some(serde_json::json!({"vcs_type": vcs_type})),
@@ -1005,7 +1031,7 @@ pub async fn process_single_item(
             queue_id: Some(assignment.queue_id),
             start_time: Some(start_time),
             branch_url: assignment_.branch.url.clone(),
-            vcs_type: Some(assignment.branch.vcs_type),
+            vcs_type: assignment.branch.vcs_type,
             ..Metadata::default()
         };
 
@@ -1025,10 +1051,10 @@ pub async fn process_single_item(
                 .collect::<Vec<_>>(),
             output_directory_.as_path(),
             &mut metadata,
-            &assignment_.target_repository.url,
+            assignment_.target_repository.url.as_ref(),
             &vendor,
             &assignment_.build.target,
-            Some(assignment_.branch.vcs_type),
+            assignment_.branch.vcs_type,
             assignment_.branch.subpath.as_ref(),
             resume_branch_url.as_ref(),
             assignment_.branch.cached_url.as_ref(),
@@ -1281,6 +1307,95 @@ mod tests {
         test_run_worker_existing(tempfile::tempdir().unwrap().path(), VcsType::Bzr);
     }
 
+    #[serial]
+    #[test]
+    fn test_run_worker_without_vcs_type_or_target_repository() {
+        let td = tempfile::tempdir().unwrap();
+        let tmp_path = td.path();
+        let wt = breezyshim::controldir::create_standalone_workingtree(
+            &tmp_path.join("main"),
+            &breezyshim::controldir::FORMAT_REGISTRY
+                .make_controldir("git")
+                .unwrap(),
+        )
+        .unwrap();
+        let output_dir = tmp_path.join("output");
+        std::fs::create_dir(&output_dir).unwrap();
+        let mut metadata = Metadata::default();
+        let err = run_worker(
+            &CodebaseName::new("mycodebase").unwrap(),
+            &Campaign::new("mycampaign").unwrap(),
+            Some(&wt.branch().get_user_url()),
+            &RunId::new("run-id").unwrap(),
+            &serde_json::json!({
+                "chroot": serde_json::Value::Null,
+                "dep_server_url": serde_json::Value::Null,
+            }),
+            HashMap::new(),
+            vec!["sh", "-c", "echo foo > bar"],
+            &output_dir,
+            &mut metadata,
+            None,
+            "foo",
+            "generic",
+            None,
+            Path::new(""),
+            None,
+            None,
+            None,
+            None,
+            &mut None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "no-target-repository");
+        assert_eq!(metadata.revision, None);
+    }
+
+    #[serial]
+    #[test]
+    fn test_run_worker_without_branch_url_or_vcs_type() {
+        let td = tempfile::tempdir().unwrap();
+        let output_dir = td.path().join("output");
+        std::fs::create_dir(&output_dir).unwrap();
+        let mut metadata = Metadata::default();
+        let err = run_worker(
+            &CodebaseName::new("mycodebase").unwrap(),
+            &Campaign::new("mycampaign").unwrap(),
+            None,
+            &RunId::new("run-id").unwrap(),
+            &serde_json::json!({
+                "chroot": serde_json::Value::Null,
+                "dep_server_url": serde_json::Value::Null,
+            }),
+            HashMap::new(),
+            vec!["sh", "-c", "echo foo > bar"],
+            &output_dir,
+            &mut metadata,
+            Some(&Url::from_directory_path(td.path().join("target")).unwrap()),
+            "foo",
+            "generic",
+            None,
+            Path::new(""),
+            None,
+            None,
+            None,
+            None,
+            &mut None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "branch-missing");
+    }
+
     fn test_run_worker_existing(tmp_path: &std::path::Path, vcs_type: VcsType) {
         let wt = breezyshim::controldir::create_standalone_workingtree(
             &tmp_path.join("main"),
@@ -1320,10 +1435,10 @@ check:
             vec!["sh", "-c", "echo foo > bar"],
             &output_dir,
             &mut metadata,
-            &Url::from_directory_path(tmp_path.join("target")).unwrap(),
+            Some(&Url::from_directory_path(tmp_path.join("target")).unwrap()),
             "foo",
             "generic",
-            Some(vcs_type),
+            None,
             Path::new(""),
             None,
             None,
