@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use janitor::{schema::setup_test_database, test_utils::TestDatabase, test_with_database};
+use janitor::{schema::setup_test_database, test_with_database};
 use janitor_publish::{AppState, PublishWorker};
 use sqlx::PgPool;
 use tower::ServiceExt;
@@ -55,9 +55,7 @@ async fn build_app(pool: PgPool) -> axum::Router {
         url::Url::parse("http://differ.invalid").unwrap(),
         None,
         None,
-        None,
-    )
-    .await;
+    );
     let health_checker = Arc::new(janitor_publish::health::BasicHealthChecker::with_info(
         "publish-test".to_string(),
         env!("CARGO_PKG_VERSION").to_string(),
