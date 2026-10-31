@@ -63,6 +63,30 @@ async def test_create_app():
     await create_app(config=create_config(), redis=FakeRedis())
 
 
+async def test_logo_is_served(aiohttp_client, database_location):
+    _private_app, app = await create_app(
+        config=create_config(database_location), redis=FakeRedis()
+    )
+    client = await aiohttp_client(app)
+    resp = await client.get("/_static/janitor.svg")
+    assert (resp.status, resp.content_type) == (200, "image/svg+xml")
+
+
+async def test_logo_in_pages(aiohttp_client, database_location):
+    _private_app, app = await create_app(
+        config=create_config(database_location), redis=FakeRedis()
+    )
+    client = await aiohttp_client(app)
+    for path in ["/lintian-fixes/", "/cupboard/"]:
+        resp = await client.get(path)
+        assert resp.status == 200
+        soup = BeautifulSoup(await resp.text(), "html.parser")
+        icons = [link["href"] for link in soup.select('head link[rel~="icon"]')]
+        assert icons == ["/_static/janitor.svg"]
+        logos = [img["src"] for img in soup.select("h1.logo img")]
+        assert logos == ["/_static/janitor.svg"]
+
+
 async def test_codebase_query_redirect(aiohttp_client, database_location):
     _private_app, app = await create_app(
         config=create_config(database_location), redis=FakeRedis()
