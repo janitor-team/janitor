@@ -43,6 +43,14 @@ fn error_response(msg: &str) -> Json<serde_json::Value> {
     )
 }
 
+/// The response for a failed database operation.
+fn db_error() -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        error_response("Database error"),
+    )
+}
+
 /// Slim merge-proposal listing row. Matches the JSON shape
 /// `py/janitor/publish.py::handle_merge_proposal_list` returns:
 /// `[{url, status}, ...]` with no other fields. Each of the three
@@ -57,14 +65,22 @@ pub struct MergeProposalListEntry {
 }
 
 /// Shared helper for the three `/merge-proposals` listing endpoints.
-/// Runs a `SELECT ... FROM merge_proposal LEFT JOIN run` scoped by the
-/// optional codebase and campaign filters, and emits `[{url, status}]`.
-async fn fetch_merge_proposal_list(
+/// Lists `[{url, status}]` for merge proposals, optionally restricted to
+/// those from runs of a codebase and/or campaign.
+async fn merge_proposal_list(
     conn: &sqlx::PgPool,
     codebase: Option<&CodebaseName>,
     campaign: Option<&Campaign>,
-) -> Result<Vec<MergeProposalListEntry>, sqlx::Error> {
-    let mut query = String::from(
+) -> (StatusCode, Json<serde_json::Value>) {
+    // DISTINCT ON needs finish_time in the select list to order by it.
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            Option<String>,
+            Option<chrono::DateTime<chrono::Utc>>,
+        ),
+    >(
         "SELECT DISTINCT ON (merge_proposal.url) \
             merge_proposal.url AS url, \
             merge_proposal.status::text AS status, \
@@ -72,96 +88,51 @@ async fn fetch_merge_proposal_list(
          FROM merge_proposal \
          LEFT JOIN run \
             ON merge_proposal.revision = run.revision \
-            AND run.result_code = 'success'",
-    );
-    let mut conditions = Vec::new();
-    if codebase.is_some() {
-        conditions.push(format!("run.codebase = ${}", conditions.len() + 1));
+            AND run.result_code = 'success' \
+         WHERE ($1::text IS NULL OR run.codebase = $1) \
+            AND ($2::text IS NULL OR run.suite = $2) \
+         ORDER BY merge_proposal.url, run.finish_time DESC",
+    )
+    .bind(codebase)
+    .bind(campaign)
+    .fetch_all(conn)
+    .await;
+    match rows {
+        Ok(rows) => {
+            let entries: Vec<MergeProposalListEntry> = rows
+                .into_iter()
+                .map(|(url, status, _)| MergeProposalListEntry { url, status })
+                .collect();
+            (StatusCode::OK, Json(serde_json::to_value(entries).unwrap()))
+        }
+        Err(e) => {
+            log::error!(
+                "Error fetching merge proposals (codebase: {:?}, campaign: {:?}): {}",
+                codebase,
+                campaign,
+                e
+            );
+            db_error()
+        }
     }
-    if campaign.is_some() {
-        conditions.push(format!("run.suite = ${}", conditions.len() + 1));
-    }
-    if !conditions.is_empty() {
-        query.push_str(" WHERE ");
-        query.push_str(&conditions.join(" AND "));
-    }
-    query.push_str(" ORDER BY merge_proposal.url, run.finish_time DESC");
-
-    // The DISTINCT ON requires we select finish_time so we can sort
-    // by it inside the same query, but we don't return it. Use a
-    // FromRow-friendly tuple and project.
-    let mut q = sqlx::query_as::<
-        _,
-        (
-            String,
-            Option<String>,
-            Option<chrono::DateTime<chrono::Utc>>,
-        ),
-    >(sqlx::AssertSqlSafe(&*query));
-    if let Some(cb) = codebase {
-        q = q.bind(cb);
-    }
-    if let Some(c) = campaign {
-        q = q.bind(c);
-    }
-    let rows = q.fetch_all(conn).await?;
-    Ok(rows
-        .into_iter()
-        .map(|(url, status, _)| MergeProposalListEntry { url, status })
-        .collect())
 }
 
 async fn get_merge_proposals_by_campaign(
     State(state): State<Arc<AppState>>,
     Path(campaign): Path<Campaign>,
 ) -> impl IntoResponse {
-    match fetch_merge_proposal_list(&state.conn, None, Some(&campaign)).await {
-        Ok(rows) => (StatusCode::OK, Json(serde_json::to_value(rows).unwrap())),
-        Err(e) => {
-            log::error!(
-                "Error fetching merge proposals for campaign {}: {}",
-                campaign,
-                e
-            );
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                error_response("Database error"),
-            )
-        }
-    }
+    merge_proposal_list(&state.conn, None, Some(&campaign)).await
 }
 
 async fn get_merge_proposals_by_codebase(
     State(state): State<Arc<AppState>>,
     Path(codebase): Path<CodebaseName>,
 ) -> impl IntoResponse {
-    match fetch_merge_proposal_list(&state.conn, Some(&codebase), None).await {
-        Ok(rows) => (StatusCode::OK, Json(serde_json::to_value(rows).unwrap())),
-        Err(e) => {
-            log::error!(
-                "Error fetching merge proposals for codebase {}: {}",
-                codebase,
-                e
-            );
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                error_response("Database error"),
-            )
-        }
-    }
+    merge_proposal_list(&state.conn, Some(&codebase), None).await
 }
 
 async fn list_merge_proposals(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match fetch_merge_proposal_list(&state.conn, None, None).await {
-        Ok(rows) => (StatusCode::OK, Json(serde_json::to_value(rows).unwrap())),
-        Err(e) => {
-            log::error!("Error fetching merge proposals: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                error_response("Database error"),
-            )
-        }
-    }
+    merge_proposal_list(&state.conn, None, None).await
 }
 
 /// Response structure for absorbed runs.
@@ -185,7 +156,22 @@ async fn absorbed(
     State(state): State<Arc<AppState>>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let mut query = String::from(
+    let since = match params.get("since") {
+        Some(since_str) => match chrono::DateTime::parse_from_rfc3339(since_str) {
+            Ok(since) => Some(since.with_timezone(&chrono::Utc)),
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    error_response("Invalid date format for 'since' parameter"),
+                );
+            }
+        },
+        None => None,
+    };
+
+    let mut absorbed_runs = Vec::new();
+
+    let query_result = sqlx::query_as::<_, AbsorbedRun>(
         r#"
         SELECT
             mode,
@@ -199,40 +185,13 @@ async fn absorbed(
             merged_by,
             merge_proposal_url
         FROM absorbed_runs
+        WHERE ($1::timestamptz IS NULL OR absorbed_at >= $1)
+        ORDER BY absorbed_at DESC
         "#,
-    );
-
-    let mut query_params = Vec::new();
-
-    if let Some(since_str) = params.get("since") {
-        match chrono::DateTime::parse_from_rfc3339(since_str) {
-            Ok(since) => {
-                query_params.push(since.with_timezone(&chrono::Utc));
-                query.push_str(&format!(" WHERE absorbed_at >= ${}", query_params.len()));
-            }
-            Err(_) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    error_response("Invalid date format for 'since' parameter"),
-                );
-            }
-        }
-    }
-
-    query.push_str(" ORDER BY absorbed_at DESC");
-
-    let mut absorbed_runs = Vec::new();
-
-    let query_result = if query_params.is_empty() {
-        sqlx::query_as::<_, AbsorbedRun>(sqlx::AssertSqlSafe(&*query))
-            .fetch_all(&state.conn)
-            .await
-    } else {
-        sqlx::query_as::<_, AbsorbedRun>(sqlx::AssertSqlSafe(&*query))
-            .bind(query_params[0])
-            .fetch_all(&state.conn)
-            .await
-    };
+    )
+    .bind(since)
+    .fetch_all(&state.conn)
+    .await;
 
     match query_result {
         Ok(rows) => {
@@ -283,14 +242,7 @@ async fn absorbed(
             log::error!("Failed to fetch absorbed runs: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(
-                    serde_json::to_value(crate::api_types::ErrorResponse::new(
-                        "Failed to fetch absorbed runs",
-                    ))
-                    .unwrap_or_else(
-                        |_| serde_json::json!({"error": "Failed to fetch absorbed runs"}),
-                    ),
-                ),
+                error_response("Failed to fetch absorbed runs"),
             );
         }
     }
@@ -431,10 +383,7 @@ async fn get_policy(
             Ok(row) => row,
             Err(e) => {
                 log::error!("Error fetching policy {}: {}", name, e);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    error_response("Database error"),
-                );
+                return db_error();
             }
         };
 
@@ -464,10 +413,7 @@ async fn get_policy(
         Ok(map) => map,
         Err(e) => {
             log::error!("Error reading per-branch policy for {}: {}", name, e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                error_response("Database error"),
-            );
+            return db_error();
         }
     };
 
@@ -633,10 +579,7 @@ async fn put_policy(
         }
         Err(e) => {
             log::error!("Error creating/updating policy {}: {}", name, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                error_response("Database error"),
-            )
+            db_error()
         }
     }
 }
@@ -652,10 +595,7 @@ async fn put_policies(
         Ok(tx) => tx,
         Err(e) => {
             log::error!("Failed to begin transaction: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                error_response("Database error"),
-            );
+            return db_error();
         }
     };
 
@@ -666,13 +606,7 @@ async fn put_policies(
             let _ = tx.rollback().await;
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(
-                    serde_json::to_value(crate::api_types::ErrorResponse::new(format!(
-                        "Failed to update policy {}",
-                        name
-                    )))
-                    .unwrap(),
-                ),
+                error_response(&format!("Failed to update policy {}", name)),
             );
         }
         keep_names.push(name.clone());
@@ -686,10 +620,7 @@ async fn put_policies(
     {
         log::error!("Failed to prune obsolete policies: {}", e);
         let _ = tx.rollback().await;
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            error_response("Database error"),
-        );
+        return db_error();
     }
 
     if let Err(e) = tx.commit().await {
@@ -777,10 +708,7 @@ async fn update_merge_proposal(
                 form.url,
                 e
             );
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                error_response("Database error"),
-            );
+            return db_error();
         }
     };
 
@@ -797,10 +725,7 @@ async fn update_merge_proposal(
                     form.url,
                     e
                 );
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    error_response("Database error"),
-                );
+                return db_error();
             }
         };
 
@@ -953,18 +878,12 @@ async fn update_merge_proposal(
             .await
     {
         log::error!("Error updating merge proposal {} status: {}", form.url, e);
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            error_response("Database error"),
-        );
+        return db_error();
     }
 
     if let Err(e) = tx.commit().await {
         log::error!("Error committing merge proposal {} update: {}", form.url, e);
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            error_response("Database error"),
-        );
+        return db_error();
     }
 
     log::info!("Successfully updated merge proposal: {}", form.url);
@@ -1102,14 +1021,7 @@ WHERE id = $1
             log::error!("Failed to fetch publish details for id {}: {}", id, e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(
-                    serde_json::to_value(crate::api_types::ErrorResponse::new(
-                        "Failed to fetch publish details",
-                    ))
-                    .unwrap_or_else(
-                        |_| serde_json::json!({"error": "Failed to fetch publish details"}),
-                    ),
-                ),
+                error_response("Failed to fetch publish details"),
             );
         }
     };
@@ -1198,10 +1110,7 @@ async fn publish(
                 campaign,
                 e
             );
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                error_response("Database error"),
-            );
+            return db_error();
         }
     };
 
@@ -1214,10 +1123,7 @@ async fn publish(
                 campaign,
                 e
             );
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                error_response("Database error"),
-            );
+            return db_error();
         }
     };
     if policy_lookup.is_none() && form.mode.is_none() {
@@ -1581,10 +1487,7 @@ async fn check_stragglers(
         Ok(urls) => urls,
         Err(e) => {
             log::error!("Failed to load outdated proposal info URLs: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                error_response("Database error"),
-            );
+            return db_error();
         }
     };
 
@@ -1803,17 +1706,9 @@ async fn get_rate_limit(
         }
     };
 
-    let remaining = crate::rate_limit_remaining(current_open, max_open);
     (
         StatusCode::OK,
-        Json(
-            serde_json::to_value(&BucketRateLimit {
-                open: current_open,
-                max_open,
-                remaining,
-            })
-            .unwrap(),
-        ),
+        Json(serde_json::to_value(BucketRateLimit::new(current_open, max_open)).unwrap()),
     )
 }
 
@@ -1822,6 +1717,16 @@ struct BucketRateLimit {
     open: Option<usize>,
     max_open: Option<usize>,
     remaining: Option<usize>,
+}
+
+impl BucketRateLimit {
+    fn new(open: Option<usize>, max_open: Option<usize>) -> Self {
+        Self {
+            open,
+            max_open,
+            remaining: crate::rate_limit_remaining(open, max_open),
+        }
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1843,25 +1748,21 @@ async fn get_all_rate_limits(State(state): State<Arc<AppState>>) -> impl IntoRes
         .bucket_rate_limiter
         .lock()
     {
-        Ok(limiter) => {
-            let stats = limiter.get_stats();
-            let mut out = HashMap::new();
-            if let Some(stats) = stats {
-                for (bucket, current_open) in stats.per_bucket.iter() {
-                    let max_open = limiter.get_max_open(bucket);
-                    let remaining = max_open.map(|m| m.saturating_sub(*current_open));
-                    out.insert(
-                        bucket.clone(),
-                        BucketRateLimit {
-                            open: Some(*current_open),
-                            max_open,
-                            remaining,
-                        },
-                    );
-                }
-            }
-            out
-        }
+        Ok(limiter) => limiter
+            .get_stats()
+            .map(|stats| {
+                stats
+                    .per_bucket
+                    .iter()
+                    .map(|(bucket, current_open)| {
+                        (
+                            bucket.clone(),
+                            BucketRateLimit::new(Some(*current_open), limiter.get_max_open(bucket)),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         Err(e) => {
             error!("Failed to acquire rate limiter lock: {}", e);
             return (
@@ -2065,10 +1966,7 @@ WHERE run.id = $1
         }
         Err(e) => {
             log::error!("Failed to load run {} for blockers: {}", id, e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                error_response("Database error"),
-            );
+            return db_error();
         }
     };
 
@@ -2090,10 +1988,7 @@ WHERE run.id = $1
         Ok(rows) => rows,
         Err(e) => {
             log::error!("Failed to load reviews for run {}: {}", id, e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                error_response("Database error"),
-            );
+            return db_error();
         }
     };
 
@@ -2108,10 +2003,7 @@ WHERE run.id = $1
             Ok(c) => c,
             Err(e) => {
                 log::error!("Failed to load publish attempt count for run {}: {}", id, e);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    error_response("Database error"),
-                );
+                return db_error();
             }
         }
     } else {
@@ -2129,10 +2021,7 @@ WHERE run.id = $1
                     run.campaign,
                     e
                 );
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    error_response("Database error"),
-                );
+                return db_error();
             }
         };
 
