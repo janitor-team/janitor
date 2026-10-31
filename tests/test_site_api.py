@@ -351,6 +351,60 @@ async def test_reschedule_returns_runner_result(aiohttp_client, db):
     assert body["campaign"] == "mycampaign"
 
 
+ADMIN_CONFIG = 'oauth2_provider { client_id: "site" admin_group: "admins" }'
+ADMIN_USER = {"email": "admin@example.com", "groups": ["admins"]}
+
+
+async def test_merge_proposal_change_forwards_publisher_error(aiohttp_client, db):
+    seen = []
+    publisher_app = web.Application()
+
+    async def _handle_change(request):
+        seen.append(dict(await request.post()))
+        return web.json_response({"reason": "No such merge proposal"}, status=404)
+
+    publisher_app.router.add_post("/merge-proposal", _handle_change)
+    publisher_client = await aiohttp_client(publisher_app)
+
+    client = await create_client(
+        aiohttp_client,
+        db,
+        publisher_url=str(publisher_client.make_url("/")),
+        user=ADMIN_USER,
+        config=ADMIN_CONFIG,
+    )
+
+    resp = await client.post(
+        "/merge-proposal",
+        data={"url": "https://example.com/merge/1", "status": "closed"},
+    )
+    assert resp.status == 404
+    assert await resp.json() == {"reason": "No such merge proposal"}
+    assert seen == [{"url": "https://example.com/merge/1", "status": "closed"}]
+
+
+async def test_runner_kill_forwards_runner_error(aiohttp_client, db):
+    runner_app = web.Application()
+
+    async def _handle_kill(request):
+        return web.json_response({"reason": "No such current run: run-1"}, status=404)
+
+    runner_app.router.add_post("/kill/{run_id}", _handle_kill)
+    runner_client = await aiohttp_client(runner_app)
+
+    client = await create_client(
+        aiohttp_client,
+        db,
+        runner_url=str(runner_client.make_url("/")),
+        user=ADMIN_USER,
+        config=ADMIN_CONFIG,
+    )
+
+    resp = await client.post("/active-runs/run-1/kill")
+    assert resp.status == 404
+    assert await resp.json() == {"reason": "No such current run: run-1"}
+
+
 async def test_admin_action_without_oauth2_provider_is_unauthorized(aiohttp_client, db):
     client = await create_client(
         aiohttp_client, db, user={"email": "alice@example.com", "groups": []}
@@ -385,3 +439,21 @@ async def test_review_without_oauth2_provider_is_not_qa_review(aiohttp_client, d
     async with db.acquire() as conn:
         rows = await conn.fetch("SELECT run_id, reviewer, verdict FROM review")
     assert [tuple(row) for row in rows] == [("r1", "alice@example.com", "approved")]
+
+
+async def test_runner_log_index_passes_through_runner_error(aiohttp_client, db):
+    runner_app = web.Application()
+
+    async def _handle_log_index(request):
+        return web.json_response({"reason": "No such current run: r1"}, status=404)
+
+    runner_app.router.add_get("/log/{run_id}", _handle_log_index)
+    runner_client = await aiohttp_client(runner_app)
+
+    client = await create_client(
+        aiohttp_client, db, runner_url=str(runner_client.make_url("/"))
+    )
+
+    resp = await client.get("/active-runs/r1/log/")
+    assert resp.status == 404
+    assert await resp.json() == {"reason": "No such current run: r1"}

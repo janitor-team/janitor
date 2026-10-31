@@ -16,6 +16,7 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
 import asyncio
+import json
 from typing import Optional
 
 import aiozipkin
@@ -52,6 +53,25 @@ from .common import render_template_for_request
 from .setup import setup_logfile_manager, setup_postgres
 
 routes = web.RouteTableDef()
+
+
+async def forward_request(request, method, url, backend, **kwargs):
+    try:
+        async with request.app["http_client_session"].request(
+            method, url, **kwargs
+        ) as resp:
+            return web.Response(
+                body=await resp.read(),
+                status=resp.status,
+                content_type=resp.content_type,
+                charset=resp.charset,
+            )
+    except ClientConnectorError:
+        return web.json_response({"reason": f"unable to contact {backend}"}, status=502)
+    except asyncio.TimeoutError:
+        return web.json_response(
+            {"reason": f"timeout contacting {backend}"}, status=502
+        )
 
 
 @docs()
@@ -239,10 +259,13 @@ async def handle_merge_proposal_change(request):
     post = await request.post()
 
     url = URL(request.app["publisher_url"]) / "merge-proposal"
-    async with request.app["http_client_session"].post(
-        url, data={"url": post["url"], "status": post["status"]}, raise_for_status=True
-    ):
-        return web.json_response({})
+    return await forward_request(
+        request,
+        "POST",
+        url,
+        "publisher",
+        data={"url": post["url"], "status": post["status"]},
+    )
 
 
 @docs()
@@ -523,21 +546,10 @@ async def handle_runner_log_index(request):
     url = URL(request.app["runner_url"]) / "log" / run_id
     span = aiozipkin.request_span(request)
     with span.new_child("runner:log-list"):
-        try:
-            async with request.app["http_client_session"].get(url) as resp:
-                ret = await resp.json()
-        except ContentTypeError as e:
-            return web.json_response(
-                {"reason": f"runner returned error {e}"}, status=400
-            )
-        except ClientConnectorError as e:
-            return web.json_response(
-                {"reason": "unable to contact runner", "details": repr(e)}, status=502
-            )
-        except asyncio.TimeoutError:
-            return web.json_response(
-                {"reason": "timeout contacting runner"}, status=502
-            )
+        resp = await forward_request(request, "GET", url, "runner")
+    if resp.status != 200:
+        return resp
+    ret = json.loads(resp.body)
 
     best_match = mimeparse.best_match(
         ["text/html", "application/json", "text/plain"],
@@ -571,33 +583,7 @@ async def handle_runner_kill(request):
     run_id = request.match_info["run_id"]
     with span.new_child("runner:kill"):
         url = URL(request.app["runner_url"]) / "kill" / run_id
-        try:
-            async with request.app["http_client_session"].post(url) as resp:
-                if resp.status == 501:
-                    return web.json_response(
-                        {
-                            "reason": await resp.text()
-                            or "kill not supported for this type of run"
-                        },
-                        status=501,
-                    )
-                if resp.status == 410:
-                    return web.json_response(
-                        {"reason": await resp.text() or "worker has no active run"},
-                        status=410,
-                    )
-                resp.raise_for_status()
-                return web.json_response(await resp.json(), status=resp.status)
-        except ContentTypeError as e:
-            return web.json_response(
-                {"reason": f"runner returned error {e}"}, status=400
-            )
-        except ClientConnectorError:
-            return web.json_response({"reason": "unable to contact runner"}, status=502)
-        except asyncio.TimeoutError:
-            return web.Response(text="timeout contacting runner", status=502)
-        except ClientResponseError as e:
-            return web.json_response({"reason": str(e)}, status=502)
+        return await forward_request(request, "POST", url, "runner")
 
 
 @docs()
@@ -629,15 +615,7 @@ async def handle_publish_id(request):
     span = aiozipkin.request_span(request)
     with span.new_child("publisher:publish"):
         url = URL(request.app["publisher_url"]) / "publish" / publish_id
-        try:
-            async with request.app["http_client_session"].get(url) as resp:
-                return web.json_response(await resp.json())
-        except ContentTypeError as e:
-            return web.Response(text=f"runner returned error {e}", status=400)
-        except ClientConnectorError:
-            return web.Response(text="unable to contact runner", status=502)
-        except asyncio.TimeoutError:
-            return web.Response(text="timeout contacting runner", status=502)
+        return await forward_request(request, "GET", url, "publisher")
 
 
 @docs()
