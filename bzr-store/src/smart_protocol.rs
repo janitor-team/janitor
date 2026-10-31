@@ -154,6 +154,12 @@ fn handle_exchange(
         .map_err(|e| BzrError::Python(format!("ResponseBuffer::into_bytes: {}", e)))
 }
 
+/// The runner's cache branch (`main`, or `<vendor>/latest` for Debian
+/// builds), which is not a campaign branch.
+fn is_cache_branch(campaign: &str, role: Option<&str>) -> bool {
+    matches!((campaign, role), ("main", None) | (_, Some("latest")))
+}
+
 /// Internal dispatch shared by the three route shapes. Checks the
 /// codebase in the DB, validates the campaign against `janitor.conf`
 /// campaigns, and runs the smart protocol exchange with per-app
@@ -179,7 +185,7 @@ pub async fn smart_protocol_dispatch(
     }
 
     if let Some(c) = campaign.as_ref() {
-        if state.janitor_config.get_campaign(c).is_none() {
+        if state.janitor_config.get_campaign(c).is_none() && !is_cache_branch(c, role.as_deref()) {
             warn!("unknown campaign: {}", c);
             return Err(BzrError::PathNotFound {
                 path: format!("campaign/{}", c),

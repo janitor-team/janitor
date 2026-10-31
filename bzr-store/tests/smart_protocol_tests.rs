@@ -276,6 +276,34 @@ test_with_database! {
     }
 }
 
+test_with_database! {
+    async fn test_public_smart_protocol_cache_branch(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase(test_db.pool(), "foo").await;
+
+        let tmp = TempDir::new().unwrap();
+        let cfg = build_config(tmp.path(), test_db_url(&test_db));
+        let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
+            .await
+            .unwrap();
+        let (addr, handle) = spawn_public(public).await;
+
+        let client = reqwest::Client::new();
+        // The runner's cache branch URLs, see `cache_branch_name`.
+        for path in ["/bzr/foo/debian/latest/.bzr/smart", "/bzr/foo/main/.bzr/smart"] {
+            let resp = client
+                .post(format!("http://{}{}", addr, path))
+                .body(b"bzr request 3\nhello\n".to_vec())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 200, "{}", path);
+        }
+
+        handle.abort();
+    }
+}
+
 // Public smart protocol with HTTP Basic credentials for a known worker
 // reaches the write path without panicking. Complementary to the
 // anonymous test above — here we exercise `is_worker_request` +
