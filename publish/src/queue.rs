@@ -3,37 +3,11 @@
 //! This module handles the main queue processing loop and related functionality,
 //! ported from the Python implementation.
 
-use crate::{consider_publish_run, AppState, PublishError};
+use crate::{consider_publish_run, AppState, Consideration, PublishError};
 use chrono::Utc;
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
-
-/// Represents a publish-ready run with its associated metadata.
-///
-/// NOTE: retained for external API shape (`crate::state::iter_publish_ready`
-/// now returns a tuple). Prefer that function directly in new code -
-/// see commit history for why the previous in-module
-/// `PublishReadyIterator` was removed.
-#[derive(Debug, Clone)]
-pub struct PublishReadyRun {
-    /// The run information.
-    pub run: janitor::state::Run,
-    /// The rate limit bucket for this run.
-    pub rate_limit_bucket: String,
-    /// The command that was executed.
-    pub command: String,
-    /// List of unpublished branches for this run.
-    pub unpublished_branches: Vec<crate::state::UnpublishedBranch>,
-}
-
-// `PublishReadyIterator` was removed: its hand-rolled join bypassed
-// the `publish_ready` view and the associated gating (publish_status,
-// change_set_state, mode, max_frequency_days, ordering), hardcoded
-// `publish_mode = "propose"`, and returned a single run per call.
-// `publish_pending_ready` and the single-run path in
-// `handle_publish_run` now both go through
-// `crate::state::iter_publish_ready`.
 
 /// Periodically check existing merge proposals and publish pending
 /// ready changes.
@@ -41,9 +15,6 @@ pub async fn process_queue_loop(
     state: Arc<AppState>,
     interval: chrono::Duration,
     auto_publish: bool,
-    push_limit: Option<usize>,
-    modify_mp_limit: Option<i32>,
-    require_binary_diff: bool,
 ) {
     log::info!(
         "Starting publish queue processing (auto_publish: {}, interval: {:?})",
@@ -65,10 +36,10 @@ pub async fn process_queue_loop(
     // on a *recent completed* scan (see `run_publish_loop`): it never
     // creates proposals against a stale or incomplete view of what we
     // already own, which is exactly what the rate limiter depends on.
-    tokio::spawn(run_scan_loop(state.clone(), interval, modify_mp_limit));
+    tokio::spawn(run_scan_loop(state.clone(), interval));
 
     if auto_publish {
-        run_publish_loop(state, interval, push_limit, require_binary_diff).await;
+        run_publish_loop(state, interval).await;
     } else {
         log::info!("Auto-publish disabled; running merge-proposal scan loop only");
         // Nothing to publish, but keep the process on the scan loop so a
@@ -145,26 +116,11 @@ async fn sleep_remaining(
 /// publish loop so its long, network-bound passes cannot starve
 /// publishing. On every *completed* pass it stamps `last_full_scan_at`,
 /// which is what re-opens the publish gate.
-async fn run_scan_loop(
-    state: Arc<AppState>,
-    interval: chrono::Duration,
-    modify_mp_limit: Option<i32>,
-) {
+async fn run_scan_loop(state: Arc<AppState>, interval: chrono::Duration) {
     loop {
         let cycle_start = Utc::now();
         log::debug!("Checking existing merge proposals");
-        let completed = crate::check_existing(
-            state.conn.clone(),
-            state.redis.clone(),
-            state.config,
-            &state.publish_worker,
-            &state.bucket_rate_limiter,
-            state.forge_rate_limiter.clone(),
-            &state.vcs_managers,
-            modify_mp_limit,
-            state.unexpected_mp_limit,
-        )
-        .await;
+        let completed = crate::check_existing(&state).await;
 
         log::debug!("Checking straggler merge proposals");
         if let Err(e) = check_stragglers(&state.conn, state.redis.clone()).await {
@@ -216,12 +172,7 @@ async fn await_recent_scan(
 /// Publish loop: repeatedly publishes approved, publish-ready runs on a
 /// fixed cadence, but only once a recent full scan has refreshed the
 /// bucket counts (see [`await_recent_scan`]).
-async fn run_publish_loop(
-    state: Arc<AppState>,
-    interval: chrono::Duration,
-    push_limit: Option<usize>,
-    require_binary_diff: bool,
-) {
+async fn run_publish_loop(state: Arc<AppState>, interval: chrono::Duration) {
     let mut scan_rx = state.last_full_scan_at.subscribe();
     loop {
         let cycle_start = Utc::now();
@@ -229,8 +180,7 @@ async fn run_publish_loop(
         await_recent_scan(&mut scan_rx).await;
 
         log::debug!("Publishing pending ready changes");
-        if let Err(e) = publish_pending_ready(state.clone(), push_limit, require_binary_diff).await
-        {
+        if let Err(e) = publish_pending_ready(state.clone(), state.push_limit).await {
             log::error!("Error publishing pending ready changes: {}", e);
         }
 
@@ -246,24 +196,22 @@ async fn run_publish_loop(
 /// # Arguments
 /// * `state` - The application state
 /// * `push_limit` - Optional limit on the number of pushes
-/// * `require_binary_diff` - Whether to require binary diffs
 ///
 /// # Returns
 /// Ok(()) if successful, or a PublishError
 pub async fn publish_pending_ready(
     state: Arc<AppState>,
     push_limit: Option<usize>,
-    require_binary_diff: bool,
 ) -> Result<(), PublishError> {
     let start_time = std::time::Instant::now();
-    let mut actions: HashMap<Option<String>, usize> = HashMap::new();
+    let mut actions: HashMap<String, usize> = HashMap::new();
     let mut published_count = 0;
     let mut error_count = 0;
 
     log::info!(
         "Starting publish_pending_ready (push_limit: {:?}, require_binary_diff: {})",
         push_limit,
-        require_binary_diff
+        state.require_binary_diff
     );
 
     // Pull publish-ready runs from the `publish_ready` SQL view via
@@ -277,10 +225,10 @@ pub async fn publish_pending_ready(
         .await
         .map_err(|e| {
             log::error!("Database error iterating publish-ready runs: {}", e);
-            PublishError::Failure {
-                code: "database-error".to_string(),
-                description: format!("Failed to iterate publish-ready runs: {}", e),
-            }
+            PublishError::failure(
+                "database-error",
+                format!("Failed to iterate publish-ready runs: {}", e),
+            )
         })?;
 
     for (run, rate_limit_bucket, policy_command, unpublished_branches) in ready_runs {
@@ -305,18 +253,12 @@ pub async fn publish_pending_ready(
         let considered = tokio::time::timeout(
             std::time::Duration::from_secs(PER_RUN_PUBLISH_TIMEOUT_SECS),
             consider_publish_run(
-                &state.conn,
-                state.redis.clone(),
-                state.config,
-                &state.publish_worker,
-                &state.vcs_managers,
-                &state.bucket_rate_limiter,
+                &state,
                 &run,
                 &rate_limit_bucket,
                 &unpublished_branches,
                 &policy_command,
                 push_limit.map(|limit| limit - published_count),
-                require_binary_diff,
             ),
         )
         .await;
@@ -333,23 +275,22 @@ pub async fn publish_pending_ready(
                     run.suite,
                     run.codebase,
                 );
-                *actions.entry(Some("timeout".to_string())).or_insert(0) += 1;
+                *actions.entry("timeout".to_string()).or_insert(0) += 1;
             }
-            Ok(Ok(results)) => {
-                if let Some(pre_flight) = results.get("__status").and_then(|v| v.as_ref()) {
-                    *actions.entry(Some(pre_flight.clone())).or_insert(0) += 1;
-                } else {
-                    for (role, mode) in &results {
-                        match mode {
-                            Some(m) => {
-                                *actions.entry(Some(m.clone())).or_insert(0) += 1;
-                                if m != "build-only" && m != "skip" {
-                                    published_count += 1;
-                                }
+            Ok(Ok(Consideration::Skipped(reason))) => {
+                *actions.entry(reason.to_string()).or_insert(0) += 1;
+            }
+            Ok(Ok(Consideration::Roles(results))) => {
+                for (role, mode) in &results {
+                    match mode {
+                        Some(m) => {
+                            *actions.entry(m.clone()).or_insert(0) += 1;
+                            if m != "build-only" && m != "skip" {
+                                published_count += 1;
                             }
-                            None => {
-                                *actions.entry(Some(format!("gated:{}", role))).or_insert(0) += 1;
-                            }
+                        }
+                        None => {
+                            *actions.entry(format!("gated:{}", role)).or_insert(0) += 1;
                         }
                     }
                 }
@@ -359,7 +300,7 @@ pub async fn publish_pending_ready(
             Ok(Err(e)) => {
                 error_count += 1;
                 log::error!("Error considering run {} for publishing: {}", run.id, e);
-                *actions.entry(Some("error".to_string())).or_insert(0) += 1;
+                *actions.entry("error".to_string()).or_insert(0) += 1;
             }
         }
     }
