@@ -33,25 +33,115 @@ pub fn push_branch(
                 .unwrap()
         },
     );
-    let target = match breezyshim::controldir::open(&url, possible_transports.as_mut()) {
-        Ok(cd) => cd,
-        Err(BrzError::NotBranchError(..)) => {
-            breezyshim::controldir::create(&url, &vcs_type, possible_transports.as_mut())?
-        }
-        Err(e) => {
+    // A boxed selector is used up by one push; share it so that each try gets its own.
+    let tag_selector = tag_selector.map(std::rc::Rc::from);
+    retry_push(push_retryable, || {
+        let target = match breezyshim::controldir::open(&url, possible_transports.as_mut()) {
+            Ok(cd) => cd,
+            Err(BrzError::NotBranchError(..)) => {
+                breezyshim::controldir::create(&url, &vcs_type, possible_transports.as_mut())?
+            }
+            Err(e) => {
+                return Err(e);
+            }
+        };
+
+        let tag_selector = tag_selector
+            .clone()
+            .map(|f: std::rc::Rc<dyn Fn(String) -> bool>| {
+                Box::new(move |tag| f(tag)) as Box<dyn Fn(String) -> bool>
+            });
+        target.push_branch(
+            source_branch,
+            branch_name.as_deref(),
+            stop_revision.as_ref(),
+            Some(overwrite),
+            tag_selector,
+        )?;
+
+        Ok(())
+    })
+}
+
+/// Tries for one push, as in the Python worker (`max_tries=10`).
+const PUSH_MAX_TRIES: u32 = 10;
+
+/// Errors after which `import_branches_*` is tried again, as in the Python worker.
+fn import_retryable(e: &BrzError) -> bool {
+    matches!(
+        e,
+        BrzError::InvalidHttpResponse(..)
+            | BrzError::IncompleteRead(..)
+            | BrzError::ConnectionError(..)
+    )
+}
+
+/// Errors after which `push_branch` is tried again: also any unexpected HTTP status.
+fn push_retryable(e: &BrzError) -> bool {
+    matches!(e, BrzError::UnexpectedHttpStatus { .. }) || import_retryable(e)
+}
+
+fn push_branch_retries() -> &'static prometheus::IntCounter {
+    static M: std::sync::OnceLock<prometheus::IntCounter> = std::sync::OnceLock::new();
+    M.get_or_init(|| {
+        prometheus::register_int_counter!("push_branch_retries", "Number of branch push retries.")
+            .expect("register push_branch_retries")
+    })
+}
+
+/// Run a push, and run it again with a growing wait while it fails with a `retryable` error.
+fn retry_push<T>(
+    retryable: fn(&BrzError) -> bool,
+    op: impl FnMut() -> Result<T, BrzError>,
+) -> Result<T, BrzError> {
+    retry_push_with(
+        retryable,
+        op,
+        push_waits(),
+        std::thread::sleep,
+        push_branch_retries(),
+    )
+}
+
+/// Waits of 0.5 s, 1 s, 2 s, ... each with jitter.
+fn push_waits() -> backoff::ExponentialBackoff {
+    backoff::ExponentialBackoff {
+        multiplier: 2.0,
+        max_interval: std::time::Duration::from_secs(128),
+        max_elapsed_time: None,
+        ..Default::default()
+    }
+}
+
+fn retry_push_with<T>(
+    retryable: fn(&BrzError) -> bool,
+    mut op: impl FnMut() -> Result<T, BrzError>,
+    mut waits: backoff::ExponentialBackoff,
+    mut sleep: impl FnMut(std::time::Duration),
+    retries: &prometheus::IntCounter,
+) -> Result<T, BrzError> {
+    use backoff::backoff::Backoff;
+    let mut tries = 1;
+    loop {
+        let e = match op() {
+            Ok(ret) => return Ok(ret),
+            Err(e) => e,
+        };
+        if !retryable(&e) || tries >= PUSH_MAX_TRIES {
             return Err(e);
         }
-    };
-
-    target.push_branch(
-        source_branch,
-        branch_name.as_deref(),
-        stop_revision.as_ref(),
-        Some(overwrite),
-        tag_selector,
-    )?;
-
-    Ok(())
+        let wait = waits.next_backoff().unwrap_or(waits.max_interval);
+        tries += 1;
+        retries.inc();
+        // The error text can hold the URL with the password, so it is not logged.
+        log::warn!(
+            "Push failed; try {} of {} in {:?}",
+            tries,
+            PUSH_MAX_TRIES,
+            wait
+        );
+        sleep(wait);
+    }
 }
 
 /// Import branches into a new location.
@@ -214,15 +304,17 @@ impl Vcs for BzrVcs {
         tags: Vec<(String, Option<RevisionId>)>,
         update_current: bool,
     ) -> Result<(), BrzError> {
-        import_branches_bzr(
-            repo_url,
-            local_branch,
-            campaign,
-            log_id,
-            branches,
-            tags,
-            update_current,
-        )
+        retry_push(import_retryable, || {
+            import_branches_bzr(
+                repo_url,
+                local_branch,
+                campaign,
+                log_id,
+                branches,
+                tags.clone(),
+                update_current,
+            )
+        })
     }
 }
 
@@ -334,15 +426,17 @@ impl Vcs for GitVcs {
         tags: Vec<(String, Option<RevisionId>)>,
         update_current: bool,
     ) -> Result<(), BrzError> {
-        import_branches_git(
-            repo_url,
-            local_branch,
-            campaign,
-            log_id,
-            branches,
-            tags,
-            update_current,
-        )
+        retry_push(import_retryable, || {
+            import_branches_git(
+                repo_url,
+                local_branch,
+                campaign,
+                log_id,
+                branches,
+                tags.clone(),
+                update_current,
+            )
+        })
     }
 }
 
@@ -498,5 +592,100 @@ mod tests {
             }
         );
         std::mem::drop(td);
+    }
+
+    fn retry(
+        retryable: fn(&BrzError) -> bool,
+        errors: Vec<BrzError>,
+    ) -> (Result<(), BrzError>, Vec<std::time::Duration>, u64) {
+        let mut errors = errors.into_iter();
+        let mut waits = vec![];
+        let retries = prometheus::IntCounter::new("retries", "retries").unwrap();
+        let waits_without_jitter = backoff::ExponentialBackoff {
+            randomization_factor: 0.0,
+            ..push_waits()
+        };
+        let ret = retry_push_with(
+            retryable,
+            || errors.next().map_or(Ok(()), Err),
+            waits_without_jitter,
+            |wait| waits.push(wait),
+            &retries,
+        );
+        (ret, waits, retries.get())
+    }
+
+    fn connection_error() -> BrzError {
+        BrzError::ConnectionError("while sending POST /codebase/git-receive-pack:".to_string())
+    }
+
+    #[test]
+    fn test_retry_push_repeats_a_retryable_error() {
+        let (ret, waits, retries) = retry(
+            import_retryable,
+            (0..3).map(|_| connection_error()).collect(),
+        );
+        assert!(ret.is_ok());
+        assert_eq!(
+            waits,
+            vec![
+                std::time::Duration::from_millis(500),
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(2),
+            ]
+        );
+        assert_eq!(retries, 3);
+    }
+
+    #[test]
+    fn test_retry_push_gives_up() {
+        let (ret, waits, retries) = retry(
+            push_retryable,
+            (0..20).map(|_| connection_error()).collect(),
+        );
+        assert!(matches!(ret, Err(BrzError::ConnectionError(_))));
+        assert_eq!((waits.len(), retries), (9, 9));
+
+        let (ret, waits, retries) = retry(push_retryable, vec![BrzError::DivergedBranches]);
+        assert!(matches!(ret, Err(BrzError::DivergedBranches)));
+        assert_eq!((waits.len(), retries), (0, 0));
+    }
+
+    #[test]
+    fn test_retryable_errors() {
+        let status = BrzError::UnexpectedHttpStatus {
+            url: Url::parse("http://example.com/codebase").unwrap(),
+            code: 403,
+            extra: None,
+            headers: HashMap::new(),
+        };
+        let errors = [
+            connection_error(),
+            BrzError::IncompleteRead(vec![], Some(10)),
+            BrzError::InvalidHttpResponse(
+                "http://example.com/codebase".to_string(),
+                "Bad status line received".to_string(),
+                None,
+                HashMap::new(),
+            ),
+            status,
+            BrzError::TransportError("No space left on device".to_string()),
+            BrzError::DivergedBranches,
+        ];
+        let kinds: Vec<_> = errors
+            .iter()
+            .map(|e| (push_retryable(e), import_retryable(e)))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (true, true),
+                (true, true),
+                (true, true),
+                (true, false),
+                (false, false),
+                (false, false),
+            ]
+        );
     }
 }
