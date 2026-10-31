@@ -105,7 +105,7 @@ mod tests {
              {sep}\n| Summary |\n{sep}\nFail-Stage: build\n"
         );
         assert_eq!(
-            find_build_log_failure(log.as_bytes(), 15),
+            find_build_log_failure(log.as_bytes(), 15).unwrap(),
             AnalyzeResult {
                 total_lines: 9,
                 include_lines: (1, 6),
@@ -117,7 +117,7 @@ mod tests {
     #[test]
     fn test_find_build_log_failure_short_log_without_match() {
         assert_eq!(
-            find_build_log_failure(&b"hello\nworld\n"[..], 15),
+            find_build_log_failure(&b"hello\nworld\n"[..], 15).unwrap(),
             AnalyzeResult {
                 total_lines: 2,
                 include_lines: (1, 2),
@@ -129,7 +129,7 @@ mod tests {
     #[test]
     fn test_find_dist_log_failure_short_log() {
         assert_eq!(
-            find_dist_log_failure("hello\nworld\n", 15),
+            find_dist_log_failure("hello\nworld\n", 15).unwrap(),
             AnalyzeResult {
                 total_lines: 2,
                 include_lines: (1, 2),
