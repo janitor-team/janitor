@@ -1,10 +1,11 @@
 #!/usr/bin/python3
 
+import logging
 from typing import Any, Optional
 
 import aiohttp_jinja2
 import asyncpg
-from aiohttp import ClientConnectorError, ClientResponseError, web
+from aiohttp import web
 from breezy.revision import NULL_REVISION
 from yarl import URL
 
@@ -296,10 +297,9 @@ WHERE codebase.name = $1""",
                     revid.encode("utf-8"),
                 )
                 return diff.decode("utf-8", "replace")
-        except ClientResponseError as e:
-            return f"Unable to retrieve diff; error {e.status}"
-        except ClientConnectorError as e:
-            return f"Unable to retrieve diff; error {e}"
+        except RuntimeError as e:
+            logging.warning("Unable to retrieve diff: %s", e)
+            return "Unable to retrieve diff"
 
     async def show_debdiff():
         if not run["build_version"]:
