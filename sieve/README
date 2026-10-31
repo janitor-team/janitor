@@ -1,5 +1,7 @@
 This directory contains a basic script to process e-mails from GitLab and use
 them to trigger immediate refreshing of the status of merge proposals.
+Checking the sender (for example with DKIM) is not needed, as the status is
+always read from the forge and a forged mail at most causes an extra refresh.
 
 Dovecot
 =======
