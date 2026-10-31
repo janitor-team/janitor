@@ -191,12 +191,11 @@ WHERE followup.origin = $1""",
                     else NULL_REVISION,
                     revid.encode("utf-8"),
                 )
-        except ClientResponseError as e:
-            return f"Unable to retrieve diff; error {e.status}"
-        except ClientConnectorError as e:
-            return f"Unable to retrieve diff; error {e}"
         except NotImplementedError:
             return "Unable to retrieve diff; unsupported vcs"
+        except RuntimeError as e:
+            logging.warning("Unable to retrieve diff: %s", e)
+            return "Unable to retrieve diff"
         return diff.decode("utf-8", "replace")
 
     kwargs["show_diff"] = show_diff
