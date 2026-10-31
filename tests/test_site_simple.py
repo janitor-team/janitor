@@ -406,3 +406,55 @@ async def test_oauth_callback_defaults_missing_groups_claim(
     )
     stored = await _get_session(client, session_id)
     assert (resp.status, page.status, stored["groups"]) == (302, 200, groups)
+
+
+async def test_login_keeps_only_a_url_the_site_serves(
+    aiohttp_client, aiohttp_server, database_location
+):
+    provider = await _start_provider(aiohttp_server)
+    client = await _openid_site(aiohttp_client, database_location, provider)
+    answers = {}
+    for url in [
+        "/cupboard/queue",
+        "https://example.com/cupboard/queue?limit=5",
+        "https://example.com:443/cupboard/queue",
+        "https://example.com:8443/cupboard/queue",
+        "/no-such-page",
+        "//evil.example",
+        "/\\evil.example",
+        "http://evil.example//evil.example",
+        "https://xn--/cupboard/queue",
+    ]:
+        resp = await client.get("/login", params={"url": url}, allow_redirects=False)
+        back_url = resp.cookies.get("back_url")
+        answers[url] = (resp.status, back_url.value if back_url else await resp.text())
+    assert answers == {
+        "/cupboard/queue": (302, "/cupboard/queue"),
+        "https://example.com/cupboard/queue?limit=5": (302, "/cupboard/queue?limit=5"),
+        "https://example.com:443/cupboard/queue": (302, "/cupboard/queue"),
+        "https://example.com:8443/cupboard/queue": (400, "invalid url"),
+        "/no-such-page": (400, "invalid url"),
+        "//evil.example": (400, "invalid url"),
+        "/\\evil.example": (400, "invalid url"),
+        "http://evil.example//evil.example": (400, "invalid url"),
+        "https://xn--/cupboard/queue": (400, "invalid url"),
+    }
+
+
+async def test_oauth_callback_goes_back_only_to_a_url_the_site_serves(
+    aiohttp_client, aiohttp_server, database_location
+):
+    # back_url is a plain cookie, so a request can set it without /login.
+    provider = await _start_provider(
+        aiohttp_server, userinfo={"email": "alice@example.com", "groups": []}
+    )
+    client = await _openid_site(aiohttp_client, database_location, provider)
+    locations = {}
+    for back_url in ["/cupboard/queue", "//evil.example", "https://evil.example/"]:
+        resp = await _callback(client, back_url=back_url)
+        locations[back_url] = (resp.status, resp.headers["Location"])
+    assert locations == {
+        "/cupboard/queue": (302, "/cupboard/queue"),
+        "//evil.example": (302, "/"),
+        "https://evil.example/": (302, "/"),
+    }
