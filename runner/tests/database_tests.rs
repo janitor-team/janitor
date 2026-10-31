@@ -1,18 +1,14 @@
 //! Tests for `RunnerDatabase` queries against a real Postgres schema.
 
-use janitor::schema::setup_debian_test_database;
-use janitor::test_utils::TestDatabase;
+use janitor::test_utils::{TestDatabase, TestSchema};
 use janitor_runner::database::{DebianBuildRow, RunnerDatabase};
 use serde_json::json;
 
 async fn setup() -> Option<TestDatabase> {
-    let Ok(Some(db)) = TestDatabase::new_optional().await else {
+    let Ok(Some(db)) = TestDatabase::new_optional_with_schema(TestSchema::Debian).await else {
         eprintln!("Skipping: no Postgres available");
         return None;
     };
-    setup_debian_test_database(&db.pool)
-        .await
-        .expect("schema setup failed");
     sqlx::query(
         "INSERT INTO codebase (name, branch_url, url, subpath, vcs_type, value) \
          VALUES ('foo', 'https://example.com/foo', 'https://example.com/foo', '', 'git', 10)",

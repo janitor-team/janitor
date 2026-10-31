@@ -22,7 +22,7 @@ stackdriver_logger = { version = "0.8", optional = true }
 url = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive", "env"] }
 silver-platter = { workspace = true }
-tokio = { workspace = true, features = ["fs", "process", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["fs", "process", "rt-multi-thread", "sync"] }
 regex = "1.11.0"
 lazy-regex = "3.2.0"
 fancy-regex = ">=0.17,<0.20"

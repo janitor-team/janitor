@@ -473,17 +473,12 @@ mod tests {
     /// of erroring.
     #[tokio::test]
     async fn test_get_proposal_info_handles_null_codebase() {
-        use janitor::schema::setup_test_database;
-        use janitor::test_utils::TestDatabase;
+        use janitor::test_utils::{TestDatabase, TestSchema};
 
-        let Ok(Some(db)) = TestDatabase::new_optional().await else {
+        let Ok(Some(db)) = TestDatabase::new_optional_with_schema(TestSchema::Core).await else {
             eprintln!("Skipping: no Postgres available");
             return;
         };
-        if let Err(e) = setup_test_database(&db.pool).await {
-            eprintln!("Skipping: schema setup failed: {}", e);
-            return;
-        }
 
         let url = "https://github.com/example/repo/pull/1";
         sqlx::query(
@@ -514,14 +509,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_proposal_statistics() {
-        use janitor::schema::setup_test_database;
-        use janitor::test_utils::TestDatabase;
+        use janitor::test_utils::{TestDatabase, TestSchema};
 
-        let Ok(Some(db)) = TestDatabase::new_optional().await else {
+        let Ok(Some(db)) = TestDatabase::new_optional_with_schema(TestSchema::Core).await else {
             eprintln!("Skipping: no Postgres available");
             return;
         };
-        setup_test_database(&db.pool).await.unwrap();
         sqlx::query(
             "INSERT INTO merge_proposal (url, status) VALUES \
              ('https://example.com/1', 'open'), \

@@ -13,18 +13,12 @@
 //! not.
 
 use janitor::state::Run;
-use janitor::{schema::setup_test_database, test_utils::TestDatabase};
+use janitor::test_utils::{TestDatabase, TestSchema};
 use sqlx::PgPool;
 
 async fn make_db() -> Option<TestDatabase> {
-    match TestDatabase::new_optional().await {
-        Ok(Some(db)) => match setup_test_database(&db.pool).await {
-            Ok(()) => Some(db),
-            Err(e) => {
-                eprintln!("Skipping FromRow test: schema setup failed: {}", e);
-                None
-            }
-        },
+    match TestDatabase::new_optional_with_schema(TestSchema::Core).await {
+        Ok(Some(db)) => Some(db),
         _ => {
             eprintln!("Skipping FromRow test: no Postgres available");
             None

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use janitor::test_utils::TestDatabase;
-use janitor::{schema::setup_test_database, test_with_database};
+use janitor::test_with_database;
 use janitor_archive::config::ArchiveConfig;
 use janitor_archive::database::ArchiveDatabase;
 use janitor_archive::error::ArchiveError;
@@ -36,8 +36,8 @@ async fn build_app(pool: sqlx::PgPool) -> (axum::Router, TempDir) {
 }
 
 test_with_database! {
+    schema = Core;
     async fn lookup_builds_404s_an_unknown_run(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         let db = ArchiveDatabase::new(test_db.pool().clone());
 
         let target = OnDemandTarget::parse("run", "no-such-run-id").unwrap();
@@ -49,8 +49,8 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn get_dists_run_unknown_id_responds_404(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         let (app, _tmp) = build_app(test_db.pool().clone()).await;
 
         let req = Request::builder()
@@ -64,8 +64,8 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn get_dists_run_invalid_id_responds_400(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         let (app, _tmp) = build_app(test_db.pool().clone()).await;
 
         let req = Request::builder()
