@@ -15,6 +15,8 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
+import re
+from html import escape
 from typing import Optional
 
 from aiohttp import ClientConnectorError, web
@@ -138,12 +140,57 @@ def format_timestamp(ts):
 template_loader = PackageLoader("janitor.site")
 
 
+# An http(s) URL in plain text, without a closing punctuation mark.
+_URL_RE = re.compile(
+    r"https?://[^\s\x00-\x1f\x7f\"'`<>]*[^\s\x00-\x1f\x7f\"'`<>.,:;!?)\]]"
+)
+
+
+def _linkify(text):
+    """Escape text for HTML, with its http(s) URLs as links."""
+    parts = []
+    pos = 0
+    for m in _URL_RE.finditer(text):
+        url = escape(m.group(0))
+        parts.append(escape(text[pos : m.start()]))
+        parts.append(f'<a href="{url}" rel="nofollow noopener">{url}</a>')
+        pos = m.end()
+    parts.append(escape(text[pos:]))
+    return "".join(parts)
+
+
+def _css_classes(ttype):
+    """The CSS classes of a token type, as pygments' HtmlFormatter gives them."""
+    from pygments.token import STANDARD_TYPES
+
+    names = []
+    while ttype not in STANDARD_TYPES and ttype.parent is not None:
+        names.append(ttype[-1])
+        ttype = ttype.parent
+    css_class = STANDARD_TYPES[ttype]
+    classes = [css_class]
+    for name in reversed(names):
+        css_class += "-" + name
+        classes.append(css_class)
+    return " ".join(classes)
+
+
 def highlight_diff(diff):
-    from pygments import highlight
-    from pygments.formatters import HtmlFormatter
     from pygments.lexers.diff import DiffLexer
 
-    return highlight(diff, DiffLexer(stripnl=False), HtmlFormatter())
+    # Like pygments' HtmlFormatter, but escaping here lets the URLs become links.
+    html = ['<div class="highlight"><pre>']
+    for ttype, value in DiffLexer(stripnl=False).get_tokens(diff):
+        css_classes = _css_classes(ttype)
+        for line in value.splitlines(keepends=True):
+            text = line.rstrip("\n")
+            if css_classes and text:
+                html.append(f'<span class="{css_classes}">{_linkify(text)}</span>')
+            else:
+                html.append(_linkify(text))
+            html.append(line[len(text) :])
+    html.append("</pre></div>\n")
+    return "".join(html)
 
 
 def classify_result_code(result_code, transient: Optional[bool]):
