@@ -16,6 +16,7 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
 import asyncio
+import base64
 import json
 import tempfile
 from pathlib import Path
@@ -406,3 +407,49 @@ async def test_oauth_callback_defaults_missing_groups_claim(
     )
     stored = await _get_session(client, session_id)
     assert (resp.status, page.status, stored["groups"]) == (302, 200, groups)
+
+
+# A real throwaway ed25519 public key, generated for these tests only.
+IMPORTABLE_KEY = """-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEar0oJhYJKwYBBAHaRw8BAQdAWau9EcHXu85QZP6cSXl9uDQKWcUj6Tgc5RmJ
+43UAUYu0Lkphbml0b3IgQXJjaGl2ZSBUZXN0IDxhcmNoaXZlQGV4YW1wbGUuaW52
+YWxpZD6IkAQTFgoAOBYhBN0jaZX8b8oPr+Lq8hAB/UU1IsftBQJqvSgmAhsBBQsJ
+CAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJEBAB/UU1Isft02IBAMrmlhteLroJuhsx
+4iq/LqRXcMt5een+7jJ4EJWQPOoGAP4qjF1yjfQ0uXEHv2FK3rzd19WzeyH2TJJM
+fQ0QDRZHAg==
+=6omt
+-----END PGP PUBLIC KEY BLOCK-----
+"""
+# The packets inside the armor, which a minimal export of the key gives back.
+IMPORTABLE_KEY_PACKETS = base64.b64decode("".join(IMPORTABLE_KEY.splitlines()[2:-2]))
+
+
+@pytest.mark.parametrize(
+    "publisher, archiver, path",
+    [(True, False, "/pgp_keys"), (False, True, "/archive-keyring.gpg")],
+)
+async def test_keyring_route_with_only_one_url(
+    aiohttp_client, aiohttp_server, database_location, publisher, archiver, path
+):
+    async def handle_credentials(request):
+        return web.json_response(
+            {"ssh_keys": [], "pgp_keys": [IMPORTABLE_KEY], "hosting": []}
+        )
+
+    async def handle_pgp_keys(request):
+        return web.json_response([IMPORTABLE_KEY])
+
+    stand_in = web.Application()
+    stand_in.router.add_get("/credentials", handle_credentials)
+    stand_in.router.add_get("/pgp_keys", handle_pgp_keys)
+    url = str((await aiohttp_server(stand_in)).make_url("/"))
+    _private_app, app = await create_app(
+        config=create_config(database_location),
+        redis=FakeRedis(),
+        publisher_url=url if publisher else None,
+        archiver_url=url if archiver else None,
+    )
+    client = await aiohttp_client(app)
+    resp = await client.get(path)
+    assert (resp.status, await resp.read()) == (200, IMPORTABLE_KEY_PACKETS)
