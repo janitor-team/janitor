@@ -216,6 +216,65 @@ test_with_database! {
 }
 
 test_with_database! {
+    async fn blockers_after_failed_publish_without_rate_limit_bucket(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase_and_run(test_db.pool(), "cb-1", "lintian-fixes").await;
+        sqlx::raw_sql(
+            "INSERT INTO named_publish_policy (name, per_branch_policy) VALUES ('policy', ARRAY[
+                 ROW('main', 'propose'::publish_mode, NULL::int)::branch_publish_policy]);
+             INSERT INTO candidate (suite, value, command, publish_policy, codebase)
+                 VALUES ('lintian-fixes', 100, 'noop', 'policy', 'cb-1');
+             UPDATE run SET start_time = '2026-01-02 02:04:05', finish_time = '2026-01-02 03:04:05';
+             INSERT INTO publish (id, change_set, target_branch_url, revision, mode, result_code)
+                 VALUES ('p1', 'cs-1', 'https://example.invalid/cb-1', 'rev-tip', 'propose',
+                         'publish-failed')",
+        )
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+
+        let app = build_app(test_db.pool().clone()).await;
+        let req = Request::builder()
+            .uri("/blockers/run-1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["success"]["result"], true);
+        assert_eq!(body["success"]["details"]["result_code"], "success");
+        assert_eq!(body["inactive"]["result"], true);
+        assert_eq!(body["inactive"]["details"]["inactive"], false);
+        assert_eq!(body["command"]["result"], true);
+        assert_eq!(body["command"]["details"]["correct"], "noop");
+        assert_eq!(body["command"]["details"]["actual"], "noop");
+        assert_eq!(body["publish_status"]["result"], false);
+        assert_eq!(body["publish_status"]["details"]["status"], "unknown");
+        assert_eq!(body["publish_status"]["details"]["reviews"], serde_json::json!({}));
+        assert_eq!(body["backoff"]["result"], true);
+        assert_eq!(body["backoff"]["details"]["attempt_count"], 1);
+        let next_try_time = body["backoff"]["details"]["next_try_time"].as_str().unwrap();
+        assert_eq!(
+            next_try_time.parse::<chrono::DateTime<chrono::Utc>>().unwrap(),
+            "2026-01-02T05:04:05Z".parse::<chrono::DateTime<chrono::Utc>>().unwrap()
+        );
+        assert_eq!(body["propose_rate_limit"]["result"], true);
+        assert_eq!(
+            body["propose_rate_limit"]["details"]["bucket"],
+            serde_json::Value::Null
+        );
+        assert_eq!(body["change_set"]["result"], true);
+        assert_eq!(body["change_set"]["details"]["change_set_id"], "cs-1");
+        assert_eq!(body["change_set"]["details"]["change_set_state"], "ready");
+        assert_eq!(body["previous_mp"]["result"], true);
+        assert_eq!(body["previous_mp"]["details"], serde_json::json!([]));
+    }
+}
+
+test_with_database! {
     async fn invalid_identifiers_in_path_are_rejected(test_db: TestDatabase) {
         setup_test_database(test_db.pool()).await.unwrap();
 
