@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use janitor::test_utils::TestDatabase;
@@ -8,7 +6,6 @@ use janitor_archive::config::ArchiveConfig;
 use janitor_archive::database::ArchiveDatabase;
 use janitor_archive::error::ArchiveError;
 use janitor_archive::on_demand::{lookup_builds, OnDemandTarget};
-use janitor_archive::repository::{RepositoryGenerationConfig, RepositoryGenerator};
 use janitor_archive::scanner::PackageScanner;
 use janitor_archive::web::ArchiveWebService;
 use tempfile::TempDir;
@@ -20,18 +17,9 @@ async fn build_app(pool: sqlx::PgPool) -> (axum::Router, TempDir) {
     config.archive_path = tmp.path().to_path_buf();
     let location = tmp.path().display().to_string();
 
-    let scanner_for_gen = PackageScanner::new(&location).await.unwrap();
-    let database_for_gen = ArchiveDatabase::new(pool.clone());
-    let generator = RepositoryGenerator::new(
-        Arc::new(scanner_for_gen),
-        Arc::new(database_for_gen),
-        RepositoryGenerationConfig::default(),
-    );
     let scanner_for_svc = PackageScanner::new(&location).await.unwrap();
     let database_for_svc = ArchiveDatabase::new(pool);
-    let service = ArchiveWebService::new(config, generator, scanner_for_svc, database_for_svc)
-        .await
-        .unwrap();
+    let service = ArchiveWebService::new(config, scanner_for_svc, database_for_svc);
     (service.router(), tmp)
 }
 
