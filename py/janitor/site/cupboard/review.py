@@ -174,11 +174,8 @@ async def generate_evaluate(
             return await vcs_managers[run["vcs_type"]].get_revision_info(
                 run["codebase"], old_revid, new_revid
             )
-        except ClientResponseError as e:
-            logging.warning("Unable to retrieve commit info; error code %d", e.status)
-            return []
-        except ClientConnectorError as e:
-            logging.warning("Unable to retrieve diff; error %s", e)
+        except ConnectionError as e:
+            logging.warning("Unable to retrieve commit info: %s", e)
             return []
         except TimeoutError:
             logging.warning("Timeout while retrieving commit info")
