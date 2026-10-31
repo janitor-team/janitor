@@ -23,7 +23,7 @@ fn refresh_merge_proposal(api_url: &str, merge_proposal_url: &str) -> Result<(),
     let client = Client::new();
     let res = client
         .post(api_url)
-        .json(&serde_json::json!({"url": merge_proposal_url}))
+        .form(&[("url", merge_proposal_url)])
         .send()
         .map_err(|e| e.to_string())?;
 
@@ -37,6 +37,8 @@ fn refresh_merge_proposal(api_url: &str, merge_proposal_url: &str) -> Result<(),
 }
 
 fn main() {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
     let args = Args::parse();
 
     let f = File::open(args.input).unwrap();
@@ -56,5 +58,37 @@ fn main() {
             debug!("No merge proposal URL found.");
             process::exit(0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+    use axum::{routing::post, Form, Router};
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_refresh_posts_form() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let listener = rt
+            .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .unwrap();
+        let api_url = format!("http://{}/refresh", listener.local_addr().unwrap());
+        let app = Router::new().route(
+            "/refresh",
+            post(|Form(form): Form<HashMap<String, String>>| async move {
+                match form.get("url").map(String::as_str) {
+                    Some("https://example.com/pull/1") => StatusCode::ACCEPTED,
+                    _ => StatusCode::BAD_REQUEST,
+                }
+            }),
+        );
+        rt.spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        assert_eq!(
+            refresh_merge_proposal(&api_url, "https://example.com/pull/1"),
+            Ok(())
+        );
     }
 }
