@@ -434,7 +434,14 @@ pub async fn upload_results(
                 backoff::Error::permanent(UploadFailure(format!("Error creating multipart: {}", e)))
             })?;
         let response = builder.multipart(bundle_info.form).send().await.map_err(|e| {
-            backoff::Error::permanent(UploadFailure(format!("Error creating multipart: {}", e)))
+            let failure = UploadFailure(format!("Error creating multipart: {}", e));
+            // Connect failures, timeouts and dropped connections are request
+            // errors. Builder and redirect errors would fail the same way again.
+            if e.is_request() {
+                backoff::Error::transient(failure)
+            } else {
+                backoff::Error::permanent(failure)
+            }
         })?;
 
         match response.status() {
@@ -728,5 +735,73 @@ mod tests {
 
         assert_eq!(err.to_string(), "unknown-run");
         assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn upload_results_retries_a_dropped_connection() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let state = MockState {
+            status: AxumStatus::OK,
+            body: serde_json::json!({"filenames": []}),
+            hits: hits.clone(),
+        };
+        let app = Router::new()
+            .route("/active-runs/{run_id}/finish", post(mock_finish))
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            drop(listener.accept().await.unwrap());
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        let base_url: Url = format!("http://{}/", addr).parse().unwrap();
+
+        let metadata = Metadata::default();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            upload_results(
+                &reqwest::Client::new(),
+                &Credentials::None,
+                &base_url,
+                &RunId::new("run-4").unwrap(),
+                &metadata,
+                None,
+            ),
+        )
+        .await
+        .expect("should not exceed timeout")
+        .expect("the retry should succeed");
+
+        assert_eq!(result, serde_json::json!({"filenames": []}));
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn upload_results_builder_error_is_permanent() {
+        let base_url: Url = "ftp://127.0.0.1/".parse().unwrap();
+
+        let metadata = Metadata::default();
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            upload_results(
+                &reqwest::Client::new(),
+                &Credentials::None,
+                &base_url,
+                &RunId::new("run-5").unwrap(),
+                &metadata,
+                None,
+            ),
+        )
+        .await
+        .expect("should not exceed timeout, i.e. should not retry")
+        .expect_err("a bad URL scheme should surface as an error");
+
+        assert!(
+            err.to_string().contains("builder error"),
+            "expected a builder error, got: {}",
+            err
+        );
     }
 }
