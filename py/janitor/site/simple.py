@@ -35,6 +35,8 @@ from aiohttp.web_middlewares import normalize_path_middleware
 from aiohttp.web_urldispatcher import URL
 from aiohttp_openmetrics import metrics, metrics_middleware
 from jinja2 import select_autoescape
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from .. import state
 from ..artifacts import ArtifactsMissing
@@ -477,9 +479,16 @@ async def create_app(
             app["topic_notifications"].publish([name, data])
 
         async def forward_redis(app, name):
+            async def reconnect(e: BaseException, pubsub) -> None:
+                # redis-py reconnects and subscribes again on the next read.
+                if not isinstance(e, (RedisConnectionError, RedisTimeoutError)):
+                    raise e
+                logging.warning("Redis %s subscription lost: %s", name, e)
+                await asyncio.sleep(5)
+
             async with app["redis"].pubsub(ignore_subscribe_messages=True) as ch:
                 await ch.subscribe(name, **{name: functools.partial(forward, name)})
-                await ch.run()
+                await ch.run(exception_handler=reconnect)
 
         for name, title in [
             ("publish", "publisher publish listening"),
