@@ -2548,6 +2548,10 @@ async fn finish_run_multipart_internal(
         .stage
         .as_deref()
         .map(|s| s.split('/').map(|p| p.to_string()).collect());
+    janitor_result.target = builder_result.as_ref().map(|br| crate::ResultTarget {
+        name: br.kind().to_string(),
+        details: br.to_json(),
+    });
     janitor_result.builder_result = builder_result;
     janitor_result.transient = worker_result.transient;
     janitor_result.target_branch_url = worker_result.target_branch_url;
