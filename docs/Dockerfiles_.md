@@ -25,12 +25,22 @@ $ podman run --rm --network=host --name janitor-bzr-store     --volume $( pwd ):
 $ podman run --rm --network=host --name janitor-differ        --volume $( pwd ):/mnt/janitor ghcr.io/jelmer/janitor/differ:latest        --config /mnt/janitor/janitor.conf --cache-path /srv/cache
 $ podman run --rm --network=host --name janitor-git-store     --volume $( pwd ):/mnt/janitor ghcr.io/jelmer/janitor/git_store:latest     --config /mnt/janitor/janitor.conf --vcs-path /srv/git
 $ podman run --rm --network=host --name janitor-ognibuild-dep ghcr.io/jelmer/janitor/ognibuild_dep:latest
-$ podman run --rm --network=host --name janitor-mail-filter   ghcr.io/jelmer/janitor/mail_filter:latest                                              --refresh-url http://localhost/api/refresh-proposal-status
 $ podman run --rm --network=host --name janitor-publish       --volume $( pwd ):/mnt/janitor ghcr.io/jelmer/janitor/publish:latest       --config /mnt/janitor/janitor.conf --differ-url http://localhost:9920/ --external-url http://localhost/
-$ podman run --rm --network=host --name janitor-runner        --volume $( pwd ):/mnt/janitor ghcr.io/jelmer/janitor/runner:latest        --config /mnt/janitor/janitor.conf --public-vcs-location http://localhost:9924/
+$ podman run --rm --network=host --name janitor-runner        --volume $( pwd ):/mnt/janitor ghcr.io/jelmer/janitor/runner:latest        --config /mnt/janitor/janitor.conf --public-vcs-location git=http://localhost:9924/git/,bzr=http://localhost:9930/bzr/
 $ podman run --rm --network=host --name janitor-site          --volume $( pwd ):/mnt/janitor ghcr.io/jelmer/janitor/site:latest          --config /mnt/janitor/janitor.conf --archiver-url http://localhost:9914/ --differ-url http://localhost:9920/ --external-url http://localhost/ --publisher-url http://localhost:9912/ --runner-url http://localhost:9911/
-$ podman run --rm --network=host --name janitor-worker        ghcr.io/jelmer/janitor/worker:latest                                                   --base-url http://localhost/
 ```
+
+Register the worker first. See [Registering workers](production.md#registering-workers). Set `WORKER_PASSWORD` to its password in your shell, and `--env WORKER_PASSWORD` passes it on. The worker talks to the runner's public port, 9919. Without `--loop` it exits after one item, so pass `--loop` to keep it running:
+
+```console
+$ podman run --rm --network=host --name janitor-worker \
+    --env WORKER_NAME=myworker --env WORKER_PASSWORD \
+    ghcr.io/jelmer/janitor/worker:latest \
+    --base-url http://localhost:9919/ --loop
+```
+
+`janitor-mail-filter` is not a service. It reads one email from standard input
+and posts the URL of the merge proposal in it to `--refresh-url`.
 
 **Custom worker tooling** - `janitor-worker` only bundles Debian's `sbuild`/`schroot`/`mmdebstrap`; add anything else your campaigns need by deriving your own image the same way. For example, to add `lintian-brush` for the `lintian-fixes` campaign in `janitor.conf.example`:
 
@@ -43,7 +53,9 @@ Save it as `Dockerfile` in an empty directory, then build it and run it in place
 
 ```console
 $ podman build -t my-janitor-worker .
-$ podman run --rm --network=host --name janitor-worker my-janitor-worker --base-url http://localhost/
+$ podman run --rm --network=host --name janitor-worker \
+    --env WORKER_NAME=myworker --env WORKER_PASSWORD \
+    my-janitor-worker --base-url http://localhost:9919/ --loop
 ```
 
 **Troubleshooting**:
