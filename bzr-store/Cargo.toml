@@ -43,6 +43,8 @@ loggerhead = "3"
 # works. Pinned to the same version loggerhead=3 uses.
 breezyshim = { workspace = true }
 
+pyo3 = { workspace = true }
+
 # URL-encoded form bodies for POST /{codebase}/remotes/{remote}
 serde_urlencoded = "0.7"
 
