@@ -216,6 +216,52 @@ test_with_database! {
 }
 
 test_with_database! {
+    async fn publish_endpoint_only_returns_ids_for_queued_roles(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase_and_run(test_db.pool(), "cb-1", "lintian-fixes").await;
+        sqlx::query(
+            "INSERT INTO new_result_branch (run_id, role, remote_name)
+             VALUES ('run-1', 'main', 'main'), ('run-1', 'extra', 'extra')",
+        )
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO named_publish_policy (name, per_branch_policy) VALUES ('policy', ARRAY[
+                ROW('main', 'propose'::publish_mode, NULL::int)::branch_publish_policy,
+                ROW('extra', 'skip'::publish_mode, NULL::int)::branch_publish_policy])",
+        )
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO candidate (suite, value, command, publish_policy, codebase)
+             VALUES ('lintian-fixes', 100, 'noop', 'policy', 'cb-1')",
+        )
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+
+        let app = build_app(test_db.pool().clone()).await;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/lintian-fixes/cb-1/publish")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(""))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let roles: Vec<&String> = body["publish_ids"].as_object().unwrap().keys().collect();
+        assert_eq!(roles, ["main"]);
+    }
+}
+
+test_with_database! {
     async fn invalid_identifiers_in_path_are_rejected(test_db: TestDatabase) {
         setup_test_database(test_db.pool()).await.unwrap();
 
