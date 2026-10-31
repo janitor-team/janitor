@@ -31,7 +31,7 @@ class Subscription:
 
     def __init__(self, topic: "Topic") -> None:
         self.topic = topic
-        self.queue: asyncio.Queue = asyncio.Queue()
+        self.queue: asyncio.Queue = asyncio.Queue(maxsize=topic.queue_size)
         if topic.last:
             self.queue.put_nowait(topic.last)
 
@@ -48,8 +48,9 @@ class Subscription:
 class Topic:
     """A pubsub topic."""
 
-    def __init__(self, name, repeat_last: bool = False) -> None:
+    def __init__(self, name, repeat_last: bool = False, queue_size: int = 100) -> None:
         self.name = name
+        self.queue_size = queue_size
         self.subscriptions: set[asyncio.Queue] = set()
         self.last = None
         self.repeat_last = repeat_last
@@ -58,6 +59,9 @@ class Topic:
         if self.repeat_last:
             self.last = message
         for queue in self.subscriptions:
+            if queue.full():
+                # A subscriber that does not read loses the oldest message.
+                queue.get_nowait()
             queue.put_nowait(message)
 
 

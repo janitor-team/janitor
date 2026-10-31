@@ -21,6 +21,7 @@ from unittest.mock import MagicMock
 from yarl import URL
 
 from janitor.site import format_duration, format_timestamp, update_vars_from_request
+from janitor.site.pubsub import Subscription, Topic
 
 
 def test_duration():
@@ -80,3 +81,12 @@ def test_update_vars_from_request_uses_external_url():
         vs["bzr_vcs_manager"].get_repository_url("mycb")
         == "https://public.example.org/bzr/mycb"
     )
+
+
+def test_publish_to_subscriber_that_does_not_read():
+    topic = Topic("test", queue_size=10)
+    with Subscription(topic) as slow, Subscription(topic) as reader:
+        for i in range(100):
+            topic.publish(i)
+            assert reader.get_nowait() == i
+        assert [slow.get_nowait() for _ in range(slow.qsize())] == list(range(90, 100))
