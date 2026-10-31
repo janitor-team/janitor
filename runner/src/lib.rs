@@ -35,8 +35,6 @@ pub use watchdog::{RunHealthStatus, TerminationReason, Watchdog, WatchdogConfig,
 /// `QueueProcessor.active_runs`.
 pub mod active_runs;
 
-/// API types for runner service.
-pub mod api_types;
 /// Module for application initialization and orchestration.
 pub mod application;
 /// Module for worker authentication and security.
