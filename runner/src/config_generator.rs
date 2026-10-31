@@ -218,10 +218,19 @@ impl ConfigGeneratorResult for DebianResult {
                 continue;
             };
             let changes_path = output_dir.join(changes_filename);
-            if let Ok(filenames) = crate::changes_filenames(&changes_path) {
-                ret.extend(filenames);
-            } else {
-                log::warn!("Failed to read changes file: {}", changes_path.display());
+            match std::fs::File::open(&changes_path)
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+                .and_then(|mut f| {
+                    let changes = debian_control::changes::Changes::read(&mut f)?;
+                    Ok(changes
+                        .files()
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|file| file.filename.clone())
+                        .collect::<Vec<_>>())
+                }) {
+                Ok(filenames) => ret.extend(filenames),
+                Err(_) => log::warn!("Failed to read changes file: {}", changes_path.display()),
             }
             ret.push(changes_filename.to_string());
         }
