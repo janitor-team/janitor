@@ -51,7 +51,7 @@
                 <p>No unpublished successful runs for {{ codebase }}.</p>
             {% endif %}
         {% else %}
-            {% if run.result_branches %}
+            {% if result_code == 'success' and run.result_branches %}
                 <div class="section" id="ready-changes">
                     <h2>Ready changes</h2>
                     {% if run.result_branches %}{{ publish_buttons(suite, run.codebase) }}{% endif %}
