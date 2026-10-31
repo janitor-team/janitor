@@ -34,6 +34,19 @@ fn http_requests_total() -> &'static IntCounterVec {
     })
 }
 
+/// Git requests whose body did not arrive in full, by service.
+pub(crate) fn incomplete_request_bodies_total() -> &'static IntCounterVec {
+    static M: OnceLock<IntCounterVec> = OnceLock::new();
+    M.get_or_init(|| {
+        prometheus::register_int_counter_vec!(
+            "git_incomplete_request_bodies_total",
+            "Git requests whose body did not arrive in full",
+            &["service"]
+        )
+        .expect("register git_incomplete_request_bodies_total")
+    })
+}
+
 /// Per-request latency histogram (seconds). Buckets tuned for the
 /// mix of fast metadata calls and long-running smart-protocol pushes.
 fn http_request_duration_seconds() -> &'static HistogramVec {

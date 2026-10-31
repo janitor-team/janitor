@@ -26,6 +26,7 @@ use testcontainers_modules::{
     postgres::Postgres as PostgresImage,
     testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt},
 };
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::sync::OnceCell;
 use uuid::Uuid;
 
@@ -655,6 +656,52 @@ db_test! {
             body
         );
         assert!(body.contains("http_request_duration_seconds"));
+
+        handle.abort();
+    }
+}
+
+db_test! {
+    async fn test_admin_counts_truncated_request_bodies(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase(test_db.pool(), "trunc").await;
+        let tmp = TempDir::new().unwrap();
+        git2::Repository::init_bare(tmp.path().join("trunc")).unwrap();
+        let state = build_state(&tmp, &test_db, AppRole::Admin).await;
+        let (addr, handle) = spawn(web::create_admin_app(state, 0)).await;
+
+        // A pkt-line header promising 0x78 bytes, then the client goes away.
+        let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let request = format!(
+            "POST /trunc/git-receive-pack HTTP/1.1\r\nHost: {}\r\n\
+             Content-Type: application/x-git-receive-pack-request\r\n\
+             Content-Length: 4096\r\n\r\n0078",
+            addr
+        );
+        sock.write_all(request.as_bytes()).await.unwrap();
+        sock.shutdown().await.unwrap();
+        let mut reply = Vec::new();
+        tokio::time::timeout(Duration::from_secs(60), sock.read_to_end(&mut reply))
+            .await
+            .unwrap()
+            .unwrap();
+        let reply = String::from_utf8_lossy(&reply);
+        assert_eq!(reply.lines().next(), Some("HTTP/1.1 200 OK"));
+
+        let metrics = reqwest::get(format!("http://{}/metrics", addr))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        let counted: Vec<&str> = metrics
+            .lines()
+            .filter(|line| line.starts_with("git_incomplete_request_bodies_total{"))
+            .collect();
+        assert_eq!(
+            counted,
+            vec![r#"git_incomplete_request_bodies_total{service="git-receive-pack"} 1"#]
+        );
 
         handle.abort();
     }
