@@ -274,3 +274,166 @@ fn classify_forge_rate_limit_past_deadline_is_expired() {
         ForgeRateLimitDecision::Expired,
     );
 }
+
+janitor::test_with_database! {
+    async fn test_check_existing_mp_value_threshold(test_db: TestDatabase) {
+        use pyo3::prelude::*;
+
+        janitor::schema::setup_test_database(test_db.pool())
+            .await
+            .unwrap();
+        let config = janitor::config::read_string(
+            r#"campaign {
+                name: "lintian-fixes"
+                command: "lintian-brush"
+                branch_name: "lintian-fixes"
+                merge_proposal { value_threshold: 50 }
+            }"#,
+        )
+        .unwrap();
+        let publish_worker = PublishWorker::new(
+            None,
+            None,
+            "http://differ.invalid".parse().unwrap(),
+            None,
+            None,
+            None,
+        )
+        .await;
+        let bucket_rate_limiter: Mutex<Box<dyn RateLimiter>> =
+            Mutex::new(Box::new(rate_limiter::NonRateLimiter));
+        let stub_class: Py<PyAny> = Python::attach(|py| {
+            PyModule::from_code(
+                py,
+                c"
+class MergeProposal:
+    def __init__(self, url, target, revision):
+        self.url = url
+        self.target = target
+        self.revision = revision
+        self.closed = False
+
+    def get_source_revision(self):
+        return self.revision
+
+    def get_source_branch_url(self):
+        return None
+
+    def can_be_merged(self):
+        return True
+
+    def get_target_branch_url(self):
+        return self.target
+
+    def post_comment(self, body):
+        pass
+
+    def close(self):
+        self.closed = True
+",
+                c"stub_mp.py",
+                c"stub_mp",
+            )
+            .unwrap()
+            .getattr("MergeProposal")
+            .unwrap()
+            .unbind()
+        });
+
+        let cases = [("cb-null", None, false), ("cb-low", Some(10), true)];
+        for (codebase, value, abandoned) in cases {
+            let branch_url = format!("https://example.invalid/{}", codebase);
+            let mp_url = format!("{}/pull/1", branch_url);
+            let revision = format!("rev-{}", codebase);
+            sqlx::query(
+                "INSERT INTO codebase (name, branch_url, url, vcs_type) VALUES ($1, $2, $2, 'git')",
+            )
+            .bind(codebase)
+            .bind(&branch_url)
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO change_set (id, campaign) VALUES ($1, 'lintian-fixes')")
+                .bind(codebase)
+                .execute(test_db.pool())
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO run (
+                    id, suite, codebase, command, result_code, revision, branch_url,
+                    value, start_time, finish_time, logfilenames, change_set, vcs_type
+                ) VALUES (
+                    $1, 'lintian-fixes', $1, 'lintian-brush', 'success', $2, $3,
+                    $4, NOW(), NOW(), '{}', $1, 'git'
+                )",
+            )
+            .bind(codebase)
+            .bind(&revision)
+            .bind(&branch_url)
+            .bind(value)
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO new_result_branch (run_id, role, remote_name, base_revision, revision)
+                 VALUES ($1, 'main', 'main', 'rev-base', $2)",
+            )
+            .bind(codebase)
+            .bind(&revision)
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO merge_proposal (
+                    url, status, revision, target_branch_url, codebase, rate_limit_bucket
+                ) VALUES ($1, 'open', $2, $3, $4, 'default')",
+            )
+            .bind(&mp_url)
+            .bind(&revision)
+            .bind(&branch_url)
+            .bind(codebase)
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+
+            let stub = Python::attach(|py| {
+                stub_class
+                    .call1(py, (&mp_url, &branch_url, revision.as_bytes()))
+                    .unwrap()
+            });
+            let mp =
+                breezyshim::forge::MergeProposal::from(Python::attach(|py| stub.clone_ref(py)));
+            let modified = check_existing_mp(
+                test_db.pool(),
+                None,
+                &config,
+                &publish_worker,
+                &mp,
+                breezyshim::forge::MergeProposalStatus::Open,
+                &HashMap::new(),
+                &bucket_rate_limiter,
+                false,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+            let closed: bool =
+                Python::attach(|py| stub.getattr(py, "closed").unwrap().extract(py).unwrap());
+            let status: String =
+                sqlx::query_scalar("SELECT status::text FROM merge_proposal WHERE url = $1")
+                    .bind(&mp_url)
+                    .fetch_one(test_db.pool())
+                    .await
+                    .unwrap();
+            assert_eq!((modified, closed), (abandoned, abandoned), "{}", codebase);
+            assert_eq!(
+                status,
+                if abandoned { "abandoned" } else { "open" },
+                "{}",
+                codebase
+            );
+        }
+    }
+}
