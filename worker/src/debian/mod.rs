@@ -267,7 +267,7 @@ pub fn build_from_config(
             .into_iter()
             .chain(e.stage)
             .collect(),
-        transient: None,
+        transient: e.transient,
     })
     .map(|x| serde_json::to_value(x).unwrap())
 }
