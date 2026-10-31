@@ -3353,7 +3353,13 @@ async fn assign_work_internal(
                 },
                 // Default to polling for `http`, no kind, or anything
                 // unknown: the worker's reported url is a polling target.
-                (_, Some(u)) => Backchannel::Polling { my_url: u },
+                (_, Some(u)) => match u.parse() {
+                    Ok(my_url) => Backchannel::Polling { my_url },
+                    Err(e) => {
+                        log::warn!("Invalid backchannel URL {}: {}", u, e);
+                        Backchannel::default()
+                    }
+                },
                 _ => {
                     log::warn!("Invalid backchannel configuration (no url): {:?}", bc_json);
                     Backchannel::default()
