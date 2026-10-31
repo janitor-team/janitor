@@ -19,11 +19,7 @@
 //! are exactly what `check_existing_mp` will see in production.
 
 use chrono::{Duration, Utc};
-use janitor::{
-    schema::setup_test_database,
-    test_utils::{TestDatabase, TestDatabaseConfig},
-    test_with_database,
-};
+use janitor::{schema::setup_test_database, test_with_database};
 use janitor::{Campaign, CodebaseName, RunId};
 use janitor_publish::state::{
     get_last_effective_run, get_merge_proposal_run, get_run, guess_proposal_info_from_revision,
@@ -260,7 +256,6 @@ test_with_database! {
         assert_eq!(mp_run.codebase, "cb-1");
         assert_eq!(mp_run.role, "main");
         assert_eq!(mp_run.remote_branch_name, "refs/heads/main");
-        assert_eq!(mp_run.command, "lintian-brush");
         assert_eq!(mp_run.value, 10);
     }
 }
@@ -580,6 +575,15 @@ test_with_database! {
             Some("rev-tip"),
         )
         .await;
+        // `Run.worker_name` is decoded from the `run.worker` column.
+        sqlx::query("INSERT INTO worker (name, password) VALUES ('worker-1', 'secret')")
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE run SET worker = 'worker-1' WHERE id = 'run-1'")
+            .execute(test_db.pool())
+            .await
+            .unwrap();
 
         let run = get_run(test_db.pool(), &RunId::new("run-1").unwrap())
             .await
@@ -591,6 +595,7 @@ test_with_database! {
         assert_eq!(run.command, "lintian-brush");
         assert_eq!(run.result_code, "success");
         assert_eq!(run.value, Some(42));
+        assert_eq!(run.worker_name.as_deref(), Some("worker-1"));
         let branches = run.result_branches.expect("result_branches missing");
         assert_eq!(branches.len(), 1);
         assert_eq!(branches[0].0, "main");

@@ -133,3 +133,33 @@ fn get_stats_reports_the_same_open_counts_as_the_fixed_limiter() {
     );
     assert_eq!(slow.get_stats().unwrap().per_bucket.get(BUCKET), Some(&7));
 }
+
+#[test]
+fn max_open_is_unknown_before_the_first_refresh() {
+    assert_eq!(
+        SlowStartRateLimiter::new(Some(10)).get_max_open(BUCKET),
+        None
+    );
+}
+
+#[test]
+fn max_open_grows_with_merged_proposals() {
+    assert_eq!(limiter(None, 1, 0, 0).get_max_open(BUCKET), Some(1));
+    assert_eq!(limiter(None, 1, 4, 0).get_max_open(BUCKET), Some(5));
+    assert_eq!(limiter(None, 1, 4, 0).get_max_open("other"), Some(1));
+}
+
+#[test]
+fn max_open_is_capped_by_the_maximum() {
+    assert_eq!(limiter(Some(3), 1, 4, 0).get_max_open(BUCKET), Some(3));
+    assert_eq!(limiter(Some(10), 1, 4, 0).get_max_open(BUCKET), Some(5));
+    assert_eq!(limiter(Some(0), 1, 4, 0).get_max_open(BUCKET), Some(5));
+}
+
+#[test]
+fn max_open_matches_refusal_when_the_maximum_binds() {
+    let mut limiter = limiter(Some(3), 1, 4, 0);
+    limiter.inc(BUCKET);
+    limiter.inc(BUCKET);
+    assert_eq!(refused_at(&limiter), limiter.get_max_open(BUCKET));
+}

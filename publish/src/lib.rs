@@ -484,10 +484,6 @@ pub enum PublishError {
     NothingToDo(String),
     /// The branch is already being used.
     BranchBusy(url::Url),
-    /// Authentication failed.
-    AuthenticationFailed,
-    /// Network error occurred.
-    NetworkError(String),
     /// Database error occurred.
     DatabaseError(sqlx::Error),
     /// Service temporarily unavailable.
@@ -495,6 +491,14 @@ pub enum PublishError {
 }
 
 impl PublishError {
+    /// Construct a [`PublishError::Failure`].
+    pub fn failure(code: impl Into<String>, description: impl Into<String>) -> Self {
+        PublishError::Failure {
+            code: code.into(),
+            description: description.into(),
+        }
+    }
+
     /// Get the error code.
     ///
     /// # Returns
@@ -504,8 +508,6 @@ impl PublishError {
             PublishError::Failure { code, .. } => code,
             PublishError::NothingToDo(_) => "nothing-to-do",
             PublishError::BranchBusy(_) => "branch-busy",
-            PublishError::AuthenticationFailed => "authentication-failed",
-            PublishError::NetworkError(_) => "network-error",
             PublishError::DatabaseError(_) => "database-error",
             PublishError::ServiceUnavailable(_) => "service-unavailable",
         }
@@ -520,8 +522,6 @@ impl PublishError {
             PublishError::Failure { description, .. } => description,
             PublishError::NothingToDo(description) => description,
             PublishError::BranchBusy(_) => "Branch is busy",
-            PublishError::AuthenticationFailed => "Authentication failed",
-            PublishError::NetworkError(msg) => msg,
             PublishError::DatabaseError(_) => "Database error",
             PublishError::ServiceUnavailable(msg) => msg,
         }
@@ -533,50 +533,15 @@ impl serde::Serialize for PublishError {
     where
         S: serde::Serializer,
     {
-        match self {
-            PublishError::Failure { code, description } => {
-                let mut state = serializer.serialize_struct("PublishError", 2)?;
-                state.serialize_field("code", code)?;
-                state.serialize_field("description", description)?;
-                state.end()
-            }
-            PublishError::NothingToDo(description) => {
-                let mut state = serializer.serialize_struct("PublishError", 2)?;
-                state.serialize_field("code", "nothing-to-do")?;
-                state.serialize_field("description", description)?;
-                state.end()
-            }
-            PublishError::BranchBusy(url) => {
-                let mut state = serializer.serialize_struct("PublishError", 2)?;
-                state.serialize_field("code", "branch-busy")?;
-                state.serialize_field("description", &format!("Branch is busy: {}", url))?;
-                state.end()
-            }
-            PublishError::AuthenticationFailed => {
-                let mut state = serializer.serialize_struct("PublishError", 2)?;
-                state.serialize_field("code", "authentication-failed")?;
-                state.serialize_field("description", "Authentication failed")?;
-                state.end()
-            }
-            PublishError::NetworkError(msg) => {
-                let mut state = serializer.serialize_struct("PublishError", 2)?;
-                state.serialize_field("code", "network-error")?;
-                state.serialize_field("description", msg)?;
-                state.end()
-            }
-            PublishError::DatabaseError(e) => {
-                let mut state = serializer.serialize_struct("PublishError", 2)?;
-                state.serialize_field("code", "database-error")?;
-                state.serialize_field("description", &e.to_string())?;
-                state.end()
-            }
-            PublishError::ServiceUnavailable(msg) => {
-                let mut state = serializer.serialize_struct("PublishError", 2)?;
-                state.serialize_field("code", "service-unavailable")?;
-                state.serialize_field("description", msg)?;
-                state.end()
-            }
-        }
+        let description = match self {
+            PublishError::BranchBusy(url) => format!("Branch is busy: {}", url),
+            PublishError::DatabaseError(e) => e.to_string(),
+            _ => self.description().to_string(),
+        };
+        let mut state = serializer.serialize_struct("PublishError", 2)?;
+        state.serialize_field("code", self.code())?;
+        state.serialize_field("description", &description)?;
+        state.end()
     }
 }
 
@@ -591,15 +556,6 @@ impl std::fmt::Display for PublishError {
             }
             PublishError::BranchBusy(url) => {
                 write!(f, "PublishError::BranchBusy: Branch is busy: {}", url)
-            }
-            PublishError::AuthenticationFailed => {
-                write!(
-                    f,
-                    "PublishError::AuthenticationFailed: Authentication failed"
-                )
-            }
-            PublishError::NetworkError(msg) => {
-                write!(f, "PublishError::NetworkError: {}", msg)
             }
             PublishError::DatabaseError(e) => {
                 write!(f, "PublishError::DatabaseError: {}", e)
@@ -688,8 +644,6 @@ pub struct PublishWorker {
     pub external_url: Option<url::Url>,
     /// URL of the differ service.
     pub differ_url: url::Url,
-    /// Optional Redis connection manager.
-    pub redis: Option<RedisConnectionManager>,
     /// Redis manager for pub/sub operations.
     pub redis_manager: Option<Arc<janitor::redis::RedisManager>>,
     /// Optional lock manager for coordinating publish operations.
@@ -815,16 +769,14 @@ impl PublishWorker {
     /// * `template_env_path` - Optional path to the template environment
     /// * `external_url` - Optional external URL for the publish operation
     /// * `differ_url` - URL of the differ service
-    /// * `redis` - Optional Redis connection manager
     /// * `lock_manager` - Optional lock manager for coordinating publish operations
     ///
     /// # Returns
     /// A new PublishWorker instance
-    pub async fn new(
+    pub fn new(
         template_env_path: Option<PathBuf>,
         external_url: Option<url::Url>,
         differ_url: url::Url,
-        redis: Option<RedisConnectionManager>,
         redis_manager: Option<Arc<janitor::redis::RedisManager>>,
         lock_manager: Option<rslock::LockManager>,
     ) -> Self {
@@ -832,7 +784,6 @@ impl PublishWorker {
             template_env_path,
             external_url,
             differ_url,
-            redis,
             redis_manager,
             lock_manager,
         }
@@ -928,10 +879,10 @@ impl PublishWorker {
                     let (returncode, response) = match run_worker_process(args, request).await {
                         Ok((returncode, response)) => (returncode, response),
                         Err(e) => {
-                            return Err(PublishError::Failure {
-                                code: "publisher-invalid-response".to_string(),
-                                description: e.to_string(),
-                            });
+                            return Err(PublishError::failure(
+                                "publisher-invalid-response",
+                                e.to_string(),
+                            ));
                         }
                     };
                     lock_manager.unlock(&rl).await;
@@ -945,32 +896,23 @@ impl PublishWorker {
             match run_worker_process(args, request).await {
                 Ok((returncode, response)) => (returncode, response),
                 Err(e) => {
-                    return Err(PublishError::Failure {
-                        code: "publisher-invalid-response".to_string(),
-                        description: e.to_string(),
-                    });
+                    return Err(PublishError::failure(
+                        "publisher-invalid-response",
+                        e.to_string(),
+                    ));
                 }
             }
         };
 
         if returncode == 1 {
-            let error: PublishOneError =
-                serde_json::from_value(response).map_err(|e| PublishError::Failure {
-                    code: "publisher-invalid-response".to_string(),
-                    description: e.to_string(),
-                })?;
-            return Err(PublishError::Failure {
-                code: error.code,
-                description: error.description,
-            });
+            let error: PublishOneError = serde_json::from_value(response)
+                .map_err(|e| PublishError::failure("publisher-invalid-response", e.to_string()))?;
+            return Err(PublishError::failure(error.code, error.description));
         }
 
         if returncode == 0 {
-            let result: PublishOneResult =
-                serde_json::from_value(response).map_err(|e| PublishError::Failure {
-                    code: "publisher-invalid-response".to_string(),
-                    description: e.to_string(),
-                })?;
+            let result: PublishOneResult = serde_json::from_value(response)
+                .map_err(|e| PublishError::failure("publisher-invalid-response", e.to_string()))?;
 
             if result.proposal_url.is_some() && result.is_new.unwrap_or(false) {
                 // Publish merge proposal event to Redis
@@ -1330,119 +1272,40 @@ pub async fn refresh_bucket_mp_counts(state: Arc<AppState>) -> Result<(), sqlx::
 ///
 /// # Arguments
 /// * `state` - The application state
-/// * `shutdown_rx` - Channel for receiving shutdown signals
 pub async fn listen_to_runner(
     state: Arc<AppState>,
-    shutdown_rx: tokio::sync::mpsc::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let redis_manager = state
         .redis_manager
         .clone()
         .ok_or_else(|| "Redis manager not configured")?;
-    let subscriber = redis::RedisSubscriber::new(redis_manager, shutdown_rx);
+    let subscriber = redis::RedisSubscriber::new(redis_manager);
     subscriber.listen_to_runner(state).await?;
     Ok(())
 }
 
-/// Get the status of a merge proposal.
-///
-/// # Arguments
-/// * `mp` - The merge proposal to check
-///
-/// # Returns
-/// String representing the status: "merged", "closed", or "open"
-pub async fn get_mp_status(mp: &breezyshim::forge::MergeProposal) -> Result<String, BrzError> {
-    let is_merged = tokio::task::spawn_blocking({
-        let mp = mp.clone();
-        move || mp.is_merged()
-    })
-    .await
-    .map_err(|_| BrzError::Other(PyErr::new::<PyRuntimeError, _>("Task join error")))??;
-
-    if is_merged {
-        return Ok("merged".to_string());
-    }
-
-    let is_closed = tokio::task::spawn_blocking({
-        let mp = mp.clone();
-        move || mp.is_closed()
-    })
-    .await
-    .map_err(|_| BrzError::Other(PyErr::new::<PyRuntimeError, _>("Task join error")))??;
-
-    if is_closed {
-        Ok("closed".to_string())
-    } else {
-        Ok("open".to_string())
-    }
+fn join_err(_: tokio::task::JoinError) -> BrzError {
+    BrzError::Other(PyErr::new::<PyRuntimeError, _>("Task join error"))
 }
 
-/// Abandon a merge proposal by updating its status and closing it.
+/// Post `comment` (if any) on a merge proposal and close it.
 ///
-/// # Arguments
-/// * `proposal_info_manager` - Manager for proposal information
-/// * `mp` - The merge proposal to abandon
-/// * `revision` - The revision ID
-/// * `codebase` - Optional codebase name
-/// * `target_branch_url` - URL of the target branch
-/// * `campaign` - Optional campaign name
-/// * `can_be_merged` - Whether the proposal can be merged
-/// * `rate_limit_bucket` - Optional rate limit bucket
-/// * `comment` - Optional comment to post
-///
-/// # Returns
-/// Ok(()) if successful, or a BrzError
-pub async fn abandon_mp(
-    proposal_info_manager: &mut proposal_info::ProposalInfoManager,
+/// A failure to post the comment is logged but non-fatal; errors closing
+/// the proposal, including PermissionDenied, are returned.
+pub async fn post_comment_and_close(
     mp: &breezyshim::forge::MergeProposal,
-    revision: &RevisionId,
-    codebase: Option<&CodebaseName>,
-    target_branch_url: &str,
-    campaign: Option<&janitor::Campaign>,
-    can_be_merged: Option<bool>,
-    rate_limit_bucket: Option<&str>,
+    mp_url: &url::Url,
     comment: Option<&str>,
 ) -> Result<(), BrzError> {
-    let mp_url = mp.url()?;
-
     if let Some(comment_text) = comment {
         log::info!("{}: {}", mp_url, comment_text);
-    }
-
-    // Update proposal info in database
-    proposal_info_manager
-        .update_proposal_info(
-            mp,
-            janitor::publish::MergeProposalStatus::Abandoned,
-            Some(revision),
-            codebase,
-            &url::Url::parse(target_branch_url).map_err(|e| {
-                BrzError::Other(PyErr::new::<PyRuntimeError, _>(format!(
-                    "URL parse error: {}",
-                    e
-                )))
-            })?,
-            campaign,
-            can_be_merged,
-            rate_limit_bucket,
-        )
-        .await
-        .map_err(|e| {
-            BrzError::Other(PyErr::new::<PyRuntimeError, _>(format!(
-                "Database error: {}",
-                e
-            )))
-        })?;
-
-    // Post comment if provided. PermissionDenied is logged but non-fatal.
-    if let Some(comment_text) = comment {
         let post_result = tokio::task::spawn_blocking({
             let mp = mp.clone();
             let comment = comment_text.to_string();
             move || mp.post_comment(&comment)
         })
         .await
-        .map_err(|_| BrzError::Other(PyErr::new::<PyRuntimeError, _>("Task join error")))?;
+        .map_err(join_err)?;
         match post_result {
             Ok(()) => {}
             Err(BrzError::PermissionDenied(_, msg)) => {
@@ -1456,46 +1319,29 @@ pub async fn abandon_mp(
         }
     }
 
-    // Close the merge proposal. PermissionDenied is reraised - the
-    // Python caller treats it as the abandon/close having failed.
     let close_result = tokio::task::spawn_blocking({
         let mp = mp.clone();
         move || mp.close()
     })
     .await
-    .map_err(|_| BrzError::Other(PyErr::new::<PyRuntimeError, _>("Task join error")))?;
-    match close_result {
-        Ok(()) => Ok(()),
-        Err(BrzError::PermissionDenied(path, msg)) => {
-            log::warn!(
-                "Permission denied closing merge request {}: {}",
-                mp_url,
-                msg.as_deref().unwrap_or("")
-            );
-            Err(BrzError::PermissionDenied(path, msg))
-        }
-        Err(e) => Err(e),
+    .map_err(join_err)?;
+    if let Err(BrzError::PermissionDenied(_, msg)) = &close_result {
+        log::warn!(
+            "Permission denied closing merge request {}: {}",
+            mp_url,
+            msg.as_deref().unwrap_or("")
+        );
     }
+    close_result
 }
 
-/// Close an applied merge proposal by updating its status and closing it.
-///
-/// # Arguments
-/// * `proposal_info_manager` - Manager for proposal information
-/// * `mp` - The merge proposal to close
-/// * `revision` - The revision ID
-/// * `codebase` - Optional codebase name
-/// * `target_branch_url` - URL of the target branch
-/// * `campaign` - Optional campaign name
-/// * `can_be_merged` - Whether the proposal can be merged
-/// * `rate_limit_bucket` - Optional rate limit bucket
-/// * `comment` - Optional comment to post
-///
-/// # Returns
-/// Ok(()) if successful, or a BrzError
-pub async fn close_applied_mp(
+/// Record a merge proposal as `status` (abandoned or applied), then
+/// post `comment` on it and close it.
+#[allow(clippy::too_many_arguments)]
+pub async fn close_mp(
     proposal_info_manager: &mut proposal_info::ProposalInfoManager,
     mp: &breezyshim::forge::MergeProposal,
+    status: janitor::publish::MergeProposalStatus,
     revision: &RevisionId,
     codebase: Option<&CodebaseName>,
     target_branch_url: &str,
@@ -1506,11 +1352,10 @@ pub async fn close_applied_mp(
 ) -> Result<(), BrzError> {
     let mp_url = mp.url()?;
 
-    // Update proposal info in database with "applied" status
     proposal_info_manager
         .update_proposal_info(
             mp,
-            janitor::publish::MergeProposalStatus::Applied,
+            status,
             Some(revision),
             codebase,
             &url::Url::parse(target_branch_url).map_err(|e| {
@@ -1531,48 +1376,7 @@ pub async fn close_applied_mp(
             )))
         })?;
 
-    // Post comment if provided. PermissionDenied is logged but non-fatal.
-    if let Some(comment_text) = comment {
-        let post_result = tokio::task::spawn_blocking({
-            let mp = mp.clone();
-            let comment = comment_text.to_string();
-            move || mp.post_comment(&comment)
-        })
-        .await
-        .map_err(|_| BrzError::Other(PyErr::new::<PyRuntimeError, _>("Task join error")))?;
-        match post_result {
-            Ok(()) => {}
-            Err(BrzError::PermissionDenied(_, msg)) => {
-                log::warn!(
-                    "Permission denied posting comment to {}: {}",
-                    mp_url,
-                    msg.unwrap_or_default()
-                );
-            }
-            Err(e) => log::warn!("Failed to post comment to {}: {}", mp_url, e),
-        }
-    }
-
-    // Close the merge proposal. PermissionDenied is reraised - the
-    // Python caller treats it as the abandon/close having failed.
-    let close_result = tokio::task::spawn_blocking({
-        let mp = mp.clone();
-        move || mp.close()
-    })
-    .await
-    .map_err(|_| BrzError::Other(PyErr::new::<PyRuntimeError, _>("Task join error")))?;
-    match close_result {
-        Ok(()) => Ok(()),
-        Err(BrzError::PermissionDenied(path, msg)) => {
-            log::warn!(
-                "Permission denied closing merge request {}: {}",
-                mp_url,
-                msg.as_deref().unwrap_or("")
-            );
-            Err(BrzError::PermissionDenied(path, msg))
-        }
-        Err(e) => Err(e),
-    }
+    post_comment_and_close(mp, &mp_url, comment).await
 }
 
 #[cfg(test)]
@@ -1581,116 +1385,29 @@ mod tests {
     use chrono::Utc;
 
     #[test]
-    fn test_calculate_next_try_time_zero_attempts() {
+    fn test_calculate_next_try_time() {
         let finish_time = Utc::now();
-        let next_try_time = calculate_next_try_time(finish_time, 0);
-        assert_eq!(finish_time, next_try_time);
-    }
-
-    #[test]
-    fn test_calculate_next_try_time_exponential_backoff() {
-        let finish_time = Utc::now();
-        assert_eq!(
-            calculate_next_try_time(finish_time, 1),
-            finish_time + chrono::Duration::hours(2)
-        );
-        assert_eq!(
-            calculate_next_try_time(finish_time, 2),
-            finish_time + chrono::Duration::hours(4)
-        );
-        assert_eq!(
-            calculate_next_try_time(finish_time, 3),
-            finish_time + chrono::Duration::hours(8)
-        );
-        assert_eq!(
-            calculate_next_try_time(finish_time, 4),
-            finish_time + chrono::Duration::hours(16)
-        );
-    }
-
-    #[test]
-    fn test_calculate_next_try_time_max_7_days() {
-        let finish_time = Utc::now();
-        // 2^10 = 1024 hours, but capped at 7*24 = 168 hours
-        let next_try_time = calculate_next_try_time(finish_time, 10);
-        assert_eq!(next_try_time, finish_time + chrono::Duration::days(7));
-        // Even higher attempts should also be capped
-        let next_try_time = calculate_next_try_time(finish_time, 20);
-        assert_eq!(next_try_time, finish_time + chrono::Duration::days(7));
-    }
-
-    #[test]
-    fn test_calculate_next_try_time_monotonically_increasing() {
-        let finish_time = Utc::now();
-        let mut prev = finish_time;
-        for i in 0..=10 {
-            let next = calculate_next_try_time(finish_time, i);
-            assert!(
-                next >= prev,
-                "attempt {} should be >= attempt {}",
-                i,
-                i.saturating_sub(1)
+        for (attempts, delay) in [
+            (0, chrono::Duration::zero()),
+            (1, chrono::Duration::hours(2)),
+            (2, chrono::Duration::hours(4)),
+            (4, chrono::Duration::hours(16)),
+            (7, chrono::Duration::hours(128)),
+            (8, chrono::Duration::days(7)),
+            (100, chrono::Duration::days(7)),
+        ] {
+            assert_eq!(
+                calculate_next_try_time(finish_time, attempts),
+                finish_time + delay,
+                "attempts={}",
+                attempts
             );
-            prev = next;
         }
     }
 
     #[test]
-    fn test_publish_error_failure_code() {
-        let err = PublishError::Failure {
-            code: "merge-conflict".to_string(),
-            description: "Could not merge".to_string(),
-        };
-        assert_eq!(err.code(), "merge-conflict");
-        assert_eq!(err.description(), "Could not merge");
-    }
-
-    #[test]
-    fn test_publish_error_nothing_to_do() {
-        let err = PublishError::NothingToDo("No changes detected".to_string());
-        assert_eq!(err.code(), "nothing-to-do");
-        assert_eq!(err.description(), "No changes detected");
-    }
-
-    #[test]
-    fn test_publish_error_branch_busy() {
-        let url = url::Url::parse("https://github.com/foo/bar").unwrap();
-        let err = PublishError::BranchBusy(url);
-        assert_eq!(err.code(), "branch-busy");
-        assert_eq!(err.description(), "Branch is busy");
-    }
-
-    #[test]
-    fn test_publish_error_display() {
-        let err = PublishError::Failure {
-            code: "merge-conflict".to_string(),
-            description: "Could not merge".to_string(),
-        };
-        assert_eq!(
-            err.to_string(),
-            "PublishError::Failure: merge-conflict: Could not merge"
-        );
-
-        let err = PublishError::NothingToDo("No changes".to_string());
-        assert_eq!(
-            err.to_string(),
-            "PublishError::PublishNothingToDo: No changes"
-        );
-
-        let url = url::Url::parse("https://github.com/foo/bar").unwrap();
-        let err = PublishError::BranchBusy(url);
-        assert_eq!(
-            err.to_string(),
-            "PublishError::BranchBusy: Branch is busy: https://github.com/foo/bar"
-        );
-    }
-
-    #[test]
     fn test_publish_error_serialize() {
-        let err = PublishError::Failure {
-            code: "merge-conflict".to_string(),
-            description: "Could not merge".to_string(),
-        };
+        let err = PublishError::failure("merge-conflict", "Could not merge");
         let json = serde_json::to_value(&err).unwrap();
         assert_eq!(json["code"], "merge-conflict");
         assert_eq!(json["description"], "Could not merge");
@@ -1711,103 +1428,9 @@ mod tests {
     }
 
     #[test]
-    fn test_publish_one_request_serde() {
-        let request = PublishOneRequest {
-            campaign: janitor::Campaign::new("lintian-fixes").unwrap(),
-            target_branch_url: url::Url::parse("https://salsa.debian.org/foo/bar").unwrap(),
-            role: "main".to_string(),
-            log_id: RunId::new("log-123").unwrap(),
-            reviewers: Some(vec!["alice".to_string()]),
-            revision_id: breezyshim::RevisionId::from(b"rev-1".to_vec()),
-            unchanged_id: Some(RunId::new("unchanged-456").unwrap()),
-            require_binary_diff: true,
-            differ_url: url::Url::parse("https://differ.example.com").unwrap(),
-            derived_branch_name: "lintian-fixes".to_string(),
-            tags: None,
-            allow_create_proposal: true,
-            source_branch_url: url::Url::parse("https://salsa.debian.org/fork/bar").unwrap(),
-            codemod_result: serde_json::json!({"applied": 3}),
-            commit_message_template: Some("Fix lintian issues".to_string()),
-            title_template: Some("Fix lintian issues in {{source}}".to_string()),
-            existing_mp_url: None,
-            extra_context: None,
-            mode: Mode::Propose,
-            command: "lintian-brush".to_string(),
-            external_url: None,
-            derived_owner: None,
-            auto_merge: None,
-        };
-        let json = serde_json::to_string(&request).unwrap();
-        let roundtripped: PublishOneRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(roundtripped.campaign, "lintian-fixes");
-        assert_eq!(roundtripped.mode, Mode::Propose);
-        assert_eq!(roundtripped.require_binary_diff, true);
-        assert_eq!(roundtripped.reviewers, Some(vec!["alice".to_string()]));
-    }
-
-    #[test]
-    fn test_publish_one_result_serde() {
-        let result = PublishOneResult {
-            proposal_url: Some(url::Url::parse("https://github.com/foo/bar/pull/1").unwrap()),
-            proposal_web_url: Some(url::Url::parse("https://github.com/foo/bar/pull/1").unwrap()),
-            is_new: Some(true),
-            branch_name: "lintian-fixes".to_string(),
-            target_branch_url: url::Url::parse("https://github.com/foo/bar").unwrap(),
-            target_branch_web_url: None,
-            mode: Mode::Propose,
-        };
-        let json = serde_json::to_string(&result).unwrap();
-        let roundtripped: PublishOneResult = serde_json::from_str(&json).unwrap();
-        assert_eq!(roundtripped.branch_name, "lintian-fixes");
-        assert_eq!(roundtripped.is_new, Some(true));
-        assert_eq!(roundtripped.mode, Mode::Propose);
-        assert!(roundtripped.proposal_url.is_some());
-    }
-
-    #[test]
-    fn test_publish_one_error_serde() {
-        let err = PublishOneError {
-            code: "merge-conflict".to_string(),
-            description: "Could not merge".to_string(),
-        };
-        let json = serde_json::to_string(&err).unwrap();
-        let roundtripped: PublishOneError = serde_json::from_str(&json).unwrap();
-        assert_eq!(roundtripped.code, "merge-conflict");
-        assert_eq!(roundtripped.description, "Could not merge");
-    }
-
-    #[test]
-    fn test_check_mp_error_display() {
-        let err = CheckMpError::NoRunForMergeProposal(
-            url::Url::parse("https://github.com/foo/bar/pull/1").unwrap(),
-        );
-        assert_eq!(
-            err.to_string(),
-            "No run for merge proposal: https://github.com/foo/bar/pull/1"
-        );
-
-        let err = CheckMpError::BranchRateLimited {
-            retry_after: Some(chrono::Duration::minutes(30)),
-        };
-        assert_eq!(err.to_string(), "Branch is rate limited");
-
-        let err = CheckMpError::UnexpectedHttpStatus;
-        assert_eq!(err.to_string(), "Unexpected HTTP status");
-
-        let err = CheckMpError::ForgeLoginRequired;
-        assert_eq!(err.to_string(), "Forge login required");
-    }
-
-    #[test]
-    fn test_debdiff_error_display() {
-        let err = DebdiffError::MissingRun("run-123".to_string());
-        assert_eq!(err.to_string(), "Missing run: run-123");
-
-        let err = DebdiffError::NoUnchangedRun;
-        assert_eq!(err.to_string(), "No unchanged run to compare against yet");
-
-        let err = DebdiffError::Unavailable("service down".to_string());
-        assert_eq!(err.to_string(), "Unavailable: service down");
+    fn test_check_mp_error_from_brz_login_required() {
+        let converted: CheckMpError = BrzError::ForgeLoginRequired.into();
+        assert!(matches!(converted, CheckMpError::ForgeLoginRequired));
     }
 
     #[test]
@@ -1822,19 +1445,6 @@ mod tests {
         let differ_url = url::Url::parse("http://127.0.0.1:1").unwrap();
         let err = get_debdiff(&differ_url, None, &RunId::new("log-123").unwrap()).unwrap_err();
         assert!(matches!(err, DebdiffError::NoUnchangedRun));
-        assert_eq!(err.to_string(), "No unchanged run to compare against yet");
-    }
-
-    #[test]
-    fn test_worker_invalid_response_display() {
-        let err = WorkerInvalidResponse::WorkerError("process crashed".to_string());
-        assert_eq!(err.to_string(), "Worker error: process crashed");
-
-        let err = WorkerInvalidResponse::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "file not found",
-        ));
-        assert_eq!(err.to_string(), "IO error: file not found");
     }
 
     #[test]
@@ -1862,13 +1472,14 @@ mod tests {
     }
 
     #[test]
-    fn test_role_branch_url_no_branch() {
+    fn test_role_branch_url() {
         let url = url::Url::parse("https://example.com/repo").unwrap();
-        let result = role_branch_url(&url, None);
-        assert_eq!(result, url);
+        assert_eq!(role_branch_url(&url, None), url);
+        assert_eq!(
+            role_branch_url(&url, Some("feature/branch-name")).as_str(),
+            "https://example.com/repo,branch=feature%2Fbranch-name"
+        );
     }
-
-    // --- consider_publish_run pure helper tests ---
 
     fn ub(role: &str, mode: Option<&str>) -> crate::state::UnpublishedBranch {
         crate::state::UnpublishedBranch {
@@ -1883,27 +1494,12 @@ mod tests {
     }
 
     #[test]
-    fn test_wants_push_mode_empty() {
+    fn test_wants_push_mode() {
         assert!(!wants_push_mode(&[]));
-    }
-
-    #[test]
-    fn test_wants_push_mode_only_propose() {
         assert!(!wants_push_mode(&[ub("main", Some("propose"))]));
-    }
-
-    #[test]
-    fn test_wants_push_mode_push() {
+        assert!(!wants_push_mode(&[ub("main", None)]));
         assert!(wants_push_mode(&[ub("main", Some("push"))]));
-    }
-
-    #[test]
-    fn test_wants_push_mode_attempt_push() {
         assert!(wants_push_mode(&[ub("main", Some("attempt-push"))]));
-    }
-
-    #[test]
-    fn test_wants_push_mode_mixed_picks_up_push() {
         assert!(wants_push_mode(&[
             ub("aux", Some("propose")),
             ub("main", Some("push")),
@@ -1911,90 +1507,57 @@ mod tests {
     }
 
     #[test]
-    fn test_wants_push_mode_none_mode_is_ignored() {
-        assert!(!wants_push_mode(&[ub("main", None)]));
+    fn test_should_skip_for_push_limit() {
+        for (wants_push, limit, expected) in [
+            (true, None, false),
+            (false, None, false),
+            (true, Some(0), true),
+            (false, Some(0), false),
+            (true, Some(5), false),
+            (false, Some(5), false),
+        ] {
+            assert_eq!(
+                should_skip_for_push_limit(wants_push, limit),
+                expected,
+                "wants_push={} limit={:?}",
+                wants_push,
+                limit
+            );
+        }
     }
 
     #[test]
-    fn test_should_skip_for_push_limit_no_limit() {
-        assert!(!should_skip_for_push_limit(true, None));
-        assert!(!should_skip_for_push_limit(false, None));
-    }
-
-    #[test]
-    fn test_should_skip_for_push_limit_zero_with_push() {
-        assert!(should_skip_for_push_limit(true, Some(0)));
-    }
-
-    #[test]
-    fn test_should_skip_for_push_limit_zero_without_push() {
-        // No branch wants push -> the budget doesn't matter.
-        assert!(!should_skip_for_push_limit(false, Some(0)));
-    }
-
-    #[test]
-    fn test_should_skip_for_push_limit_positive() {
-        // Positive limit means budget remaining, never skip.
-        assert!(!should_skip_for_push_limit(true, Some(5)));
-        assert!(!should_skip_for_push_limit(false, Some(5)));
-    }
-
-    #[test]
-    fn test_previous_mp_blocks_publish_empty() {
+    fn test_previous_mp_blocks_publish() {
+        let statuses = |s: &[(&str, &str)]| -> Vec<(String, String)> {
+            s.iter()
+                .map(|(r, st)| (r.to_string(), st.to_string()))
+                .collect()
+        };
         assert!(!previous_mp_blocks_publish(&[]));
+        assert!(previous_mp_blocks_publish(&statuses(&[(
+            "main", "rejected"
+        )])));
+        assert!(previous_mp_blocks_publish(&statuses(&[("main", "closed")])));
+        assert!(!previous_mp_blocks_publish(&statuses(&[
+            ("main", "open"),
+            ("aux", "merged")
+        ])));
+        assert!(previous_mp_blocks_publish(&statuses(&[
+            ("main", "open"),
+            ("aux", "rejected")
+        ])));
     }
 
     #[test]
-    fn test_previous_mp_blocks_publish_rejected() {
-        let statuses = vec![("main".to_string(), "rejected".to_string())];
-        assert!(previous_mp_blocks_publish(&statuses));
-    }
-
-    #[test]
-    fn test_previous_mp_blocks_publish_closed() {
-        let statuses = vec![("main".to_string(), "closed".to_string())];
-        assert!(previous_mp_blocks_publish(&statuses));
-    }
-
-    #[test]
-    fn test_previous_mp_blocks_publish_open_does_not_block() {
-        let statuses = vec![
-            ("main".to_string(), "open".to_string()),
-            ("aux".to_string(), "merged".to_string()),
-        ];
-        assert!(!previous_mp_blocks_publish(&statuses));
-    }
-
-    #[test]
-    fn test_previous_mp_blocks_publish_any_blocking_wins() {
-        // If one MP was rejected and another is still open, we
-        // should still skip - Python checks `any`.
-        let statuses = vec![
-            ("main".to_string(), "open".to_string()),
-            ("aux".to_string(), "rejected".to_string()),
-        ];
-        assert!(previous_mp_blocks_publish(&statuses));
-    }
-
-    #[test]
-    fn test_resolve_target_branch_url_explicit() {
+    fn test_resolve_target_branch_url() {
         assert_eq!(
             resolve_target_branch_url(Some("https://target/r"), "https://run/r"),
             "https://target/r"
         );
-    }
-
-    #[test]
-    fn test_resolve_target_branch_url_falls_back_when_none() {
         assert_eq!(
             resolve_target_branch_url(None, "https://run/r"),
             "https://run/r"
         );
-    }
-
-    #[test]
-    fn test_resolve_target_branch_url_falls_back_when_empty() {
-        // Empty string is treated like missing.
         assert_eq!(
             resolve_target_branch_url(Some(""), "https://run/r"),
             "https://run/r"
@@ -2002,32 +1565,26 @@ mod tests {
     }
 
     #[test]
-    fn test_should_skip_main_after_aux_failure_no_aux() {
-        let modes: HashMap<String, Option<String>> = HashMap::new();
-        assert!(!should_skip_main_after_aux_failure("main", &modes));
-    }
-
-    #[test]
-    fn test_should_skip_main_after_aux_failure_aux_succeeded() {
-        let mut modes: HashMap<String, Option<String>> = HashMap::new();
-        modes.insert("aux".to_string(), Some("push".to_string()));
-        assert!(!should_skip_main_after_aux_failure("main", &modes));
-    }
-
-    #[test]
-    fn test_should_skip_main_after_aux_failure_aux_failed() {
-        let mut modes: HashMap<String, Option<String>> = HashMap::new();
-        modes.insert("aux".to_string(), None);
-        assert!(should_skip_main_after_aux_failure("main", &modes));
-    }
-
-    #[test]
-    fn test_should_skip_main_after_aux_failure_role_is_aux() {
-        // The guard is main-only: an aux role iterating after
-        // another failed aux is fine.
-        let mut modes: HashMap<String, Option<String>> = HashMap::new();
-        modes.insert("aux1".to_string(), None);
-        assert!(!should_skip_main_after_aux_failure("aux2", &modes));
+    fn test_should_skip_main_after_aux_failure() {
+        let modes = |m: &[(&str, Option<&str>)]| -> HashMap<String, Option<String>> {
+            m.iter()
+                .map(|(r, v)| (r.to_string(), v.map(str::to_string)))
+                .collect()
+        };
+        assert!(!should_skip_main_after_aux_failure("main", &modes(&[])));
+        assert!(!should_skip_main_after_aux_failure(
+            "main",
+            &modes(&[("aux", Some("push"))])
+        ));
+        assert!(should_skip_main_after_aux_failure(
+            "main",
+            &modes(&[("aux", None)])
+        ));
+        // The guard is main-only.
+        assert!(!should_skip_main_after_aux_failure(
+            "aux2",
+            &modes(&[("aux1", None)])
+        ));
     }
 
     // --- classify_publish_failure_action tests ---
@@ -2175,76 +1732,43 @@ mod tests {
         );
     }
 
-    // --- change_set_state_allows_publish ---
-
     #[test]
-    fn test_change_set_state_allows_publish_publishing() {
+    fn test_change_set_state_allows_publish() {
         assert!(change_set_state_allows_publish("publishing"));
-    }
-
-    #[test]
-    fn test_change_set_state_allows_publish_ready() {
         assert!(change_set_state_allows_publish("ready"));
+        for state in ["done", "working", "draft", "", "PUBLISHING"] {
+            assert!(!change_set_state_allows_publish(state), "{}", state);
+        }
     }
 
     #[test]
-    fn test_change_set_state_allows_publish_other_states_block() {
-        // Any state other than publishing/ready should block.
-        assert!(!change_set_state_allows_publish("done"));
-        assert!(!change_set_state_allows_publish("working"));
-        assert!(!change_set_state_allows_publish("draft"));
-        assert!(!change_set_state_allows_publish(""));
-        assert!(!change_set_state_allows_publish("PUBLISHING")); // case-sensitive
-    }
-
-    // --- rate_limit_remaining ---
-
-    #[test]
-    fn test_rate_limit_remaining_both_known() {
+    fn test_rate_limit_remaining() {
         assert_eq!(rate_limit_remaining(Some(3), Some(10)), Some(7));
         assert_eq!(rate_limit_remaining(Some(0), Some(10)), Some(10));
         assert_eq!(rate_limit_remaining(Some(10), Some(10)), Some(0));
-    }
-
-    #[test]
-    fn test_rate_limit_remaining_current_missing() {
+        // current_open can briefly exceed max_open; clamp at 0.
+        assert_eq!(rate_limit_remaining(Some(15), Some(10)), Some(0));
         assert_eq!(rate_limit_remaining(None, Some(10)), None);
-    }
-
-    #[test]
-    fn test_rate_limit_remaining_max_missing() {
         assert_eq!(rate_limit_remaining(Some(3), None), None);
-    }
-
-    #[test]
-    fn test_rate_limit_remaining_both_missing() {
         assert_eq!(rate_limit_remaining(None, None), None);
     }
 
     #[test]
-    fn test_rate_limit_remaining_saturates_when_current_exceeds_max() {
-        // A slow race could let current_open exceed max_open
-        // momentarily. Don't underflow usize - clamp at 0.
-        assert_eq!(rate_limit_remaining(Some(15), Some(10)), Some(0));
+    fn test_classify_forge_rate_limit() {
+        let now = Utc::now();
+        assert_eq!(
+            classify_forge_rate_limit(None, now),
+            ForgeRateLimitDecision::NotLimited,
+        );
+        assert_eq!(
+            classify_forge_rate_limit(Some(now + chrono::Duration::minutes(5)), now),
+            ForgeRateLimitDecision::Backoff,
+        );
+        assert_eq!(
+            classify_forge_rate_limit(Some(now - chrono::Duration::minutes(5)), now),
+            ForgeRateLimitDecision::Expired,
+        );
     }
-
-    // Note: The new functions (get_mp_status, abandon_mp, close_applied_mp) require
-    // actual MergeProposal instances from breezyshim, which cannot be easily mocked
-    // in unit tests. These functions should be tested with integration tests that
-    // have access to real forge connections and database instances.
-
-    // #[test]
-    // fn test_merge_proposal_status_functions_exist() {
-    //     // This test simply verifies the functions can be referenced and have the correct signatures
-    //     // Actual testing requires integration tests with forge connections
-    //
-    //     // Verify function signatures by creating function pointers
-    //     // NOTE: These are async functions, so we can't create simple function pointers
-    //     // This test is disabled as it's not meaningful for async functions
-    //
-    //     // If we get here, the functions exist with the expected signatures
-    //     assert!(true);
-    // }
 
     // --- check_existing_mp freshness gate ---
 
@@ -3644,7 +3168,6 @@ async fn check_existing_mp(
                         id: None,
                         campaign: campaign_name,
                         branch_url: synth_branch_url,
-                        command: String::new(),
                         value: 0,
                         role: role.to_string(),
                         remote_branch_name: String::new(),
@@ -3744,29 +3267,20 @@ async fn check_existing_mp(
             mp_url
         );
         if let (Some(rev), Some(target)) = (revision.as_ref(), target_branch_url.as_ref()) {
-            match abandon_or_close_mp_async(
+            return Ok(try_close_mp(
                 &mut proposal_info_manager,
                 mp,
+                &mp_url,
+                janitor::publish::MergeProposalStatus::Applied,
                 rev,
-                Some(&mp_run.codebase),
-                &target.to_string(),
-                Some(&mp_run.campaign),
+                &mp_run.codebase,
+                target,
+                &mp_run.campaign,
                 can_be_merged,
                 rate_limit_bucket.as_deref(),
-                Some(
-                    "This merge proposal will be closed, since all remaining changes have been applied independently.",
-                ),
-                AbandonMode::Applied,
+                "This merge proposal will be closed, since all remaining changes have been applied independently.",
             )
-            .await
-            {
-                Ok(()) => return Ok(true),
-                Err(BrzError::PermissionDenied(_, _)) => return Ok(false),
-                Err(e) => {
-                    log::warn!("Failed to close merge proposal {}: {}", mp_url, e);
-                    return Ok(false);
-                }
-            }
+            .await);
         } else {
             log::warn!(
                 "{}: Cannot close-as-applied without revision + target URL",
@@ -3840,27 +3354,20 @@ async fn check_existing_mp(
             mp_run.value
         );
         if let (Some(rev), Some(target)) = (revision.as_ref(), target_branch_url.as_ref()) {
-            match abandon_or_close_mp_async(
+            return Ok(try_close_mp(
                 &mut proposal_info_manager,
                 mp,
+                &mp_url,
+                janitor::publish::MergeProposalStatus::Abandoned,
                 rev,
-                Some(&mp_run.codebase),
-                &target.to_string(),
-                Some(&mp_run.campaign),
+                &mp_run.codebase,
+                target,
+                &mp_run.campaign,
                 can_be_merged,
                 rate_limit_bucket.as_deref(),
-                Some("This merge proposal will be closed, since only trivial changes are left."),
-                AbandonMode::Abandoned,
+                "This merge proposal will be closed, since only trivial changes are left.",
             )
-            .await
-            {
-                Ok(()) => return Ok(true),
-                Err(BrzError::PermissionDenied(_, _)) => return Ok(false),
-                Err(e) => {
-                    log::warn!("Failed to abandon merge proposal {}: {}", mp_url, e);
-                    return Ok(false);
-                }
-            }
+            .await);
         } else {
             log::warn!("{}: Cannot abandon without revision + target URL", mp_url);
             return Ok(false);
@@ -3935,27 +3442,20 @@ async fn check_existing_mp(
                         "This merge proposal will be closed, since the branch for the role '{}' has changed from {} to {}.",
                         mp_run.role, mp_run.remote_branch_name, new_name
                     );
-                    match abandon_or_close_mp_async(
+                    return Ok(try_close_mp(
                         &mut proposal_info_manager,
                         mp,
+                        &mp_url,
+                        janitor::publish::MergeProposalStatus::Abandoned,
                         rev,
-                        Some(&mp_run.codebase),
-                        &target.to_string(),
-                        Some(&mp_run.campaign),
+                        &mp_run.codebase,
+                        target,
+                        &mp_run.campaign,
                         can_be_merged,
                         rate_limit_bucket.as_deref(),
-                        Some(&comment),
-                        AbandonMode::Abandoned,
+                        &comment,
                     )
-                    .await
-                    {
-                        Ok(()) => return Ok(true),
-                        Err(BrzError::PermissionDenied(_, _)) => return Ok(false),
-                        Err(e) => {
-                            log::warn!("Failed to abandon merge proposal {}: {}", mp_url, e);
-                            return Ok(false);
-                        }
-                    }
+                    .await);
                 }
                 return Ok(false);
             }
@@ -4195,9 +3695,10 @@ async fn check_existing_mp(
                 if code == "empty-merge-proposal" {
                     log::info!("{}: Empty merge proposal; closing as applied.", mp_url);
                     if let Some(rev) = revision.as_ref() {
-                        match abandon_or_close_mp_async(
+                        match close_mp(
                             &mut proposal_info_manager,
                             mp,
+                            janitor::publish::MergeProposalStatus::Applied,
                             rev,
                             codebase.as_ref(),
                             target_branch_url_for_publish.as_str(),
@@ -4207,7 +3708,6 @@ async fn check_existing_mp(
                             Some(
                                 "This merge proposal will be closed, since all remaining changes have been applied independently.",
                             ),
-                            AbandonMode::Applied,
                         )
                         .await
                         {
@@ -4219,11 +3719,6 @@ async fn check_existing_mp(
                             }
                             Err(BrzError::PermissionDenied(_, msg)) => {
                                 let msg = msg.unwrap_or_default();
-                                log::warn!(
-                                    "Permission denied closing merge request {}: {}",
-                                    mp_url,
-                                    msg
-                                );
                                 code = "empty-failed-to-close".to_string();
                                 description = format!(
                                     "Permission denied closing merge request: {}",
@@ -4305,61 +3800,46 @@ async fn check_existing_mp(
     Ok(false)
 }
 
-/// Distinguish between abandon ("we are giving up on this proposal")
-/// and close-as-applied ("the changes have already been merged in
-/// some other way"). Used by [`abandon_or_close_mp_async`] to pick
-/// the appropriate persisted status.
-#[derive(Debug, Clone, Copy)]
-enum AbandonMode {
-    Abandoned,
-    Applied,
-}
-
-/// Tiny wrapper that picks abandon_mp vs close_applied_mp based on
-/// `mode`. Lets [`check_existing_mp`] call a single function in
-/// the half-dozen places it transitions a proposal out of the
-/// `open` state.
+/// Like [`close_mp`], but log failures and report whether the proposal
+/// was closed.
 #[allow(clippy::too_many_arguments)]
-async fn abandon_or_close_mp_async(
+async fn try_close_mp(
     proposal_info_manager: &mut proposal_info::ProposalInfoManager,
     mp: &breezyshim::forge::MergeProposal,
+    mp_url: &url::Url,
+    status: janitor::publish::MergeProposalStatus,
     revision: &RevisionId,
-    codebase: Option<&CodebaseName>,
-    target_branch_url: &str,
-    campaign: Option<&janitor::Campaign>,
+    codebase: &CodebaseName,
+    target_branch_url: &url::Url,
+    campaign: &janitor::Campaign,
     can_be_merged: Option<bool>,
     rate_limit_bucket: Option<&str>,
-    comment: Option<&str>,
-    mode: AbandonMode,
-) -> Result<(), BrzError> {
-    match mode {
-        AbandonMode::Abandoned => {
-            abandon_mp(
-                proposal_info_manager,
-                mp,
-                revision,
-                codebase,
-                target_branch_url,
-                campaign,
-                can_be_merged,
-                rate_limit_bucket,
-                comment,
-            )
-            .await
-        }
-        AbandonMode::Applied => {
-            close_applied_mp(
-                proposal_info_manager,
-                mp,
-                revision,
-                codebase,
-                target_branch_url,
-                campaign,
-                can_be_merged,
-                rate_limit_bucket,
-                comment,
-            )
-            .await
+    comment: &str,
+) -> bool {
+    match close_mp(
+        proposal_info_manager,
+        mp,
+        status,
+        revision,
+        Some(codebase),
+        target_branch_url.as_str(),
+        Some(campaign),
+        can_be_merged,
+        rate_limit_bucket,
+        Some(comment),
+    )
+    .await
+    {
+        Ok(()) => true,
+        Err(BrzError::PermissionDenied(_, _)) => false,
+        Err(e) => {
+            log::warn!(
+                "Failed to close merge proposal {} as {}: {}",
+                mp_url,
+                status,
+                e
+            );
+            false
         }
     }
 }
@@ -4954,7 +4434,6 @@ pub(crate) fn should_skip_main_after_aux_failure(
 #[allow(clippy::too_many_arguments)]
 async fn consider_publish_run(
     conn: &sqlx::PgPool,
-    _redis: Option<RedisConnectionManager>,
     config: &janitor::config::Config,
     publish_worker: &crate::PublishWorker,
     vcs_managers: &HashMap<VcsType, Box<dyn VcsManager>>,
@@ -5000,7 +4479,9 @@ async fn consider_publish_run(
     // Exponential backoff: skip the run if the previous attempt was
     // too recent. Matches py/janitor/publish.py::consider_publish_run.
     let attempt_count = match run.revision.as_ref() {
-        Some(rev) => get_publish_attempt_count(conn, rev, &["differ-unreachable"]).await?,
+        Some(rev) => {
+            crate::state::get_publish_attempt_count(conn, rev, &["differ-unreachable"]).await?
+        }
         None => 0,
     };
     let next_try_time = calculate_next_try_time(run.finish_time, attempt_count);
@@ -5159,38 +4640,6 @@ async fn consider_publish_run(
     Ok(actual_modes)
 }
 
-/// Get the count of previous publish attempts for a revision.
-///
-/// # Arguments
-/// * `conn` - Database connection
-/// * `revision` - The revision ID to check
-/// * `exclude_codes` - Result codes to exclude from the count
-///
-/// # Returns
-/// The number of previous attempts
-async fn get_publish_attempt_count(
-    conn: &sqlx::PgPool,
-    revision: &breezyshim::RevisionId,
-    exclude_codes: &[&str],
-) -> Result<usize, sqlx::Error> {
-    let revision_str = revision.to_string();
-
-    let count = sqlx::query_scalar::<_, i64>(
-        r#"
-        SELECT COUNT(*)
-        FROM publish
-        WHERE revision = $1
-        AND (result_code IS NULL OR NOT (result_code = ANY($2)))
-        "#,
-    )
-    .bind(&revision_str)
-    .bind(exclude_codes)
-    .fetch_one(conn)
-    .await? as usize;
-
-    Ok(count)
-}
-
 /// Fetch the publish policy for a (codebase, campaign) pair: the
 /// per-branch `role -> (mode, frequency_days)` map, the campaign's
 /// current command, and the rate-limit bucket key.
@@ -5255,8 +4704,3 @@ pub async fn get_publish_policy(
 
     Ok(Some((policy_map, command, rate_limit_bucket)))
 }
-
-// Re-export the test module for testing
-#[cfg(test)]
-#[path = "lib_tests.rs"]
-mod lib_tests;
