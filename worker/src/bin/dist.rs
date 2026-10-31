@@ -56,6 +56,24 @@ fn report_failure(kind: &str, description: &str) -> ! {
     std::process::exit(1);
 }
 
+fn report_session_failure(e: ognibuild::session::Error) -> ! {
+    let failure = janitor_worker::session_failure(e, &[]);
+    report_failure(&failure.code, &failure.description);
+}
+
+#[cfg(feature = "debian")]
+fn report_apt_failure(e: ognibuild::debian::apt::Error) -> ! {
+    use ognibuild::debian::apt::Error;
+    match e {
+        Error::Session(e) => report_session_failure(e),
+        Error::Detailed {
+            error: Some(error), ..
+        } => report_failure(error.kind().as_ref(), &error.to_string()),
+        Error::FileSearch(e) => report_failure("file-search-error", &format!("{:?}", e)),
+        e => report_failure("command-failed", &format!("{:?}", e)),
+    }
+}
+
 fn main() -> Result<(), i32> {
     let args = Args::parse();
 
@@ -68,7 +86,10 @@ fn main() -> Result<(), i32> {
 
     #[cfg(target_os = "linux")]
     let mut session: Box<dyn Session> = if let Some(schroot) = args.schroot {
-        Box::new(ognibuild::session::schroot::SchrootSession::new(&schroot, None).unwrap())
+        match ognibuild::session::schroot::SchrootSession::new(&schroot, None) {
+            Ok(session) => Box::new(session),
+            Err(e) => report_session_failure(e),
+        }
     } else {
         Box::new(ognibuild::session::plain::PlainSession::new())
     };
@@ -78,20 +99,26 @@ fn main() -> Result<(), i32> {
 
     #[cfg(feature = "debian")]
     if args.apt_update {
-        ognibuild::debian::apt::run_apt(session.as_ref(), vec!["update"], vec![]).unwrap();
+        if let Err(e) = ognibuild::debian::apt::run_apt(session.as_ref(), vec!["update"], vec![]) {
+            report_apt_failure(e);
+        }
     }
     #[cfg(feature = "debian")]
     if args.apt_dist_upgrade {
-        ognibuild::debian::apt::run_apt(session.as_ref(), vec!["dist-upgrade"], vec![]).unwrap();
+        if let Err(e) =
+            ognibuild::debian::apt::run_apt(session.as_ref(), vec!["dist-upgrade"], vec![])
+        {
+            report_apt_failure(e);
+        }
     }
 
     let project = match breezyshim::workingtree::open(&args.directory) {
         Ok(tree) => session
             .project_from_vcs(&tree, Some(true), Some(&subdir))
-            .unwrap(),
+            .unwrap_or_else(|e| report_session_failure(e)),
         Err(BrzError::NotBranchError(..)) => session
             .project_from_directory(&args.directory, Some(&subdir))
-            .unwrap(),
+            .unwrap_or_else(|e| report_session_failure(e)),
         Err(e) => {
             report_failure("vcs-error", &format!("Error opening working tree: {}", e));
         }
@@ -153,31 +180,9 @@ fn main() -> Result<(), i32> {
                 }
                 (None, None)
             }
-            Err(ognibuild::debian::apt::Error::Session(
-                ognibuild::session::Error::SetupFailure(e, _),
-            )) => {
-                report_failure("session-setup-failure", &e.to_string());
-            }
-            Err(ognibuild::debian::apt::Error::Session(ognibuild::session::Error::IoError(e))) => {
-                report_failure("session-io-error", &e.to_string());
-            }
-            Err(ognibuild::debian::apt::Error::Session(
-                ognibuild::session::Error::CalledProcessError(e),
-            )) => {
-                report_failure("session-process-error", &e.to_string());
-            }
+            Err(ognibuild::debian::apt::Error::Session(e)) => report_session_failure(e),
             Err(ognibuild::debian::apt::Error::FileSearch(e)) => {
                 report_failure("file-search-error", &format!("{:?}", e));
-            }
-            Err(ognibuild::debian::apt::Error::Session(ognibuild::session::Error::ImageError(
-                e,
-            ))) => {
-                report_failure("session-image-error", &e.to_string());
-            }
-            Err(ognibuild::debian::apt::Error::Session(
-                e @ ognibuild::session::Error::MissingBinary { .. },
-            )) => {
-                report_failure("session-missing-binary", &e.to_string());
             }
         }
     } else {
