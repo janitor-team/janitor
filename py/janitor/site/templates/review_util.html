@@ -17,7 +17,7 @@
                     <td>
                         <span class="review-{{ review['verdict'] }}">{{ review['verdict'] }}</span>
                     </td>
-                    <td>{{ review['review_comment'] }}</td>
+                    <td>{{ review['comment'] }}</td>
                 </tr>
             {% endif %}
         {% endfor %}
@@ -62,7 +62,7 @@
                 </td>
                 <td id="my-review-comment">
                     {% if ns.my_review %}
-                        {{ ns.my_review.review_comment }}
+                        {{ ns.my_review.comment }}
                     {% endif %}
                 </td>
             </tr>
