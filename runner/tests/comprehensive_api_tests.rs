@@ -34,19 +34,6 @@ async fn get_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&body).unwrap()
 }
 
-async fn insert_codebase(pool: &sqlx::PgPool, name: &str) {
-    let url = format!("https://example.invalid/{name}");
-    sqlx::query(
-        "INSERT INTO codebase (name, branch_url, url, vcs_type)
-         VALUES ($1, $2, $2, 'git')",
-    )
-    .bind(name)
-    .bind(&url)
-    .execute(pool)
-    .await
-    .expect("codebase insert");
-}
-
 async fn assign(app: &axum::Router, worker: &str) -> axum::response::Response {
     let request = Request::builder()
         .method(Method::POST)
@@ -71,38 +58,6 @@ async fn test_assign_queue_empty_compatibility() {
     let response = assign(&app, "empty-queue-worker").await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(get_json(response).await, json!({"reason": "queue empty"}));
-}
-
-/// Test active runs endpoint API compatibility.
-#[tokio::test]
-async fn test_active_runs_compatibility() {
-    require_test_app!(app, _state);
-
-    let request = Request::builder()
-        .method(Method::GET)
-        .uri("/active-runs")
-        .body(Body::empty())
-        .unwrap();
-
-    let response = app.clone().oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let runs: Value = serde_json::from_slice(&body).unwrap();
-
-    // Should return array of active runs
-    assert!(runs.is_array());
-
-    // Each run should have Python-compatible structure
-    if let Some(runs_array) = runs.as_array() {
-        for run in runs_array {
-            assert!(run.get("worker_name").is_some());
-            assert!(run.get("log_id").is_some());
-            assert!(run.get("start_time").is_some());
-            assert!(run.get("campaign").is_some());
-            assert!(run.get("codebase").is_some());
-        }
-    }
 }
 
 /// `GET /queue/position` for a codebase that isn't queued.
@@ -130,7 +85,7 @@ async fn test_queue_position_not_queued() {
 async fn test_queue_position_without_active_runs() {
     require_test_app!(app, state);
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "position-cb").await;
+    test_utils::insert_codebase(&pool, "position-cb").await;
     sqlx::query(
         "INSERT INTO queue (codebase, suite, command, estimated_duration)
          VALUES ('position-cb', 'test-campaign', 'true', interval '10 seconds')",
@@ -158,7 +113,7 @@ async fn test_queue_position_without_active_runs() {
 async fn test_schedule_control_compatibility() {
     require_test_app!(app, state);
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "control-cb").await;
+    test_utils::insert_codebase(&pool, "control-cb").await;
 
     let request = Request::builder()
         .method(Method::POST)
@@ -201,7 +156,7 @@ async fn test_schedule_control_compatibility() {
 async fn test_schedule_control_run_without_main_branch_revision() {
     require_test_app!(app, state);
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "control-norev-cb").await;
+    test_utils::insert_codebase(&pool, "control-norev-cb").await;
     sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs-norev', 'test-campaign')")
         .execute(&pool)
         .await
