@@ -4,12 +4,12 @@ use crate::api_types::{
     CleanupRunsResponse, CurrentStageResponse, DebianBuildAssignment, EmptyResponse, ErrorResponse,
     FinishConflictResponse, FinishResponse, GenericBuildAssignment, MessageResponse, PeekResponse,
     PublishStatusUpdate, QueueEntry, QueuePositionResponse, QueueStatsResponse,
-    RateLimitedResponse, ReasonResponse, ResultBranchEntry, ResumeAssignment, ResumeChainResponse,
-    ResumeCheckResponse, ResumeDescendantsResponse, ResumeValidationResponse, RunDetailResponse,
-    RunFollowup, RunFollowupsResponse, RunHealthSummary, RunListResponse, RunSummary,
-    ScheduleControlResponse, ScheduleResponse, ScheduledCandidate, StatusResponse,
-    UploadCandidatesResponse, WatchdogHealthResponse, WorkerInfo, WorkerListResponse,
-    WorkerSummary,
+    RateLimitedResponse, ReasonResponse, ReprocessLogsResponse, ResultBranchEntry,
+    ResumeAssignment, ResumeChainResponse, ResumeCheckResponse, ResumeDescendantsResponse,
+    ResumeValidationResponse, RunDetailResponse, RunFollowup, RunFollowupsResponse,
+    RunHealthSummary, RunListResponse, RunSummary, ScheduleControlResponse, ScheduleResponse,
+    ScheduledCandidate, StatusResponse, UploadCandidatesResponse, WatchdogHealthResponse,
+    WorkerInfo, WorkerListResponse, WorkerSummary,
 };
 use crate::{
     get_builder, metrics::MetricsCollector, ActiveRun, AppState, Backchannel, BuilderResult,
@@ -69,6 +69,17 @@ struct AssignRequest {
 struct UpdateRunRequest {
     /// New publish status.
     publish_status: String,
+}
+
+/// JSON body for `POST /runs/{run_id}/reprocess-logs`.
+#[derive(Debug, Deserialize, ToSchema)]
+struct ReprocessLogsRequest {
+    /// Report the new analysis without storing it.
+    #[serde(default)]
+    dry_run: bool,
+    /// Reschedule the run when the result code changes.
+    #[serde(default)]
+    reschedule: bool,
 }
 
 /// Request for resume information.
@@ -1908,6 +1919,105 @@ async fn update_run(
         Err(e) => {
             log::error!("Failed to update run {}: {}", id, e);
             db_error()
+        }
+    }
+}
+
+/// Analyze the run's dist or build log again and store the new result.
+#[utoipa::path(
+    post,
+    path = "/runs/{id}/reprocess-logs",
+    params(("id" = RunId, Path, description = "Run id")),
+    request_body = ReprocessLogsRequest,
+    responses(
+        (status = 200, description = "Result of the run after reprocessing", body = ReprocessLogsResponse),
+        (status = 404, description = "No such run", body = ReasonResponse),
+        (status = 500, description = "Database error or failure to reprocess", body = ErrorResponse),
+    )
+)]
+async fn reprocess_run_logs(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<RunId>,
+    Json(request): Json<ReprocessLogsRequest>,
+) -> Response {
+    #[derive(sqlx::FromRow)]
+    struct RunRow {
+        codebase: CodebaseName,
+        suite: Campaign,
+        change_set: ChangeSetId,
+        start_time: chrono::NaiveDateTime,
+        finish_time: chrono::NaiveDateTime,
+        result_code: String,
+        description: Option<String>,
+        failure_details: Option<serde_json::Value>,
+    }
+    let row: Result<Option<RunRow>, _> = sqlx::query_as(
+        "SELECT codebase, suite, change_set, start_time, finish_time, result_code, \
+         description, failure_details FROM run WHERE id = $1",
+    )
+    .bind(&id)
+    .fetch_optional(state.database.pool())
+    .await;
+    let run = match row {
+        Ok(Some(run)) => run,
+        Ok(None) => {
+            return reason(StatusCode::NOT_FOUND, format!("no such run: {}", id));
+        }
+        Err(e) => {
+            log::error!("Failed to get run {}: {}", id, e);
+            return db_error();
+        }
+    };
+    let process_fns: [(String, LogFilename, janitor::analyze_log::AnalyzeLogFn<_>); 2] = [
+        (
+            "dist-".to_string(),
+            LogFilename::new("dist.log").expect("a fixed log filename is valid"),
+            janitor::analyze_log::process_dist_log,
+        ),
+        (
+            "build-".to_string(),
+            LogFilename::new("build.log").expect("a fixed log filename is valid"),
+            janitor::analyze_log::process_sbuild_log,
+        ),
+    ];
+    let result = janitor::reprocess_logs::reprocess_run_logs(
+        state.database.pool(),
+        &state.log_manager,
+        &run.codebase,
+        &run.suite,
+        &id,
+        Some(&run.change_set),
+        run.finish_time - run.start_time,
+        &run.result_code,
+        run.description.as_deref(),
+        run.failure_details.as_ref(),
+        &process_fns,
+        request.dry_run,
+        request.reschedule,
+        None,
+    )
+    .await;
+    match result {
+        Ok(Some(analysis)) => Json(ReprocessLogsResponse {
+            changed: true,
+            result_code: analysis.code,
+            description: Some(analysis.description),
+            failure_details: analysis.failure_details,
+        })
+        .into_response(),
+        Ok(None) => Json(ReprocessLogsResponse {
+            changed: false,
+            result_code: run.result_code,
+            description: run.description,
+            failure_details: run.failure_details,
+        })
+        .into_response(),
+        Err(e) => {
+            log::error!("Failed to reprocess logs of run {}: {}", id, e);
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to reprocess logs: {}", e),
+            )
         }
     }
 }
@@ -4542,6 +4652,7 @@ fn private_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(get_run, update_run))
         .routes(routes!(get_run_followups))
         .routes(routes!(get_last_unabsorbed_run))
+        .routes(routes!(reprocess_run_logs))
         // The unauthenticated POST is for intra-cluster admin tools
         // (e.g. schedule-codebases CronJob). Body must include
         // `worker`/`node`. Workers themselves should hit
