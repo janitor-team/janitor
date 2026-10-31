@@ -239,3 +239,55 @@ test_with_database! {
         }
     }
 }
+
+test_with_database! {
+    async fn blockers_with_a_review(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase_and_run(test_db.pool(), "cb-1", "lintian-fixes").await;
+        sqlx::query(
+            "INSERT INTO named_publish_policy (name, per_branch_policy) \
+             VALUES ('policy-1', ARRAY[ROW('main', 'propose', NULL)::branch_publish_policy])",
+        )
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO candidate (suite, command, publish_policy, codebase, value) \
+             VALUES ('lintian-fixes', 'noop', 'policy-1', 'cb-1', 100)",
+        )
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO review (run_id, reviewer, verdict, reviewed_at) \
+             VALUES ('run-1', 'alice', 'approved', '2026-01-02 03:04:05')",
+        )
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+
+        let app = build_app(test_db.pool().clone()).await;
+        let req = Request::builder()
+            .uri("/blockers/run-1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            body["publish_status"],
+            serde_json::json!({
+                "result": false,
+                "details": {
+                    "status": "unknown",
+                    "reviews": {
+                        "alice": {"comment": null, "timestamp": "2026-01-02T03:04:05", "verdict": "approved"}
+                    }
+                }
+            })
+        );
+    }
+}

@@ -1922,7 +1922,7 @@ struct BlockerCommandDetails {
 /// py/janitor/publish.py::blockers_request.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ReviewSummary {
-    timestamp: chrono::DateTime<chrono::Utc>,
+    timestamp: chrono::NaiveDateTime,
     comment: Option<String>,
     verdict: String,
 }
@@ -2075,7 +2075,7 @@ WHERE run.id = $1
     #[derive(sqlx::FromRow)]
     struct ReviewRow {
         reviewer: String,
-        reviewed_at: chrono::DateTime<chrono::Utc>,
+        reviewed_at: chrono::NaiveDateTime,
         comment: Option<String>,
         verdict: String,
     }
