@@ -66,10 +66,7 @@ fn test_debdiff_error_display() {
 
 #[test]
 fn test_publish_error_code() {
-    let err = PublishError::Failure {
-        code: "test-code".to_string(),
-        description: "Test description".to_string(),
-    };
+    let err = PublishError::failure("test-code", "Test description");
     assert_eq!(err.code(), "test-code");
 
     let err = PublishError::NothingToDo("Nothing to do".to_string());
@@ -78,22 +75,13 @@ fn test_publish_error_code() {
     let err = PublishError::BranchBusy(url::Url::parse("https://example.com").unwrap());
     assert_eq!(err.code(), "branch-busy");
 
-    let err = PublishError::AuthenticationFailed;
-    assert_eq!(err.code(), "authentication-failed");
-
-    let err = PublishError::NetworkError("Network error".to_string());
-    assert_eq!(err.code(), "network-error");
-
     let err = PublishError::DatabaseError(sqlx::Error::RowNotFound);
     assert_eq!(err.code(), "database-error");
 }
 
 #[test]
 fn test_publish_error_description() {
-    let err = PublishError::Failure {
-        code: "test-code".to_string(),
-        description: "Test description".to_string(),
-    };
+    let err = PublishError::failure("test-code", "Test description");
     assert_eq!(err.description(), "Test description");
 
     let err = PublishError::NothingToDo("Nothing to do".to_string());
@@ -102,22 +90,13 @@ fn test_publish_error_description() {
     let err = PublishError::BranchBusy(url::Url::parse("https://example.com").unwrap());
     assert_eq!(err.description(), "Branch is busy");
 
-    let err = PublishError::AuthenticationFailed;
-    assert_eq!(err.description(), "Authentication failed");
-
-    let err = PublishError::NetworkError("Network connection failed".to_string());
-    assert_eq!(err.description(), "Network connection failed");
-
     let err = PublishError::DatabaseError(sqlx::Error::RowNotFound);
     assert_eq!(err.description(), "Database error");
 }
 
 #[test]
 fn test_publish_error_display() {
-    let err = PublishError::Failure {
-        code: "test-code".to_string(),
-        description: "Test description".to_string(),
-    };
+    let err = PublishError::failure("test-code", "Test description");
     assert_eq!(
         err.to_string(),
         "PublishError::Failure: test-code: Test description"
