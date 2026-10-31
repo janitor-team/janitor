@@ -82,6 +82,46 @@ fn build_failure(e: IterateBuildError) -> BuildFailure {
     }
 }
 
+/// Fail if a `.deb` in `output_directory` can not be read to the end.
+fn check_debs(output_directory: &std::path::Path) -> Result<(), BuildFailure> {
+    let io_failure = |e: std::io::Error| BuildFailure {
+        code: "io-error".to_string(),
+        description: format!("IO error: {}", e),
+        stage: vec![],
+        details: None,
+    };
+    for entry in std::fs::read_dir(output_directory).map_err(io_failure)? {
+        let path = entry.map_err(io_failure)?.path();
+        if path.extension() != Some(std::ffi::OsStr::new("deb")) {
+            continue;
+        }
+        let output = std::process::Command::new("dpkg-deb")
+            .arg("--contents")
+            .arg(&path)
+            .stdout(std::process::Stdio::null())
+            .output()
+            .map_err(|e| BuildFailure {
+                code: "io-error".to_string(),
+                description: format!("Error running dpkg-deb: {}", e),
+                stage: vec![],
+                details: None,
+            })?;
+        if !output.status.success() {
+            return Err(BuildFailure {
+                code: "unreadable-deb".to_string(),
+                description: format!(
+                    "Unable to read {}: {}",
+                    path.file_name().unwrap().to_string_lossy(),
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+                stage: vec![],
+                details: None,
+            });
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn build(
     local_tree: &breezyshim::workingtree::GenericWorkingTree,
     subpath: &std::path::Path,
@@ -231,6 +271,8 @@ pub(crate) fn build(
         let build_result = result.map_err(build_failure)?;
         log::info!("Built {:?}.", build_result.changes_names);
 
+        check_debs(output_directory)?;
+
         let lintian_result = crate::debian::lintian::run_lintian(
             output_directory,
             build_result
@@ -270,6 +312,20 @@ pub struct DebianBuildResult {
 mod tests {
     use super::*;
     use buildlog_consultant::problems::debian::UnsatisfiedAptDependencies;
+
+    #[test]
+    fn test_check_debs() {
+        let td = tempfile::tempdir().unwrap();
+        let deb = include_bytes!("../../../archive/tests/data/hello_2.10-3_amd64.deb");
+        std::fs::write(td.path().join("hello_2.10-3_amd64.deb"), deb).unwrap();
+        check_debs(td.path()).unwrap();
+        std::fs::write(td.path().join("broken_1.0-1_amd64.deb"), &deb[..30000]).unwrap();
+        let f = check_debs(td.path()).unwrap_err();
+        assert_eq!(f.code, "unreadable-deb");
+        assert!(f
+            .description
+            .starts_with("Unable to read broken_1.0-1_amd64.deb: "));
+    }
 
     fn failure(e: IterateBuildError) -> (String, String, Vec<String>) {
         let f = build_failure(e);
