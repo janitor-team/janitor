@@ -270,6 +270,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Ok(_) => 0,
             };
+            *state.write().unwrap() = AppState::default();
 
             if !args.r#loop {
                 std::process::exit(exit_code);

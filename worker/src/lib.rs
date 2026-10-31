@@ -1009,7 +1009,11 @@ pub async fn process_single_item(
             ..Metadata::default()
         };
 
-        // TODO: Update metadata in appstate while working
+        {
+            let mut state = state.write().unwrap();
+            state.output_directory = Some(output_directory_.clone());
+            state.metadata = Some(metadata.clone());
+        }
 
         let result = run_worker(
             &assignment_.codebase,
