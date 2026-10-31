@@ -113,7 +113,7 @@ async fn listen_to_runner(
     artifact_location: &str,
     upload_config: UploadConfig,
 ) -> Result<()> {
-    let redis_client = RedisClient::new(redis_url).await?;
+    let redis_client = RedisClient::new(redis_url)?;
     let message_handler = Arc::new(MessageHandler::new(artifact_location, upload_config).await?);
 
     loop {

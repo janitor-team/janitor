@@ -64,16 +64,14 @@ impl PubSubMessage for BuildResultMessage {
 }
 
 impl RedisClient {
-    /// Connect to Redis and verify the connection with a health check.
-    pub async fn new(redis_url: &str) -> Result<Self> {
-        info!("connecting to Redis: {}", redis_url);
+    /// Set up the Redis client. The connection is made when subscribing.
+    pub fn new(redis_url: &str) -> Result<Self> {
+        info!("using Redis at {}", redis_url);
         let config = RedisConfig {
             url: redis_url.to_string(),
             ..Default::default()
         };
         let redis_manager = Arc::new(RedisManager::new(config)?);
-        redis_manager.health_check().await?;
-        info!("connected to Redis");
         Ok(Self { redis_manager })
     }
 
