@@ -37,11 +37,8 @@ from yarl import URL
 from janitor import CAMPAIGN_REGEX, utcnow, version_string
 
 from .. import check_admin, worker_link_is_global
-from ..setup import setup_logfile_manager, setup_postgres
-
-BUILD_LOG_FILENAME = "build.log"
-DIST_LOG_FILENAME = "dist.log"
-
+from ..api import request_backend
+from ..setup import setup_postgres
 
 routes = web.RouteTableDef()
 
@@ -270,63 +267,16 @@ class ReprocessResultSchema(Schema):
 @response_schema(ReprocessResultSchema())
 @routes.post("/run/{run_id}/reprocess-logs", name="admin-reprocess-logs-run")
 async def handle_run_reprocess_logs(request):
-    from ...reprocess_logs import (  # type: ignore
-        process_dist_log,
-        process_sbuild_log,
-        reprocess_run_logs,
-    )
-
     post = await request.post()
     run_id = request.match_info["run_id"]
-    dry_run = "dry_run" in post
-    reschedule = "reschedule" in post
-    async with request.app["pool"].acquire() as conn:
-        run = await conn.fetchrow(
-            "SELECT codebase, suite AS campaign, command, "
-            "finish_time - start_time as duration, codebase, "
-            "result_code, description, failure_details, change_set FROM run WHERE id = $1",
-            run_id,
-        )
-
-    result = await reprocess_run_logs(
-        db=request.app["pool"],
-        logfile_manager=request.app["logfile_manager"],
-        codebase=run["codebase"],
-        campaign=run["campaign"],
-        log_id=run_id,
-        command=run["command"],
-        change_set=run["change_set"],
-        duration=run["duration"],
-        result_code=run["result_code"],
-        description=run["description"],
-        failure_details=run["failure_details"],
-        process_fns=[
-            ("dist-", DIST_LOG_FILENAME, process_dist_log),
-            ("build-", BUILD_LOG_FILENAME, process_sbuild_log),
-        ],
-        dry_run=dry_run,
-        reschedule=reschedule,
+    url = URL(request.app["runner_url"]) / "runs" / run_id / "reprocess-logs"
+    return await request_backend(
+        request,
+        "POST",
+        url,
+        "runner",
+        json={"dry_run": "dry_run" in post, "reschedule": "reschedule" in post},
     )
-
-    if result:
-        (new_code, new_description, new_failure_details) = result
-        return web.json_response(
-            {
-                "changed": True,
-                "result_code": new_code,
-                "description": new_description,
-                "failure_details": new_failure_details,
-            }
-        )
-    else:
-        return web.json_response(
-            {
-                "changed": False,
-                "result_code": run["result_code"],
-                "description": run["description"],
-                "failure_details": run["failure_details"],
-            }
-        )
 
 
 async def select_runs_to_reprocess(
@@ -407,12 +357,6 @@ class ReprocessingSchema(Schema):
 @response_schema(ReprocessingSchema(many=True))
 @routes.post("/reprocess-logs", name="admin-reprocess-logs")
 async def handle_reprocess_logs(request):
-    from ...reprocess_logs import (
-        process_dist_log,
-        process_sbuild_log,
-        reprocess_run_logs,
-    )
-
     check_admin(request)
     post = await request.post()
     dry_run = "dry_run" in post
@@ -434,29 +378,17 @@ async def handle_reprocess_logs(request):
         except asyncpg.InvalidRegularExpressionError as e:
             raise web.HTTPBadRequest(text=f"Invalid regex: {e.message}") from e
 
+    async def do_reprocess(run_id):
+        url = URL(request.app["runner_url"]) / "runs" / run_id / "reprocess-logs"
+        async with request.app["http_client_session"].post(
+            url,
+            json={"dry_run": dry_run, "reschedule": reschedule},
+            raise_for_status=True,
+        ):
+            pass
+
     for row in rows:
-        await spawn(
-            request,
-            reprocess_run_logs(
-                db=request.app["pool"],
-                logfile_manager=request.app["logfile_manager"],
-                codebase=row["codebase"],
-                campaign=row["campaign"],
-                log_id=row["id"],
-                command=row["command"],
-                change_set=row["change_set"],
-                duration=row["duration"],
-                result_code=row["result_code"],
-                description=row["description"],
-                failure_details=row["failure_details"],
-                process_fns=[
-                    ("dist-", DIST_LOG_FILENAME, process_dist_log),
-                    ("build-", BUILD_LOG_FILENAME, process_sbuild_log),
-                ],
-                dry_run=dry_run,
-                reschedule=reschedule,
-            ),
-        )
+        await spawn(request, do_reprocess(row["id"]))
 
     return web.json_response(
         [
@@ -611,7 +543,6 @@ def create_app(*, config, publisher_url, runner_url, trace_configs=None, db=None
         setup_postgres(app)
     else:
         app["pool"] = db
-    setup_logfile_manager(app)
     setup_aiojobs(app)
     setup_aiohttp_apispec(
         app=app,
