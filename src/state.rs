@@ -28,7 +28,7 @@ pub async fn create_pool(config: &Config) -> Result<Pool<Postgres>, sqlx::Error>
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Run {
     pub id: RunId,
-    pub command: String,
+    pub command: Option<String>,
     pub description: Option<String>,
     pub result_code: String,
     pub main_branch_revision: Option<RevisionId>,
@@ -37,8 +37,8 @@ pub struct Run {
     pub result: Option<serde_json::Value>,
     pub suite: Campaign,
     pub instigated_context: Option<String>,
-    pub vcs_type: String,
-    pub branch_url: String,
+    pub vcs_type: Option<String>,
+    pub branch_url: Option<String>,
     pub logfilenames: Option<Vec<String>>,
     // Column in the schema is `worker` (name of the worker); keep the
     // Rust field as `worker_name` for clarity but rename at the sqlx
@@ -46,7 +46,14 @@ pub struct Run {
     // `AS worker_name` alias everywhere.
     #[sqlx(rename = "worker")]
     pub worker_name: Option<String>,
-    pub result_branches: Option<Vec<(String, String, Option<RevisionId>, Option<RevisionId>)>>,
+    pub result_branches: Option<
+        Vec<(
+            String,
+            Option<String>,
+            Option<RevisionId>,
+            Option<RevisionId>,
+        )>,
+    >,
     pub result_tags: Option<Vec<(String, String)>>,
     pub target_branch_url: Option<String>,
     pub change_set: ChangeSetId,
@@ -80,7 +87,7 @@ impl Run {
     pub fn get_result_branch(
         &self,
         role: &str,
-    ) -> Option<(String, Option<RevisionId>, Option<RevisionId>)> {
+    ) -> Option<(Option<String>, Option<RevisionId>, Option<RevisionId>)> {
         self.result_branches.as_ref().and_then(|branches| {
             branches
                 .iter()
@@ -149,7 +156,7 @@ mod tests {
     fn make_run() -> Run {
         Run {
             id: RunId::new("run-123").unwrap(),
-            command: "lintian-brush".to_string(),
+            command: Some("lintian-brush".to_string()),
             description: Some("Fixed lintian issues".to_string()),
             result_code: "success".to_string(),
             main_branch_revision: Some(RevisionId::from(b"main-rev".to_vec())),
@@ -158,20 +165,20 @@ mod tests {
             result: Some(serde_json::json!({"applied": 3})),
             suite: Campaign::new("lintian-fixes").unwrap(),
             instigated_context: None,
-            vcs_type: "git".to_string(),
-            branch_url: "https://salsa.debian.org/foo/bar".to_string(),
+            vcs_type: Some("git".to_string()),
+            branch_url: Some("https://salsa.debian.org/foo/bar".to_string()),
             logfilenames: Some(vec!["build.log".to_string(), "worker.log".to_string()]),
             worker_name: Some("worker-1".to_string()),
             result_branches: Some(vec![
                 (
                     "main".to_string(),
-                    "refs/heads/lintian-fixes".to_string(),
+                    Some("refs/heads/lintian-fixes".to_string()),
                     Some(RevisionId::from(b"base-rev".to_vec())),
                     Some(RevisionId::from(b"tip-rev".to_vec())),
                 ),
                 (
                     "debian".to_string(),
-                    "refs/heads/debian".to_string(),
+                    Some("refs/heads/debian".to_string()),
                     None,
                     None,
                 ),
@@ -199,7 +206,7 @@ mod tests {
     fn test_run_get_result_branch_found() {
         let run = make_run();
         let (name, base_rev, rev) = run.get_result_branch("main").unwrap();
-        assert_eq!(name, "refs/heads/lintian-fixes");
+        assert_eq!(name.as_deref(), Some("refs/heads/lintian-fixes"));
         assert_eq!(base_rev, Some(RevisionId::from(b"base-rev".to_vec())));
         assert_eq!(rev, Some(RevisionId::from(b"tip-rev".to_vec())));
     }
@@ -221,7 +228,7 @@ mod tests {
     fn test_run_get_result_branch_no_revisions() {
         let run = make_run();
         let (name, base_rev, rev) = run.get_result_branch("debian").unwrap();
-        assert_eq!(name, "refs/heads/debian");
+        assert_eq!(name.as_deref(), Some("refs/heads/debian"));
         assert_eq!(base_rev, None);
         assert_eq!(rev, None);
     }
@@ -242,7 +249,7 @@ mod tests {
     fn test_run_equality_ignores_other_fields() {
         let run1 = make_run();
         let mut run2 = make_run();
-        run2.command = "different-command".to_string();
+        run2.command = Some("different-command".to_string());
         run2.result_code = "failure".to_string();
         run2.value = Some(999);
         // Still equal because id is the same
