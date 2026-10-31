@@ -9,6 +9,7 @@ pub mod error;
 pub mod identifiers;
 pub mod logging;
 pub mod logs;
+pub mod migrate_logs;
 #[cfg(feature = "otlp")]
 pub mod otlp;
 pub mod pagination;
