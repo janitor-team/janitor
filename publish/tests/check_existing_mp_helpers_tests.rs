@@ -19,6 +19,7 @@
 //! are exactly what `check_existing_mp` will see in production.
 
 use chrono::{Duration, Utc};
+use janitor::state::ResultTag;
 use janitor::{
     schema::setup_test_database,
     test_utils::{TestDatabase, TestDatabaseConfig},
@@ -27,6 +28,7 @@ use janitor::{
 use janitor::{Campaign, CodebaseName, RunId};
 use janitor_publish::state::{
     get_last_effective_run, get_merge_proposal_run, get_run, guess_proposal_info_from_revision,
+    iter_publish_ready,
 };
 use janitor_publish::{derived_branch_name, get_publish_policy};
 use sqlx::PgPool;
@@ -683,5 +685,85 @@ test_with_database! {
             .await
             .unwrap();
         assert!(policy.is_none());
+    }
+}
+
+test_with_database! {
+    async fn test_run_queries_decode_result_tags(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        let pool = test_db.pool();
+        let url = "https://example.invalid/cb-1";
+        seed_codebase_and_change_set(pool, "cb-1", "cs-1", "lintian-fixes", url).await;
+        seed_run(
+            pool,
+            "run-1",
+            "cb-1",
+            "lintian-fixes",
+            "lintian-brush",
+            url,
+            Some("rev-tip"),
+            42,
+            "cs-1",
+            5,
+        )
+        .await;
+        seed_result_branch(
+            pool,
+            "run-1",
+            "main",
+            "master",
+            Some("rev-base"),
+            Some("rev-tip"),
+        )
+        .await;
+        seed_publish_policy_and_candidate(
+            pool,
+            "policy-1",
+            "bucket-1",
+            "main",
+            "cb-1",
+            "lintian-fixes",
+            "lintian-brush",
+        )
+        .await;
+        sqlx::raw_sql(
+            "UPDATE run SET publish_status = 'approved',
+                 result_tags = ARRAY[ROW('upstream/1.0', 'rev-tag')::result_tag];
+             UPDATE change_set SET state = 'ready'",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        let tags = Some(vec![ResultTag {
+            actual_name: "upstream/1.0".to_string(),
+            revision: breezyshim::RevisionId::from(b"rev-tag".to_vec()),
+        }]);
+        let run_id = RunId::new("run-1").unwrap();
+
+        let run = get_run(pool, &run_id).await.unwrap().unwrap();
+        assert_eq!(run.result_tags, tags);
+        let run = get_last_effective_run(
+            pool,
+            &CodebaseName::new("cb-1").unwrap(),
+            &Campaign::new("lintian-fixes").unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!((run.id, run.result_tags), (run_id.clone(), tags.clone()));
+        let ready: Vec<_> = iter_publish_ready(pool, None)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(run, ..)| (run.id, run.result_tags))
+            .collect();
+        assert_eq!(ready, vec![(run_id.clone(), tags)]);
+
+        sqlx::query("UPDATE run SET result_tags = NULL")
+            .execute(pool)
+            .await
+            .unwrap();
+        let run = get_run(pool, &run_id).await.unwrap().unwrap();
+        assert_eq!(run.result_tags, None);
     }
 }
