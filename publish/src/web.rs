@@ -1168,6 +1168,7 @@ struct PublishQuery {
 ///
 /// No rate-limit or already-published check: this endpoint is the
 /// operator override.
+/// A run that has not passed review gets a 400 unless `mode` is given.
 async fn publish(
     State(state): State<Arc<AppState>>,
     Path((campaign, codebase)): Path<(Campaign, CodebaseName)>,
@@ -1204,6 +1205,34 @@ async fn publish(
             );
         }
     };
+
+    if form.mode.is_none() {
+        let publish_status: String =
+            match sqlx::query_scalar("SELECT publish_status::text FROM run WHERE id = $1")
+                .bind(&run.id)
+                .fetch_one(&state.conn)
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!("Error loading publish status of run {}: {}", run.id, e);
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        error_response("Database error"),
+                    );
+                }
+            };
+        if matches!(publish_status.as_str(), "needs-manual-review" | "rejected") {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "Run has not passed review",
+                    "run_id": run.id,
+                    "publish_status": publish_status,
+                })),
+            );
+        }
+    }
 
     let policy_lookup = match crate::get_publish_policy(&state.conn, &codebase, &campaign).await {
         Ok(p) => p,
