@@ -6,7 +6,7 @@ use axum::http::{Request, StatusCode};
 use janitor::{schema::setup_debian_test_database, test_with_database};
 use janitor_archive::config::{AptRepositoryConfig, ArchiveConfig};
 use janitor_archive::database::ArchiveDatabase;
-use janitor_archive::repository::{RepositoryGenerationConfig, RepositoryGenerator};
+use janitor_archive::repository::RepositoryGenerator;
 use janitor_archive::scanner::PackageScanner;
 use janitor_archive::web::ArchiveWebService;
 use tempfile::TempDir;
@@ -29,7 +29,7 @@ async fn generator(pool: &sqlx::PgPool, archive: &Path) -> RepositoryGenerator {
     RepositoryGenerator::new(
         Arc::new(PackageScanner::new(&location).await.unwrap()),
         Arc::new(ArchiveDatabase::new(pool.clone())),
-        RepositoryGenerationConfig::default(),
+        None,
     )
 }
 
@@ -48,12 +48,9 @@ async fn build_app(pool: sqlx::PgPool) -> (axum::Router, TempDir) {
 
     let service = ArchiveWebService::new(
         config,
-        generator(&pool, tmp.path()).await,
         PackageScanner::new(&location).await.unwrap(),
         ArchiveDatabase::new(pool),
-    )
-    .await
-    .unwrap();
+    );
     (service.router(), tmp)
 }
 
