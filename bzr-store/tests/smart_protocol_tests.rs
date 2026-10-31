@@ -383,6 +383,7 @@ test_with_database! {
             "/bzr/Ghost/.bzr/smart",
             "/bzr/foo/..%2Fetc/.bzr/smart",
             "/bzr/foo/Campaign/main/.bzr/smart",
+            "/bzr/foo/campaign//.bzr/smart",
         ] {
             let resp = client
                 .post(format!("http://{}{}", addr, path))

@@ -545,6 +545,7 @@ test_with_database! {
             "/Upper/.bzr/smart",
             "/foo/Bad_Campaign/.bzr/smart",
             "/foo/Bad_Campaign/main/.bzr/smart",
+            "/foo/campaign/..%2Fescape/.bzr/smart",
         ] {
             let resp = client
                 .post(format!("http://{}{}", addr, path))

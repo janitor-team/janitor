@@ -1,5 +1,5 @@
-//! Validated identifiers for codebases, campaigns, runs, change sets and
-//! publish attempts.
+//! Validated identifiers for codebases, campaigns, roles, runs, change sets
+//! and publish attempts.
 //!
 //! These values end up in filesystem paths, URLs, redis keys and
 //! subprocess arguments, so anything coming from outside (HTTP paths,
@@ -48,6 +48,13 @@ fn is_valid_name(s: &str) -> bool {
         return false;
     }
     rest.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '+' | '.' | '-'))
+}
+
+/// `[a-z][a-z-]*`, e.g. `main` or `pristine-tar`.
+fn is_valid_role(s: &str) -> bool {
+    let mut chars = s.chars();
+    chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c == '-')
 }
 
 fn is_valid_id(s: &str) -> bool {
@@ -229,6 +236,13 @@ identifier!(
 );
 
 identifier!(
+    /// Role of a result branch, such as `main` or `pristine-tar`.
+    Role,
+    "role",
+    is_valid_role
+);
+
+identifier!(
     /// Identifier of a run.
     RunId,
     "run id",
@@ -280,6 +294,22 @@ mod tests {
     fn test_campaign() {
         assert_eq!(Campaign::new("lintian-fixes").unwrap(), "lintian-fixes");
         assert!(Campaign::new("../etc").is_err());
+    }
+
+    #[test]
+    fn test_role() {
+        for role in [
+            "main",
+            "pristine-tar",
+            "pristine-lfs",
+            "patch-queue",
+            "upstream",
+        ] {
+            assert_eq!(Role::new(role).unwrap().as_str(), role);
+        }
+        for role in ["", ".", "..", "a/b", "a\\b", "a%b", "Main", "-x", "1abc"] {
+            assert!(Role::new(role).is_err(), "{:?}", role);
+        }
     }
 
     #[test]
