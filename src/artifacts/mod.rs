@@ -15,6 +15,7 @@ pub enum Error {
     ArtifactsMissing,
     IoError(std::io::Error),
     InvalidPath,
+    Timeout(String),
     Other(String),
 }
 
@@ -25,6 +26,7 @@ impl std::fmt::Display for Error {
             Error::ArtifactsMissing => write!(f, "Artifacts missing"),
             Error::IoError(e) => write!(f, "IO error: {}", e),
             Error::InvalidPath => write!(f, "Invalid path"),
+            Error::Timeout(e) => write!(f, "Timed out: {}", e),
             Error::Other(e) => write!(f, "Error: {}", e),
         }
     }
@@ -42,9 +44,24 @@ impl From<object_store::Error> for Error {
     fn from(e: object_store::Error) -> Self {
         match e {
             object_store::Error::NotFound { .. } => Error::ArtifactsMissing,
+            e if is_timeout(&e) => Error::Timeout(e.to_string()),
             e => Error::Other(e.to_string()),
         }
     }
+}
+
+fn is_timeout(e: &(dyn std::error::Error + 'static)) -> bool {
+    use object_store::client::{HttpError, HttpErrorKind};
+    let mut source = Some(e);
+    while let Some(e) = source {
+        if e.downcast_ref::<HttpError>()
+            .is_some_and(|e| e.kind() == HttpErrorKind::Timeout)
+        {
+            return true;
+        }
+        source = e.source();
+    }
+    false
 }
 
 pub async fn list_ids(manager: &ArtifactManager) -> Result<(), Error> {
@@ -185,6 +202,7 @@ mod tests {
         assert_eq!(Error::ServiceUnavailable.to_string(), "Service unavailable");
         assert_eq!(Error::ArtifactsMissing.to_string(), "Artifacts missing");
         assert_eq!(Error::InvalidPath.to_string(), "Invalid path");
+        assert_eq!(Error::Timeout("x".into()).to_string(), "Timed out: x");
         assert_eq!(Error::Other("x".into()).to_string(), "Error: x");
         let io_err: Error = std::io::Error::new(std::io::ErrorKind::NotFound, "nope").into();
         assert!(
@@ -201,6 +219,18 @@ mod tests {
     fn from_io_error_produces_io_variant() {
         let err: Error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "x").into();
         assert!(matches!(err, Error::IoError(_)));
+    }
+
+    #[test]
+    fn from_object_store_timeout_produces_timeout_variant() {
+        use object_store::client::{HttpError, HttpErrorKind};
+        let timeout = std::io::Error::new(std::io::ErrorKind::TimedOut, "stalled");
+        let err: Error = object_store::Error::Generic {
+            store: "GCS",
+            source: Box::new(HttpError::new(HttpErrorKind::Timeout, timeout)),
+        }
+        .into();
+        assert!(matches!(err, Error::Timeout(_)), "got {err:?}");
     }
 
     #[test]

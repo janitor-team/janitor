@@ -6,8 +6,6 @@ pub use tracing;
 
 /// Prefix for temporary directories created during scan/publish.
 pub const TMP_PREFIX: &str = "janitor-apt";
-/// Default GCS artifact-retrieval timeout in seconds.
-pub const DEFAULT_GCS_TIMEOUT: usize = 60 * 30;
 
 /// Archive service configuration.
 pub mod config;
