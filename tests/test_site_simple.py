@@ -406,3 +406,113 @@ async def test_oauth_callback_defaults_missing_groups_claim(
     )
     stored = await _get_session(client, session_id)
     assert (resp.status, page.status, stored["groups"]) == (302, 200, groups)
+
+
+def _fingerprints_of(exported):
+    """Fingerprints of the keys in an exported gpg keyring blob."""
+    import gpg
+
+    with tempfile.TemporaryDirectory() as home, gpg.Context(home_dir=home) as ctx:
+        return [i.fpr for i in ctx.key_import(exported).imports]
+
+
+def _listed_fingerprints(html):
+    """Fingerprints of the "pub" lines on the credentials page."""
+    soup = BeautifulSoup(html, "html.parser")
+    texts = [pre.get_text() for pre in soup.find_all("pre")]
+    return [t.split("]", 1)[1].split()[0] for t in texts if t.startswith("pub ")]
+
+
+async def _keys_client(
+    aiohttp_client, aiohttp_server, database_location, publisher_keys, archiver_keys
+):
+    """A site client whose publisher and archiver report the given keys."""
+
+    async def handle_credentials(request):
+        return web.json_response(
+            {"ssh_keys": [], "pgp_keys": publisher_keys, "hosting": []}
+        )
+
+    async def handle_pgp_keys(request):
+        return web.json_response(archiver_keys)
+
+    keys_app = web.Application()
+    keys_app.router.add_get("/credentials", handle_credentials)
+    keys_app.router.add_get("/pgp_keys", handle_pgp_keys)
+    server = await aiohttp_server(keys_app)
+    _private_app, app = await create_app(
+        config=create_config(database_location),
+        redis=FakeRedis(),
+        publisher_url=str(server.make_url("/")),
+        archiver_url=str(server.make_url("/")),
+    )
+    return await aiohttp_client(app)
+
+
+# A real throwaway ed25519 public key, generated for these tests only.
+IMPORTABLE_KEY = """-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEar0oJhYJKwYBBAHaRw8BAQdAWau9EcHXu85QZP6cSXl9uDQKWcUj6Tgc5RmJ
+43UAUYu0Lkphbml0b3IgQXJjaGl2ZSBUZXN0IDxhcmNoaXZlQGV4YW1wbGUuaW52
+YWxpZD6IkAQTFgoAOBYhBN0jaZX8b8oPr+Lq8hAB/UU1IsftBQJqvSgmAhsBBQsJ
+CAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJEBAB/UU1Isft02IBAMrmlhteLroJuhsx
+4iq/LqRXcMt5een+7jJ4EJWQPOoGAP4qjF1yjfQ0uXEHv2FK3rzd19WzeyH2TJJM
+fQ0QDRZHAg==
+=6omt
+-----END PGP PUBLIC KEY BLOCK-----
+"""
+
+IMPORTABLE_KEY_FPR = "DD236995FC6FCA0FAFE2EAF21001FD453522C7ED"
+
+# A key with its user ID stripped, so gpg considers it and imports nothing.
+UNIMPORTABLE_KEY = """-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEar0oJxYJKwYBBAHaRw8BAQdA9qrKXk+/Z/Nhoh3VwHWzxvL7tuan/xkvJj/O
+TgsWBY8=
+=e2Qc
+-----END PGP PUBLIC KEY BLOCK-----
+"""
+
+
+async def test_keyring_routes_without_keys_return_404(
+    aiohttp_client, aiohttp_server, database_location
+):
+    client = await _keys_client(
+        aiohttp_client, aiohttp_server, database_location, [], []
+    )
+    resp = await client.get("/pgp_keys")
+    assert (resp.status, await resp.text()) == (404, "The publisher has no PGP keys.")
+    resp = await client.get("/archive-keyring.gpg")
+    assert (resp.status, await resp.text()) == (404, "The archiver has no PGP keys.")
+
+
+async def test_pgp_keys_does_not_serve_other_keys_of_the_keyring(
+    aiohttp_client, aiohttp_server, database_location
+):
+    # The keyring routes share one gpg home, so the archive key stays in it.
+    client = await _keys_client(
+        aiohttp_client,
+        aiohttp_server,
+        database_location,
+        [UNIMPORTABLE_KEY],
+        [IMPORTABLE_KEY],
+    )
+    seeded = await client.get("/archive-keyring.gpg")
+    assert _fingerprints_of(await seeded.read()) == [IMPORTABLE_KEY_FPR]
+    resp = await client.get("/pgp_keys")
+    assert (resp.status, await resp.read()) == (
+        502,
+        b"None of the reported PGP keys could be imported.",
+    )
+
+
+async def test_credentials_lists_only_the_reported_keys(
+    aiohttp_client, aiohttp_server, database_location
+):
+    client = await _keys_client(
+        aiohttp_client, aiohttp_server, database_location, [], [IMPORTABLE_KEY]
+    )
+    seeded = await client.get("/archive-keyring.gpg")
+    assert _fingerprints_of(await seeded.read()) == [IMPORTABLE_KEY_FPR]
+    resp = await client.get("/credentials")
+    assert (resp.status, _listed_fingerprints(await resp.text())) == (200, [])
