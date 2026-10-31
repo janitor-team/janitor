@@ -23,6 +23,7 @@ from aiohttp import web
 
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
+from janitor.logs import get_log_manager
 from janitor.site.api import create_app
 
 from .conftest import _insert_codebase, _insert_run
@@ -385,3 +386,38 @@ async def test_review_without_oauth2_provider_is_not_qa_review(aiohttp_client, d
     async with db.acquire() as conn:
         rows = await conn.fetch("SELECT run_id, reviewer, verdict FROM review")
     assert [tuple(row) for row in rows] == [("r1", "alice@example.com", "approved")]
+
+
+async def test_run_logs(aiohttp_client, db, tmp_path):
+    async with db.acquire() as conn:
+        await _insert_codebase(conn, "foo")
+        now = utcnow()
+        await _insert_run(
+            conn,
+            run_id="r1",
+            codebase="foo",
+            start_time=now - timedelta(hours=1),
+            finish_time=now,
+        )
+        await conn.execute(
+            "UPDATE run SET logfilenames = ARRAY['build.log', 'worker.log']"
+        )
+    src = tmp_path / "worker.log"
+    src.write_text("Opening branch\n")
+    logs = tmp_path / "logs"
+    await get_log_manager(str(logs)).import_log("foo", "r1", str(src))
+    client = await create_client(aiohttp_client, db, config=f'logs_location: "{logs}"')
+
+    resp = await client.get("/run/r1/logs")
+    assert await resp.json() == ["build.log", "worker.log"]
+    resp = await client.get("/run/r1/logs/worker.log")
+    assert resp.content_type == "text/plain"
+    assert await resp.text() == "Opening branch\n"
+    for path in [
+        "/run/r1/logs/build.log",
+        "/run/r1/logs/x.log",
+        "/run/r2/logs",
+        "/run/r2/logs/worker.log",
+    ]:
+        resp = await client.get(path)
+        assert resp.status == 404
