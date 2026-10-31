@@ -18,13 +18,11 @@
 import asyncio
 import json
 import tempfile
-from pathlib import Path
 
 import aiohttp
 import asyncpg
 import pytest
 import pytest_asyncio
-import testing.postgresql
 from aiohttp import web
 from bs4 import BeautifulSoup
 from fakeredis.aioredis import FakeRedis
@@ -32,19 +30,10 @@ from fakeredis.aioredis import FakeRedis
 from janitor.config import read_string as read_config_string
 from janitor.site.simple import create_app
 
-_SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schema"
-
 
 @pytest_asyncio.fixture()
-async def database_location():
-    with testing.postgresql.Postgresql() as postgresql:
-        conn = await asyncpg.connect(postgresql.url())
-        try:
-            await conn.execute((_SCHEMA_DIR / "state.sql").read_text())
-            await conn.execute((_SCHEMA_DIR / "debian" / "debian.sql").read_text())
-        finally:
-            await conn.close()
-
+async def database_location(postgresql_factory):
+    with postgresql_factory() as postgresql:
         yield postgresql.url()
 
 

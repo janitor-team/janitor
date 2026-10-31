@@ -1,7 +1,9 @@
+import asyncio
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
 import asyncpg
+import pytest
 import pytest_asyncio
 import testing.postgresql
 
@@ -12,21 +14,38 @@ pytest_plugins = ["aiohttp"]
 _SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schema"
 
 
+async def _load_schema_async(dsn: str) -> None:
+    conn = await asyncpg.connect(dsn)
+    try:
+        await conn.execute((_SCHEMA_DIR / "state.sql").read_text())
+        await conn.execute((_SCHEMA_DIR / "debian" / "debian.sql").read_text())
+    finally:
+        await conn.close()
+
+
+def _load_schema(postgresql: testing.postgresql.Postgresql) -> None:
+    asyncio.run(_load_schema_async(postgresql.url()))
+
+
+@pytest.fixture(scope="session")
+def postgresql_factory():
+    factory = testing.postgresql.PostgresqlFactory(
+        cache_initialized_db=True, on_initialized=_load_schema
+    )
+    try:
+        yield factory
+    finally:
+        factory.clear_cache()
+
+
 @pytest_asyncio.fixture()
-async def db():
-    with testing.postgresql.Postgresql() as postgresql:
-        conn = await asyncpg.connect(postgresql.url())
+async def db(postgresql_factory):
+    with postgresql_factory() as postgresql:
+        pool = await create_pool(postgresql.url())
         try:
-            await conn.execute((_SCHEMA_DIR / "state.sql").read_text())
-            await conn.execute((_SCHEMA_DIR / "debian" / "debian.sql").read_text())
+            yield pool
         finally:
-            await conn.close()
-
-        db = await create_pool(postgresql.url())
-
-        yield db
-
-        await db.close()
+            await pool.close()
 
 
 @pytest_asyncio.fixture()
