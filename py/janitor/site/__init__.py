@@ -223,13 +223,15 @@ def is_qa_reviewer(request: web.Request) -> bool:
 
 
 def check_admin(request: web.Request) -> None:
+    check_logged_in(request)
     if not is_admin(request):
         raise web.HTTPUnauthorized()
 
 
 def check_logged_in(request: web.Request) -> None:
     if not request["user"]:
-        raise web.HTTPUnauthorized()
+        login_url = URL("/login").with_query(url=str(request.url))
+        raise web.HTTPUnauthorized(headers={"Location": str(login_url)})
 
 
 def hide_private_worker_links(entry):

@@ -150,6 +150,9 @@ async def test_reprocess_logs_requires_admin(aiohttp_client, db, user):
     )
     resp = await client.get("/cupboard/reprocess-logs")
     assert resp.status == 401
+    page = client.make_url("/cupboard/reprocess-logs")
+    login = f"/login?url={page}"
+    assert resp.headers.get("Location") == (login if user is None else None)
 
 
 async def test_reprocess_logs_admin(aiohttp_client, db):
