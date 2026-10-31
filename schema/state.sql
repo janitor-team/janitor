@@ -341,7 +341,7 @@ CREATE OR REPLACE FUNCTION new_result_branch_trigger_refresh_last_run()
   AS $$
     BEGIN
 
-    if (TG_OP = 'INSERT' AND NEW.absorbed) then
+    if (TG_OP = 'INSERT') then
         perform refresh_last_run(new.run_id);
     end if;
 
