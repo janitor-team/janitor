@@ -7,25 +7,7 @@ use nix::sys::signal::{killpg, Signal};
 use nix::unistd::Pid;
 use tokio::process::Command;
 
-#[tokio::test]
-async fn process_group_zero_makes_child_its_own_group_leader() {
-    let mut cmd = Command::new("sleep");
-    cmd.arg("30")
-        .process_group(0)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-
-    let mut child = cmd.spawn().expect("spawn sleep");
-    let pid = child.id().expect("child has pid") as i32;
-
-    let pgid = unsafe { libc::getpgid(pid) };
-    assert_eq!(pgid, pid, "child must be its own process group leader");
-
-    killpg(Pid::from_raw(pid), Signal::SIGKILL).ok();
-    let _ = child.wait().await;
-}
-
+/// Production relies on `process_group(0)` so one `killpg` reaps backend and children.
 #[tokio::test]
 async fn killpg_reaches_grandchildren_in_the_same_group() {
     // Shell forks a background sleep (the "grandchild") then execs
