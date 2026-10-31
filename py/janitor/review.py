@@ -33,7 +33,8 @@ async def store_review(
     is_qa_reviewer: bool,
 ):
     async with conn.transaction():
-        if verdict == "reschedule":
+        # The review form sends "rescheduled", the review page script "reschedule".
+        if verdict in ("reschedule", "rescheduled"):
             verdict = "rejected"
 
             run = await conn.fetchrow(
