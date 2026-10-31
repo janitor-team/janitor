@@ -1395,6 +1395,108 @@ db_test! {
     }
 }
 
+/// Number of open `.pack` and `.idx` descriptors under `dir` in this process.
+#[cfg(target_os = "linux")]
+fn open_pack_fds(dir: &std::path::Path) -> usize {
+    std::fs::read_dir("/proc/self/fd")
+        .unwrap()
+        .filter_map(|entry| std::fs::read_link(entry.ok()?.path()).ok())
+        .filter(|target| {
+            target.starts_with(dir)
+                && matches!(
+                    target.extension().and_then(|e| e.to_str()),
+                    Some("pack" | "idx")
+                )
+        })
+        .count()
+}
+
+#[cfg(target_os = "linux")]
+db_test! {
+    async fn test_public_klaus_closes_pack_files(test_db: TestDatabase) {
+        // Every page must give back the pack descriptors it opened.
+        if !klaus_available() {
+            eprintln!("skipping: klaus not importable");
+            return;
+        }
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase(test_db.pool(), "packs").await;
+
+        // One pack per commit: `git repack` only packs loose objects.
+        let tmp = TempDir::new().unwrap();
+        let bare = tmp.path().join("packs");
+        let repo = git2::Repository::init_bare(&bare).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let mut parent: Option<git2::Oid> = None;
+        for i in 0..4 {
+            let blob = repo.blob(format!("content {}\n", i).as_bytes()).unwrap();
+            let mut tb = repo.treebuilder(None).unwrap();
+            tb.insert("file", blob, 0o100644).unwrap();
+            let tree = repo.find_tree(tb.write().unwrap()).unwrap();
+            let parents: Vec<git2::Commit> = parent
+                .iter()
+                .map(|id| repo.find_commit(*id).unwrap())
+                .collect();
+            let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+            parent = Some(
+                repo.commit(
+                    Some("refs/heads/main"),
+                    &sig,
+                    &sig,
+                    &format!("commit {}", i),
+                    &tree,
+                    &parent_refs,
+                )
+                .unwrap(),
+            );
+            let out = std::process::Command::new("git")
+                .args(["repack", "-q", "-d"])
+                .current_dir(&bare)
+                .output()
+                .expect("git repack spawn");
+            assert!(
+                out.status.success(),
+                "git repack failed: stderr={}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        let bare = bare.canonicalize().unwrap();
+        drop(repo);
+        let packs = std::fs::read_dir(bare.join("objects/pack"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "pack"))
+            .count();
+        assert_eq!(packs, 4, "expected one pack per commit");
+
+        let state = build_state(&tmp, &test_db, AppRole::Public).await;
+        let app = web::create_public_app(state, 0);
+        let (addr, handle) = spawn(app).await;
+
+        assert_eq!(open_pack_fds(&bare), 0, "pack files open before any request");
+        let client = reqwest::Client::new();
+        for i in 1..=10 {
+            let resp = client
+                .get(format!("http://{}/git/packs/tree/main/", addr))
+                .header("User-Agent", "Mozilla/5.0 (test)")
+                .header("Accept", "text/html")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 200, "klaus tree page should render 200");
+            resp.bytes().await.unwrap();
+            assert_eq!(
+                open_pack_fds(&bare),
+                0,
+                "pack files left open after request {}",
+                i
+            );
+        }
+
+        handle.abort();
+    }
+}
+
 db_test! {
     async fn test_public_klaus_serves_each_codebase(test_db: TestDatabase) {
         // All codebases share one klaus app; each page must show its own
