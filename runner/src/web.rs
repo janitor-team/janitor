@@ -3298,6 +3298,29 @@ async fn assign_work_internal(
             }
         }
 
+        // The worker parses `branch.url` as a URL, so a value that is not one can never run.
+        if let Some(branch_url) = assignment.vcs_info.branch_url.as_deref() {
+            if let Err(e) = url::Url::parse(branch_url) {
+                // The URL stays out of the log, it can carry userinfo.
+                log::warn!(
+                    "Queue item {} for {}/{} has an invalid branch_url ({}); aborting and retrying",
+                    assignment.queue_item.id,
+                    assignment.queue_item.codebase,
+                    assignment.queue_item.campaign,
+                    e
+                );
+                abort_assignment(
+                    &state,
+                    &assignment,
+                    "invalid-branch-url",
+                    &format!("Invalid branch URL: {}", e),
+                )
+                .await;
+                validation_retries += 1;
+                continue;
+            }
+        }
+
         // Reserve the queue item in Redis before handing the assignment
         // to a worker. If another worker claimed it first (race between
         // `next_queue_item_with_rate_limiting` and this HSET NX),
