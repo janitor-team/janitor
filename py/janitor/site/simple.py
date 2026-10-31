@@ -39,6 +39,7 @@ from jinja2 import select_autoescape
 from .. import state
 from ..artifacts import ArtifactsMissing
 from ..config import Config
+from ..logs import LogRetrievalError
 from ..schedule import do_schedule
 from ..vcs import VcsManager, get_vcs_managers_from_config
 from . import TEMPLATE_ENV, hide_private_worker_links, template_loader
@@ -246,6 +247,11 @@ async def handle_result_file(request):
         except FileNotFoundError as e:
             raise web.HTTPNotFound(
                 text=f"No log file {filename} for run {run_id}"
+            ) from e
+        except (PermissionError, LogRetrievalError) as e:
+            logging.warning("Unable to read log %s for run %s: %s", filename, run_id, e)
+            raise web.HTTPBadGateway(
+                text=f"Unable to read log file {filename} for run {run_id}"
             ) from e
         return web.Response(
             content_type="text/plain",
