@@ -377,6 +377,15 @@ async def _callback(client, **cookies):
     )
 
 
+async def _add_session(client, session_id, userinfo):
+    async with client.app.database.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO site_session (id, userinfo) VALUES ($1, $2)",
+            session_id,
+            userinfo,
+        )
+
+
 async def _get_session(client, session_id):
     async with client.app.database.acquire() as conn:
         return await conn.fetchval(
@@ -406,3 +415,60 @@ async def test_oauth_callback_defaults_missing_groups_claim(
     )
     stored = await _get_session(client, session_id)
     assert (resp.status, page.status, stored["groups"]) == (302, 200, groups)
+
+
+ALICE = {"name": "Alice", "email": "alice@example.com", "groups": []}
+
+
+async def test_logout_deletes_session_and_redirects_home(
+    aiohttp_client, database_location
+):
+    client = await _openid_site(aiohttp_client, database_location)
+    await _add_session(client, "mysession", ALICE)
+    resp = await client.post(
+        "/logout", cookies={"session_id": "mysession"}, allow_redirects=False
+    )
+    assert (
+        resp.status,
+        resp.headers["Location"],
+        resp.cookies["session_id"]["max-age"],
+        await _get_session(client, "mysession"),
+    ) == (302, "/", "0", None)
+
+
+async def test_logout_get_keeps_session(aiohttp_client, database_location):
+    # A plain GET, as from a link or image on another site, must not log out.
+    client = await _openid_site(aiohttp_client, database_location)
+    await _add_session(client, "mysession", ALICE)
+    resp = await client.get(
+        "/logout", cookies={"session_id": "mysession"}, allow_redirects=False
+    )
+    assert (resp.status, await _get_session(client, "mysession")) == (405, ALICE)
+
+
+async def test_logout_without_session_cookie_still_redirects(
+    aiohttp_client, database_location
+):
+    client = await _openid_site(aiohttp_client, database_location)
+    resp = await client.post("/logout", allow_redirects=False)
+    assert (resp.status, resp.headers["Location"]) == (302, "/")
+
+
+def _sidebar_user(html):
+    """The POST forms in the sidebar and the text in front of the first."""
+    soup = BeautifulSoup(html, "html.parser")
+    forms = soup.select('div.sphinxsidebar form[method="post"]')
+    actions = [(form["action"], form["method"]) for form in forms]
+    return actions, " ".join(str(forms[0].previous_sibling).split())
+
+
+@pytest.mark.parametrize("path", ["/lintian-fixes/candidates", "/cupboard/history"])
+async def test_sidebar_shows_logout_button(aiohttp_client, database_location, path):
+    client = await _openid_site(aiohttp_client, database_location)
+    await _add_session(client, "mysession", ALICE)
+    resp = await client.get(path, cookies={"session_id": "mysession"})
+    assert resp.status == 200
+    assert _sidebar_user(await resp.text()) == (
+        [("/logout", "post")],
+        "Logged in as Alice",
+    )
