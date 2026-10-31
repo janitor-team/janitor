@@ -15,13 +15,13 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
-import sys
-import types
 from datetime import timedelta
 
 import aiohttp_jinja2
 import pytest
+import pytest_asyncio
 from aiohttp import web
+from aiojobs.aiohttp import get_scheduler_from_app
 from jinja2 import Environment
 from yarl import URL
 
@@ -67,9 +67,11 @@ async def create_client(aiohttp_client, db, *, user=None, config=""):
     return await aiohttp_client(app)
 
 
-async def create_api_client(aiohttp_client, db, *, user):
+async def create_api_client(aiohttp_client, db, *, user, runner_url=None):
     config = read_config_string("oauth2_provider {}\n")
-    app = create_api_app(config=config, publisher_url=None, runner_url=None, db=db)
+    app = create_api_app(
+        config=config, publisher_url=None, runner_url=runner_url, db=db
+    )
     app.middlewares.insert(0, _user_middleware(user))
     return await aiohttp_client(app)
 
@@ -518,25 +520,36 @@ async def test_publish_history_limit_zero_lists_nothing(con):
     assert await iter_publish_history(con, limit=0) == []
 
 
-@pytest.fixture
-def reprocess_logs_stub(monkeypatch):
-    # The handler imports this module on each request and only hands the rows on.
-    async def reprocess_run_logs(**kwargs):
-        return None
+@pytest_asyncio.fixture()
+async def runner(aiohttp_client):
+    calls = []
 
-    stub = types.ModuleType("janitor.reprocess_logs")
-    vars(stub).update(
-        reprocess_run_logs=reprocess_run_logs,
-        process_dist_log=None,
-        process_sbuild_log=None,
+    async def handle_reprocess_logs(request):
+        calls.append((request.match_info["run_id"], await request.json()))
+        return web.json_response({"changed": False})
+
+    app = web.Application()
+    app.router.add_post("/runs/{run_id}/reprocess-logs", handle_reprocess_logs)
+    client = await aiohttp_client(app)
+    return str(client.make_url("/")), calls
+
+
+async def test_reprocess_logs_run_forwards_to_runner(aiohttp_client, db, runner):
+    runner_url, calls = runner
+    client = await create_api_client(
+        aiohttp_client, db, user=ADMIN_USER, runner_url=runner_url
     )
-    monkeypatch.setitem(sys.modules, "janitor.reprocess_logs", stub)
+    resp = await client.post("/run/run-1/reprocess-logs", data={"dry_run": "1"})
+    assert resp.status == 200
+    assert await resp.json() == {"changed": False}
+    assert calls == [("run-1", {"dry_run": True, "reschedule": False})]
 
 
-async def test_reprocess_logs_bulk_filters_by_campaign(
-    aiohttp_client, db, reprocess_logs_stub
-):
-    client = await create_api_client(aiohttp_client, db, user=ADMIN_USER)
+async def test_reprocess_logs_bulk_filters_by_campaign(aiohttp_client, db, runner):
+    runner_url, calls = runner
+    client = await create_api_client(
+        aiohttp_client, db, user=ADMIN_USER, runner_url=runner_url
+    )
     async with db.acquire() as conn:
         await _insert_codebase(conn, "foo")
         await _insert_codebase(conn, "bar")
@@ -564,12 +577,16 @@ async def test_reprocess_logs_bulk_filters_by_campaign(
     assert resp.status == 200
     body = await resp.json()
     assert [row["log_id"] for row in body] == ["matching"]
+    await get_scheduler_from_app(client.app).wait_and_close()
+    assert calls == [("matching", {"dry_run": False, "reschedule": False})]
 
 
 async def test_reprocess_logs_bulk_filters_by_description_re(
-    aiohttp_client, db, reprocess_logs_stub
+    aiohttp_client, db, runner
 ):
-    client = await create_api_client(aiohttp_client, db, user=ADMIN_USER)
+    client = await create_api_client(
+        aiohttp_client, db, user=ADMIN_USER, runner_url=runner[0]
+    )
     async with db.acquire() as conn:
         await _insert_codebase(conn, "foo")
         await _insert_codebase(conn, "bar")
@@ -599,10 +616,10 @@ async def test_reprocess_logs_bulk_filters_by_description_re(
     assert [row["log_id"] for row in body] == ["matching"]
 
 
-async def test_reprocess_logs_bulk_filters_by_min_age(
-    aiohttp_client, db, reprocess_logs_stub
-):
-    client = await create_api_client(aiohttp_client, db, user=ADMIN_USER)
+async def test_reprocess_logs_bulk_filters_by_min_age(aiohttp_client, db, runner):
+    client = await create_api_client(
+        aiohttp_client, db, user=ADMIN_USER, runner_url=runner[0]
+    )
     async with db.acquire() as conn:
         await _insert_codebase(conn, "foo")
         await _insert_codebase(conn, "bar")
@@ -630,9 +647,7 @@ async def test_reprocess_logs_bulk_filters_by_min_age(
     assert [row["log_id"] for row in body] == ["old-enough"]
 
 
-async def test_reprocess_logs_bulk_invalid_regex(
-    aiohttp_client, db, reprocess_logs_stub
-):
+async def test_reprocess_logs_bulk_invalid_regex(aiohttp_client, db):
     client = await create_api_client(aiohttp_client, db, user=ADMIN_USER)
     resp = await client.post("/reprocess-logs", data={"description_re": "("})
     assert resp.status == 400

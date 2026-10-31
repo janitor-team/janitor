@@ -55,6 +55,15 @@ struct UpdateRunRequest {
     publish_status: String,
 }
 
+/// JSON body for `POST /runs/{run_id}/reprocess-logs`.
+#[derive(Debug, Deserialize)]
+struct ReprocessLogsRequest {
+    #[serde(default)]
+    dry_run: bool,
+    #[serde(default)]
+    reschedule: bool,
+}
+
 /// Request for resume information.
 #[derive(Debug, Deserialize)]
 struct ResumeInfoRequest {
@@ -1437,6 +1446,105 @@ async fn update_run(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": "Database error"})),
+            )
+        }
+    }
+}
+
+/// `POST /runs/{run_id}/reprocess-logs` -- analyze the run's dist or
+/// build log again and, unless `dry_run` is set, store the new result.
+async fn reprocess_run_logs(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<RunId>,
+    Json(request): Json<ReprocessLogsRequest>,
+) -> impl IntoResponse {
+    #[derive(sqlx::FromRow)]
+    struct RunRow {
+        codebase: CodebaseName,
+        suite: Campaign,
+        change_set: ChangeSetId,
+        start_time: chrono::NaiveDateTime,
+        finish_time: chrono::NaiveDateTime,
+        result_code: String,
+        description: Option<String>,
+        failure_details: Option<serde_json::Value>,
+    }
+    let row: Result<Option<RunRow>, _> = sqlx::query_as(
+        "SELECT codebase, suite, change_set, start_time, finish_time, result_code, \
+         description, failure_details FROM run WHERE id = $1",
+    )
+    .bind(&id)
+    .fetch_optional(state.database.pool())
+    .await;
+    let run = match row {
+        Ok(Some(run)) => run,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"reason": format!("no such run: {}", id)})),
+            );
+        }
+        Err(e) => {
+            log::error!("Failed to get run {}: {}", id, e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Database error"})),
+            );
+        }
+    };
+    let process_fns: [(String, String, janitor::analyze_log::AnalyzeLogFn<_>); 2] = [
+        (
+            "dist-".to_string(),
+            "dist.log".to_string(),
+            janitor::analyze_log::process_dist_log,
+        ),
+        (
+            "build-".to_string(),
+            "build.log".to_string(),
+            janitor::analyze_log::process_sbuild_log,
+        ),
+    ];
+    let result = janitor::reprocess_logs::reprocess_run_logs(
+        state.database.pool(),
+        &state.log_manager,
+        &run.codebase,
+        &run.suite,
+        &id,
+        Some(&run.change_set),
+        run.finish_time - run.start_time,
+        &run.result_code,
+        run.description.as_deref(),
+        run.failure_details.as_ref(),
+        &process_fns,
+        request.dry_run,
+        request.reschedule,
+        None,
+    )
+    .await;
+    match result {
+        Ok(Some(analysis)) => (
+            StatusCode::OK,
+            Json(json!({
+                "changed": true,
+                "result_code": analysis.code,
+                "description": analysis.description,
+                "failure_details": analysis.failure_details,
+            })),
+        ),
+        Ok(None) => (
+            StatusCode::OK,
+            Json(json!({
+                "changed": false,
+                "result_code": run.result_code,
+                "description": run.description,
+                "failure_details": run.failure_details,
+            })),
+        ),
+        Err(e) => {
+            log::error!("Failed to reprocess logs of run {}: {}", id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to reprocess logs: {}", e)})),
             )
         }
     }
@@ -3934,6 +4042,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/candidates/{id}", delete(delete_candidate))
         .route("/runs/{id}", get(get_run))
         .route("/runs/{id}", post(update_run))
+        .route("/runs/{id}/reprocess-logs", post(reprocess_run_logs))
         .route("/active-runs", get(get_active_runs))
         // Unauthenticated assign for intra-cluster admin tools (e.g.
         // schedule-codebases CronJob). Body must include `worker`/
