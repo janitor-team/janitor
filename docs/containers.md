@@ -1,21 +1,19 @@
-## Containers (`Dockerfiles_*`)
+# Containers (`Dockerfile_*`)
 
-_Stand-alone_
-
-**Pull (Pre-Built)**:
+## Pull a pre-built image
 
 ```console
 $ podman pull ghcr.io/jelmer/janitor/site:latest
 ```
 
-**Build**:
+## Build
 
 ```console
 $ podman build -t ghcr.io/jelmer/janitor/site:latest -f Dockerfile_site .
 $ buildah build -t ghcr.io/jelmer/janitor/site:latest -f Dockerfile_site .
 ```
 
-**Run**:
+## Run
 
 ```console
 $ cp janitor.conf.example janitor.conf  # then edit janitor.conf for your setup
@@ -32,7 +30,9 @@ $ podman run --rm --network=host --name janitor-site          --volume $( pwd ):
 $ podman run --rm --network=host --name janitor-worker        ghcr.io/jelmer/janitor/worker:latest                                                   --base-url http://localhost/
 ```
 
-**Custom worker tooling** - `janitor-worker` only bundles Debian's `sbuild`/`schroot`/`mmdebstrap`; add anything else your campaigns need by deriving your own image the same way. For example, to add `lintian-brush` for the `lintian-fixes` campaign in `janitor.conf.example`:
+## Custom worker tooling
+
+`janitor-worker` only bundles Debian's `sbuild`/`schroot`/`mmdebstrap`; add anything else your campaigns need by deriving your own image the same way. For example, to add `lintian-brush` for the `lintian-fixes` campaign in `janitor.conf.example`:
 
 ```dockerfile
 FROM ghcr.io/jelmer/janitor/worker:latest
@@ -46,7 +46,7 @@ $ podman build -t my-janitor-worker .
 $ podman run --rm --network=host --name janitor-worker my-janitor-worker --base-url http://localhost/
 ```
 
-**Troubleshooting**:
+## Troubleshooting
 
 ```console
 $ podman run -it --entrypoint=/bin/bash --rm -p 8090:8090 -v $( pwd ):/mnt ghcr.io/jelmer/janitor/site:latest
