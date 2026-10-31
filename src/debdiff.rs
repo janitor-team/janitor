@@ -348,6 +348,11 @@ pub fn markdownify_debdiff(debdiff: &str) -> String {
 }
 
 pub fn htmlize_debdiff(debdiff: &str) -> String {
+    let escape = |text: &str| {
+        askama::filters::escape(text, askama::filters::Html)
+            .unwrap()
+            .to_string()
+    };
     let highlight_wdiff = |line: &str| {
         let line = lazy_regex::regex_replace!(
             r"\[-(.*?)-\]",
@@ -365,7 +370,7 @@ pub fn htmlize_debdiff(debdiff: &str) -> String {
     let mut ret = vec![];
     for (title, lines) in iter_sections(debdiff) {
         if let Some(title) = title {
-            ret.push(format!("<h4>{}</h4>", title));
+            ret.push(format!("<h4>{}</h4>", escape(title)));
             let wdiff = if lazy_regex::regex_is_match!(
                 r"Control files of package .*: lines which differ \(wdiff format\)",
                 title,
@@ -382,18 +387,13 @@ pub fn htmlize_debdiff(debdiff: &str) -> String {
                     }
                     ret.push(format!(
                         "<li><pre>{}</pre></li>",
-                        highlight_wdiff(&mlines.join("\n"))
+                        highlight_wdiff(&escape(&mlines.join("\n")))
                     ));
                 }
                 ret.push("</ul>".to_owned());
             } else {
                 ret.push("<pre>".to_owned());
-                ret.extend(
-                    lines
-                        .iter()
-                        .map(|line| line.to_string())
-                        .collect::<Vec<_>>(),
-                );
+                ret.extend(lines.iter().map(|line| escape(line)));
                 ret.push("</pre>".to_owned());
             }
         } else {
@@ -402,7 +402,7 @@ pub fn htmlize_debdiff(debdiff: &str) -> String {
                 if !line.trim().is_empty() {
                     let line = lazy_regex::regex_replace!(
                         "^(No differences were encountered between the control files of package) (.*)$",
-                        line,
+                        &escape(line),
                         r"$1 <b>$2</b>",
                     ).to_string();
                     ret.push(line);
@@ -729,12 +729,12 @@ Version: [-5.25.4-1~jan+unchanged1-] {+5.25.4-2~jan+lint1+}
     fn test_htmlize_debdiff_basic() {
         let title = "Files in second .changes but not in first";
         let dashes = "-".repeat(title.len());
-        let debdiff = format!("{title}\n{dashes}\n-rw-r--r--  root/root   /usr/lib/somefile\n");
+        let debdiff = format!("{title}\n{dashes}\n-rw-r--r--  root/root   /usr/lib/a&b\n");
         assert_eq!(
             htmlize_debdiff(&debdiff),
             "<h4>Files in second .changes but not in first</h4>\n\
              <pre>\n\
-             -rw-r--r--  root/root   /usr/lib/somefile\n\
+             -rw-r--r--  root/root   /usr/lib/a&#38;b\n\
              </pre>"
         );
     }
@@ -743,12 +743,12 @@ Version: [-5.25.4-1~jan+unchanged1-] {+5.25.4-2~jan+lint1+}
     fn test_htmlize_debdiff_wdiff_highlighting() {
         let title = "Control files: lines which differ (wdiff format)";
         let dashes = "-".repeat(title.len());
-        let debdiff = format!("{title}\n{dashes}\nVersion: [-1.0-] {{+2.0+}}\n");
+        let debdiff = format!("{title}\n{dashes}\nDepends: [-foo (<< 1.0)-] {{+foo (>= 2.0)+}}\n");
         assert_eq!(
             htmlize_debdiff(&debdiff),
             "<h4>Control files: lines which differ (wdiff format)</h4>\n\
              <ul>\n\
-             <li><pre>Version: <span style=\"color:red;font-weight:bold\">1.0</span> <span style=\"color:green;font-weight:bold\">2.0</span></pre></li>\n\
+             <li><pre>Depends: <span style=\"color:red;font-weight:bold\">foo (&#60;&#60; 1.0)</span> <span style=\"color:green;font-weight:bold\">foo (&#62;= 2.0)</span></pre></li>\n\
              </ul>"
         );
     }

@@ -15,6 +15,7 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
+import html
 from typing import Optional
 
 from aiohttp import ClientConnectorError, web
@@ -160,6 +161,10 @@ def classify_result_code(result_code, transient: Optional[bool]):
 
 class DebdiffRetrievalError(Exception):
     """Error occurred while retrieving debdiff."""
+
+
+def format_debdiff_error(error: Exception) -> str:
+    return f"Error retrieving debdiff: {html.escape(str(error))}"
 
 
 class BuildDiffUnavailable(Exception):
