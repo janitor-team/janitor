@@ -490,6 +490,46 @@ mod tests {
             "https://vcs.example.com/bzr/mycodebase"
         );
     }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_local_git_get_revision_info_closes_packs() {
+        let base = tempfile::tempdir().unwrap();
+        let base_path = base.path().canonicalize().unwrap();
+        let repo_path = base_path.join("mycodebase");
+        std::fs::create_dir(&repo_path).unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+                .args(args)
+                .current_dir(&repo_path)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {:?} failed", args);
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        };
+        let head =
+            || RevisionId::from(format!("git-v1:{}", git(&["rev-parse", "HEAD"])).into_bytes());
+        git(&["init", "-q"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "one"]);
+        let one = head();
+        git(&["commit", "-q", "--allow-empty", "-m", "two"]);
+        let two = head();
+        git(&["repack", "-q", "-a", "-d"]);
+
+        let info = LocalGitVcsManager::new(base_path.clone())
+            .get_revision_info("mycodebase", &one, &two)
+            .await;
+        let open: Vec<_> = std::fs::read_dir("/proc/self/fd")
+            .unwrap()
+            .filter_map(|entry| std::fs::read_link(entry.ok()?.path()).ok())
+            .filter(|target| target.starts_with(&base_path))
+            .collect();
+
+        let revids: Vec<_> = info.into_iter().map(|r| r.revision_id).collect();
+        assert_eq!(revids, vec![two]);
+        assert_eq!(open, Vec::<PathBuf>::new());
+    }
 }
 
 /// Add a `,branch=` segment parameter for a colocated git branch. The
@@ -873,6 +913,8 @@ impl VcsManager for LocalGitVcsManager {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
+        // The lookups below open pack files; only the unlock closes them.
+        let _lock = repo.lock_read().unwrap();
         stdout
             .lines()
             .filter(|line| !line.is_empty())
@@ -1007,7 +1049,7 @@ impl VcsManager for LocalBzrVcsManager {
     ) -> Vec<RevisionInfo> {
         let repo = self.get_repository(codebase).unwrap().unwrap();
 
-        let lock = repo.lock_read();
+        let _lock = repo.lock_read().unwrap();
         let mut ret = vec![];
 
         let graph = repo.get_graph();
@@ -1027,7 +1069,6 @@ impl VcsManager for LocalBzrVcsManager {
             }
         }
 
-        std::mem::drop(lock);
         ret
     }
 }
