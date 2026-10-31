@@ -1364,7 +1364,14 @@ db_test! {
         let repo = git2::Repository::init_bare(&bare).unwrap();
         let sig = git2::Signature::now("Test", "test@example.com").unwrap();
         let tree_id = {
-            let tb = repo.treebuilder(None).unwrap();
+            let mut debian = repo.treebuilder(None).unwrap();
+            let control = repo.blob(b"Source: browse\n").unwrap();
+            debian.insert("control", control, 0o100644).unwrap();
+            let mut tb = repo.treebuilder(None).unwrap();
+            let readme = repo.blob(b"hello\n").unwrap();
+            tb.insert("README", readme, 0o100644).unwrap();
+            tb.insert("debian", debian.write().unwrap(), 0o040000)
+                .unwrap();
             tb.write().unwrap()
         };
         let tree = repo.find_tree(tree_id).unwrap();
@@ -1377,18 +1384,41 @@ db_test! {
         let (addr, handle) = spawn(app).await;
 
         let client = reqwest::Client::new();
-        for path in [
-            format!("http://{}/git/browse/tree/main/", addr),
-            format!("http://{}/git/browse/commit/{}/", addr, commit),
-        ] {
-            let resp = client
-                .get(&path)
+        let get = |path: &str| {
+            client
+                .get(format!("http://{}{}", addr, path))
                 .header("User-Agent", "Mozilla/5.0 (test)")
                 .header("Accept", "text/html")
                 .send()
-                .await
-                .unwrap();
-            assert_eq!(resp.status(), 200, "expected 200 from {}", path);
+        };
+        for (page, files) in [
+            ("/git/browse/tree/main/".to_string(), vec!["main/README".to_string()]),
+            (
+                format!("/git/browse/commit/{}/", commit),
+                vec![
+                    format!("{}/README", commit),
+                    format!("{}/debian/control", commit),
+                ],
+            ),
+        ] {
+            let resp = get(&page).await.unwrap();
+            assert_eq!(resp.status(), 200, "expected 200 from {}", page);
+            let body = resp.text().await.unwrap();
+            let doc = select::document::Document::from(body.as_str());
+            let blob_links: Vec<&str> = doc
+                .find(select::predicate::Name("a"))
+                .filter_map(|a| a.attr("href"))
+                .filter(|href| href.starts_with("/git/browse/blob/"))
+                .collect();
+            let expected: Vec<String> = files
+                .iter()
+                .map(|f| format!("/git/browse/blob/{}", f))
+                .collect();
+            assert_eq!(blob_links, expected, "blob links on {}", page);
+            for link in blob_links {
+                let resp = get(link).await.unwrap();
+                assert_eq!(resp.status(), 200, "expected 200 from {}", link);
+            }
         }
 
         handle.abort();
