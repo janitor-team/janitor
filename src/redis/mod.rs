@@ -118,23 +118,18 @@ impl RedisManager {
 
     /// Ensure we have a valid connection, attempting to reconnect if necessary
     async fn ensure_connected(&self) -> Result<(), JanitorError> {
-        let state = self.connection_state.read().await;
-
-        match *state {
+        let state = *self.connection_state.read().await;
+        match state {
             ConnectionState::Connected => return Ok(()),
             ConnectionState::Connecting => {
                 // Wait a bit for ongoing connection attempt
-                drop(state);
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                let state = self.connection_state.read().await;
-                if *state == ConnectionState::Connected {
+                if *self.connection_state.read().await == ConnectionState::Connected {
                     return Ok(());
                 }
             }
             _ => {}
         }
-
-        // State is automatically dropped here
 
         // Try to connect
         self.connect().await
@@ -284,5 +279,23 @@ mod tests {
         let parse_error =
             redis::RedisError::from((redis::ErrorKind::UnexpectedReturnType, "Invalid type"));
         assert!(!RedisManager::is_connection_error(&parse_error));
+    }
+
+    #[tokio::test]
+    async fn test_get_connection_manager_does_not_hang() {
+        // Nothing listens on this port; redis-rs retries the connect for about 9 s.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let manager =
+            RedisManager::new(RedisConfig::new(format!("redis://127.0.0.1:{}/", port))).unwrap();
+        let result =
+            tokio::time::timeout(Duration::from_secs(30), manager.get_connection_manager()).await;
+        assert!(matches!(result, Ok(Err(_))));
+        assert_eq!(
+            *manager.connection_state.read().await,
+            ConnectionState::Failed
+        );
     }
 }
