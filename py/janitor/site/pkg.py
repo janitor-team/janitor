@@ -76,6 +76,17 @@ async def read_log(logfile_manager, codebase, run_id, name):
         return str(e).encode("utf-8")
 
 
+def primary_log_for_failure_stage(failure_stage):
+    if failure_stage == "codemod/dist":
+        return "dist"
+    elif failure_stage.split("/")[0] == "codemod":
+        return "codemod"
+    elif failure_stage.split("/")[0] == "build":
+        return "build"
+    else:
+        return "worker"
+
+
 async def generate_run_file(
     db,
     client,
@@ -274,14 +285,7 @@ WHERE followup.origin = $1""",
     kwargs["get_log"] = get_log
 
     if run.get("failure_stage"):
-        if run["failure_stage"] == "codemod/dist":
-            primary_log = "dist"
-        if run["failure_stage"].split("/")[0] == "codemod":
-            primary_log = "codemod"
-        elif run["failure_stage"].split("/")[0] == "build":
-            primary_log = "build"
-        else:
-            primary_log = "worker"
+        primary_log = primary_log_for_failure_stage(run["failure_stage"])
     else:
         # Legacy runs
         if run["result_code"].startswith("worker-") or run["result_code"].startswith(
@@ -300,7 +304,7 @@ WHERE followup.origin = $1""",
     if primary_log == "dist":
         logf = await get_log(DIST_LOG_FILENAME)
         line_count, include_lines, highlight_lines = find_dist_log_failure(
-            logf.read(), FAIL_BUILD_LOG_LEN
+            logf.read().decode("utf-8", "replace"), FAIL_BUILD_LOG_LEN
         )
         kwargs["dist_log_line_count"] = line_count
         kwargs["dist_log_include_lines"] = include_lines

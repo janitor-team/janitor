@@ -275,7 +275,7 @@ mod tests {
                     Some(RevisionId::from(b"tip-revision".to_vec())),
                 )]),
                 failure_details: None,
-                failure_stage: None,
+                failure_stage: Some("codemod/dist".to_string()),
                 resume: Some(ResultResume {
                     run_id: janitor::RunId::new("earlier-run").unwrap(),
                 }),
@@ -312,14 +312,15 @@ mod tests {
             assert_eq!(change_set_count, 1);
 
             // The core run row should reflect every column we set.
-            let (run_suite, run_code, run_command, run_worker, run_codebase): (
+            let (run_suite, run_code, run_command, run_worker, run_codebase, run_failure_stage): (
                 String,
                 String,
                 Option<String>,
                 Option<String>,
                 String,
+                Option<String>,
             ) = sqlx::query_as(
-                "SELECT suite, result_code, command, worker, codebase
+                "SELECT suite, result_code, command, worker, codebase, failure_stage
                  FROM run WHERE id = $1",
             )
             .bind(log_id)
@@ -331,6 +332,7 @@ mod tests {
             assert_eq!(run_command.as_deref(), Some("lintian-brush"));
             assert_eq!(run_worker.as_deref(), Some("worker-42"));
             assert_eq!(run_codebase, "finish-run-codebase");
+            assert_eq!(run_failure_stage.as_deref(), Some("codemod/dist"));
 
             // result_tags is a result_tag[] composite; verify store_run's
             // unnest-based construction actually materialised our tag.
