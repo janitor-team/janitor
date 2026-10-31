@@ -230,7 +230,6 @@ mod tests {
             queue_id: 0,
             log_id: rid(log_id),
             start_time: Utc::now(),
-            finish_time: None,
             estimated_duration: None,
             campaign: janitor::Campaign::new("test").unwrap(),
             change_set: None,
