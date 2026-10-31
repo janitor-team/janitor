@@ -188,44 +188,6 @@ fn import_branches_bzr(
     Ok(())
 }
 
-pub trait Vcs {
-    fn import_branches(
-        &self,
-        repo_url: &Url,
-        local_branch: &dyn breezyshim::branch::PyBranch,
-        campaign: &Campaign,
-        log_id: &RunId,
-        branches: &Vec<(String, String, Option<RevisionId>, Option<RevisionId>)>,
-        tags: Vec<(String, Option<RevisionId>)>,
-        update_current: bool,
-    ) -> Result<(), BrzError>;
-}
-
-pub struct BzrVcs;
-
-impl Vcs for BzrVcs {
-    fn import_branches(
-        &self,
-        repo_url: &Url,
-        local_branch: &dyn breezyshim::branch::PyBranch,
-        campaign: &Campaign,
-        log_id: &RunId,
-        branches: &Vec<(String, String, Option<RevisionId>, Option<RevisionId>)>,
-        tags: Vec<(String, Option<RevisionId>)>,
-        update_current: bool,
-    ) -> Result<(), BrzError> {
-        import_branches_bzr(
-            repo_url,
-            local_branch,
-            campaign,
-            log_id,
-            branches,
-            tags,
-            update_current,
-        )
-    }
-}
-
 fn import_branches_git(
     repo_url: &Url,
     local_branch: &dyn breezyshim::branch::PyBranch,
@@ -321,29 +283,32 @@ fn import_branches_git(
     Ok(())
 }
 
-pub struct GitVcs;
-
-impl Vcs for GitVcs {
-    fn import_branches(
-        &self,
-        repo_url: &Url,
-        local_branch: &dyn breezyshim::branch::PyBranch,
-        campaign: &Campaign,
-        log_id: &RunId,
-        branches: &Vec<(String, String, Option<RevisionId>, Option<RevisionId>)>,
-        tags: Vec<(String, Option<RevisionId>)>,
-        update_current: bool,
-    ) -> Result<(), BrzError> {
-        import_branches_git(
-            repo_url,
-            local_branch,
-            campaign,
-            log_id,
-            branches,
-            tags,
-            update_current,
-        )
-    }
+/// Import the result branches and tags of a run into the repository at
+/// `repo_url`.
+#[allow(clippy::too_many_arguments)]
+pub fn import_branches(
+    vcs_type: janitor::vcs::VcsType,
+    repo_url: &Url,
+    local_branch: &dyn breezyshim::branch::PyBranch,
+    campaign: &Campaign,
+    log_id: &RunId,
+    branches: &Vec<(String, String, Option<RevisionId>, Option<RevisionId>)>,
+    tags: Vec<(String, Option<RevisionId>)>,
+    update_current: bool,
+) -> Result<(), BrzError> {
+    let import = match vcs_type {
+        janitor::vcs::VcsType::Git => import_branches_git,
+        janitor::vcs::VcsType::Bzr => import_branches_bzr,
+    };
+    import(
+        repo_url,
+        local_branch,
+        campaign,
+        log_id,
+        branches,
+        tags,
+        update_current,
+    )
 }
 
 #[cfg(test)]
@@ -414,22 +379,22 @@ mod tests {
         )
         .unwrap();
         target.create_repository(Some(true)).unwrap();
-        BzrVcs
-            .import_branches(
-                &target_url,
-                &source_tree.branch(),
-                &Campaign::new("campaign").unwrap(),
-                &RunId::new("log_id").unwrap(),
-                &vec![(
-                    "main".to_string(),
-                    "foo".to_string(),
-                    None,
-                    Some(revid1.clone()),
-                )],
-                vec![("tag".to_string(), Some(revid1.clone()))],
-                false,
-            )
-            .unwrap();
+        import_branches(
+            janitor::vcs::VcsType::Bzr,
+            &target_url,
+            &source_tree.branch(),
+            &Campaign::new("campaign").unwrap(),
+            &RunId::new("log_id").unwrap(),
+            &vec![(
+                "main".to_string(),
+                "foo".to_string(),
+                None,
+                Some(revid1.clone()),
+            )],
+            vec![("tag".to_string(), Some(revid1.clone()))],
+            false,
+        )
+        .unwrap();
         let target_branch_foo = breezyshim::branch::open(
             &Url::from_directory_path(target_path.join("campaign")).unwrap(),
         )
@@ -471,22 +436,22 @@ mod tests {
             None,
         )
         .unwrap();
-        GitVcs
-            .import_branches(
-                &target_url,
-                &source_tree.branch(),
-                &Campaign::new("campaign").unwrap(),
-                &RunId::new("log_id").unwrap(),
-                &vec![(
-                    "main".to_string(),
-                    "foo".to_string(),
-                    None,
-                    Some(revid1.clone()),
-                )],
-                vec![("tag".to_string(), Some(revid1.clone()))],
-                true,
-            )
-            .unwrap();
+        import_branches(
+            janitor::vcs::VcsType::Git,
+            &target_url,
+            &source_tree.branch(),
+            &Campaign::new("campaign").unwrap(),
+            &RunId::new("log_id").unwrap(),
+            &vec![(
+                "main".to_string(),
+                "foo".to_string(),
+                None,
+                Some(revid1.clone()),
+            )],
+            vec![("tag".to_string(), Some(revid1.clone()))],
+            true,
+        )
+        .unwrap();
         let target_branch_foo = target.open_branch(Some("campaign/main")).unwrap();
         assert_eq!(&target_branch_foo.last_revision(), &revid1);
         assert_eq!(
