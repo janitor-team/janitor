@@ -282,13 +282,18 @@ async def test_codebase_redirect_prefers_finished_run(aiohttp_client, db):
     assert resp.headers["Location"] == "/cupboard/c/foo/done/"
 
 
-async def test_codebase_redirect_no_runs_returns_404(aiohttp_client, db):
+async def test_codebase_without_runs(aiohttp_client, db):
     client = await create_client(aiohttp_client, db)
     async with db.acquire() as conn:
         await _insert_codebase(conn, "foo")
+        await conn.execute(
+            "INSERT INTO candidate (codebase, suite, command) "
+            "VALUES ('foo', 'lintian-fixes', 'true')"
+        )
 
     resp = await client.get("/cupboard/c/foo/", allow_redirects=False)
-    assert resp.status == 404
+    assert resp.status == 200
+    assert '<a href="/lintian-fixes/c/foo/">lintian-fixes</a>' in await resp.text()
 
 
 async def test_codebase_redirect_unknown_codebase_returns_404(aiohttp_client, db):
