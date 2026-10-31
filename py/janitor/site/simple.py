@@ -136,6 +136,14 @@ async def handle_merge_proposal(request):
     }
 
 
+def export_each_key(gpg_context, fprs):
+    """Export one key at a time; gpgme cuts a pattern at its first NUL."""
+    exported = [gpg_context.key_export_minimal(fpr) for fpr in fprs]
+    if not all(exported):
+        raise web.HTTPBadGateway(text="Some PGP keys could not be exported.")
+    return b"".join(exported)
+
+
 @html_template("credentials.html", headers={"Vary": "Cookie"})
 async def handle_credentials(request):
     import gpg
@@ -165,7 +173,7 @@ async def handle_credentials(request):
         "pgp_validity": pgp_validity.get,
         "pgp_algo": gpg.core.pubkey_algo_name,
         "ssh_keys": credentials["ssh_keys"],
-        "pgp_keys": request.app["gpg"].keylist("\0".join(pgp_fprs)),
+        "pgp_keys": [k for fpr in pgp_fprs for k in request.app["gpg"].keylist(fpr)],
         "hosting": credentials["hosting"],
     }
 
@@ -195,7 +203,7 @@ async def handle_pgp_keys(request):
             result = request.app["gpg"].key_import(keydata.encode("utf-8"))
             fprs.extend([i.fpr for i in result.imports])
         return web.Response(
-            body=request.app["gpg"].key_export_minimal("\0".join(fprs)),
+            body=export_each_key(request.app["gpg"], fprs),
             content_type="application/pgp-keys",
         )
 
@@ -218,7 +226,7 @@ async def handle_archive_keyring(request):
             result = request.app["gpg"].key_import(keydata.encode("utf-8"))
             fprs.extend([i.fpr for i in result.imports])
         return web.Response(
-            body=request.app["gpg"].key_export_minimal("\0".join(fprs)),
+            body=export_each_key(request.app["gpg"], fprs),
             content_type="application/pgp-keys",
         )
 

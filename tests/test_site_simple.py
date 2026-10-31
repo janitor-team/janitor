@@ -406,3 +406,109 @@ async def test_oauth_callback_defaults_missing_groups_claim(
     )
     stored = await _get_session(client, session_id)
     assert (resp.status, page.status, stored["groups"]) == (302, 200, groups)
+
+
+def _fingerprints_of(exported):
+    """Fingerprints of the keys in an exported gpg keyring blob."""
+    import gpg
+
+    with tempfile.TemporaryDirectory() as home, gpg.Context(home_dir=home) as ctx:
+        return [i.fpr for i in ctx.key_import(exported).imports]
+
+
+def _listed_fingerprints(html):
+    """Fingerprints of the "pub" lines on the credentials page."""
+    soup = BeautifulSoup(html, "html.parser")
+    texts = [pre.get_text() for pre in soup.find_all("pre")]
+    return [t.split("]", 1)[1].split()[0] for t in texts if t.startswith("pub ")]
+
+
+async def _keys_client(
+    aiohttp_client, aiohttp_server, database_location, publisher_keys, archiver_keys
+):
+    """A site client whose publisher and archiver report the given keys."""
+
+    async def handle_credentials(request):
+        return web.json_response(
+            {"ssh_keys": [], "pgp_keys": publisher_keys, "hosting": []}
+        )
+
+    async def handle_pgp_keys(request):
+        return web.json_response(archiver_keys)
+
+    keys_app = web.Application()
+    keys_app.router.add_get("/credentials", handle_credentials)
+    keys_app.router.add_get("/pgp_keys", handle_pgp_keys)
+    server = await aiohttp_server(keys_app)
+    _private_app, app = await create_app(
+        config=create_config(database_location),
+        redis=FakeRedis(),
+        publisher_url=str(server.make_url("/")),
+        archiver_url=str(server.make_url("/")),
+    )
+    return await aiohttp_client(app)
+
+
+# A real throwaway ed25519 public key, generated for these tests only.
+IMPORTABLE_KEY = """-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEar0oJhYJKwYBBAHaRw8BAQdAWau9EcHXu85QZP6cSXl9uDQKWcUj6Tgc5RmJ
+43UAUYu0Lkphbml0b3IgQXJjaGl2ZSBUZXN0IDxhcmNoaXZlQGV4YW1wbGUuaW52
+YWxpZD6IkAQTFgoAOBYhBN0jaZX8b8oPr+Lq8hAB/UU1IsftBQJqvSgmAhsBBQsJ
+CAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJEBAB/UU1Isft02IBAMrmlhteLroJuhsx
+4iq/LqRXcMt5een+7jJ4EJWQPOoGAP4qjF1yjfQ0uXEHv2FK3rzd19WzeyH2TJJM
+fQ0QDRZHAg==
+=6omt
+-----END PGP PUBLIC KEY BLOCK-----
+"""
+
+IMPORTABLE_KEY_FPR = "DD236995FC6FCA0FAFE2EAF21001FD453522C7ED"
+
+# A second one, for a janitor part way through a key rotation.
+ROTATED_KEY = """-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEar0skRYJKwYBBAHaRw8BAQdAdjP/XCUejUxYvBfe37nEIrJAvTae82vu6fK6
+2VEPyk60MEphbml0b3IgUm90YXRpb24gVGVzdCA8cm90YXRpb25AZXhhbXBsZS5p
+bnZhbGlkPoiQBBMWCgA4FiEEPLD9OJtBhxgNbxuyYNypMR4xQyMFAmq9LJECGwEF
+CwkIBwIGFQoJCAsCBBYCAwECHgECF4AACgkQYNypMR4xQyOVMwEA/xWVBmH7Ik5Y
++fK14Gbeo/Jxl5LAr59BaRRRW+cJJacBAPK0h/Yr0xM13MbcmIQk16oqLiWl9rHq
+L8H3TRy4UukF
+=642X
+-----END PGP PUBLIC KEY BLOCK-----
+"""
+
+ROTATED_KEY_FPR = "3CB0FD389B4187180D6F1BB260DCA9311E314323"
+
+
+async def test_pgp_keys_serves_every_reported_key(
+    aiohttp_client, aiohttp_server, database_location
+):
+    client = await _keys_client(
+        aiohttp_client,
+        aiohttp_server,
+        database_location,
+        [IMPORTABLE_KEY, ROTATED_KEY],
+        [],
+    )
+    resp = await client.get("/pgp_keys")
+    assert (resp.status, _fingerprints_of(await resp.read())) == (
+        200,
+        [IMPORTABLE_KEY_FPR, ROTATED_KEY_FPR],
+    )
+
+
+async def test_credentials_lists_every_reported_key(
+    aiohttp_client, aiohttp_server, database_location
+):
+    client = await _keys_client(
+        aiohttp_client,
+        aiohttp_server,
+        database_location,
+        [IMPORTABLE_KEY, ROTATED_KEY],
+        [],
+    )
+    resp = await client.get("/credentials")
+    assert (resp.status, _listed_fingerprints(await resp.text())) == (
+        200,
+        [IMPORTABLE_KEY_FPR, ROTATED_KEY_FPR],
+    )
