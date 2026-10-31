@@ -1541,24 +1541,9 @@ async fn assign_sends_opened_branch_url() {
     );
 }
 
-/// `GET /active-runs/+peek` returns 201 + the peek envelope when a
-/// queue item is available, and 503 with `{reason: "queue empty"}`
-/// when it isn't. The peek shape is
-/// `{queue_item, vcs_info, build_config, estimated_duration}` --
-/// smaller than a full assign response because peek doesn't reserve
-/// or wire up a worker.
-#[tokio::test]
-async fn peek_returns_queue_item_shape_when_available() {
-    let Some((app, state)) = setup_with_campaign().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
-
-    let pool = state.database.pool().clone();
-    insert_codebase(&pool, "peek-cb").await;
-    // Enqueue via POST /candidates so the queue row + campaign
-    // config are wired the same way an assign would see them.
-    let body = json!([{ "codebase": "peek-cb", "campaign": "test-campaign" }]);
+/// Schedule `codebase` for test-campaign via `POST /candidates`.
+async fn schedule_test_candidate(app: &axum::Router, codebase: &str) {
+    let body = json!([{ "codebase": codebase, "campaign": "test-campaign" }]);
     let req = Request::builder()
         .method(Method::POST)
         .uri("/candidates")
@@ -1569,31 +1554,70 @@ async fn peek_returns_queue_item_shape_when_available() {
         app.clone().oneshot(req).await.unwrap().status(),
         StatusCode::OK
     );
+}
 
+async fn peek(app: &axum::Router) -> axum::response::Response {
     let req = Request::builder()
         .method(Method::GET)
         .uri("/active-runs/+peek")
         .body(Body::empty())
         .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    app.clone().oneshot(req).await.unwrap()
+}
 
+/// Like Python, `GET /active-runs/+peek` returns the assignment a
+/// worker would get, with a Location header, without claiming it.
+#[tokio::test]
+async fn peek_returns_assignment_without_claiming() {
+    let Some((app, state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let pool = state.database.pool().clone();
+    insert_codebase(&pool, "peek-cb").await;
+    schedule_test_candidate(&app, "peek-cb").await;
+
+    let response = peek(&app).await;
     assert_eq!(response.status(), StatusCode::CREATED);
+    let location = response.headers().get("location").cloned();
     let body = get_body(response).await;
-    for key in ["queue_item", "vcs_info", "build_config"] {
-        assert!(
-            body.get(key).is_some(),
-            "peek envelope missing `{key}`, got {body}"
-        );
-    }
-    // estimated_duration is optional (null when the queue row hasn't
-    // been through a run yet), but the key must be present.
-    assert!(
-        body.get("estimated_duration").is_some(),
-        "peek envelope missing `estimated_duration`, got {body}"
+    let id: janitor::RunId = serde_json::from_value(body["id"].clone()).expect("assignment id");
+    assert_eq!(
+        location.as_ref().map(|l| l.to_str().unwrap()),
+        Some(format!("/active-runs/{id}").as_str())
     );
-    let queue_item = &body["queue_item"];
-    assert_eq!(queue_item["codebase"], "peek-cb");
-    assert_eq!(queue_item["campaign"], "test-campaign");
+    assert!(body["queue_id"].is_i64(), "got {body}");
+    assert_eq!(body["codebase"], json!("peek-cb"));
+    assert_eq!(body["campaign"], json!("test-campaign"));
+    assert_eq!(state.active_runs.get(&id).await.map(|r| r.log_id), None);
+
+    // Not claimed, so it can be peeked again.
+    let response = peek(&app).await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let mut again = get_body(response).await;
+    again["id"] = json!(id);
+    assert_eq!(again, body);
+}
+
+/// Peek skips codebases on hosts passed with --avoid-host.
+#[tokio::test]
+async fn peek_honours_avoid_hosts() {
+    let Some((_app, state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let mut avoiding = (*state).clone();
+    avoiding.avoid_hosts = vec!["example.invalid".to_string()];
+    let app = janitor_runner::web::app(Arc::new(avoiding));
+
+    let pool = state.database.pool().clone();
+    insert_codebase(&pool, "peek-avoid-cb").await;
+    schedule_test_candidate(&app, "peek-avoid-cb").await;
+
+    let response = peek(&app).await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(get_body(response).await, json!({"reason": "queue empty"}));
 }
 
 #[tokio::test]
