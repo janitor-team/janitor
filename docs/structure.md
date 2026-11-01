@@ -1,5 +1,7 @@
 # Tools and scripts
 
+See [services.md](services.md) for how the running services talk to each other.
+
 - `./reschedule.py` - a tool for users of the janitor and can be run by anybody locally
 - `./helpers/*` - all need to run inside of a janitor deployment (and talk to the database, etc) by an admin.
 - `janitor-admin` - admin CLI that talks to a running janitor site over its public HTTP API. Run with `cargo run --bin janitor-admin -- <args>`.
