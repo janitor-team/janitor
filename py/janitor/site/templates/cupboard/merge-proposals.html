@@ -7,11 +7,11 @@
     {% endif %}
 {% endblock sidebar %}
 {% block page_title %}
-    Cupboard - Merge proposal status
+    Cupboard - Merge proposals
 {% endblock page_title %}
 {% block body %}
     <div class="section" id="merge-proposal-status">
-        <h1>Merge proposal status</h1>
+        <h1>Merge proposals</h1>
         <p><em>Status of merge proposals the Janitor has opened, across all campaigns.</em></p>
         {% macro display_merge_proposal(proposal) %}
             <a class="reference external" href="{{ proposal.url }}">
