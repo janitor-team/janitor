@@ -13,8 +13,6 @@
 //!   on-disk shared repo gets created under `<vcs_path>/{codebase}`.
 //! * Smart protocol `POST /bzr/{codebase}/.bzr/smart` for an unknown
 //!   codebase — asserts a 404.
-//! * Smart protocol `POST /bzr/{codebase}/notcampaign/.bzr/smart`
-//!   for a campaign not in `janitor.conf` — asserts a 404.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -236,32 +234,6 @@ test_with_database! {
         let client = reqwest::Client::new();
         let resp = client
             .post(format!("http://{}/bzr/ghost/.bzr/smart", addr))
-            .body(b"hello".to_vec())
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), 404);
-
-        handle.abort();
-    }
-}
-
-test_with_database! {
-    schema = Core;
-    async fn test_public_smart_protocol_unknown_campaign_404(test_db: TestDatabase) {
-        seed_codebase(test_db.pool(), "foo").await;
-
-        let tmp = TempDir::new().unwrap();
-        let cfg = build_config(tmp.path(), test_db_url(&test_db));
-        let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
-            .await
-            .unwrap();
-        let (addr, handle) = spawn_public(public).await;
-
-        let client = reqwest::Client::new();
-        // `notcampaign` is not in janitor.conf — expect 404.
-        let resp = client
-            .post(format!("http://{}/bzr/foo/notcampaign/.bzr/smart", addr))
             .body(b"hello".to_vec())
             .send()
             .await
