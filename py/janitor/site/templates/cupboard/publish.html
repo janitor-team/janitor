@@ -14,7 +14,7 @@
             <li>
                 Codebase: <a class="reference external" href="/cupboard/c/{{ publish.codebase }}/">{{ publish.codebase }}</a>
             </li>
-            {% if publish.branch_name %}<li>Branch Name: {{ publish.branch_name }}</li>{% endif %}
+            {% if publish.branch_name %}<li>Branch name: {{ publish.branch_name }}</li>{% endif %}
             <li>Mode: {{ publish.mode }}</li>
             <li>
                 {{ display_publish_result_code(publish.result_code) }}:
@@ -24,7 +24,7 @@
                     {{ publish.description }}
                 {% endif %}
                 {% if publish.mode == 'propose' %}
-                    {% if publish.merge_proposal_url %}- <a href="{{ publish.merge_proposal_url }}">Merge Proposal</a>{% endif %}
+                    {% if publish.merge_proposal_url %}- <a href="{{ publish.merge_proposal_url }}">Merge proposal</a>{% endif %}
                 {% endif %}
                 {% if publish.mode == 'push' and result_code == 'success' %}
                     {% if publish.vcs_browse %}- <a href="{{ publish.vcs_browse }}">Branch</a>{% endif %}

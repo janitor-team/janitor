@@ -3,17 +3,17 @@
     {% include "cupboard/sidebar.html" %}
 {% endblock sidebar %}
 {% block page_title %}
-    Cupboard - Reprocess Logs
+    Cupboard - Reprocess logs
 {% endblock page_title %}
 {% block body %}
     <h1>Reprocess logs</h1>
     <form id="mass_reschedule"
           method="post"
           action="/cupboard/api/reprocess-logs">
-        Dry Run:
+        Dry run:
         <input type="checkbox" name="dry_run" value="1" />
         Reschedule:
         <input type="checkbox" name="reschedule" value="1" />
-        <input type="submit" value="Reprocess Logs" />
+        <input type="submit" value="Reprocess logs" />
     </form>
 {% endblock body %}

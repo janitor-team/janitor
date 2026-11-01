@@ -3,7 +3,7 @@
     {% include "cupboard/sidebar.html" %}
 {% endblock sidebar %}
 {% block page_title %}
-    Cupboard - Never Processed
+    Cupboard - Never processed
     {% if campaign %}- for {{ campaign }}{% endif %}
 {% endblock page_title %}
 {% block body %}
@@ -16,7 +16,7 @@
                   action="/cupboard/api/mass-reschedule">
                 {% if campaign %}<input type="hidden" name="campaign" value="{{ campaign }}" />{% endif %}
                 <input type="hidden" name="result_code" value="never-processed" />
-                <input type="submit" value="Reschedule Matching" />
+                <input type="submit" value="Reschedule matching" />
             </form>
             <script>
                 window.mass_reschedule.onsubmit = function(e) {
