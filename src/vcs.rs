@@ -490,6 +490,97 @@ mod tests {
             "https://vcs.example.com/bzr/mycodebase"
         );
     }
+
+    const SHA: &str = "2282dc9d1e5e2c0b95c1a8e1f1e6a5f2b3c4d5e6";
+
+    fn git_revision_info() -> RevisionInfo {
+        RevisionInfo {
+            commit_id: Some(SHA.to_string()),
+            revision_id: RevisionId::from(format!("git-v1:{}", SHA).into_bytes()),
+            message: "Add a thing\n".to_string(),
+            link: Some(format!("/git/foo/commit/{}/", SHA)),
+        }
+    }
+
+    /// `git_revision_info()` as the git store sends it.
+    fn git_wire() -> serde_json::Value {
+        serde_json::json!({
+            "commit-id": SHA,
+            "revision-id": format!("git-v1:{}", SHA),
+            "message": "Add a thing\n",
+            "link": format!("/git/foo/commit/{}/", SHA),
+        })
+    }
+
+    #[test]
+    fn test_revision_info_wire_names() {
+        assert_eq!(
+            serde_json::to_value(git_revision_info()).unwrap(),
+            git_wire()
+        );
+        assert_eq!(
+            serde_json::from_value::<RevisionInfo>(git_wire()).unwrap(),
+            git_revision_info()
+        );
+    }
+
+    /// Serves `body` with `status` for every revision-info request; `None` refuses connections.
+    async fn revision_info_store(answer: Option<(u16, String)>) -> Url {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        match answer {
+            Some((status, body)) => {
+                let status = axum::http::StatusCode::from_u16(status).unwrap();
+                let app = axum::Router::new().route(
+                    "/{codebase}/revision-info",
+                    axum::routing::get(move || async move { (status, body) }),
+                );
+                tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            }
+            None => drop(listener),
+        }
+        url.parse().unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_remote_get_revision_info() {
+        let payload = serde_json::json!([git_wire()]).to_string();
+        let revid = |sha: &str| RevisionId::from(format!("git-v1:{}", sha).into_bytes());
+        let (old, new) = (revid(&"0".repeat(40)), revid(SHA));
+        let mut results = vec![];
+        for answer in [
+            Some((200, payload.clone())),
+            Some((500, payload)),
+            Some((200, "<html>".to_string())),
+            None,
+        ] {
+            let base_url = revision_info_store(answer).await;
+            let managers: [Box<dyn VcsManager>; 2] = [
+                Box::new(RemoteGitVcsManager::new(base_url.clone())),
+                Box::new(RemoteBzrVcsManager::new(base_url)),
+            ];
+            for manager in managers {
+                results.push(match manager.get_revision_info("foo", &old, &new).await {
+                    Ok(infos) => Ok(infos),
+                    Err(RevisionInfoError::Request(_)) => Err("request"),
+                    Err(RevisionInfoError::Decode(_)) => Err("decode"),
+                });
+            }
+        }
+        assert_eq!(
+            results,
+            vec![
+                Ok(vec![git_revision_info()]),
+                Ok(vec![git_revision_info()]),
+                Err("request"),
+                Err("request"),
+                Err("decode"),
+                Err("decode"),
+                Err("request"),
+                Err("request"),
+            ]
+        );
+    }
 }
 
 /// Add a `,branch=` segment parameter for a colocated git branch. The
@@ -671,12 +762,55 @@ fn convert_branch_exception(vcs_url: &Url, e: BranchOpenError) -> BranchOpenFail
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct RevisionInfo {
-    pub commit_id: Option<Vec<u8>>,
+    pub commit_id: Option<String>,
     pub revision_id: RevisionId,
     pub message: String,
-    pub link: Option<Url>,
+    pub link: Option<String>,
+}
+
+/// Why `get_revision_info` failed.
+#[derive(Debug)]
+pub enum RevisionInfoError {
+    /// The store was not reached in time or answered with an error status.
+    Request(reqwest::Error),
+    /// The answer is not a list of revisions.
+    Decode(reqwest::Error),
+}
+
+impl std::fmt::Display for RevisionInfoError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Request(e) => write!(f, "revision info request failed: {}", e),
+            Self::Decode(e) => write!(f, "cannot decode revision info: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for RevisionInfoError {}
+
+/// How long a VCS store gets to answer a revision info request.
+const REVISION_INFO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Send a revision info request to a VCS store and decode its answer.
+async fn fetch_revision_info(
+    request: reqwest::RequestBuilder,
+) -> Result<Vec<RevisionInfo>, RevisionInfoError> {
+    let resp = request
+        .timeout(REVISION_INFO_TIMEOUT)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(RevisionInfoError::Request)?;
+    resp.json().await.map_err(|e| {
+        if e.is_decode() {
+            RevisionInfoError::Decode(e)
+        } else {
+            RevisionInfoError::Request(e)
+        }
+    })
 }
 
 pub const EMPTY_GIT_TREE: &[u8] = b"4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -717,7 +851,7 @@ pub trait VcsManager: Send + Sync {
         codebase: &CodebaseName,
         old_revid: &RevisionId,
         new_revid: &RevisionId,
-    ) -> Vec<RevisionInfo>;
+    ) -> Result<Vec<RevisionInfo>, RevisionInfoError>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -847,7 +981,7 @@ impl VcsManager for LocalGitVcsManager {
         codebase: &CodebaseName,
         old_revid: &RevisionId,
         new_revid: &RevisionId,
-    ) -> Vec<RevisionInfo> {
+    ) -> Result<Vec<RevisionInfo>, RevisionInfoError> {
         let repo = self.get_repository(codebase).unwrap().unwrap();
         let old_sha = repo.lookup_bzr_revision_id(old_revid).unwrap().0;
         let new_sha = repo.lookup_bzr_revision_id(new_revid).unwrap().0;
@@ -873,21 +1007,22 @@ impl VcsManager for LocalGitVcsManager {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        stdout
+        Ok(stdout
             .lines()
             .filter(|line| !line.is_empty())
             .map(|line| {
                 let (commit_hex, message) = line.split_once('\0').unwrap();
-                let commit_id = commit_hex.as_bytes().to_vec();
-                let revision_id = repo.lookup_foreign_revision_id(&commit_id).unwrap();
+                let revision_id = repo
+                    .lookup_foreign_revision_id(commit_hex.as_bytes())
+                    .unwrap();
                 RevisionInfo {
-                    commit_id: Some(commit_id),
+                    commit_id: Some(commit_hex.to_string()),
                     revision_id,
                     message: message.to_string(),
                     link: None,
                 }
             })
-            .collect()
+            .collect())
     }
 }
 
@@ -1004,7 +1139,7 @@ impl VcsManager for LocalBzrVcsManager {
         codebase: &CodebaseName,
         old_revid: &RevisionId,
         new_revid: &RevisionId,
-    ) -> Vec<RevisionInfo> {
+    ) -> Result<Vec<RevisionInfo>, RevisionInfoError> {
         let repo = self.get_repository(codebase).unwrap().unwrap();
 
         let lock = repo.lock_read();
@@ -1028,7 +1163,7 @@ impl VcsManager for LocalBzrVcsManager {
         }
 
         std::mem::drop(lock);
-        ret
+        Ok(ret)
     }
 }
 
@@ -1134,7 +1269,7 @@ impl VcsManager for RemoteGitVcsManager {
         codebase: &CodebaseName,
         old_revid: &RevisionId,
         new_revid: &RevisionId,
-    ) -> Vec<RevisionInfo> {
+    ) -> Result<Vec<RevisionInfo>, RevisionInfoError> {
         let url = self
             .base_url
             .join(&format!(
@@ -1152,9 +1287,7 @@ impl VcsManager for RemoteGitVcsManager {
                 .unwrap()
             ))
             .unwrap();
-        let client = reqwest::Client::new();
-        let resp = client.get(url).send().await.unwrap();
-        resp.json().await.unwrap()
+        fetch_revision_info(reqwest::Client::new().get(url)).await
     }
 
     fn get_branch_url(&self, codebase: &CodebaseName, branch_name: &str) -> Url {
@@ -1272,7 +1405,7 @@ impl VcsManager for RemoteBzrVcsManager {
         codebase: &CodebaseName,
         old_revid: &RevisionId,
         new_revid: &RevisionId,
-    ) -> Vec<RevisionInfo> {
+    ) -> Result<Vec<RevisionInfo>, RevisionInfoError> {
         let url = self
             .base_url
             .join(&format!(
@@ -1288,8 +1421,7 @@ impl VcsManager for RemoteBzrVcsManager {
             request = request.header("x-trace-span-id", format!("{:?}", trace_id));
         }
 
-        let resp = request.send().await.unwrap();
-        resp.json().await.unwrap()
+        fetch_revision_info(request).await
     }
 
     fn get_branch_url(&self, codebase: &CodebaseName, branch_name: &str) -> Url {
