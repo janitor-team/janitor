@@ -18,9 +18,16 @@
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock
 
+from bs4 import BeautifulSoup
+from pygments.token import Generic
 from yarl import URL
 
-from janitor.site import format_duration, format_timestamp, update_vars_from_request
+from janitor.site import (
+    format_duration,
+    format_timestamp,
+    highlight_diff,
+    update_vars_from_request,
+)
 
 
 def test_duration():
@@ -80,3 +87,26 @@ def test_update_vars_from_request_uses_external_url():
         vs["bzr_vcs_manager"].get_repository_url("mycb")
         == "https://public.example.org/bzr/mycb"
     )
+
+
+def test_highlight_diff_links_urls():
+    diff = (
+        "-Homepage: http://example.org/foo\n"
+        "+Homepage: https://example.org/foo.\n"
+        '+See https://example.org/"onmouseover="alert(1) <img src=x> javascript:x\n'
+    )
+    soup = BeautifulSoup(highlight_diff(diff), "html.parser")
+    (pre,) = soup.find_all("pre")
+    assert [(a["href"], a.get_text()) for a in soup.find_all("a")] == [
+        ("http://example.org/foo", "http://example.org/foo"),
+        ("https://example.org/foo", "https://example.org/foo"),
+        ("https://example.org/", "https://example.org/"),
+    ]
+    assert pre.get_text() == diff
+    assert {tag.name for tag in soup.find_all(True)} == {"div", "pre", "span", "a"}
+
+
+def test_css_classes_of_a_token_sub_type():
+    from janitor.site import _css_classes
+
+    assert _css_classes(Generic.Inserted.Mark) == "gi gi-Mark"
