@@ -28,7 +28,7 @@ from yarl import URL
 
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
-from janitor.logs import FileSystemLogFileManager, LogRetrievalError
+from janitor.logs import LogRetrievalError, get_log_manager
 from janitor.site import (
     TEMPLATE_ENV,
     classify_result_code,
@@ -667,7 +667,7 @@ async def test_result_file_unreadable_log_returns_502(tmp_path):
     log.write_text("log")
     log.chmod(0)
     app = web.Application()
-    app["logfile_manager"] = FileSystemLogFileManager(str(tmp_path))
+    app["logfile_manager"] = get_log_manager(str(tmp_path))
     request = make_mocked_request(
         "GET",
         "/",
