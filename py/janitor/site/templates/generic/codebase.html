@@ -59,7 +59,7 @@
                 </div>
                 {{ display_vcs_diffs(show_diff, run.result_branches, run.result_tags) }}
                 {% if debdiff %}
-                    <h3>Debdiff</h3>
+                    <h2>Debdiff</h2>
                     {% if debdiff.split('\n')|length < 200 %}
                         {{ debdiff|safe }}
                     {% else %}
@@ -69,15 +69,15 @@
                     {% endif %}
                 {% endif %}
             {% endif %}
-            <h3>Run locally</h3>
+            <h2>Run locally</h2>
             {{ local_command(command, run.codebase, vcs_type, suite) }}
-            <h3>More details</h3>
+            <h2>More details</h2>
             <p>
                 <a href="/cupboard/c/{{ run.codebase }}/{{ run_id }}/">Full run details</a>
             </p>
         {% endif %}
         {% if previous_runs and result_code not in ('nothing-to-do', 'success') %}
-            <h3>Historical runs</h3>
+            <h2>Historical runs</h2>
             <ul>
                 {% for previous_run in previous_runs %}
                     <li>
