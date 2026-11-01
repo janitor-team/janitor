@@ -1,7 +1,6 @@
 //! Redis pub/sub functionality
 
 use crate::error::JanitorError;
-use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 
@@ -113,23 +112,30 @@ impl Subscriber {
     {
         info!("Subscribing to Redis channel: {}", channel);
 
-        let mut pubsub = self
-            .manager
-            .client()
-            .get_async_pubsub()
-            .await
-            .map_err(|e| JanitorError::Redis(e))?;
-
-        pubsub
-            .subscribe(channel)
-            .await
-            .map_err(|e| JanitorError::Redis(e))?;
+        // Over RESP3 the connection manager reconnects and subscribes again after a restart.
+        let info = self.manager.client().get_connection_info().clone();
+        let settings = info.redis_settings().clone();
+        let client = redis::Client::open(
+            info.set_redis_settings(settings.set_protocol(redis::ProtocolVersion::RESP3)),
+        )?;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let config = redis::aio::ConnectionManagerConfig::new()
+            .set_push_sender(tx)
+            .set_automatic_resubscription()
+            .set_number_of_retries(usize::MAX)
+            .set_max_delay(std::time::Duration::from_secs(5));
+        let mut conn = client.get_connection_manager_with_config(config).await?;
+        conn.subscribe(channel).await?;
 
         info!("Successfully subscribed to channel: {}", channel);
 
-        let mut stream = pubsub.on_message();
-
-        while let Some(msg) = stream.next().await {
+        while let Some(push) = rx.recv().await {
+            if push.kind == redis::PushKind::Disconnection {
+                warn!("Lost Redis connection; subscribing to '{}' again", channel);
+            }
+            let Some(msg) = redis::Msg::from_push_info(push) else {
+                continue;
+            };
             match msg.get_payload::<String>() {
                 Ok(payload) => {
                     debug!(
@@ -147,7 +153,6 @@ impl Subscriber {
             }
         }
 
-        warn!("Subscription to channel '{}' ended", channel);
         Ok(())
     }
 }
