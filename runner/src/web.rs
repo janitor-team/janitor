@@ -3378,7 +3378,7 @@ async fn abort_assignment(
         remotes: None,
         branches: None,
         failure_details: None,
-        failure_stage: None,
+        failure_stage: Some("assign".to_string()),
         resume: None,
         target: None,
         worker_name: None,
