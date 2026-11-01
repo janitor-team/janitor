@@ -85,8 +85,9 @@ Each candidate has a "publish_policy" associated with it, which
 describes the mode to use ("push", "propose", "attempt-push") and
 a rate limiting bucket. So long as the number of
 open merge proposals is below the rate-limiting threshold,
-new merge proposals can be created. Different algorithms
-for rate-limiting are supported, but the default is slow-start.
+new merge proposals can be created. The publisher's `--rate-limiter`
+picks the algorithm: `slowstart` (the default), `fixed` (which needs
+`--max-mps-per-bucket`) or `none`.
 
 The "attempt-push" mode will try to push first, but if it
 gets a permission denied error (because the janitor does
