@@ -14,16 +14,13 @@
 //! * `state::guess_proposal_info_from_revision` (newly ported).
 //! * `derived_branch_name` (newly ported, uses `state::has_cotenants`).
 //!
-//! All tests load the production schema via
-//! `janitor::schema::setup_test_database`, so the columns and types
-//! are exactly what `check_existing_mp` will see in production.
+//! All tests load the production schema via the
+//! `test_with_database! { schema = Core; ... }` fast path, so the
+//! columns and types are exactly what `check_existing_mp` will see in
+//! production.
 
 use chrono::{Duration, Utc};
-use janitor::{
-    schema::setup_test_database,
-    test_utils::{TestDatabase, TestDatabaseConfig},
-    test_with_database,
-};
+use janitor::test_with_database;
 use janitor::{Campaign, CodebaseName, RunId};
 use janitor_publish::state::{
     get_last_effective_run, get_merge_proposal_run, get_run, guess_proposal_info_from_revision,
@@ -210,9 +207,8 @@ async fn seed_publish_policy_and_candidate(
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_get_merge_proposal_run_returns_matching_row(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
-
         seed_codebase_and_change_set(
             test_db.pool(),
             "cb-1",
@@ -266,9 +262,8 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_get_last_effective_run_picks_most_recent_success(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
-
         seed_codebase_and_change_set(
             test_db.pool(),
             "cb-1",
@@ -353,11 +348,10 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_guess_proposal_info_from_revision_finds_unique_match(
         test_db: TestDatabase
     ) {
-        setup_test_database(test_db.pool()).await.unwrap();
-
         seed_codebase_and_change_set(
             test_db.pool(),
             "cb-1",
@@ -410,9 +404,8 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_derived_branch_name_with_single_result_branch(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
-
         seed_codebase_and_change_set(
             test_db.pool(),
             "cb-1",
@@ -473,11 +466,10 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_derived_branch_name_with_multiple_result_branches(
         test_db: TestDatabase
     ) {
-        setup_test_database(test_db.pool()).await.unwrap();
-
         seed_codebase_and_change_set(
             test_db.pool(),
             "cb-1",
@@ -547,9 +539,8 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_get_run_returns_row_with_result_branches(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
-
         seed_codebase_and_change_set(
             test_db.pool(),
             "cb-1",
@@ -599,17 +590,16 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_get_run_returns_none_for_missing_id(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         let run = get_run(test_db.pool(), &RunId::new("does-not-exist").unwrap()).await.unwrap();
         assert!(run.is_none());
     }
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_get_publish_policy_decodes_composite_array(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
-
         seed_codebase_and_change_set(
             test_db.pool(),
             "cb-1",
@@ -673,8 +663,8 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_get_publish_policy_returns_none_for_missing_candidate(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         let policy = get_publish_policy(
             test_db.pool(),
             &CodebaseName::new("nope").unwrap(),

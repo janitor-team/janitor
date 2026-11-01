@@ -4292,14 +4292,14 @@ distribution {
     #[tokio::test]
     async fn test_admin_cleanup_runs_filters_and_cleans_up() {
         use chrono::{TimeZone, Utc};
-        let Ok(Some(db)) = crate::test_utils::TestDatabase::new_optional().await else {
+        let Ok(Some(db)) = crate::test_utils::TestDatabase::new_optional_with_schema(
+            crate::test_utils::TestSchema::Core,
+        )
+        .await
+        else {
             eprintln!("Skipping: no Postgres available");
             return;
         };
-        if let Err(e) = janitor::schema::setup_test_database(&db.pool).await {
-            eprintln!("Skipping: schema setup failed: {}", e);
-            return;
-        }
         let pool = &db.pool;
 
         // Schema has change_set as a non-null FK. Insert one shared
@@ -4543,14 +4543,14 @@ distribution {
     #[tokio::test]
     async fn test_admin_cleanup_runs_description_like_filter() {
         use chrono::{TimeZone, Utc};
-        let Ok(Some(db)) = crate::test_utils::TestDatabase::new_optional().await else {
+        let Ok(Some(db)) = crate::test_utils::TestDatabase::new_optional_with_schema(
+            crate::test_utils::TestSchema::Core,
+        )
+        .await
+        else {
             eprintln!("Skipping: no Postgres available");
             return;
         };
-        if let Err(e) = janitor::schema::setup_test_database(&db.pool).await {
-            eprintln!("Skipping: schema setup failed: {}", e);
-            return;
-        }
         let pool = &db.pool;
 
         sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs1', 'lintian-fixes')")
@@ -4638,15 +4638,15 @@ distribution {
     #[tokio::test]
     async fn test_admin_cleanup_runs_deletes_run_children() {
         use chrono::{TimeZone, Utc};
-        let Ok(Some(db)) = crate::test_utils::TestDatabase::new_optional().await else {
+        // Need the Debian schema overlay so `debian_build` exists.
+        let Ok(Some(db)) = crate::test_utils::TestDatabase::new_optional_with_schema(
+            crate::test_utils::TestSchema::Debian,
+        )
+        .await
+        else {
             eprintln!("Skipping: no Postgres available");
             return;
         };
-        // Need the Debian schema overlay so `debian_build` exists.
-        if let Err(e) = janitor::schema::setup_debian_test_database(&db.pool).await {
-            eprintln!("Skipping: schema setup failed: {}", e);
-            return;
-        }
         let pool = &db.pool;
 
         sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs1', 'lintian-fixes')")

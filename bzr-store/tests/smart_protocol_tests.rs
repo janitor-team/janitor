@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use janitor::{schema::setup_test_database, test_utils::TestDatabase, test_with_database};
+use janitor::{test_utils::TestDatabase, test_with_database};
 use janitor_bzr_store::{
     config::{BzrConfig, BzrStoreConfig, Config},
     web::create_applications,
@@ -120,9 +120,8 @@ async fn seed_codebase(pool: &PgPool, name: &str) {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_public_repo_list_json(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
-
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("alpha")).unwrap();
         std::fs::create_dir_all(tmp.path().join("beta")).unwrap();
@@ -149,9 +148,8 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_public_repo_list_text(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
-
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("gamma")).unwrap();
 
@@ -177,9 +175,8 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_public_repo_list_html(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
-
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("foo")).unwrap();
 
@@ -227,9 +224,8 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_public_smart_protocol_unknown_codebase_404(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
-
         let tmp = TempDir::new().unwrap();
         let cfg = build_config(tmp.path(), test_db_url(&test_db));
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
@@ -251,8 +247,8 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_public_smart_protocol_unknown_campaign_404(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "foo").await;
 
         let tmp = TempDir::new().unwrap();
@@ -284,8 +280,8 @@ test_with_database! {
 // on the campaign/role sub-paths run, so the directory structure is
 // created on disk).
 test_with_database! {
+    schema = Core;
     async fn test_public_smart_protocol_worker_auth_creates_subpaths(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "foo").await;
         seed_worker(test_db.pool(), "alice", "s3cret").await;
 
@@ -329,8 +325,8 @@ test_with_database! {
 // repo is created on demand under `<vcs_path>/foo`, and (3) unknown
 // protocol payloads round-trip as smart-protocol error responses.
 test_with_database! {
+    schema = Core;
     async fn test_public_smart_protocol_runs_to_completion(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "foo").await;
 
         let tmp = TempDir::new().unwrap();
@@ -367,8 +363,8 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_public_invalid_identifiers_400(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "foo").await;
 
         let tmp = TempDir::new().unwrap();

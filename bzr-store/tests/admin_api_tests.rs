@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use janitor::{schema::setup_test_database, test_utils::TestDatabase, test_with_database};
+use janitor::{test_utils::TestDatabase, test_with_database};
 use janitor_bzr_store::{
     config::{BzrConfig, BzrStoreConfig, Config},
     web::create_applications,
@@ -83,9 +83,8 @@ async fn seed_codebase(pool: &PgPool, name: &str) {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_admin_root_lists_repositories_json(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
-
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("alpha")).unwrap();
         std::fs::create_dir_all(tmp.path().join("beta")).unwrap();
@@ -112,8 +111,8 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_admin_metrics_endpoint(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         let tmp = TempDir::new().unwrap();
         let cfg = build_config(tmp.path(), test_db_url(&test_db));
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
@@ -143,8 +142,8 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_admin_health_and_ready(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         let tmp = TempDir::new().unwrap();
         let cfg = build_config(tmp.path(), test_db_url(&test_db));
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
@@ -173,12 +172,12 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_admin_configure_remote_form_urlencoded(test_db: TestDatabase) {
         // Matches Python `handle_set_bzr_remote`: body is urlencoded
         // with a `url` field. The handler creates the branch sub-path
         // on demand through configure_remote (which fails on an
         // unknown codebase).
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "foo").await;
 
         let tmp = TempDir::new().unwrap();
@@ -214,8 +213,8 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_admin_create_repository(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         let tmp = TempDir::new().unwrap();
         let cfg = build_config(tmp.path(), test_db_url(&test_db));
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
@@ -249,9 +248,9 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_admin_smart_protocol_unauthenticated(test_db: TestDatabase) {
         // Admin interface allows writes without any auth.
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "foo").await;
 
         let tmp = TempDir::new().unwrap();
@@ -279,9 +278,8 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_public_text_plain_matches_newline_per_line(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
-
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("one")).unwrap();
         std::fs::create_dir_all(tmp.path().join("two")).unwrap();
@@ -307,8 +305,8 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_public_home_returns_empty_200(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         let tmp = TempDir::new().unwrap();
         let cfg = build_config(tmp.path(), test_db_url(&test_db));
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
@@ -326,13 +324,12 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_public_app_does_not_expose_admin_endpoints(test_db: TestDatabase) {
         // /health, /ready, /metrics must stay admin-only, matching
         // Python's `create_web_app` which only mounts them on `app`
         // and not `public_app`. Hitting them on the public port
         // should 404.
-        setup_test_database(test_db.pool()).await.unwrap();
-
         let tmp = TempDir::new().unwrap();
         let cfg = build_config(tmp.path(), test_db_url(&test_db));
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
@@ -361,12 +358,11 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_public_repo_list_406_on_unmatchable_accept(test_db: TestDatabase) {
         // mimeparse-style negotiator returns None for an Accept header
         // that doesn't match html/plain/json — must surface as 406,
         // matching Python's `web.HTTPNotAcceptable`.
-        setup_test_database(test_db.pool()).await.unwrap();
-
         let tmp = TempDir::new().unwrap();
         let cfg = build_config(tmp.path(), test_db_url(&test_db));
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
@@ -388,13 +384,13 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_public_smart_protocol_anonymous_denied_as_readonly(test_db: TestDatabase) {
         // Public app with no credentials should route to the readonly
         // transport path. The handler itself still answers 200
         // because the smart protocol handles the write-rejection
         // in-band — but the campaign/role sub-paths must NOT be
         // created on disk (ensure_base runs only when allow_writes).
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "foo").await;
 
         let tmp = TempDir::new().unwrap();
@@ -424,10 +420,10 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_public_smart_protocol_bad_auth_falls_back_to_readonly(test_db: TestDatabase) {
         // Wrong Basic creds must behave like no creds: resolve_allow_writes
         // returns false and the readonly transport is used.
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "foo").await;
 
         let tmp = TempDir::new().unwrap();
@@ -456,12 +452,11 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_admin_repository_info_returns_json(test_db: TestDatabase) {
         // Admin /{codebase}/info — JSON RepositoryInfo. The repo is
         // either empty (just a shared repo with no last_revision) or
         // doesn't exist; both shapes are valid.
-        setup_test_database(test_db.pool()).await.unwrap();
-
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("empty")).unwrap();
 
@@ -490,11 +485,10 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_public_repo_list_json_sorted(test_db: TestDatabase) {
         // Python sorts the listing; the Rust path does too. Create
         // directories in reverse order and verify alphabetical output.
-        setup_test_database(test_db.pool()).await.unwrap();
-
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("zeta")).unwrap();
         std::fs::create_dir_all(tmp.path().join("alpha")).unwrap();
@@ -522,8 +516,8 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_admin_invalid_identifiers_400(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         let tmp = TempDir::new().unwrap();
         let cfg = build_config(tmp.path(), test_db_url(&test_db));
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())

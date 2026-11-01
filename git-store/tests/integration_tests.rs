@@ -12,7 +12,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use janitor::schema::setup_test_database;
 use janitor_git_store::{
     config::Config,
     database::DatabaseManager,
@@ -40,6 +39,47 @@ struct PgBackend {
 }
 
 static BACKEND: OnceCell<Option<PgBackend>> = OnceCell::const_new();
+static CORE_TEMPLATE: OnceCell<&'static str> = OnceCell::const_new();
+
+const CORE_TEMPLATE_NAME: &str = "janitor_test_template_core";
+
+/// Lazily create a template database with the core schema loaded.
+/// Returns the template name, or `None` if setup failed. On failure the
+/// cache is *not* poisoned, so a subsequent test may retry; the error is
+/// logged so a schema regression doesn't masquerade as "no Postgres".
+async fn ensure_core_template(backend: &PgBackend) -> Option<&'static str> {
+    CORE_TEMPLATE
+        .get_or_try_init(|| async {
+            use sqlx::Executor;
+
+            let admin_pool = PgPool::connect(&backend.admin_url).await?;
+            let drop = format!("DROP DATABASE IF EXISTS \"{}\"", CORE_TEMPLATE_NAME);
+            sqlx::query(sqlx::AssertSqlSafe(drop.as_str()))
+                .execute(&admin_pool)
+                .await?;
+            let create = format!("CREATE DATABASE \"{}\"", CORE_TEMPLATE_NAME);
+            sqlx::query(sqlx::AssertSqlSafe(create.as_str()))
+                .execute(&admin_pool)
+                .await?;
+
+            let template_url = replace_db(&backend.admin_url, CORE_TEMPLATE_NAME);
+            let template_pool = PgPool::connect(&template_url).await?;
+            template_pool
+                .execute(sqlx::raw_sql("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
+                .await?;
+            template_pool
+                .execute(sqlx::raw_sql(janitor::schema::CORE_SCHEMA))
+                .await?;
+            // Postgres refuses to use a template that has open
+            // connections; close ours before any test clones it.
+            template_pool.close().await;
+            Ok::<_, sqlx::Error>(CORE_TEMPLATE_NAME)
+        })
+        .await
+        .map_err(|e| eprintln!("ensure_core_template failed: {}", e))
+        .ok()
+        .copied()
+}
 
 async fn backend() -> Option<&'static PgBackend> {
     BACKEND
@@ -80,17 +120,18 @@ struct TestDatabase {
     pool: PgPool,
     name: String,
     admin_pool: PgPool,
-    admin_url: String,
+    url: String,
 }
 
 impl TestDatabase {
     async fn new() -> Option<Self> {
         let backend = backend().await?;
+        let template = ensure_core_template(backend).await?;
         let admin_pool = PgPool::connect(&backend.admin_url).await.ok()?;
         let name = format!("janitor_test_{}", Uuid::new_v4().simple());
         // Name is a locally generated hex UUID; sqlx can't parameterise
         // DDL identifiers, so wrap in AssertSqlSafe.
-        let create = format!("CREATE DATABASE \"{}\"", name);
+        let create = format!("CREATE DATABASE \"{}\" TEMPLATE \"{}\"", name, template);
         if sqlx::query(sqlx::AssertSqlSafe(create))
             .execute(&admin_pool)
             .await
@@ -98,19 +139,13 @@ impl TestDatabase {
         {
             return None;
         }
-        let test_url = replace_db(&backend.admin_url, &name);
-        let pool = PgPool::connect(&test_url).await.ok()?;
-        // pgcrypto is used by worker auth; ensure it's present in the
-        // per-test database too (init_sql on the container installs it
-        // in `postgres`, but new databases start from template1).
-        let _ = sqlx::raw_sql("CREATE EXTENSION IF NOT EXISTS pgcrypto")
-            .execute(&pool)
-            .await;
+        let url = replace_db(&backend.admin_url, &name);
+        let pool = PgPool::connect(&url).await.ok()?;
         Some(Self {
             pool,
             name,
             admin_pool,
-            admin_url: backend.admin_url.clone(),
+            url,
         })
     }
 
@@ -119,7 +154,7 @@ impl TestDatabase {
     }
 
     fn url(&self) -> String {
-        replace_db(&self.admin_url, &self.name)
+        self.url.clone()
     }
 }
 
@@ -239,7 +274,6 @@ macro_rules! db_test {
 
 db_test! {
     async fn test_admin_health(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
@@ -254,7 +288,6 @@ db_test! {
 
 db_test! {
     async fn test_admin_ready(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
@@ -269,7 +302,6 @@ db_test! {
 
 db_test! {
     async fn test_public_repo_list_json(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir(tmp.path().join("alpha")).unwrap();
         std::fs::create_dir(tmp.path().join("beta")).unwrap();
@@ -295,7 +327,6 @@ db_test! {
 
 db_test! {
     async fn test_public_repo_list_text(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir(tmp.path().join("gamma")).unwrap();
 
@@ -320,7 +351,6 @@ db_test! {
 
 db_test! {
     async fn test_public_home_empty_200(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
@@ -337,7 +367,6 @@ db_test! {
 
 db_test! {
     async fn test_admin_diff_503_when_repo_absent(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "codebase").await;
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
@@ -368,7 +397,6 @@ db_test! {
 
 db_test! {
     async fn test_admin_diff_200_with_real_commits(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "codebase").await;
 
         let tmp = TempDir::new().unwrap();
@@ -407,7 +435,6 @@ db_test! {
 
 db_test! {
     async fn test_admin_revision_info_missing_params_400(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "codebase").await;
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
@@ -427,7 +454,6 @@ db_test! {
 
 db_test! {
     async fn test_admin_revision_info_missing_commit_returns_empty_json(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "codebase").await;
 
         let tmp = TempDir::new().unwrap();
@@ -457,7 +483,6 @@ db_test! {
 
 db_test! {
     async fn test_public_smart_protocol_unknown_codebase_404(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
@@ -494,7 +519,6 @@ db_test! {
             eprintln!("skipping: klaus not importable");
             return;
         }
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "klauzy").await;
 
         // Give klaus a real repo with one commit so the index page
@@ -544,7 +568,6 @@ db_test! {
 // (stdin streaming, stdout header parsing, body buffering).
 db_test! {
     async fn test_admin_smart_protocol_git_push_end_to_end(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "pushtest").await;
 
         let tmp = TempDir::new().unwrap();
@@ -605,7 +628,6 @@ db_test! {
     async fn test_public_worker_auth_flows_through(test_db: TestDatabase) {
         // Checks the auth + codebase-exists gate; does not drive a
         // full push.
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "foo").await;
         seed_worker(test_db.pool(), "alice", "s3cret").await;
 
@@ -632,7 +654,6 @@ db_test! {
 
 db_test! {
     async fn test_admin_metrics_returns_prometheus_text(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
@@ -665,7 +686,6 @@ db_test! {
         // /health, /ready, /metrics must stay admin-only, matching
         // Python's `create_web_app` in `py/janitor/git_store.py`.
         // Hitting them on the public port should 404.
-        setup_test_database(test_db.pool()).await.unwrap();
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
@@ -691,7 +711,6 @@ db_test! {
 db_test! {
     async fn test_admin_repo_list_at_root(test_db: TestDatabase) {
         // The admin app exposes `list_repositories` at `/`.
-        setup_test_database(test_db.pool()).await.unwrap();
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir(tmp.path().join("only-one")).unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
@@ -717,7 +736,6 @@ db_test! {
         // Build a repo whose second commit introduces a ~400 KB file.
         // The response must arrive chunked (no Content-Length) and
         // the full body must round-trip without truncation.
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "codebase").await;
 
         let tmp = TempDir::new().unwrap();
@@ -780,7 +798,6 @@ db_test! {
     async fn test_admin_diff_empty_still_200(test_db: TestDatabase) {
         // Same tree on both commits -> empty diff. Streaming must
         // still produce a clean 200 rather than hanging or 500ing.
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "codebase").await;
 
         let tmp = TempDir::new().unwrap();
@@ -823,7 +840,6 @@ db_test! {
         // No precheck for revision presence anymore -- git itself
         // errors out, which surfaces as 500 "git diff failed: ..."
         // matching Python exactly.
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "codebase").await;
 
         let tmp = TempDir::new().unwrap();
@@ -855,7 +871,6 @@ db_test! {
 
 db_test! {
     async fn test_admin_diff_invalid_sha_400(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "codebase").await;
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
@@ -880,7 +895,6 @@ db_test! {
 
 db_test! {
     async fn test_admin_revision_info_happy_path(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "codebase").await;
 
         let tmp = TempDir::new().unwrap();
@@ -926,7 +940,6 @@ db_test! {
 
 db_test! {
     async fn test_admin_log_happy_path(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "codebase").await;
 
         let tmp = TempDir::new().unwrap();
@@ -970,7 +983,6 @@ db_test! {
 
 db_test! {
     async fn test_admin_set_remote_writes_config(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "codebase").await;
 
         let tmp = TempDir::new().unwrap();
@@ -1010,7 +1022,6 @@ db_test! {
 
 db_test! {
     async fn test_admin_set_remote_missing_url_400(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "codebase").await;
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
@@ -1033,7 +1044,6 @@ db_test! {
 db_test! {
     async fn test_admin_set_remote_unknown_codebase_404(test_db: TestDatabase) {
         // Matches Python `_git_open_repo`: unknown codebase must 404.
-        setup_test_database(test_db.pool()).await.unwrap();
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
@@ -1058,7 +1068,6 @@ db_test! {
     async fn test_admin_smart_protocol_clone_end_to_end(test_db: TestDatabase) {
         // Push once, then clone via the same admin server. Exercises
         // git-upload-pack, which the push test doesn't cover.
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "cloneme").await;
 
         let tmp = TempDir::new().unwrap();
@@ -1099,7 +1108,6 @@ db_test! {
 db_test! {
     async fn test_admin_smart_protocol_clone_many_refs(test_db: TestDatabase) {
         // 50 branches push the fetch request over 1024 bytes, where git starts to gzip it.
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "manyrefs").await;
 
         let tmp = TempDir::new().unwrap();
@@ -1166,7 +1174,6 @@ db_test! {
         // On the public app an unauthenticated receive-pack advertisement
         // request must be challenged with 401 (not silently allowed and
         // not 403). Matches Python's `_git_check_service`.
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "gated").await;
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir(tmp.path().join("gated")).unwrap();
@@ -1199,7 +1206,6 @@ db_test! {
 
 db_test! {
     async fn test_public_receive_pack_bad_credentials_401(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "gated2").await;
         seed_worker(test_db.pool(), "alice", "s3cret").await;
         let tmp = TempDir::new().unwrap();
@@ -1227,7 +1233,6 @@ db_test! {
 db_test! {
     async fn test_admin_client_max_size_enforced(test_db: TestDatabase) {
         // A cap of 1 KiB should reject a POST body of 100 KiB with 413.
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "codebase").await;
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir(tmp.path().join("codebase")).unwrap();
@@ -1256,7 +1261,6 @@ db_test! {
         // A cap of 0 must mean "unlimited" (matches Python's aiohttp
         // convention). The push test already runs with `client_max_size
         // = 0` and pushes a real pack, but pin the invariant here too.
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "codebase").await;
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir(tmp.path().join("codebase")).unwrap();
@@ -1290,7 +1294,6 @@ db_test! {
             eprintln!("skipping: klaus not importable");
             return;
         }
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "auto").await;
 
         let tmp = TempDir::new().unwrap();
@@ -1325,7 +1328,6 @@ db_test! {
             eprintln!("skipping: klaus not importable");
             return;
         }
-        setup_test_database(test_db.pool()).await.unwrap();
 
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
@@ -1356,7 +1358,6 @@ db_test! {
             eprintln!("skipping: klaus not importable");
             return;
         }
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "browse").await;
 
         let tmp = TempDir::new().unwrap();
@@ -1403,7 +1404,6 @@ db_test! {
             eprintln!("skipping: klaus not importable");
             return;
         }
-        setup_test_database(test_db.pool()).await.unwrap();
         let tmp = TempDir::new().unwrap();
         let mut commits = Vec::new();
         for name in ["alpha", "beta"] {
@@ -1454,7 +1454,6 @@ db_test! {
             eprintln!("skipping: klaus not importable");
             return;
         }
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "files").await;
 
         let tmp = TempDir::new().unwrap();
@@ -1520,7 +1519,6 @@ db_test! {
             eprintln!("skipping: klaus not importable");
             return;
         }
-        setup_test_database(test_db.pool()).await.unwrap();
 
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
@@ -1549,7 +1547,6 @@ db_test! {
         // hit info/refs with a bogus `Content-Encoding: gzip` header;
         // the handler must still 200 instead of producing a corrupted
         // response or 500ing.
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "ce").await;
         let tmp = TempDir::new().unwrap();
         // Pre-create a bare repo with one commit so info/refs is
@@ -1598,7 +1595,6 @@ db_test! {
     async fn test_admin_smart_protocol_rejects_arbitrary_path(test_db: TestDatabase) {
         // Previously the catch-all let any path through to git-http-backend.
         // Now unknown paths must 404 before shelling out.
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "codebase").await;
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("codebase")).unwrap();
@@ -1619,7 +1615,6 @@ db_test! {
     async fn test_public_repo_list_406_on_unmatchable_accept(test_db: TestDatabase) {
         // Matches Python's mimeparse `best_match` returning empty ->
         // `HTTPNotAcceptable` (406).
-        setup_test_database(test_db.pool()).await.unwrap();
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
@@ -1639,7 +1634,6 @@ db_test! {
 
 db_test! {
     async fn test_public_repo_list_html(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir(tmp.path().join("alpha")).unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
@@ -1664,7 +1658,6 @@ db_test! {
 
 db_test! {
     async fn test_admin_invalid_codebase_400(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
@@ -1699,7 +1692,6 @@ db_test! {
 
 db_test! {
     async fn test_public_invalid_codebase_400(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);

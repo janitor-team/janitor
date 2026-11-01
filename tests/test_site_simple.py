@@ -29,7 +29,7 @@ from bs4 import BeautifulSoup
 from fakeredis.aioredis import FakeRedis
 
 from janitor.config import read_string as read_config_string
-from janitor.logs import FileSystemLogFileManager
+from janitor.logs import get_log_manager
 from janitor.site.simple import create_app, handle_result_file
 
 
@@ -405,7 +405,7 @@ async def test_result_file_unreadable_log_returns_502(tmp_path):
     log.write_text("log")
     log.chmod(0)
     app = web.Application()
-    app["logfile_manager"] = FileSystemLogFileManager(str(tmp_path))
+    app["logfile_manager"] = get_log_manager(str(tmp_path))
     request = make_mocked_request(
         "GET",
         "/",
