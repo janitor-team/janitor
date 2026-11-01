@@ -22,7 +22,6 @@ fn publish_mode_value(mode: &Mode) -> usize {
         Mode::Push => 500,
         Mode::Propose => 400,
         Mode::AttemptPush => 450,
-        Mode::Bts => 100,
         Mode::PushDerived => 200,
     }
 }

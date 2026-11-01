@@ -64,7 +64,6 @@ pub enum Mode {
     PushDerived,
     Propose,
     AttemptPush,
-    Bts,
 }
 
 impl std::fmt::Display for Mode {
@@ -75,7 +74,6 @@ impl std::fmt::Display for Mode {
             Mode::Push => write!(f, "push"),
             Mode::BuildOnly => write!(f, "build-only"),
             Mode::Skip => write!(f, "skip"),
-            Mode::Bts => write!(f, "bts"),
             Mode::AttemptPush => write!(f, "attempt-push"),
         }
     }
@@ -91,7 +89,6 @@ impl std::str::FromStr for Mode {
             "push" => Ok(Mode::Push),
             "build-only" => Ok(Mode::BuildOnly),
             "skip" => Ok(Mode::Skip),
-            "bts" => Ok(Mode::Bts),
             "attempt-push" => Ok(Mode::AttemptPush),
             _ => Err(format!("Unknown mode: {}", s)),
         }
@@ -108,7 +105,6 @@ impl TryFrom<Mode> for silver_platter::Mode {
             Mode::Push => Ok(silver_platter::Mode::Push),
             Mode::BuildOnly => Err("Mode::BuildOnly is not supported".to_string()),
             Mode::Skip => Err("Mode::Skip is not supported".to_string()),
-            Mode::Bts => Err("Mode::BTS is not supported".to_string()),
             Mode::AttemptPush => Ok(silver_platter::Mode::AttemptPush),
         }
     }
@@ -184,7 +180,6 @@ mod tests {
             (Mode::PushDerived, "push-derived"),
             (Mode::Propose, "propose"),
             (Mode::AttemptPush, "attempt-push"),
-            (Mode::Bts, "bts"),
         ] {
             assert_eq!(mode.to_string(), name);
             assert_eq!(name.parse::<Mode>().unwrap(), mode);
@@ -244,7 +239,6 @@ mod tests {
         );
         assert!(silver_platter::Mode::try_from(Mode::BuildOnly).is_err());
         assert!(silver_platter::Mode::try_from(Mode::Skip).is_err());
-        assert!(silver_platter::Mode::try_from(Mode::Bts).is_err());
     }
 
     #[test]
