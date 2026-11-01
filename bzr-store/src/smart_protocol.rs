@@ -34,7 +34,7 @@ use axum::{
 use breezyshim::bazaar::smart;
 use breezyshim::repository::Repository;
 use breezyshim::transport::Transport;
-use janitor::{Campaign, CodebaseName};
+use janitor::{Campaign, CodebaseName, Role};
 use tracing::{debug, info, warn};
 
 use crate::error::{BzrError, Result};
@@ -162,7 +162,7 @@ pub async fn smart_protocol_dispatch(
     state: AppState,
     codebase: CodebaseName,
     campaign: Option<Campaign>,
-    role: Option<String>,
+    role: Option<Role>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response> {
@@ -239,7 +239,7 @@ pub async fn smart_protocol_campaign_handler(
 /// `POST /:codebase/:campaign/:role/.bzr/smart`
 pub async fn smart_protocol_role_handler(
     State(state): State<AppState>,
-    Path((codebase, campaign, role)): Path<(CodebaseName, Campaign, String)>,
+    Path((codebase, campaign, role)): Path<(CodebaseName, Campaign, Role)>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response> {
