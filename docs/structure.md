@@ -2,7 +2,7 @@
 
 - `./reschedule.py` - a tool for users of the janitor and can be run by anybody locally
 - `./helpers/*` - all need to run inside of a janitor deployment (and talk to the database, etc) by an admin.
-- `janitor-admin` - admin CLI that talks to a running janitor site over its public HTTP API. Run with `cargo run --bin janitor-admin -- <args>`.
+- `janitor-admin` - admin CLI that talks to a running janitor site over its public HTTP API. Run with `cargo run --bin janitor-admin -- <args>`. `--session-id` (or `JANITOR_SESSION_ID`) sends the site's `session_id` login cookie.
   - `worker list` - list registered workers with their run counts
   - `worker add <name> [--link <url>]` - register a new worker; prints the generated password, shown once
   - `worker delete <name>` - remove a worker
@@ -12,8 +12,12 @@
   - `run list` - list active runs
   - `run kill <run-id>` - kill an active run
   - `merge-proposal set-status <url> <status>` - set a merge proposal's status (closed/abandoned/applied/rejected)
+  - `merge-proposal refresh-status <url>` - ask the publisher to check the status of a merge proposal again
   - `reprocess-logs run <run-id> [--dry-run] [--reschedule]` - reprocess a single run's stored build log
   - `reprocess-logs bulk [--run-id <id>...] [--dry-run] [--reschedule]` - reprocess stored build logs in bulk, restricted to the given run IDs if any are passed
   - `publish autopublish` - trigger an autopublish pass
   - `publish scan` - rescan merge proposal statuses
+  - `publish trigger <campaign> <codebase>` - ask the publisher to publish a codebase now
   - `logs <run-id> <name>` - print a log file of a run, e.g. `worker.log`
+  - `review submit <run-id> <approved|rejected|reschedule|abstained> [--comment <text>]` - submit a review of a run
+  - `review needs-review [--campaign <name>]` - list runs waiting for review

@@ -3,7 +3,7 @@
 //! Talks to a running janitor site instance over its public HTTP API.
 
 use clap::{Args, Parser, Subcommand};
-use janitor::{Campaign, RunId};
+use janitor::{Campaign, CodebaseName, RunId};
 use reqwest::{Client, RequestBuilder, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -25,6 +25,10 @@ struct Cli {
     /// Password for HTTP basic auth (admin).
     #[arg(long, env = "JANITOR_PASSWORD")]
     password: Option<String>,
+
+    /// Value of the site's session_id login cookie.
+    #[arg(long, env = "JANITOR_SESSION_ID")]
+    session_id: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -58,6 +62,21 @@ enum Command {
         run_id: RunId,
         /// Log file to print (e.g. worker.log).
         name: String,
+    },
+    /// Trigger publish attempts.
+    Publish {
+        #[command(subcommand)]
+        cmd: PublishCmd,
+    },
+    /// Review runs.
+    Review {
+        #[command(subcommand)]
+        cmd: ReviewCmd,
+    },
+    /// Manage merge proposals.
+    MergeProposal {
+        #[command(subcommand)]
+        cmd: MergeProposalCmd,
     },
 }
 
@@ -140,6 +159,47 @@ enum RunCmd {
     List,
 }
 
+#[derive(Subcommand)]
+enum PublishCmd {
+    /// Ask the publisher to publish a codebase now.
+    Trigger {
+        /// Campaign.
+        campaign: Campaign,
+        /// Codebase.
+        codebase: CodebaseName,
+    },
+}
+
+#[derive(Subcommand)]
+enum ReviewCmd {
+    /// Submit a review of a run.
+    Submit {
+        /// Run ID.
+        run_id: RunId,
+        /// Review verdict.
+        #[arg(value_parser = ["approved", "rejected", "reschedule", "abstained"])]
+        verdict: String,
+        /// Comment to store with the review.
+        #[arg(long)]
+        comment: Option<String>,
+    },
+    /// List runs waiting for review.
+    NeedsReview {
+        /// Restrict to this campaign.
+        #[arg(long)]
+        campaign: Option<Campaign>,
+    },
+}
+
+#[derive(Subcommand)]
+enum MergeProposalCmd {
+    /// Ask the publisher to check the status of a merge proposal again.
+    RefreshStatus {
+        /// Merge proposal URL.
+        url: String,
+    },
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct WorkerInfo {
     name: String,
@@ -159,15 +219,22 @@ struct ApiClient {
     base: Url,
     user: Option<String>,
     password: Option<String>,
+    session_id: Option<String>,
 }
 
 impl ApiClient {
-    fn new(base: Url, user: Option<String>, password: Option<String>) -> reqwest::Result<Self> {
+    fn new(
+        base: Url,
+        user: Option<String>,
+        password: Option<String>,
+        session_id: Option<String>,
+    ) -> reqwest::Result<Self> {
         Ok(Self {
             http: Client::builder().build()?,
             base,
             user,
             password,
+            session_id,
         })
     }
 
@@ -176,6 +243,12 @@ impl ApiClient {
         let mut req = self.http.request(method, url);
         if let Some(user) = &self.user {
             req = req.basic_auth(user, self.password.as_deref());
+        }
+        if let Some(session_id) = &self.session_id {
+            req = req.header(
+                reqwest::header::COOKIE,
+                format!("session_id={}", session_id),
+            );
         }
         Ok(req)
     }
@@ -386,12 +459,71 @@ async fn cmd_logs(client: &ApiClient, run_id: &RunId, name: &str) -> Result<(), 
         .map_err(|e| e.to_string())
 }
 
+/// Send `req` and print the JSON body of a successful response.
+async fn print_json(req: RequestBuilder) -> Result<(), String> {
+    let resp = req.send().await.map_err(|e| e.to_string())?;
+    let resp = expect_success(resp).await?;
+    let body: Value = resp.json().await.map_err(|e| e.to_string())?;
+    println!("{}", serde_json::to_string_pretty(&body).unwrap());
+    Ok(())
+}
+
+async fn cmd_publish_trigger(
+    client: &ApiClient,
+    campaign: &Campaign,
+    codebase: &CodebaseName,
+) -> Result<(), String> {
+    let path = format!("api/{}/c/{}/publish", campaign, codebase);
+    print_json(client.request(reqwest::Method::POST, &path)?).await
+}
+
+async fn cmd_review_submit(
+    client: &ApiClient,
+    run_id: &RunId,
+    verdict: &str,
+    comment: Option<&str>,
+) -> Result<(), String> {
+    let mut form = vec![("verdict", verdict)];
+    if let Some(comment) = comment {
+        form.push(("review-comment", comment));
+    }
+    let path = format!("api/run/{}", run_id);
+    print_json(client.request(reqwest::Method::POST, &path)?.form(&form)).await
+}
+
+async fn cmd_review_needs_review(
+    client: &ApiClient,
+    campaign: Option<&Campaign>,
+) -> Result<(), String> {
+    let path = match campaign {
+        Some(campaign) => format!("cupboard/api/{}/needs-review", campaign),
+        None => "cupboard/api/needs-review".to_string(),
+    };
+    print_json(client.request(reqwest::Method::GET, &path)?).await
+}
+
+async fn cmd_merge_proposal_refresh_status(client: &ApiClient, url: &str) -> Result<(), String> {
+    let resp = client
+        .request(reqwest::Method::POST, "api/refresh-proposal-status")?
+        .form(&[("url", url)])
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let body = expect_success(resp)
+        .await?
+        .text()
+        .await
+        .map_err(|e| e.to_string())?;
+    println!("{}", body);
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
     cli.logging.init();
 
-    let client = match ApiClient::new(cli.url, cli.user, cli.password) {
+    let client = match ApiClient::new(cli.url, cli.user, cli.password, cli.session_id) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("failed to build HTTP client: {}", e);
@@ -414,6 +546,26 @@ async fn main() -> ExitCode {
             RunCmd::List => cmd_run_list(&client).await,
         },
         Command::Logs { run_id, name } => cmd_logs(&client, &run_id, &name).await,
+        Command::Publish { cmd } => match cmd {
+            PublishCmd::Trigger { campaign, codebase } => {
+                cmd_publish_trigger(&client, &campaign, &codebase).await
+            }
+        },
+        Command::Review { cmd } => match cmd {
+            ReviewCmd::Submit {
+                run_id,
+                verdict,
+                comment,
+            } => cmd_review_submit(&client, &run_id, &verdict, comment.as_deref()).await,
+            ReviewCmd::NeedsReview { campaign } => {
+                cmd_review_needs_review(&client, campaign.as_ref()).await
+            }
+        },
+        Command::MergeProposal { cmd } => match cmd {
+            MergeProposalCmd::RefreshStatus { url } => {
+                cmd_merge_proposal_refresh_status(&client, &url).await
+            }
+        },
     };
 
     match result {
@@ -449,6 +601,21 @@ mod tests {
         assert_eq!(
             api_url(&base, "api/queue").unwrap().as_str(),
             "https://example.com/janitor/api/queue"
+        );
+    }
+
+    #[test]
+    fn request_sends_session_cookie() {
+        let base = Url::parse("https://example.com/").unwrap();
+        let client = ApiClient::new(base, None, None, Some("abc".to_string())).unwrap();
+        let req = client
+            .request(reqwest::Method::POST, "api/queue")
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(
+            req.headers().get(reqwest::header::COOKIE).unwrap(),
+            "session_id=abc"
         );
     }
 
