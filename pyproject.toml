@@ -171,6 +171,7 @@ include = ["janitor*"]
     "_static/*.css",
     "_static/*.js",
     "_static/*.png",
+    "_static/*.svg",
 ]
 
 [tool.setuptools.dynamic]
