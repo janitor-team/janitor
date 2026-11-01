@@ -1,4 +1,5 @@
 use crate::{CodebaseName, RunId};
+use object_store::ObjectStoreScheme;
 use std::io;
 
 mod store;
@@ -93,15 +94,33 @@ fn increment_upload_success() {
 /// - Google Cloud Storage URL (e.g., "gs://bucket-name")
 /// - S3 URL (e.g., "s3://bucket-name", "s3://bucket-name/logs"), with the
 ///   endpoint in `AWS_ENDPOINT_URL` for servers other than AWS
+/// - Any other URL that `object_store` knows (e.g., "memory:///")
 /// - None/empty: Uses temporary directory
 pub fn create_log_manager(location: Option<&str>) -> Result<LogFileManager, Error> {
-    match location {
-        None | Some("") => LogFileManager::local(std::env::temp_dir()),
-        Some(loc) if loc.starts_with("gs://") => {
+    let loc = match location {
+        None | Some("") => return LogFileManager::local(std::env::temp_dir()),
+        Some(loc) => loc,
+    };
+    let url = match url::Url::parse(loc) {
+        Ok(url) => url,
+        Err(url::ParseError::RelativeUrlWithoutBase) => return LogFileManager::local(loc),
+        Err(e) => {
+            return Err(Error::Other(format!(
+                "Invalid logs location {}: {}",
+                loc, e
+            )))
+        }
+    };
+    match ObjectStoreScheme::parse(&url) {
+        Ok((ObjectStoreScheme::Local, _)) => {
+            let path = url
+                .to_file_path()
+                .map_err(|_| Error::Other(format!("Invalid logs location {}", loc)))?;
+            LogFileManager::local(path)
+        }
+        Ok((ObjectStoreScheme::GoogleCloudStorage, _)) => {
             #[cfg(feature = "gcs")]
             {
-                let url = url::Url::parse(loc)
-                    .map_err(|e| Error::Other(format!("Invalid GCS URL: {}", e)))?;
                 let bucket_name = url
                     .host_str()
                     .ok_or_else(|| Error::Other(format!("Missing bucket name in {}", loc)))?;
@@ -112,12 +131,13 @@ pub fn create_log_manager(location: Option<&str>) -> Result<LogFileManager, Erro
                 Err(Error::Other("GCS support not compiled in".to_string()))
             }
         }
-        Some(loc) if loc.starts_with("s3://") => LogFileManager::s3(loc),
-        Some(loc) if loc.contains("://") => Err(Error::Other(format!(
-            "Unsupported logs location {}: use a local path, gs:// or s3://",
-            loc
+        Ok((scheme, prefix)) => crate::open_object_store(&url, scheme, prefix)
+            .map(LogFileManager::new)
+            .map_err(|e| Error::Other(format!("Unable to use logs location {}: {}", loc, e))),
+        Err(e) => Err(Error::Other(format!(
+            "Unsupported logs location {}: {}",
+            loc, e
         ))),
-        Some(loc) => LogFileManager::local(loc),
     }
 }
 
@@ -297,6 +317,7 @@ mod tests {
     fn test_create_log_manager_s3() {
         create_log_manager(Some("s3://janitor-logs")).unwrap();
         create_log_manager(Some("s3://janitor-logs/logs")).unwrap();
+        create_log_manager(Some("memory:///logs")).unwrap();
         for location in ["s3://", "https://s3.example.com/janitor-logs"] {
             let err = create_log_manager(Some(location)).unwrap_err();
             assert!(matches!(err, Error::Other(_)), "got {err:?}");

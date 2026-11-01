@@ -1,5 +1,6 @@
 use crate::RunId;
 use futures::stream::{BoxStream, TryStreamExt};
+use object_store::ObjectStoreScheme;
 use std::path::Path;
 
 mod store;
@@ -57,23 +58,55 @@ pub async fn list_ids(manager: &ArtifactManager) -> Result<(), Error> {
 }
 
 pub fn get_artifact_manager(location: &str) -> Result<ArtifactManager, Error> {
-    if location.starts_with("gs://") {
-        #[cfg(feature = "gcs")]
-        {
-            let url: url::Url = location
-                .parse()
-                .map_err(|e| Error::Other(format!("invalid location {}: {}", location, e)))?;
-            let bucket_name = url
-                .host_str()
-                .ok_or_else(|| Error::Other(format!("missing bucket name in {}", location)))?;
-            ArtifactManager::gcs(bucket_name)
+    let url = match url::Url::parse(location) {
+        Ok(url) => url,
+        Err(url::ParseError::RelativeUrlWithoutBase) => {
+            return Ok(ArtifactManager::local(Path::new(location))?);
         }
-        #[cfg(not(feature = "gcs"))]
-        {
-            Err(Error::ServiceUnavailable)
+        Err(e) => {
+            return Err(Error::Other(format!(
+                "invalid artifact location {}: {}",
+                location, e
+            )))
         }
-    } else {
-        Ok(ArtifactManager::local(Path::new(location))?)
+    };
+    match ObjectStoreScheme::parse(&url) {
+        Ok((ObjectStoreScheme::Local, _)) => {
+            let path = url
+                .to_file_path()
+                .map_err(|_| Error::Other(format!("invalid artifact location {}", location)))?;
+            Ok(ArtifactManager::local(&path)?)
+        }
+        Ok((ObjectStoreScheme::GoogleCloudStorage, _)) => {
+            #[cfg(feature = "gcs")]
+            {
+                let bucket_name = url
+                    .host_str()
+                    .ok_or_else(|| Error::Other(format!("missing bucket name in {}", location)))?;
+                ArtifactManager::gcs(bucket_name)
+            }
+            #[cfg(not(feature = "gcs"))]
+            {
+                Err(Error::ServiceUnavailable)
+            }
+        }
+        Ok((scheme, prefix)) => {
+            let store = crate::open_object_store(&url, scheme, prefix).map_err(|e| {
+                Error::Other(format!(
+                    "unable to use artifact location {}: {}",
+                    location, e
+                ))
+            })?;
+            let mut public_base = url.clone();
+            if !public_base.path().ends_with('/') {
+                public_base.set_path(&format!("{}/", url.path()));
+            }
+            Ok(ArtifactManager::new(store, public_base))
+        }
+        Err(e) => Err(Error::Other(format!(
+            "unsupported artifact location {}: {}",
+            location, e
+        ))),
     }
 }
 
@@ -230,6 +263,42 @@ mod tests {
     async fn get_artifact_manager_gs_without_feature_returns_service_unavailable() {
         let err = get_artifact_manager("gs://some-bucket").unwrap_err();
         assert!(matches!(err, Error::ServiceUnavailable));
+    }
+
+    #[tokio::test]
+    async fn get_artifact_manager_object_store_url() {
+        let mgr = get_artifact_manager("s3://janitor-artifacts/prefix").unwrap();
+        assert_eq!(
+            mgr.public_artifact_url(&RunId::new("run-1").unwrap(), "out.txt")
+                .as_str(),
+            "s3://janitor-artifacts/prefix/run-1/out.txt"
+        );
+
+        let mgr = get_artifact_manager("memory:///prefix").unwrap();
+        let run_id = RunId::new("run-1").unwrap();
+        let src = tempfile::tempdir().unwrap();
+        std::fs::write(src.path().join("out.txt"), b"body").unwrap();
+        mgr.store_artifacts(&run_id, src.path(), None)
+            .await
+            .unwrap();
+        let ids: Vec<String> = mgr.iter_ids().try_collect().await.unwrap();
+        assert_eq!(ids, vec!["run-1".to_string()]);
+        let body: Vec<u8> = mgr
+            .get_artifact(&run_id, "out.txt")
+            .await
+            .unwrap()
+            .map_ok(|chunk| chunk.to_vec())
+            .try_concat()
+            .await
+            .unwrap();
+        assert_eq!(body, b"body");
+
+        let err = get_artifact_manager("unknown://bucket/prefix").unwrap_err();
+        assert!(matches!(err, Error::Other(_)), "got {err:?}");
+        assert!(
+            err.to_string().contains("unknown://bucket/prefix"),
+            "got {err}"
+        );
     }
 
     /// `store_artifacts_with_backup` happy path: primary succeeds,

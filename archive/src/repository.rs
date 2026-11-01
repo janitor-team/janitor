@@ -865,7 +865,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let not_a_dir = tmp.path().join("file");
         std::fs::write(&not_a_dir, b"").unwrap();
-        let scanner = Arc::new(PackageScanner::new("local://").await.unwrap());
+        let scanner = Arc::new(
+            PackageScanner::new(tmp.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
         let pool = sqlx::PgPool::connect_lazy("postgresql://localhost/unused").unwrap();
         let generator = RepositoryGenerator::new(
             scanner,
