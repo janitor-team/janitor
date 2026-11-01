@@ -2,6 +2,8 @@
 
 - `./reschedule.py` - a tool for users of the janitor and can be run by anybody locally
 - `./helpers/*` - all need to run inside of a janitor deployment (and talk to the database, etc) by an admin.
+- `sieve/` - a Sieve filter and notes for passing GitLab's notification mail to `janitor-mail-filter`, so that a merge proposal's status is refreshed as soon as the mail arrives.
+- `examples/janitor.rules` - Prometheus alerting rules for the services.
 - `janitor-admin` - admin CLI that talks to a running janitor site over its public HTTP API. Run with `cargo run --bin janitor-admin -- <args>`.
   - `worker list` - list registered workers with their run counts
   - `worker add <name> [--link <url>]` - register a new worker; prints the generated password, shown once
