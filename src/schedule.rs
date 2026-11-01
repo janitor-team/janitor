@@ -508,7 +508,7 @@ pub async fn bulk_add_to_queue(
 ) -> Result<(), Error> {
     let bucket = bucket.unwrap_or("default");
     let mut codebase_values = sqlx::query_as::<_, (String, f64)>(
-        "SELECT name, coalesce(value, 0) FROM codebase WHERE name IS NOT NULL",
+        "SELECT name, coalesce(value, 0)::float8 FROM codebase WHERE name IS NOT NULL",
     )
     .fetch_all(conn)
     .await?
@@ -522,7 +522,8 @@ pub async fn bulk_add_to_queue(
     } else {
         None
     };
-    if let Some(max_codebase_value) = max_codebase_value.filter(|&v| v > 0.0) {
+    let max_codebase_value = max_codebase_value.filter(|&v| v > 0.0);
+    if let Some(max_codebase_value) = max_codebase_value {
         log::info!("Maximum value: {}", max_codebase_value);
     }
     for req in todo {
@@ -1011,6 +1012,50 @@ mod tests {
         assert_eq!(req.change_set, None);
         // Candidate value plus the value of the "propose" publish mode.
         assert_eq!(req.value, 405);
+    }
+
+    #[cfg(feature = "testing")]
+    #[tokio::test]
+    async fn test_bulk_add_to_queue() {
+        let Some(db) = setup_run_database("cb").await else {
+            return;
+        };
+        let pool = db.pool();
+        sqlx::raw_sql(
+            "INSERT INTO codebase (name) VALUES ('other');
+             INSERT INTO named_publish_policy (name, per_branch_policy) VALUES
+             ('default', ARRAY[ROW('main', 'propose', NULL)::branch_publish_policy]);
+             INSERT INTO candidate (suite, command, codebase, value, context, success_chance,
+                                    publish_policy)
+             VALUES ('lintian-fixes', 'lintian-brush', 'cb', 5, 'ctx', 0.5, 'default')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        let todo: Vec<ScheduleRequest> = iter_schedule_requests_from_candidates(pool, None, None)
+            .await
+            .unwrap()
+            .collect();
+
+        let mut queues = vec![];
+        // No codebase has a value yet, then cb has half the maximum.
+        for values in [
+            "DELETE FROM queue; UPDATE codebase SET value = NULL",
+            "DELETE FROM queue; UPDATE codebase SET value = CASE name WHEN 'cb' THEN 5 ELSE 10 END",
+        ] {
+            sqlx::raw_sql(values).execute(pool).await.unwrap();
+            bulk_add_to_queue(pool, &todo, false, 0.0, None, None, false)
+                .await
+                .unwrap();
+            let queue: Vec<(String, String, i64)> =
+                sqlx::query_as("SELECT codebase, suite, priority FROM queue")
+                    .fetch_all(pool)
+                    .await
+                    .unwrap();
+            queues.push(queue);
+        }
+        let row = |priority| vec![("cb".to_string(), "lintian-fixes".to_string(), priority)];
+        assert_eq!(queues, vec![row(69), row(138)]);
     }
 
     #[cfg(feature = "testing")]
