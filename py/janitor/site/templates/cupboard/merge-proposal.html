@@ -83,14 +83,16 @@ $(document).ready(function() {
         <ul>
             {% for publish in publishes %}
                 <li>
-                    {{ format_timestamp(publish.timestamp) }}: {{ display_publish_result_code(publish.result_code) }}:
-                    {% if '\n' in publish.description %}
-                        <pre>{{ publish.description }}</pre>
-                    {% else %}
-                        {% if publish.run_id %}<a href="/cupboard/c/{{ proposal.codebase }}/{{ publish.run_id }}">{% endif %}
-                            {{ publish.description }}<!-- {{ publish.revision }} -->
-                            {% if publish.run_id %}</a>{% endif %}
+                    {{ format_timestamp(publish.timestamp) }}: {{ display_publish_result_code(publish.result_code) }}
+                    {%- if publish.description and not description_restates_code(publish.description, publish.result_code) %}:
+                        {% if '\n' in publish.description %}
+                            <pre>{{ publish.description }}</pre>
+                        {% else %}
+                            {{ publish.description }}
+                        {% endif %}
                     {% endif %}
+                    {% if publish.run_id %}(<a href="/cupboard/c/{{ proposal.codebase }}/{{ publish.run_id }}">run</a>){% endif %}
+                    <!-- {{ publish.revision }} -->
                 </li>
             {% endfor %}
         </ul>

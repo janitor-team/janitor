@@ -35,7 +35,7 @@
             {% endif %}
             <li>Start time: {{ format_timestamp(run.start_time) }}</li>
             <li>Duration: {{ format_duration(run.finish_time - run.start_time) }}</li>
-            <li>Success probability: {{ success_probability|round(2) }} (based on {{ total_previous_runs }} previous runs)</li>
+            <li>Success probability: {{ success_probability|round(2) }} (based on {{ total_previous_runs }} previous run{% if total_previous_runs != 1 %}s{% endif %})</li>
             <li>
                 Status: {{ display_result_code(result_code, failure_transient) |safe }}
                 {% if unchanged_run and suite not in ('unchanged', 'control') %}
@@ -45,7 +45,7 @@
                 {% endif %}
                 {% if run.resume_from %}(<a href="/cupboard/c/{{ run.codebase }}/{{ run.resume_from }}/">base run</a>){% endif %}
             </li>
-            <li>Description: {{ description }}</li>
+            {% if description %}<li>Description: {{ description }}</li>{% endif %}
             <li>Publish status: {{ run.publish_status }}</li>
             {% if queue_position %}
                 <li class="queue-position.{{ run.codebase }}">

@@ -17,11 +17,13 @@
             {% if publish.branch_name %}<li>Branch name: {{ publish.branch_name }}</li>{% endif %}
             <li>Mode: {{ publish.mode }}</li>
             <li>
-                {{ display_publish_result_code(publish.result_code) }}:
-                {% if '\n' in publish.description %}
-                    <pre>{{ publish.description }}</pre>
-                {% else %}
-                    {{ publish.description }}
+                {{ display_publish_result_code(publish.result_code) }}
+                {%- if publish.description and not description_restates_code(publish.description, publish.result_code) %}:
+                    {% if '\n' in publish.description %}
+                        <pre>{{ publish.description }}</pre>
+                    {% else %}
+                        {{ publish.description }}
+                    {% endif %}
                 {% endif %}
                 {% if publish.mode == 'propose' %}
                     {% if publish.merge_proposal_url %}- <a href="{{ publish.merge_proposal_url }}">Merge proposal</a>{% endif %}
