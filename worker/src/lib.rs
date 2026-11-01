@@ -137,6 +137,16 @@ pub fn convert_codemod_script_failed(i: i32, command: &str) -> WorkerFailure {
     }
 }
 
+fn split_codemod_command(command: &str) -> Result<Vec<String>, WorkerFailure> {
+    shlex::split(command).ok_or_else(|| WorkerFailure {
+        code: "invalid-command-syntax".to_string(),
+        description: format!("Invalid command syntax: {}", command),
+        details: None,
+        stage: vec!["codemod".to_string()],
+        transient: Some(false),
+    })
+}
+
 type BuildConfig = serde_json::Value;
 type ValidateConfig = serde_json::Value;
 
@@ -1011,47 +1021,45 @@ pub async fn process_single_item(
 
         // TODO: Update metadata in appstate while working
 
-        let result = run_worker(
-            &assignment_.codebase,
-            &assignment_.campaign,
-            assignment_.branch.url.as_ref(),
-            &assignment_.id,
-            &assignment_.build.config,
-            env,
-            shlex::split(&assignment_.codemod.command)
-                .unwrap()
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>(),
-            output_directory_.as_path(),
-            &mut metadata,
-            &assignment_.target_repository.url,
-            &vendor,
-            &assignment_.build.target,
-            Some(assignment_.branch.vcs_type),
-            assignment_.branch.subpath.as_ref(),
-            resume_branch_url.as_ref(),
-            assignment_.branch.cached_url.as_ref(),
-            resume_result.as_ref(),
-            resume_branches.as_ref().map(|x| {
-                {
-                    x.iter().map(|(role, name, base, revision)| {
-                        (role.as_str(), name.as_str(), base.clone(), revision.clone())
-                    })
-                }
-                .collect::<Vec<_>>()
-            }),
-            &mut Some(possible_transports),
-            Some(force_build),
-            Some(tee),
-            assignment.branch.additional_colocated_branches.map(|p| {
-                p.into_iter()
-                    .map(|k| (k.to_string(), k.to_string()))
-                    .collect()
-            }),
-            Some(assignment_.skip_setup_validation),
-            Some(assignment_.branch.default_empty),
-        );
+        let result = split_codemod_command(&assignment_.codemod.command).and_then(|argv| {
+            run_worker(
+                &assignment_.codebase,
+                &assignment_.campaign,
+                assignment_.branch.url.as_ref(),
+                &assignment_.id,
+                &assignment_.build.config,
+                env,
+                argv.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                output_directory_.as_path(),
+                &mut metadata,
+                &assignment_.target_repository.url,
+                &vendor,
+                &assignment_.build.target,
+                Some(assignment_.branch.vcs_type),
+                assignment_.branch.subpath.as_ref(),
+                resume_branch_url.as_ref(),
+                assignment_.branch.cached_url.as_ref(),
+                resume_result.as_ref(),
+                resume_branches.as_ref().map(|x| {
+                    {
+                        x.iter().map(|(role, name, base, revision)| {
+                            (role.as_str(), name.as_str(), base.clone(), revision.clone())
+                        })
+                    }
+                    .collect::<Vec<_>>()
+                }),
+                &mut Some(possible_transports),
+                Some(force_build),
+                Some(tee),
+                assignment.branch.additional_colocated_branches.map(|p| {
+                    p.into_iter()
+                        .map(|k| (k.to_string(), k.to_string()))
+                        .collect()
+                }),
+                Some(assignment_.skip_setup_validation),
+                Some(assignment_.branch.default_empty),
+            )
+        });
 
         match result {
             Ok(_) => {
@@ -1231,6 +1239,28 @@ mod tests {
         assert_eq!(
             derive_branch_name(&url::Url::parse("https://example.com/").unwrap()),
             "example.com"
+        );
+    }
+
+    #[test]
+    fn test_split_codemod_command() {
+        assert_eq!(
+            split_codemod_command("lintian-brush --modern 'a b'"),
+            Ok(vec![
+                "lintian-brush".to_string(),
+                "--modern".to_string(),
+                "a b".to_string()
+            ])
+        );
+        assert_eq!(
+            split_codemod_command("echo 'oops"),
+            Err(WorkerFailure {
+                code: "invalid-command-syntax".to_string(),
+                description: "Invalid command syntax: echo 'oops".to_string(),
+                stage: vec!["codemod".to_string()],
+                details: None,
+                transient: Some(false),
+            })
         );
     }
 
