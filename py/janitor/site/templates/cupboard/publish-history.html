@@ -54,11 +54,13 @@
                         <td>{{ branch_name }}</td>
                         <td>{{ mode }}</td>
                         <td>
-                            {{ display_publish_result_code(result_code) }}:
-                            {% if '\n' in description %}
-                                <pre>{{ description }}</pre>
-                            {% else %}
-                                {{ description }}
+                            {{ display_publish_result_code(result_code) }}
+                            {%- if description and not description_restates_code(description, result_code) %}:
+                                {% if '\n' in description %}
+                                    <pre>{{ description }}</pre>
+                                {% else %}
+                                    {{ description }}
+                                {% endif %}
                             {% endif %}
                             {% if mode == 'propose' %}
                                 {% if merge_proposal_url %}

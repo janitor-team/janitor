@@ -257,6 +257,11 @@ def worker_link_is_global(url):
         return True
 
 
+def description_restates_code(description: str, code: str) -> bool:
+    """Return True if a description only repeats its result code."""
+    return description.lower().rstrip(".").replace(" ", "-") == code
+
+
 TEMPLATE_ENV = {
     "utcnow": utcnow,
     "enumerate": enumerate,
@@ -266,4 +271,5 @@ TEMPLATE_ENV = {
     "classify_result_code": classify_result_code,
     "URL": URL,
     "worker_link_is_global": worker_link_is_global,
+    "description_restates_code": description_restates_code,
 }

@@ -69,8 +69,11 @@
                     {% endif %}
                 {% endif %}
             {% endif %}
-            <h3>Run locally</h3>
-            {{ local_command(command, run.codebase, vcs_type, suite) }}
+            {% set run_locally = local_command(command, run.codebase, vcs_type, suite) %}
+            {% if run_locally|trim %}
+                <h3>Run locally</h3>
+                {{ run_locally }}
+            {% endif %}
             <h3>More details</h3>
             <p>
                 <a href="/cupboard/c/{{ run.codebase }}/{{ run_id }}/">Full run details</a>
@@ -81,7 +84,7 @@
             <ul>
                 {% for previous_run in previous_runs %}
                     <li>
-                        <a href="/cupboard/c/{{ previous_run.codebase }}/{{ previous_run.id }}/">{{ display_result_code(previous_run.result_code, previous_run.failure_transient) |safe }}: {{ previous_run.description }}</a>
+                        <a href="/cupboard/c/{{ previous_run.codebase }}/{{ previous_run.id }}/">{{ display_result_code(previous_run.result_code, previous_run.failure_transient) |safe }}{% if previous_run.description and not description_restates_code(previous_run.description, previous_run.result_code) %}: {{ previous_run.description }}{% endif %}</a>
                     </li>
                 {% endfor %}
             </ul>
