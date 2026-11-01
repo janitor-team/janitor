@@ -1948,7 +1948,7 @@ struct BlockerChangeSetDetails {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct BlockerPreviousMpDetails {
     url: String,
-    status: String,
+    status: janitor::publish::MergeProposalStatus,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
