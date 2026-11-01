@@ -154,6 +154,11 @@ fn handle_exchange(
         .map_err(|e| BzrError::Python(format!("ResponseBuffer::into_bytes: {}", e)))
 }
 
+/// A configured campaign, the runner's `main` cache or a vendor branch such as `debian/latest`.
+fn is_known_branch(config: &janitor::config::Config, campaign: &str, role: Option<&str>) -> bool {
+    config.get_campaign(campaign).is_some() || campaign == "main" || role.is_some()
+}
+
 /// Internal dispatch shared by the three route shapes. Checks the
 /// codebase in the DB, validates the campaign against `janitor.conf`
 /// campaigns, and runs the smart protocol exchange with per-app
@@ -179,7 +184,7 @@ pub async fn smart_protocol_dispatch(
     }
 
     if let Some(c) = campaign.as_ref() {
-        if state.janitor_config.get_campaign(c).is_none() {
+        if !is_known_branch(&state.janitor_config, c, role.as_deref()) {
             warn!("unknown campaign: {}", c);
             return Err(BzrError::PathNotFound {
                 path: format!("campaign/{}", c),
@@ -244,4 +249,28 @@ pub async fn smart_protocol_role_handler(
     body: Bytes,
 ) -> Result<Response> {
     smart_protocol_dispatch(state, codebase, Some(campaign), Some(role), headers, body).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_known_branch;
+
+    #[test]
+    fn test_is_known_branch() {
+        let config =
+            janitor::config::read_string("campaign {\n  name: \"lintian-fixes\"\n}\n").unwrap();
+        let paths = [
+            ("lintian-fixes", None),
+            ("lintian-fixes", Some("main")),
+            ("main", None),
+            ("debian", Some("latest")),
+            ("debian", Some("pristine-tar")),
+            ("debian", Some("upstream")),
+            ("unknown", None),
+        ];
+        assert_eq!(
+            paths.map(|(campaign, role)| is_known_branch(&config, campaign, role)),
+            [true, true, true, true, true, true, false]
+        );
+    }
 }
