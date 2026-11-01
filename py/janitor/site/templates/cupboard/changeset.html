@@ -13,21 +13,29 @@
             Status: <i>{{ changeset.state }}</i>
         </p>
         <h2>Runs</h2>
-        <ul>
-            {% for run in runs %}
-                <li>
-                    <a href="/cupboard/c/{{ run.codebase }}/{{ run.id }}/">{{ format_timestamp(run.finish_time) }} {{ run.codebase }}/{{ run.suite }}</a>: {{ display_result_code(run.result_code, run.failure_transient) }}
-                </li>
-            {% endfor %}
-        </ul>
+        {% if runs %}
+            <ul>
+                {% for run in runs %}
+                    <li>
+                        <a href="/cupboard/c/{{ run.codebase }}/{{ run.id }}/">{{ format_timestamp(run.finish_time) }} {{ run.codebase }}/{{ run.suite }}</a>: {{ display_result_code(run.result_code, run.failure_transient) }}
+                    </li>
+                {% endfor %}
+            </ul>
+        {% else %}
+            <p>No runs yet.</p>
+        {% endif %}
         <h2>Left to process</h2>
-        <ul>
-            {% for candidate in todo %}
-                <li>
-                    <a href="/cupboard/c/{{ candidate.codebase }}/">{{ candidate.codebase }}</a> / <a href="/{{ candidate.suite }}">{{ candidate.suite }}</a>
-                </li>
-            {% endfor %}
-        </ul>
+        {% if todo %}
+            <ul>
+                {% for candidate in todo %}
+                    <li>
+                        <a href="/cupboard/c/{{ candidate.codebase }}/">{{ candidate.codebase }}</a> / <a href="/{{ candidate.suite }}">{{ candidate.suite }}</a>
+                    </li>
+                {% endfor %}
+            </ul>
+        {% else %}
+            <p>Nothing left to process.</p>
+        {% endif %}
         <h2>APT repository</h2>
         <p>
             To install the packages from this changeset, use the following

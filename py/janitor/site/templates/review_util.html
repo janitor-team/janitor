@@ -1,10 +1,10 @@
 {% macro display_reviews_table(reviews, user=None) %}
-    <table class="reviews">
-        <thead>
-            <tr>
-                <th>Reviewer</th>
-                <th>Verdict</th>
-                <th>Comment</th>
+    <table class="reviews docutils" border="1">
+        <thead valign="bottom">
+            <tr class="row-odd">
+                <th class="head">Reviewer</th>
+                <th class="head">Verdict</th>
+                <th class="head">Comment</th>
             </tr>
         </thead>
         {% set ns = namespace(my_review=None) %}

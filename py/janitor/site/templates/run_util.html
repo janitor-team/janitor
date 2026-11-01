@@ -303,9 +303,9 @@ cd {{ codebase }}
 {% endmacro %}
 {% macro display_vcs_diffs(show_diff, branches, tags=None) %}
     {% if branches %}
-        <h3>Diff</h3>
+        <h2>Diff</h2>
         {% for role, name, baserev, rev in branches %}
-            {% if branches|length > 1 %}<h4>Branch: {{ role }}</h4>{% endif %}
+            {% if branches|length > 1 %}<h3>Branch: {{ role }}</h3>{% endif %}
             {% if tags %}
                 {% for tagname, tagrev in tags %}
                     {% if tagrev == rev %}Tag: {{ tagname }}{% endif %}
