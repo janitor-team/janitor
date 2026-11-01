@@ -555,12 +555,6 @@ impl Application {
             // 1. Stop accepting new work (this would be handled by the HTTP server)
             log::info!("Stopping new work acceptance...");
 
-            // 2. Wait for active runs to complete or timeout
-            log::info!("Waiting for active runs to complete...");
-            if let Err(e) = self.wait_for_active_runs().await {
-                log::warn!("Error waiting for active runs: {}", e);
-            }
-
             // 3. Artifact manager doesn't have flush_all in janitor crate
             log::info!("Artifact flush not needed for janitor artifact manager");
 
@@ -582,30 +576,6 @@ impl Application {
         tokio::time::timeout(SHUTDOWN_TIMEOUT, shutdown_future)
             .await
             .map_err(|_| ApplicationError::ShutdownTimeout)?
-    }
-
-    /// Wait for active runs to complete.
-    async fn wait_for_active_runs(&self) -> Result<(), ApplicationError> {
-        let mut attempts = 0;
-        const MAX_ATTEMPTS: u32 = 30; // 30 seconds with 1-second intervals
-
-        while attempts < MAX_ATTEMPTS {
-            let active_runs = self.state.active_runs.list().await;
-            if active_runs.is_empty() {
-                log::info!("All active runs completed");
-                return Ok(());
-            }
-            log::info!(
-                "Waiting for {} active runs to complete...",
-                active_runs.len()
-            );
-
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            attempts += 1;
-        }
-
-        log::warn!("Timeout waiting for active runs to complete");
-        Ok(())
     }
 
     /// Perform health checks on all systems.
