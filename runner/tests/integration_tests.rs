@@ -197,7 +197,7 @@ async fn test_log_manager() {
     // Test data
     let codebase = &janitor::CodebaseName::new("test-package").unwrap();
     let run_id = &janitor::RunId::new("test-run-123").unwrap();
-    let log_name = "test.log";
+    let log_name = &janitor::identifiers::LogFilename::new("test.log").unwrap();
     let test_content = b"Test log content\nLine 2\n";
 
     // Create a temporary log file to import
