@@ -27,7 +27,9 @@ RUN apt-get update --yes \
 
 COPY . /code
 
-RUN cargo build --release --manifest-path /code/publish/Cargo.toml --bin janitor-publish --bin janitor-publish-one
+RUN --mount=type=cache,target=/root/.cargo --mount=type=cache,id=janitor-publish-target,target=/code/target \
+    cargo build --release --manifest-path /code/publish/Cargo.toml --bin janitor-publish --bin janitor-publish-one \
+ && cp /code/target/release/janitor-publish /code/target/release/janitor-publish-one /usr/local/bin/
 
 FROM docker.io/debian:testing-slim
 MAINTAINER Jelmer Vernooij <jelmer@jelmer.uk>
@@ -48,8 +50,8 @@ RUN apt-get update --yes \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /code/target/release/janitor-publish /usr/local/bin/janitor-publish
-COPY --from=build /code/target/release/janitor-publish-one /usr/local/bin/janitor-publish-one
+COPY --from=build /usr/local/bin/janitor-publish /usr/local/bin/janitor-publish
+COPY --from=build /usr/local/bin/janitor-publish-one /usr/local/bin/janitor-publish-one
 
 EXPOSE 9912
 
