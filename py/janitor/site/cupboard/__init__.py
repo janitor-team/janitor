@@ -178,7 +178,6 @@ async def handle_result_codes(request):
             "include_historical": include_historical,
             "result_codes": await conn.fetch(query, *args),
             "campaign": campaign,
-            "all_campaigns": all_campaigns,
         }
 
 
@@ -215,7 +214,6 @@ async def handle_failure_stages(request):
             "include_historical": include_historical,
             "failure_stages": await conn.fetch(query, *args),
             "campaign": campaign,
-            "all_campaigns": all_campaigns,
         }
 
 
@@ -258,7 +256,6 @@ async def handle_result_code(request):
             "campaign": campaign,
             "include_historical": include_historical,
             "include_transient": include_transient,
-            "all_campaigns": all_campaigns,
         }
 
 

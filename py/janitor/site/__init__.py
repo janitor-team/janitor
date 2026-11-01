@@ -89,8 +89,7 @@ def update_vars_from_request(vs, request):
     vs["is_qa_reviewer"] = is_qa_reviewer(request)
     vs["user"] = request["user"]
     vs["rel_url"] = request.rel_url
-    vs["suites"] = [c for c in request.app["config"].campaign]
-    vs["campaigns"] = [c for c in request.app["config"].campaign]
+    vs["all_campaigns"] = [c.name for c in request.app["config"].campaign]
     vs["openid_configured"] = bool(request.app.get("openid_config"))
 
     def url_for(name, **kwargs):
