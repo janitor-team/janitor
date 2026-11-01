@@ -4,7 +4,7 @@ use std::sync::Arc;
 use janitor::test_with_database;
 use janitor_archive::config::AptRepositoryConfig;
 use janitor_archive::database::ArchiveDatabase;
-use janitor_archive::repository::{RepositoryGenerationConfig, RepositoryGenerator};
+use janitor_archive::repository::RepositoryGenerator;
 use janitor_archive::scanner::PackageScanner;
 
 test_with_database! {
@@ -17,7 +17,7 @@ test_with_database! {
         let generator = RepositoryGenerator::new(
             Arc::new(scanner),
             Arc::new(ArchiveDatabase::new(test_db.pool().clone())),
-            RepositoryGenerationConfig::default(),
+            None,
         );
         let suite_path = tmp.path().join("dists/lintian-fixes");
         let repo = AptRepositoryConfig::new(
