@@ -109,9 +109,9 @@
         {% endif %}
         {% macro display_log_link(name, description) %}
             <a href="{{ name }}">
-                {% if primary_log == name %}<b>{% endif %}
+                {% if primary_log_name == name %}<b>{% endif %}
                     {{ description }}
-                    {% if primary_log == name %}</b>{% endif %}
+                    {% if primary_log_name == name %}</b>{% endif %}
             </a>
         {% endmacro %}
         {% if worker_log_name %}{{ display_log_link(worker_log_name, "Full worker log") }}{% endif %}
