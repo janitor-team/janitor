@@ -21,6 +21,8 @@ from yarl import URL
 
 from .schedule import do_schedule
 
+VERDICTS = ("approved", "rejected", "abstained", "reschedule", "rescheduled")
+
 
 async def store_review(
     conn,

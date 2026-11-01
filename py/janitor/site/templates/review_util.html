@@ -26,8 +26,8 @@
                 <td>Your review</td>
                 <td>
                     <select id="verdict" name="verdict" onchange="submit_review(this.value)">
-                        <option value="unreviewed"
-                                {% if ns.my_review and ns.my_review.verdict == 'unreviewed' %}selected="true"{% endif %}>
+                        <option value="unreviewed" disabled
+                                {% if not ns.my_review %}selected="true"{% endif %}>
                             Unreviewed
                         </option>
                         <option value="approved"
