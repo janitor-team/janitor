@@ -8,7 +8,7 @@
 {% from "lintian_util.html" import display_lintian_result with context %}
 {% from "review_util.html" import display_reviews_table with context %}
 {% block page_title %}
-    Cupboard - Run Details - {{ run.codebase }}
+    Cupboard - Run details - {{ run.codebase }}
 {% endblock page_title %}
 {% block body %}
     <div class="section" id="{{ run_id }}">
@@ -31,7 +31,7 @@
             </li>
             {% if vcs_url %}<li>Branch URL: {{ display_branch_url(vcs_browse, vcs_url) }}</li>{% endif %}
             {% if run.result and 'upstream_branch_url' in run.result %}
-                <li>Upstream Branch URL: {{ display_upstream_branch_url(result) }}</li>
+                <li>Upstream branch URL: {{ display_upstream_branch_url(result) }}</li>
             {% endif %}
             <li>Start time: {{ format_timestamp(run.start_time) }}</li>
             <li>Duration: {{ format_duration(run.finish_time - run.start_time) }}</li>
@@ -46,7 +46,7 @@
                 {% if run.resume_from %}(<a href="/cupboard/c/{{ run.codebase }}/{{ run.resume_from }}/">base run</a>){% endif %}
             </li>
             <li>Description: {{ description }}</li>
-            <li>Publish Status: {{ run.publish_status }}</li>
+            <li>Publish status: {{ run.publish_status }}</li>
             {% if queue_position %}
                 <li class="queue-position.{{ run.codebase }}">
                     <a href="/cupboard/queue">Queue</a> position: {{ queue_position }}
@@ -73,7 +73,7 @@
                 </li>
             {% endif %}
             <li style="display: none">Command: {{ command }}</li>
-            <li style="display: none">Build Version: {{ run.build_version }}</li>
+            <li style="display: none">Build version: {{ run.build_version }}</li>
         </ul>
         {{ local_command(command, run.codebase, vcs_type, suite) }}
         {% if branch_url or campaign.default_empty %}

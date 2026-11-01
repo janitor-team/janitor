@@ -5,7 +5,7 @@
     Command: <span id="command">{{ command }}</span>
 </div>
 <div class="finish_time">
-    Finish Time: <span id="finish_time">{{ format_timestamp(finish_time) }}</span>
+    Finish time: <span id="finish_time">{{ format_timestamp(finish_time) }}</span>
 </div>
 {% for role, remote_branch_name, base_revision, revision in branches %}
     <div class="branch" id="branch-{{ role }}">

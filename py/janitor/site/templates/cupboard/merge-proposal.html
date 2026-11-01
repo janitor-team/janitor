@@ -8,7 +8,7 @@
 {% endblock sidebar %}
 {% from "run_util.html" import display_publish_result_code %}
 {% block page_title %}
-    Cupboard - Merge Proposal Status - {{ proposal.url }}
+    Cupboard - Merge proposal status - {{ proposal.url }}
 {% endblock page_title %}
 {% block body %}
     <script>
@@ -75,7 +75,7 @@ $(document).ready(function() {
             </li>
             {% if proposal.suite %}
                 <li>
-                    <a href="/{{ proposal.suite }}/c/{{ proposal.codebase }}/">Run Details</a>
+                    <a href="/{{ proposal.suite }}/c/{{ proposal.codebase }}/">Run details</a>
                 </li>
             {% endif %}
         </ul>

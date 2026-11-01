@@ -64,7 +64,7 @@ cd {{ codebase }}
                    name="issue[description]"
                    value="{%- filter escape -%} See run [{{ run_id }}]({{ url }}).  {%- endfilter -%}" />
             <button id="filebug" {% if accesskey %}accesskey="{{ accesskey }}"{% endif %}>
-                File a Bug against {{ bugtracker.name }}
+                File a bug against {{ bugtracker.name }}
             </button>
         </form>
         {% if verbatim_id %}
@@ -93,7 +93,7 @@ cd {{ codebase }}
                    name="body"
                    value="{%- filter escape -%} See run [{{ run_id }}]({{ url }}).  {%- endfilter -%}" />
             <button id="filebug"{% if accesskey %} accesskey="{{ accesskey }}"{% endif %}>
-                File a Bug against {{ bugtracker.name }}
+                File a bug against {{ bugtracker.name }}
             </button>
         </form>
     {% elif bugtracker.kind == "debian" %}
@@ -108,7 +108,7 @@ cd {{ codebase }}
             <input type="hidden"
                    name="body"
                    value="{%- filter escape -%} See run [{{ run_id }}]({{ url }}).  {%- endfilter -%}" />
-            <button {% if accesskey %}accesskey="{{ accesskey }}"{% endif %}>File a Bug against {{ bugtracker.name }}</button>
+            <button {% if accesskey %}accesskey="{{ accesskey }}"{% endif %}>File a bug against {{ bugtracker.name }}</button>
         </form>
     {% else %}
         <!-- unknown bugtracker kind {{ bugtracker.kind }} -->

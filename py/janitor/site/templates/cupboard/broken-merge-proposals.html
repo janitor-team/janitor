@@ -4,7 +4,7 @@
 {% endblock sidebar %}
 {% from "run_util.html" import display_result_code %}
 {% block page_title %}
-    Cupboard - Merge Proposals with Broken Runs
+    Cupboard - Merge proposals with broken runs
 {% endblock page_title %}
 {% block body %}
     <div class="section" id="broken-merge-proposals">
@@ -31,7 +31,7 @@
                 {% for mp_url, campaign, codebase, run_id, result_code, finish_time, description in broken_mps %}
                     <tr class="row-even">
                         <td>
-                            <a class="reference external" href="{{ mp_url }}">Merge Proposal</a>
+                            <a class="reference external" href="{{ mp_url }}">Merge proposal</a>
                         </td>
                         <td>
                             <a class="reference external" href="/cupboard/c/{{ codebase }}/">{{ codebase }}</a>

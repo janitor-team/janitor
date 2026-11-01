@@ -6,11 +6,11 @@
 {% endblock sidebar %}
 {% from "run_util.html" import local_command, merge_command, reschedule_button, describe_publish_policy, publish_buttons, result_code_explanation, display_result_code, display_vcs_diffs, display_branch_url with context %}
 {% block page_title %}
-    {{ suite }} Codebase - {{ codebase }}
+    {{ suite }} codebase - {{ codebase }}
 {% endblock page_title %}
 {% block body %}
     <div class="section" id="{{ codebase }}">
-        <h1>{{ suite }} Codebase - {{ codebase }}</h1>
+        <h1>{{ suite }} codebase - {{ codebase }}</h1>
         <ul class="metadata">
             {% if publish_policy %}<li>Automatic publish policy: {{ describe_publish_policy(publish_policy) }}</li>{% endif %}
             {% if changelog_policy != 'auto' %}<li>Changelog update policy: {{ changelog_policy }}</li>{% endif %}

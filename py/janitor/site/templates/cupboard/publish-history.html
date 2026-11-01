@@ -4,15 +4,15 @@
 {% endblock sidebar %}
 {% from "run_util.html" import display_publish_result_code %}
 {% block page_title %}
-    Cupboard - Publish History
+    Cupboard - Publish history
 {% endblock page_title %}
 {% block body %}
     <div class="section" id="publish-history">
         <h1>Publish history</h1>
         <p><em>A log of publish actions (push or merge proposal) the Janitor has taken.</em></p>
         {% if is_admin %}
-            <button id="scan">Refresh Merge Proposal Status</button>
-            <button id="autopublish">Automatically Publish</button>
+            <button id="scan">Refresh merge proposal status</button>
+            <button id="autopublish">Automatically publish</button>
             <script>
                 $(document).ready(function() {
                     $("#scan").click(function() {
@@ -62,7 +62,7 @@
                             {% endif %}
                             {% if mode == 'propose' %}
                                 {% if merge_proposal_url %}
-                                    - <a href="{{ merge_proposal_url }}">Merge Proposal</a> (<a href="../merge-proposal?url={{ merge_proposal_url|urlencode }}">Info</a>)
+                                    - <a href="{{ merge_proposal_url }}">Merge proposal</a> (<a href="../merge-proposal?url={{ merge_proposal_url|urlencode }}">Info</a>)
                                 {% endif %}
                             {% endif %}
                             {% if mode == 'push' and result_code == 'success' %}
