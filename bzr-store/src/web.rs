@@ -29,6 +29,7 @@ use crate::bzr_browse::BrowseRouters;
 use crate::config::Config;
 use crate::database::DatabaseManager;
 use crate::error::{BzrError, Result};
+use crate::pyo3_bridge::BreezyOperations;
 use crate::repository::{PyO3RepositoryManager, RepositoryManager, RepositoryPath, RevisionInfo};
 use crate::smart_protocol::{
     smart_protocol_campaign_handler, smart_protocol_codebase_handler, smart_protocol_dispatch,
@@ -165,7 +166,6 @@ pub async fn create_applications(
     let repository_manager: Arc<dyn RepositoryManager> = Arc::new(PyO3RepositoryManager::new(
         config.repository_path.clone(),
         database.clone(),
-        true,
     ));
 
     let templates = Arc::new(init_templates());
@@ -683,25 +683,13 @@ async fn list_remotes_handler(
         });
     }
 
-    let output = tokio::process::Command::new("brz")
-        .args(["config", "parent_location"])
-        .current_dir(&fs_path)
-        .output()
-        .await;
-
-    let parent_location = match output {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            stdout.trim().to_string()
-        }
-        _ => String::new(),
-    };
+    let parent_location = BreezyOperations::get_parent(&fs_path).await?;
 
     let mut remotes = Vec::new();
-    if !parent_location.is_empty() {
+    if let Some(url) = parent_location.filter(|url| !url.is_empty()) {
         remotes.push(RemoteInfo {
             name: "parent".to_string(),
-            url: parent_location,
+            url,
         });
     }
 
