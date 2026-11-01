@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use janitor::{schema::setup_test_database, test_utils::TestDatabase, test_with_database};
+use janitor::{test_utils::TestDatabase, test_with_database};
 use janitor_bzr_store::{
     config::{BzrConfig, BzrStoreConfig, Config},
     web::create_applications,
@@ -140,9 +140,8 @@ fn make_bzr_branch(branch_path: &std::path::Path) -> bool {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_loggerhead_browse_unknown_codebase_404(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
-
         let tmp = TempDir::new().unwrap();
         let cfg = build_config(tmp.path(), test_db_url(&test_db));
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
@@ -179,7 +178,7 @@ fn test_loggerhead_browse_known_codebase_renders() {
         .unwrap();
     rt.block_on(async {
         let config = janitor::test_utils::TestDatabaseConfig {
-            run_migrations: true,
+            schema: janitor::test_utils::TestSchema::Core,
             ..Default::default()
         };
         let test_db = match janitor::test_utils::TestDatabase::with_config(config).await {
@@ -195,7 +194,6 @@ fn test_loggerhead_browse_known_codebase_renders() {
             return;
         }
 
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "foo").await;
 
         let tmp = TempDir::new().unwrap();
@@ -265,7 +263,7 @@ fn test_loggerhead_changes_endpoint_reachable() {
         .unwrap();
     rt.block_on(async {
         let config = janitor::test_utils::TestDatabaseConfig {
-            run_migrations: true,
+            schema: janitor::test_utils::TestSchema::Core,
             ..Default::default()
         };
         let test_db = match janitor::test_utils::TestDatabase::with_config(config).await {
@@ -280,7 +278,6 @@ fn test_loggerhead_changes_endpoint_reachable() {
             eprintln!("skipping: brz not on PATH");
             return;
         }
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "foo").await;
 
         let tmp = TempDir::new().unwrap();

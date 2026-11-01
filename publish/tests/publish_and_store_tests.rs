@@ -3,8 +3,8 @@ use std::sync::Mutex;
 
 use breezyshim::RevisionId;
 use janitor::publish::Mode;
+use janitor::test_with_database;
 use janitor::vcs::{VcsManager, VcsType};
-use janitor::{schema::setup_test_database, test_with_database};
 use janitor::{Campaign, CodebaseName, RunId};
 use janitor_publish::rate_limiter::{NonRateLimiter, RateLimiter};
 use janitor_publish::{publish_and_store, PublishWorker};
@@ -110,8 +110,8 @@ async fn publish_and_store_errors_without_tip_revision() {
 }
 
 test_with_database! {
+    schema = Core;
     async fn publish_and_store_errors_without_vcs_manager(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         let run = make_run("main", Some("rev-tip"));
         let err = publish_main_role(test_db.pool(), &run).await.unwrap_err();
         assert_eq!(err.to_string(), "no VcsManager registered for vcs_type Git");

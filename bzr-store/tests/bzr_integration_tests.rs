@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use janitor::{schema::setup_test_database, test_utils::TestDatabase, test_with_database};
+use janitor::{test_utils::TestDatabase, test_with_database};
 use janitor_bzr_store::{
     config::{BzrConfig, BzrStoreConfig, Config},
     web::create_applications,
@@ -146,12 +146,12 @@ fn build_two_commit_branch(branch_path: &std::path::Path) -> Option<(String, Str
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_admin_diff_two_revisions(test_db: TestDatabase) {
         if !brz_working() {
             eprintln!("skipping: brz not working on this host");
             return;
         }
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "foo").await;
 
         let tmp = TempDir::new().unwrap();
@@ -201,12 +201,12 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_admin_revision_info_two_revisions(test_db: TestDatabase) {
         if !brz_working() {
             eprintln!("skipping: brz not working on this host");
             return;
         }
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "foo").await;
 
         let tmp = TempDir::new().unwrap();
@@ -245,6 +245,7 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_admin_set_remote_persists_parent_location(test_db: TestDatabase) {
         // `handle_set_bzr_remote` writes `parent_location` on the
         // branch at <codebase>/<remote>. Verify the value sticks by
@@ -253,7 +254,6 @@ test_with_database! {
             eprintln!("skipping: brz not working on this host");
             return;
         }
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "foo").await;
 
         let tmp = TempDir::new().unwrap();
@@ -298,11 +298,10 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_admin_diff_missing_params_rejected(test_db: TestDatabase) {
         // old= and new= are required query params. axum's Query
         // extractor rejects the request before our handler sees it.
-        setup_test_database(test_db.pool()).await.unwrap();
-
         let tmp = TempDir::new().unwrap();
         let cfg = build_config(tmp.path(), test_db_url(&test_db));
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
@@ -324,6 +323,7 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn test_admin_repo_info_for_real_branch(test_db: TestDatabase) {
         // When the repo exists on disk, repository_info reports
         // exists=true and (if PyO3 is working) a last_revision.
@@ -331,7 +331,6 @@ test_with_database! {
             eprintln!("skipping: brz not working on this host");
             return;
         }
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase(test_db.pool(), "foo").await;
 
         let tmp = TempDir::new().unwrap();

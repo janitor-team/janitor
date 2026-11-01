@@ -390,7 +390,7 @@ impl RedisHealthChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use janitor::{schema::setup_test_database, test_with_database};
+    use janitor::test_with_database;
 
     #[test]
     fn test_publish_event_channel() {
@@ -435,9 +435,9 @@ mod tests {
     }
 
     test_with_database! {
+        schema = Core;
         async fn test_approved_run_target_ignores_codebase_branch_url(test_db: TestDatabase) {
             let pool = test_db.pool();
-            setup_test_database(pool).await.unwrap();
             for query in [
                 "INSERT INTO codebase (name, branch_url, url, vcs_type)
                  VALUES ('cb-1', 'https://example.invalid/moved', 'https://example.invalid/moved', 'git')",

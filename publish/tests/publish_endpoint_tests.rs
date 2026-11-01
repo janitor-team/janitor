@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use janitor::{schema::setup_test_database, test_utils::TestDatabase, test_with_database};
+use janitor::{test_utils::TestDatabase, test_with_database};
 use janitor_publish::{AppState, PublishWorker};
 use sqlx::PgPool;
 use tower::ServiceExt;
@@ -116,8 +116,8 @@ async fn merge_proposal_status(pool: &PgPool, url: &str) -> String {
 }
 
 test_with_database! {
+    schema = Core;
     async fn merge_proposal_status_transitions(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         let open_url = "https://forge.invalid/pv/pulls/1";
         let closed_url = "https://forge.invalid/sl/pulls/2";
         sqlx::query(
@@ -172,8 +172,8 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn publish_endpoint_returns_404_when_no_policy_and_no_mode(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase_and_run(test_db.pool(), "cb-1", "lintian-fixes").await;
 
         let app = build_app(test_db.pool().clone()).await;
@@ -199,8 +199,8 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn publish_endpoint_rejects_invalid_mode_with_400(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
         seed_codebase_and_run(test_db.pool(), "cb-1", "lintian-fixes").await;
 
         let app = build_app(test_db.pool().clone()).await;
@@ -216,9 +216,8 @@ test_with_database! {
 }
 
 test_with_database! {
+    schema = Core;
     async fn invalid_identifiers_in_path_are_rejected(test_db: TestDatabase) {
-        setup_test_database(test_db.pool()).await.unwrap();
-
         let app = build_app(test_db.pool().clone()).await;
         for (method, uri) in [
             ("POST", "/lintian-fixes/Foo/publish"),

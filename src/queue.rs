@@ -295,13 +295,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_and_get_buckets() {
-        let Some(db) = crate::test_utils::TestDatabase::new_optional()
-            .await
-            .unwrap()
-        else {
+        let Some(db) = crate::test_utils::TestDatabase::new_optional_with_schema(
+            crate::test_utils::TestSchema::Core,
+        )
+        .await
+        .unwrap() else {
             return;
         };
-        crate::schema::setup_test_database(db.pool()).await.unwrap();
         sqlx::query(
             "INSERT INTO codebase (name, branch_url, url, vcs_type) \
              VALUES ('cb', 'https://example.invalid/cb', 'https://example.invalid/cb', 'git')",
