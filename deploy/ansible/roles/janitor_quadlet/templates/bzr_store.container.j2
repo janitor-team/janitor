@@ -1,0 +1,14 @@
+# Managed by ansible (roles/janitor_quadlet).
+[Unit]
+Description=janitor bzr store
+
+[Container]
+Image=ghcr.io/jelmer/janitor/bzr_store:latest
+ContainerName=janitor-bzr_store
+Network=host
+# The whole command line is given here.
+Entrypoint=janitor-bzr-store
+Exec=--listen-address 127.0.0.1 --port 9929 --public-port 9930 --config /mnt/janitor/janitor.conf --vcs-path /mnt/janitor/data/bzr
+Volume={{ janitor_home }}/janitor.conf:/mnt/janitor/janitor.conf:ro
+Volume={{ janitor_home }}/data/bzr:/mnt/janitor/data/bzr:rw
+{% include 'common.j2' %}

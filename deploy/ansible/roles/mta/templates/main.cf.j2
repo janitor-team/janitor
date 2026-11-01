@@ -1,0 +1,21 @@
+# Managed by ansible (roles/mta): mail from this host for
+# {{ mta_domains | join(', ') }} is delivered here; nothing is relayed out.
+compatibility_level = 3.6
+myhostname = {{ mta_domains | first }}
+mydestination = $myhostname, localhost, {{ mta_domains | join(', ') }}
+inet_interfaces = loopback-only
+inet_protocols = ipv4
+mynetworks = 127.0.0.0/8
+smtpd_relay_restrictions = permit_mynetworks, reject_unauth_destination
+relayhost =
+default_transport = error:this host delivers mail locally only
+relay_transport = error:this host delivers mail locally only
+alias_maps = hash:/etc/aliases
+alias_database = hash:/etc/aliases
+recipient_delimiter = +
+# Unknown local parts go to the deploy user's mailbox.
+local_recipient_maps =
+luser_relay = {{ ansible_user }}
+mailbox_size_limit = {{ mta_mailbox_size_limit }}
+# Per recipient; all recipients together use at most half of mail_filter_max_instances.
+local_destination_concurrency_limit = {{ [1, (mail_filter_max_instances | int) // 2 // ([1, mta_mail_filter_recipients | length] | max)] | max }}

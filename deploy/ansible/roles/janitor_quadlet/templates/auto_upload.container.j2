@@ -1,0 +1,23 @@
+# Managed by ansible (roles/janitor_quadlet).
+[Unit]
+Description=janitor auto-upload
+
+[Container]
+Image=ghcr.io/jelmer/janitor/auto_upload:latest
+ContainerName=janitor-auto_upload
+Network=host
+# The whole command line is given here.
+Entrypoint=janitor-auto-upload
+Exec=--listen-address 127.0.0.1 --port 9933 --config /mnt/janitor/janitor.conf --dput-host {{ auto_upload_dput_host }} --debsign-keyid {{ auto_upload_debsign_keyid }}{% for d in auto_upload_distributions %} --distribution {{ d }}{% endfor +%}
+Volume={{ janitor_home }}/janitor.conf:/mnt/janitor/janitor.conf:ro
+Volume={{ janitor_home }}/data/artifacts:/mnt/janitor/data/artifacts:ro
+# dput reads /etc/dput.cf; gpg writes its lock files in its home.
+Volume={{ auto_upload_dput_cf }}:/etc/dput.cf:ro
+Volume={{ auto_upload_gnupg_home }}:/mnt/janitor/gnupg-auto-upload:rw
+Environment=GNUPGHOME=/mnt/janitor/gnupg-auto-upload
+# dput warns when USER is unset; the container runs as root.
+Environment=USER=root
+{% if enable_auto_upload_target | bool %}
+Volume={{ auto_upload_incoming }}:/mnt/janitor/upload-incoming:rw
+{% endif %}
+{% include 'common.j2' %}

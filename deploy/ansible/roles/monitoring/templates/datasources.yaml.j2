@@ -1,0 +1,10 @@
+# Managed by ansible (roles/monitoring).
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: "http://127.0.0.1:{{ prometheus_port }}"
+    isDefault: true
+    editable: false

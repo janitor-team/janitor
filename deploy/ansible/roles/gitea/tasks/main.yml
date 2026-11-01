@@ -1,0 +1,239 @@
+---
+# Optional (enable_gitea): a Gitea on the control host to try janitor's
+# forge support against. Caddy serves it at https://<gitea_domain>/.
+- name: Create the Gitea directories
+  ansible.builtin.file:
+    path: "{{ gitea_home }}/{{ item }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0700"
+  loop:
+    - ""
+    - data
+    - secrets
+
+- name: Generate Gitea's own secrets once
+  # Gitea writes missing secrets into app.ini itself, which the template
+  # would then undo on every run.
+  ansible.builtin.shell: >-
+    set -o pipefail && umask 077 &&
+    openssl rand 32 | basenc --base64url | tr -d '=\n' > {{ gitea_home }}/secrets/{{ item }}
+  args:
+    executable: /bin/bash
+    creates: "{{ gitea_home }}/secrets/{{ item }}"
+  loop: "{{ ['secret_key', 'internal_token', 'jwt_secret'] + gitea_users | map('regex_replace', '$', '.password') | list }}"
+
+- name: Read Gitea's secrets
+  ansible.builtin.include_tasks: read_secrets.yml
+
+- name: Hand the secrets to the deploy user
+  ansible.builtin.file:
+    path: "{{ gitea_home }}/secrets"
+    state: directory
+    recurse: true
+    owner: "{{ ansible_user }}"
+
+- name: Deploy app.ini
+  ansible.builtin.template:
+    src: app.ini.j2
+    dest: "{{ gitea_home }}/app.ini"
+    owner: "{{ ansible_user }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart gitea
+
+- name: Create the quadlet unit directory
+  # roles/janitor_quadlet, which uses it too, runs after this role.
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.config/containers/systemd"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0755"
+
+- name: Deploy the Gitea quadlet unit
+  ansible.builtin.template:
+    src: gitea.container.j2
+    dest: "/home/{{ ansible_user }}/.config/containers/systemd/gitea.container"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  notify: Restart gitea
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Start Gitea
+  # The first start pulls the image.
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  ansible.builtin.systemd:
+    name: gitea.service
+    scope: user
+    daemon_reload: true
+    state: started
+
+- name: Wait for Gitea's API
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ gitea_http_port }}/api/v1/version"
+  register: gitea_version
+  until: gitea_version.status == 200
+  retries: 60
+  delay: 2
+
+- name: List Gitea's users
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  ansible.builtin.command: podman exec gitea gitea admin user list
+  register: gitea_user_list
+  changed_when: false
+
+- name: Create the Gitea admin
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  ansible.builtin.command: >-
+    podman exec gitea gitea admin user create --admin
+    --username {{ gitea_admin_user }} --email {{ gitea_admin_user }}@{{ gitea_domain }}
+    --password {{ gitea_secrets[gitea_admin_user + '.password'] }}
+    --must-change-password=false
+  when: gitea_admin_user not in (gitea_user_list.stdout | regex_findall('(?m)^\\d+\\s+(\\S+)'))
+  changed_when: true
+  no_log: true
+
+- name: Create the bot and test users
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ gitea_http_port }}/api/v1/admin/users"
+    method: POST
+    url_username: "{{ gitea_admin_user }}"
+    url_password: "{{ gitea_secrets[gitea_admin_user + '.password'] }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      username: "{{ item }}"
+      email: "{{ item }}@{{ gitea_domain }}"
+      password: "{{ gitea_secrets[item + '.password'] }}"
+      must_change_password: false
+    status_code: [201, 422]
+  register: gitea_user_create
+  changed_when: gitea_user_create.status == 201
+  loop: "{{ gitea_users[1:] }}"
+  no_log: true
+
+- name: Mint an access token per user once
+  # Gitea shows a token only when it makes it, so it is kept on disk.
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  ansible.builtin.shell: >-
+    set -o pipefail && umask 077 &&
+    podman exec gitea gitea admin user generate-access-token --raw
+    --username {{ item }} --token-name janitor
+    --scopes {{ gitea_bot_token_scopes if item == gitea_bot_user else gitea_test_token_scopes }}
+    > {{ gitea_home }}/secrets/{{ item }}.token.new &&
+    mv {{ gitea_home }}/secrets/{{ item }}.token.new {{ gitea_home }}/secrets/{{ item }}.token
+  args:
+    executable: /bin/bash
+    creates: "{{ gitea_home }}/secrets/{{ item }}.token"
+  loop: "{{ gitea_users[1:] }}"
+
+- name: Read the access tokens
+  ansible.builtin.include_tasks: read_secrets.yml
+
+- name: Set the bot's access token
+  ansible.builtin.set_fact:
+    gitea_bot_token: "{{ gitea_secrets[gitea_bot_user + '.token'] }}"
+  no_log: true
+
+- name: Create the test organisation, owned by the first test user
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ gitea_http_port }}/api/v1/orgs"
+    method: POST
+    headers:
+      Authorization: "token {{ gitea_secrets[gitea_test_users[0] + '.token'] }}"
+    body_format: json
+    body:
+      username: "{{ gitea_test_org }}"
+    status_code: [201, 422]
+  register: gitea_org_create
+  changed_when: gitea_org_create.status == 201
+  when: gitea_test_org | length > 0
+  no_log: true
+
+- name: Copy the test repositories in once
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ gitea_http_port }}/api/v1/repos/migrate"
+    method: POST
+    headers:
+      Authorization: "token {{ gitea_secrets[gitea_test_users[0] + '.token'] }}"
+    body_format: json
+    body:
+      clone_addr: "{{ item.clone_url }}"
+      repo_name: "{{ item.name }}"
+      repo_owner: "{{ gitea_test_org }}"
+    status_code: [201, 409]
+    timeout: 300
+  register: gitea_repo_create
+  changed_when: gitea_repo_create.status == 201
+  loop: "{{ gitea_test_repos }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: gitea_test_org | length > 0
+
+- name: Check for the site's OAuth2 application
+  ansible.builtin.stat:
+    path: "{{ gitea_home }}/secrets/oauth2-site.json"
+  register: gitea_oauth2_file
+  when: gitea_site_login | bool
+
+- name: Register the site as an OAuth2 application once
+  # Gitea shows the client secret only when it makes it.
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ gitea_http_port }}/api/v1/user/applications/oauth2"
+    method: POST
+    url_username: "{{ gitea_admin_user }}"
+    url_password: "{{ gitea_secrets[gitea_admin_user + '.password'] }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: janitor-site
+      confidential_client: true
+      redirect_uris:
+        - "{{ janitor_external_url }}oauth/callback"
+    status_code: [201]
+  register: gitea_oauth2_create
+  changed_when: true
+  when:
+    - gitea_site_login | bool
+    - not gitea_oauth2_file.stat.exists
+  no_log: true
+
+- name: Record the site's OAuth2 client
+  ansible.builtin.copy:
+    content: "{{ {'client_id': gitea_oauth2_create.json.client_id, 'client_secret': gitea_oauth2_create.json.client_secret} | to_json }}"
+    dest: "{{ gitea_home }}/secrets/oauth2-site.json"
+    owner: "{{ ansible_user }}"
+    mode: "0600"
+  when:
+    - gitea_site_login | bool
+    - not gitea_oauth2_file.stat.exists
+  no_log: true
+
+- name: Read the site's OAuth2 client
+  ansible.builtin.slurp:
+    src: "{{ gitea_home }}/secrets/oauth2-site.json"
+  register: gitea_oauth2_client
+  when: gitea_site_login | bool
+  no_log: true
+
+- name: Log in to the site through Gitea
+  ansible.builtin.set_fact:
+    oauth_client_id: "{{ (gitea_oauth2_client.content | b64decode | from_json).client_id }}"
+    oauth_client_secret: "{{ (gitea_oauth2_client.content | b64decode | from_json).client_secret }}"
+    oauth_base_url: "https://{{ gitea_domain }}/"
+  when: gitea_site_login | bool
+  no_log: true

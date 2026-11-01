@@ -1,0 +1,16 @@
+{% if not has_init | default(false) %}
+# podman's init runs as PID 1 and passes signals on.
+RunInit=true
+{% endif %}
+# The image was built or pulled by roles/janitor_source.
+Pull=never
+
+[Service]
+Restart=on-failure
+# podman passes on the 143 of a container stopped with SIGTERM.
+SuccessExitStatus=143
+RestartSec=5
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

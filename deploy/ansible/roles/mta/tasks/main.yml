@@ -1,0 +1,51 @@
+---
+# Optional (enable_mta), for trying the mail filter: Postfix takes mail
+# from this host only, delivers it here and sends nothing out.
+- name: Answer Postfix's install questions
+  ansible.builtin.debconf:
+    name: postfix
+    question: "{{ item.question }}"
+    vtype: "{{ item.vtype }}"
+    value: "{{ item.value }}"
+  loop:
+    - {question: postfix/main_mailer_type, vtype: select, value: Local only}
+    - {question: postfix/mailname, vtype: string, value: "{{ mta_domains | first }}"}
+
+- name: Install Postfix
+  ansible.builtin.apt:
+    name: postfix
+    state: present
+
+- name: Configure Postfix for local delivery only
+  ansible.builtin.template:
+    src: main.cf.j2
+    dest: /etc/postfix/main.cf
+    owner: root
+    mode: "0644"
+  notify: Restart postfix
+
+- name: Send mail for the mail filter's recipients to the deploy user's +mail-filter address
+  ansible.builtin.blockinfile:
+    path: /etc/aliases
+    marker: "# {mark} ANSIBLE MANAGED (roles/mta)"
+    block: |
+      {% for r in mta_mail_filter_recipients %}
+      {{ r }}: {{ ansible_user }}+mail-filter
+      {% endfor %}
+  notify: Rebuild the aliases
+
+- name: Pipe the deploy user's +mail-filter mail into the mail filter
+  # local(8) runs it as the deploy user.
+  ansible.builtin.copy:
+    dest: "/home/{{ ansible_user }}/.forward+mail-filter"
+    content: |
+      "|{{ mail_filter_command }}"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  when: mta_mail_filter_recipients | length > 0
+
+- name: Start Postfix
+  ansible.builtin.systemd:
+    name: postfix.service
+    enabled: true
+    state: started

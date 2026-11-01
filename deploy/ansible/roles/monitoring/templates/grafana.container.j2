@@ -1,0 +1,30 @@
+# Managed by ansible (roles/monitoring).
+[Unit]
+Description=Grafana, showing the janitor services' metrics
+After=prometheus.service
+
+[Container]
+Image={{ grafana_image }}
+ContainerName=grafana
+Network=host
+EnvironmentFile={{ grafana_home }}/grafana.env
+Environment=GF_SERVER_HTTP_ADDR=127.0.0.1 GF_SERVER_HTTP_PORT={{ grafana_port }} GF_PATHS_DATA=/var/lib/grafana GF_PATHS_LOGS=/var/lib/grafana/log
+# No calls home: update checks, usage reports, news, Gravatar and preinstalled plugins.
+Environment=GF_ANALYTICS_REPORTING_ENABLED=false GF_ANALYTICS_CHECK_FOR_UPDATES=false GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false GF_NEWS_NEWS_FEED_ENABLED=false GF_SECURITY_DISABLE_GRAVATAR=true GF_PLUGINS_PREINSTALL_DISABLED=true
+Volume={{ grafana_home }}/data:/var/lib/grafana:rw
+Volume={{ grafana_home }}/provisioning:/etc/grafana/provisioning:ro
+Volume={{ grafana_home }}/dashboards:/var/lib/grafana-dashboards:ro
+# Root in the rootless container is the deploy user, who owns the data directory.
+User=0
+Group=0
+ReadOnly=true
+DropCapability=all
+NoNewPrivileges=true
+
+[Service]
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

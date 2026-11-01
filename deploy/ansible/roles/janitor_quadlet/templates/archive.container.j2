@@ -1,0 +1,19 @@
+# Managed by ansible (roles/janitor_quadlet).
+[Unit]
+Description=janitor archive
+
+[Container]
+Image=ghcr.io/jelmer/janitor/archive:latest
+ContainerName=janitor-archive
+Network=host
+# The whole command line is given here.
+Entrypoint=janitor-archive
+Exec=--listen-address 127.0.0.1 --port 9914 --config /mnt/janitor/janitor.conf --cache-directory /mnt/janitor/data/cache/archive --dists-directory /mnt/janitor/data/dists
+Volume={{ janitor_home }}/janitor.conf:/mnt/janitor/janitor.conf:ro
+Volume={{ janitor_home }}/data/artifacts:/mnt/janitor/data/artifacts:ro
+Volume={{ janitor_home }}/data/cache/archive:/mnt/janitor/data/cache/archive:rw
+Volume={{ janitor_home }}/data/dists:/mnt/janitor/data/dists:rw
+# The signing key, made by roles/archive_signing_key; gpg writes its lock files there.
+Volume={{ janitor_home }}/gnupg-archive:/mnt/janitor/gnupg-archive:rw
+Environment=GNUPGHOME=/mnt/janitor/gnupg-archive
+{% include 'common.j2' %}

@@ -1,0 +1,25 @@
+# Managed by ansible (roles/monitoring).
+[Unit]
+Description=Prometheus, scraping the janitor services' metrics
+
+[Container]
+Image={{ prometheus_image }}
+ContainerName=prometheus
+Network=host
+Exec=--config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time={{ prometheus_retention }} --web.listen-address=127.0.0.1:{{ prometheus_port }}
+Volume={{ prometheus_home }}/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+Volume={{ prometheus_home }}/data:/prometheus:rw
+# Root in the rootless container is the deploy user, who owns the data directory.
+User=0
+Group=0
+ReadOnly=true
+DropCapability=all
+NoNewPrivileges=true
+
+[Service]
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

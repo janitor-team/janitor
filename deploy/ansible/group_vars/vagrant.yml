@@ -1,0 +1,64 @@
+---
+# Only for the local test VMs (../Vagrantfile, ../Vagrantfile.multi-host).
+# Every secret here is a fake, local-only value. The Vagrantfiles pass
+# janitor_domain and the worker addresses as extra vars.
+# HTTPS with a self-signed certificate, which each worker host trusts.
+caddy_self_signed: true
+janitor_github_org: vagrant-test
+
+janitor_db_password: vagrant-dev-only-db
+worker_password: vagrant-dev-only-worker
+breezy_whoami: "Vagrant Test Bot <vagrant-test@example.invalid>"
+
+# Every VM in [worker] is a worker named after itself. Vagrantfile.multi-host
+# passes janitor_workers with a password per worker: every worker to
+# control, and only its own to each worker.
+worker_name: "{{ inventory_hostname }}"
+
+# The lintian-fixes campaign needs lintian-brush on the worker.
+janitor_worker_extra_packages: [lintian-brush]
+
+# Gitea on control, with test accounts and repositories; the site logs in there.
+enable_gitea: true
+gitea_domain: gitea.janitor.test
+janitor_extra_hosts: "{{ {gitea_domain: janitor_domain} }}"
+gitea_test_users: [maintainer, contributor]
+gitea_test_org: packages
+gitea_test_repos:
+  - {name: sl, clone_url: "https://salsa.debian.org/debian/sl.git"}
+  - {name: cmatrix, clone_url: "https://salsa.debian.org/debian/cmatrix.git"}
+  - {name: xjump, clone_url: "https://salsa.debian.org/games-team/xjump.git"}
+gitea_site_login: true
+# Gitea's OpenID groups: members of the org review, its owners are admins.
+oauth_qa_reviewer_group: "{{ gitea_test_org }}"
+oauth_admin_group: "{{ gitea_test_org }}:owners"
+
+# auto_upload signs lintian-fixes builds with a test key and uploads them
+# to an incoming directory on control.
+enable_auto_upload: true
+enable_auto_upload_target: true
+auto_upload_dput_host: janitor-test
+auto_upload_distributions: ["{{ janitor_lintian_fixes_build_distribution }}"]
+
+# ognibuild's dependency server on control, for generic builds.
+enable_ognibuild_dep: true
+enable_generic_campaign: true
+
+# Gitea mails the bot's address on control, where Postfix pipes it into
+# the mail filter.
+enable_mail_filter: true
+enable_mta: true
+mta_domains: ["{{ gitea_domain }}"]
+mta_mail_filter_recipients: ["{{ gitea_bot_user }}"]
+
+# Build logs in a bucket of a Garage S3 server on control.
+enable_garage: true
+janitor_logs_location: s3://debian-janitor/logs
+janitor_s3_endpoint_url: "http://127.0.0.1:{{ garage_s3_port }}"
+janitor_s3_region: garage
+
+# Spans of the runner, site, git_store and archive in Jaeger on control.
+enable_tracing: true
+
+# Grafana's admin password, for when enable_monitoring is turned on (off here).
+grafana_admin_password: vagrant-dev-only-grafana
