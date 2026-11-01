@@ -8,7 +8,7 @@
 {% endblock sidebar %}
 {% from "run_util.html" import display_publish_result_code %}
 {% block page_title %}
-    Merge Proposal Status - {{ proposal.url }}
+    Merge proposal status - {{ proposal.url }}
 {% endblock page_title %}
 {% block body %}
     <div class="section" id="merge-proposal-status">
@@ -64,7 +64,7 @@
             </li>
             {% if proposal.suite %}
                 <li>
-                    <a href="/{{ proposal.suite }}/c/{{ proposal.codebase }}">Run Details</a>
+                    <a href="/{{ proposal.suite }}/c/{{ proposal.codebase }}">Run details</a>
                 </li>
             {% endif %}
         </ul>
