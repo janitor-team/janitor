@@ -23,7 +23,7 @@ redis_location: "redis://localhost"
 
 # Zipkin server for distributed tracing. Optional; tracing is skipped if
 # unset.
-# zipkin_address: "http://localhost:9411"
+# zipkin_address: "http://localhost:9411/v1/traces"
 
 # User agent sent on outgoing HTTP requests. Optional; defaults to
 # "janitor/<version>" if unset.
