@@ -244,7 +244,7 @@ impl<'a> Queue<'a> {
     /// rows, `campaign` optionally restricts to a single campaign.
     pub async fn iter_queue(
         &self,
-        limit: Option<i64>,
+        limit: Option<u32>,
         campaign: Option<&Campaign>,
     ) -> Result<Vec<QueueItem>, Error> {
         let query = if campaign.is_some() {
@@ -271,10 +271,10 @@ impl<'a> Queue<'a> {
         let sqlx_query = if let Some(campaign) = campaign {
             sqlx::query_as::<_, QueueItem>(sqlx::AssertSqlSafe(query))
                 .bind(campaign)
-                .bind(limit.unwrap_or(i64::MAX))
+                .bind(limit.map_or(i64::MAX, i64::from))
         } else {
             sqlx::query_as::<_, QueueItem>(sqlx::AssertSqlSafe(query))
-                .bind(limit.unwrap_or(i64::MAX))
+                .bind(limit.map_or(i64::MAX, i64::from))
         };
 
         sqlx_query.fetch_all(self.pool).await
