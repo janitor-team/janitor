@@ -179,6 +179,7 @@ pub fn run_worker(
     command: Vec<&str>,
     output_directory: &std::path::Path,
     metadata: &mut Metadata,
+    report_metadata: &dyn Fn(&Metadata),
     target_repo_url: &Url,
     vendor: &str,
     target: &str,
@@ -663,6 +664,7 @@ pub fn run_worker(
         metadata.add_remote("origin".to_string(), main_branch.get_user_url());
     }
 
+    report_metadata(metadata);
     let r = build_target.make_changes(
         ws.local_tree(),
         subpath,
@@ -813,6 +815,7 @@ pub fn run_worker(
         metadata.add_tag(n.to_string(), r.clone());
     }
 
+    report_metadata(metadata);
     let should_build = if force_build {
         true
     } else {
@@ -831,6 +834,7 @@ pub fn run_worker(
         name: build_target.name(),
         details: target_details,
     });
+    report_metadata(metadata);
 
     log::info!("Pushing result branch to {}", target_repo_url);
 
@@ -1000,6 +1004,7 @@ pub async fn process_single_item(
 
     let output_directory_ = output_directory.path().to_path_buf();
 
+    let web_state = state.clone();
     let metadata = tokio::task::spawn_blocking(move || {
         let mut metadata = Metadata {
             queue_id: Some(assignment.queue_id),
@@ -1009,7 +1014,9 @@ pub async fn process_single_item(
             ..Metadata::default()
         };
 
-        // TODO: Update metadata in appstate while working
+        state.write().unwrap().output_directory = Some(output_directory_.clone());
+        let report_metadata = |m: &Metadata| state.write().unwrap().metadata = Some(m.clone());
+        report_metadata(&metadata);
 
         let result = run_worker(
             &assignment_.codebase,
@@ -1025,6 +1032,7 @@ pub async fn process_single_item(
                 .collect::<Vec<_>>(),
             output_directory_.as_path(),
             &mut metadata,
+            &report_metadata,
             &assignment_.target_repository.url,
             &vendor,
             &assignment_.build.target,
@@ -1078,6 +1086,7 @@ pub async fn process_single_item(
         }
         let finish_time = chrono::Utc::now();
         metadata.finish_time = Some(finish_time);
+        report_metadata(&metadata);
         log::info!("Elapsed time: {}", finish_time - start_time);
 
         metadata
@@ -1087,7 +1096,10 @@ pub async fn process_single_item(
 
     let result = client
         .upload_results(&assignment.id, &metadata, Some(output_directory.path()))
-        .await?;
+        .await;
+    // The output directory is removed when this function returns.
+    web_state.write().unwrap().output_directory = None;
+    let result = result?;
 
     log::info!("Results uploaded");
 
@@ -1320,6 +1332,7 @@ check:
             vec!["sh", "-c", "echo foo > bar"],
             &output_dir,
             &mut metadata,
+            &|_| {},
             &Url::from_directory_path(tmp_path.join("target")).unwrap(),
             "foo",
             "generic",
@@ -1459,6 +1472,7 @@ check:
             vec!["sh", "-c", "echo foo > bar"],
             &output_dir,
             &mut metadata,
+            &|_| {},
             &Url::from_directory_path(tmp_path.join("target")).unwrap(),
             "foo",
             "generic",
