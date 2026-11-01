@@ -17,6 +17,7 @@
 
 from typing import Optional
 
+from aiohttp import web
 from yarl import URL
 
 from .schedule import do_schedule
@@ -32,6 +33,8 @@ async def store_review(
     reviewer: Optional[str],
     is_qa_reviewer: bool,
 ):
+    if "/" in run_id or run_id in (".", ".."):
+        raise web.HTTPNotFound(text="invalid run_id")
     async with conn.transaction():
         if verdict == "reschedule":
             verdict = "rejected"

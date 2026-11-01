@@ -296,6 +296,68 @@ async def test_codebase_merge_proposal_list_returns_publisher_body(aiohttp_clien
     assert seen_paths == ["/c/example/merge-proposals"]
 
 
+async def test_codebase_merge_proposal_list_rejects_path_codebase(aiohttp_client, db):
+    seen_paths: list[str] = []
+    publisher_client = await _publisher_client(aiohttp_client, [], seen_paths)
+
+    client = await create_client(
+        aiohttp_client, db, publisher_url=str(publisher_client.make_url("/"))
+    )
+
+    resp = await client.get("/c/..%2Flintian-fixes/merge-proposals")
+    assert resp.status == 404
+    assert await resp.text() == "invalid codebase"
+    assert seen_paths == []
+
+
+async def test_runner_log_rejects_path_filename(aiohttp_client, db):
+    runner_paths = []
+
+    runner_app = web.Application()
+
+    async def _handle_status(request):
+        runner_paths.append(request.path)
+        return web.json_response({"processing": []})
+
+    runner_app.router.add_get("/status", _handle_status)
+    runner_client = await aiohttp_client(runner_app)
+
+    client = await create_client(
+        aiohttp_client, db, runner_url=str(runner_client.make_url("/"))
+    )
+
+    resp = await client.get("/active-runs/run-1/log/..%2F..%2Fstatus")
+    assert resp.status == 404
+    assert await resp.text() == "invalid filename"
+    assert runner_paths == []
+
+
+async def test_run_update_rejects_path_run_id(aiohttp_client, db):
+    runner_paths = []
+
+    runner_app = web.Application()
+
+    async def _handle_any(request):
+        runner_paths.append(request.path)
+        return web.json_response({})
+
+    runner_app.router.add_post("/{tail:.*}", _handle_any)
+    runner_client = await aiohttp_client(runner_app)
+
+    client = await create_client(
+        aiohttp_client,
+        db,
+        runner_url=str(runner_client.make_url("/")),
+        user={"email": "alice@example.com", "groups": []},
+        config="oauth2_provider {}\n",
+    )
+
+    resp = await client.post("/run/..%2Fstatus", data={"verdict": "approved"})
+    assert resp.status == 404
+    assert await resp.text() == "invalid run_id"
+    assert runner_paths == []
+
+
 async def test_reschedule_passes_through_runner_error(aiohttp_client, db):
     runner_app = web.Application()
 
