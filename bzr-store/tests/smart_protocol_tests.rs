@@ -321,9 +321,9 @@ test_with_database! {
 // smart protocol runs to completion, even if the client's payload is
 // malformed — Breezy's factory returns a smart-protocol-framed error
 // body rather than surfacing as an HTTP error. This proves (1) the
-// PyO3 → Breezy happy path runs without panicking, (2) the shared bzr
-// repo is created on demand under `<vcs_path>/foo`, and (3) unknown
-// protocol payloads round-trip as smart-protocol error responses.
+// PyO3 → Breezy happy path runs without panicking, (2) a read-only
+// (anonymous) request creates nothing under `<vcs_path>/foo`, and (3)
+// unknown protocol payloads round-trip as smart-protocol error responses.
 test_with_database! {
     schema = Core;
     async fn test_public_smart_protocol_runs_to_completion(test_db: TestDatabase) {
@@ -351,10 +351,10 @@ test_with_database! {
         let prefix = b"error\x01";
         assert_eq!(&body[..prefix.len()], prefix, "body did not start with smart-protocol error framing: {:?}", body);
 
-        // The shared repo directory should have been created on demand.
+        // An anonymous request is read-only and must create nothing on disk.
         assert!(
-            tmp.path().join("foo").join(".bzr").exists(),
-            "expected on-demand creation of shared repo at {}/foo/.bzr",
+            !tmp.path().join("foo").join(".bzr").exists(),
+            "anonymous read must not create a shared repo at {}/foo/.bzr",
             tmp.path().display()
         );
 
@@ -398,5 +398,264 @@ test_with_database! {
         }
 
         handle.abort();
+    }
+}
+
+// Path-traversal jail: smart VFS requests must stay in the codebase directory.
+
+/// Marker written into the canary file outside the store.
+const CANARY: &str = "CANARY-OUTSIDE-THE-STORE";
+/// Marker written into a sibling codebase, reachable with a single `..`.
+const SIBLING: &str = "SIBLING-CODEBASE-FILE";
+
+/// Build a raw protocol-v1 smart request body: `verb\x01arg\x01...\n`.
+fn v1(verb: &str, args: &[&str]) -> Vec<u8> {
+    let mut parts: Vec<&str> = vec![verb];
+    parts.extend_from_slice(args);
+    let mut body = parts.join("\u{1}").into_bytes();
+    body.push(b'\n');
+    body
+}
+
+/// POST a raw smart request and return the response body as a lossy string.
+async fn smart_post(
+    client: &reqwest::Client,
+    url: &str,
+    body: Vec<u8>,
+    auth: Option<(&str, &str)>,
+) -> String {
+    let mut req = client
+        .post(url)
+        .header("Content-Type", "application/octet-stream")
+        .body(body);
+    if let Some((u, p)) = auth {
+        req = req.basic_auth(u, Some(p));
+    }
+    let resp = req.send().await.unwrap();
+    assert_eq!(resp.status(), 200, "smart POST should answer 200");
+    String::from_utf8_lossy(&resp.bytes().await.unwrap()).into_owned()
+}
+
+/// Lay out `tmp/store/{one,two}` and `tmp/canary/secret.txt`; return the store.
+fn make_store_with_canary(tmp: &std::path::Path) -> std::path::PathBuf {
+    let store = tmp.join("store");
+    std::fs::create_dir_all(store.join("one")).unwrap();
+    std::fs::write(store.join("one").join("f1"), b"in-bounds-file\n").unwrap();
+    std::fs::create_dir_all(store.join("two")).unwrap();
+    std::fs::write(store.join("two").join("t"), format!("{}\n", SIBLING)).unwrap();
+    std::fs::create_dir_all(tmp.join("canary")).unwrap();
+    std::fs::write(
+        tmp.join("canary").join("secret.txt"),
+        format!("{}\n", CANARY),
+    )
+    .unwrap();
+    store
+}
+
+/// Paths that try to reach the sibling codebase or the canary.
+fn traversal_get_paths() -> Vec<String> {
+    vec![
+        "./%2e%2e/two/t".to_string(),
+        "./%2E%2E/two/t".to_string(),
+        "./.%2e/two/t".to_string(),
+        "../../two/t".to_string(),
+        "./%2e%2e/%2e%2e/canary/secret.txt".to_string(),
+    ]
+}
+
+test_with_database! {
+    async fn test_public_smart_protocol_anonymous_rejects_path_traversal(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase(test_db.pool(), "one").await;
+        seed_codebase(test_db.pool(), "two").await;
+
+        let tmp = TempDir::new().unwrap();
+        let store = make_store_with_canary(tmp.path());
+        let cfg = build_config(&store, test_db_url(&test_db));
+        let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
+            .await
+            .unwrap();
+        let (addr, handle) = spawn_public(public).await;
+        let client = reqwest::Client::new();
+        let smart = format!("http://{}/bzr/one/.bzr/smart", addr);
+
+        // A normal in-bounds read still works.
+        let body = smart_post(&client, &smart, v1("get", &["./f1"]), None).await;
+        assert!(
+            body.contains("in-bounds-file"),
+            "normal anonymous read should work, got: {:?}",
+            body
+        );
+
+        // No traversal path may return the sibling or the canary contents.
+        for p in traversal_get_paths() {
+            let body = smart_post(&client, &smart, v1("get", &[&p]), None).await;
+            assert!(
+                !body.contains(CANARY) && !body.contains(SIBLING),
+                "anonymous get {} escaped the codebase directory: {:?}",
+                p,
+                body
+            );
+        }
+
+        // list_dir of the parent must not reveal sibling codebases.
+        let body = smart_post(&client, &smart, v1("list_dir", &["./%2e%2e"]), None).await;
+        assert!(
+            !body.contains("two"),
+            "anonymous list_dir ./%2e%2e leaked the store root: {:?}",
+            body
+        );
+
+        handle.abort();
+    }
+}
+
+test_with_database! {
+    async fn test_public_smart_protocol_worker_rejects_path_traversal(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase(test_db.pool(), "one").await;
+        seed_codebase(test_db.pool(), "two").await;
+        seed_worker(test_db.pool(), "alice", "s3cret").await;
+
+        let tmp = TempDir::new().unwrap();
+        let store = make_store_with_canary(tmp.path());
+        let cfg = build_config(&store, test_db_url(&test_db));
+        let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
+            .await
+            .unwrap();
+        let (addr, handle) = spawn_public(public).await;
+        let client = reqwest::Client::new();
+        let smart = format!("http://{}/bzr/one/.bzr/smart", addr);
+        let auth = Some(("alice", "s3cret"));
+
+        // A write must not land outside the codebase directory.
+        let _ = smart_post(
+            &client,
+            &smart,
+            v1("mkdir", &["./%2e%2e/%2e%2e/canary/evildir", ""]),
+            auth,
+        )
+        .await;
+        assert!(
+            !tmp.path().join("canary").join("evildir").exists(),
+            "worker mkdir escaped the codebase directory and wrote outside the store"
+        );
+
+        // A write-enabled request still may not read outside the directory.
+        for p in traversal_get_paths() {
+            let body = smart_post(&client, &smart, v1("get", &[&p]), auth).await;
+            assert!(
+                !body.contains(CANARY) && !body.contains(SIBLING),
+                "worker get {} escaped the codebase directory: {:?}",
+                p,
+                body
+            );
+        }
+
+        handle.abort();
+    }
+}
+
+test_with_database! {
+    async fn test_public_smart_protocol_anonymous_missing_dir_creates_nothing(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase(test_db.pool(), "ghostdir").await;
+
+        let tmp = TempDir::new().unwrap();
+        // The codebase row exists, but no directory is created for it.
+        let cfg = build_config(tmp.path(), test_db_url(&test_db));
+        let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
+            .await
+            .unwrap();
+        let (addr, handle) = spawn_public(public).await;
+        let client = reqwest::Client::new();
+
+        let smart = format!("http://{}/bzr/ghostdir/.bzr/smart", addr);
+        let _ = smart_post(&client, &smart, v1("get", &["./f1"]), None).await;
+
+        assert!(
+            !tmp.path().join("ghostdir").exists(),
+            "anonymous read of a missing codebase directory created {}",
+            tmp.path().join("ghostdir").display()
+        );
+
+        handle.abort();
+    }
+}
+
+test_with_database! {
+    async fn test_admin_smart_protocol_rejects_path_traversal(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase(test_db.pool(), "one").await;
+        seed_codebase(test_db.pool(), "two").await;
+
+        let tmp = TempDir::new().unwrap();
+        let store = make_store_with_canary(tmp.path());
+        let cfg = build_config(&store, test_db_url(&test_db));
+        let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
+            .await
+            .unwrap();
+        let (addr, handle) = spawn_public(admin).await;
+        let client = reqwest::Client::new();
+        let smart = format!("http://{}/one/.bzr/smart", addr);
+
+        // The admin port needs no login and always allows writes.
+        let _ = smart_post(
+            &client,
+            &smart,
+            v1("mkdir", &["./%2e%2e/%2e%2e/canary/evildir", ""]),
+            None,
+        )
+        .await;
+        assert!(
+            !tmp.path().join("canary").join("evildir").exists(),
+            "admin mkdir escaped the codebase directory and wrote outside the store"
+        );
+
+        let body = smart_post(&client, &smart, v1("get", &["./%2e%2e/two/t"]), None).await;
+        assert!(
+            !body.contains(SIBLING),
+            "admin get ./%2e%2e/two/t escaped the codebase directory: {:?}",
+            body
+        );
+
+        handle.abort();
+    }
+}
+
+test_with_database! {
+    async fn test_smart_protocol_relative_store_path(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        seed_codebase(test_db.pool(), "one").await;
+
+        // `--vcs-path store` reaches the handlers as a relative path.
+        let cwd = std::env::current_dir().unwrap();
+        let tmp = tempfile::tempdir_in(&cwd).unwrap();
+        let store = make_store_with_canary(tmp.path());
+        let store = store.strip_prefix(&cwd).unwrap();
+        assert!(store.is_relative());
+        let cfg = build_config(store, test_db_url(&test_db));
+        let (admin, public) = create_applications(cfg, janitor_config_with_campaign())
+            .await
+            .unwrap();
+        let (public_addr, public_handle) = spawn_public(public).await;
+        let (admin_addr, admin_handle) = spawn_public(admin).await;
+        let client = reqwest::Client::new();
+
+        for url in [
+            format!("http://{}/bzr/one/.bzr/smart", public_addr),
+            format!("http://{}/one/.bzr/smart", admin_addr),
+        ] {
+            let body = smart_post(&client, &url, v1("get", &["./f1"]), None).await;
+            assert!(
+                body.contains("in-bounds-file"),
+                "read through {} failed: {:?}",
+                url,
+                body
+            );
+        }
+
+        public_handle.abort();
+        admin_handle.abort();
     }
 }

@@ -3366,6 +3366,7 @@ dependencies = [
  "janitor",
  "loggerhead",
  "prometheus 0.14.0",
+ "pyo3",
  "reqwest 0.13.5",
  "serde",
  "serde_json",

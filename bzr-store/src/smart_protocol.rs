@@ -3,27 +3,29 @@
 //! Port of `py/janitor/bzr_store.py::bzr_backend`. Each request:
 //!
 //! 1. Checks the codebase exists in the `codebase` table (404 otherwise).
-//! 2. Opens the shared bzr repository at `<vcs_path>/<codebase>`,
-//!    creating one via `ControlDir.create(...).create_repository(shared=True)`
-//!    on `NotBranchError`.
-//! 3. Starts from `repo.user_transport` and, when a campaign (and
-//!    role) is given, clones the transport into the campaign/role
-//!    sub-paths. When `allow_writes`, the sub-path directories are
-//!    created with `transport.ensure_base()`.
-//! 4. When `allow_writes` is false, wraps the backing transport in
-//!    `readonly+<url>` so writes are rejected at the transport layer.
+//! 2. When the request may write, opens the shared bzr repository at
+//!    `<vcs_path>/<codebase>`, creating one via
+//!    `ControlDir.create(...).create_repository(shared=True)` on
+//!    `NotBranchError`. A read-only request never creates anything.
+//! 3. Serves every request from a `breezyshim` `ChrootServer` rooted
+//!    at the codebase directory, the same jail `brz serve` uses. The
+//!    chroot clamps `..` (including percent-encoded forms) to that
+//!    directory.
+//!    When a campaign (and role) is given, the backing transport is
+//!    cloned into the campaign/role sub-paths. The directories are
+//!    created with `ensure_base()` only on a write-enabled request.
+//! 4. When writes are not allowed, wraps the backing and jail
+//!    transports in `readonly+<url>` so writes are rejected at the
+//!    transport layer.
 //! 5. Feeds the HTTP request body through
-//!    [`breezyshim::bazaar::smart::detect_protocol_factory`],
-//!    builds the protocol with the backing + jail transports, and
-//!    runs `accept_bytes(unused)`.
+//!    `breezy.bzr.smart.medium._get_protocol_factory_for_bytes`,
+//!    builds the protocol with `root_client_path=None` (the chroot,
+//!    not path-prefix translation, is the boundary) and the chroot
+//!    jail, then runs `accept_bytes(unused)`.
 //! 6. If `next_read_size() != 0` after `accept_bytes`, returns the
 //!    canonical incomplete-request body
 //!    `b"error\x01incomplete request\n"`; otherwise returns the
 //!    contents of the `BytesIO` buffer.
-//!
-//! The whole handler goes through typed `breezyshim` wrappers now —
-//! no raw PyO3 remains outside the `BytesIO` wiring (which exists
-//! only because the protocol writes to a Python-callable sink).
 
 use axum::{
     body::Bytes,
@@ -31,10 +33,11 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
-use breezyshim::bazaar::smart;
-use breezyshim::repository::Repository;
-use breezyshim::transport::Transport;
+use breezyshim::bazaar::smart::ResponseBuffer;
+use breezyshim::transport::{chroot::ChrootServer, get_transport};
 use janitor::{Campaign, CodebaseName};
+use pyo3::prelude::*;
+use pyo3::types::{PyBytes, PyDict};
 use tracing::{debug, info, warn};
 
 use crate::error::{BzrError, Result};
@@ -63,6 +66,8 @@ fn open_or_create_shared_repo(
 /// and optional campaign/role transport sub-paths. Returns the raw
 /// response bytes to send back with
 /// `content-type: application/octet-stream`.
+///
+/// The exchange is jailed to `repo_path` with a Breezy `ChrootServer`.
 fn handle_exchange(
     repo_path: &std::path::Path,
     campaign: Option<&str>,
@@ -70,77 +75,94 @@ fn handle_exchange(
     allow_writes: bool,
     body: &[u8],
 ) -> Result<Vec<u8>> {
-    // Open the shared repo through breezyshim; this handles
-    // NotBranchError -> auto-create inline.
-    let repo = open_or_create_shared_repo(repo_path)
-        .map_err(|e| BzrError::Python(format!("open/create shared repo: {}", e)))?;
+    // Only a write-enabled request may create the shared repo.
+    if allow_writes {
+        open_or_create_shared_repo(repo_path)
+            .map_err(|e| BzrError::Python(format!("open/create shared repo: {}", e)))?;
+    }
 
-    // Walk from the repo's user_transport into the campaign (and
-    // optionally role) sub-paths. Each `clone` returns a new typed
-    // Transport; `ensure_base` creates the directory on write-enabled
-    // requests, matching the Python branch.
-    let user_transport: Transport = repo.user_transport();
-    let mut transport: Transport = user_transport
-        .clone(".")
-        .map_err(|e| BzrError::Python(format!("initial transport.clone(.): {}", e)))?;
+    // A relative --vcs-path must still give a file URL.
+    let abs_path = std::path::absolute(repo_path)?;
+    let root_url = url::Url::from_file_path(&abs_path).map_err(|_| {
+        BzrError::Python(format!(
+            "repository path is not absolute: {}",
+            abs_path.display()
+        ))
+    })?;
+
+    let root = get_transport(&root_url, None)
+        .map_err(|e| BzrError::Python(format!("get_transport({}): {}", root_url, e)))?;
+    let server = ChrootServer::new(&root)
+        .map_err(|e| BzrError::Python(format!("ChrootServer::new: {}", e)))?;
+    server
+        .start_server()
+        .map_err(|e| BzrError::Python(format!("ChrootServer::start_server: {}", e)))?;
+
+    let result = run_chrooted_exchange(&server, campaign, role, allow_writes, body)
+        .map_err(|e| BzrError::Python(format!("smart protocol exchange: {}", e)));
+
+    if let Err(e) = server.stop_server() {
+        warn!("ChrootServer::stop_server({}): {}", root_url, e);
+    }
+    result
+}
+
+/// Run the exchange in the chroot of `server`, with `root_client_path` set to `None`.
+#[allow(clippy::result_large_err)] // breezyshim::error::Error is intentionally large; not our choice.
+fn run_chrooted_exchange(
+    server: &ChrootServer,
+    campaign: Option<&str>,
+    role: Option<&str>,
+    allow_writes: bool,
+    body: &[u8],
+) -> std::result::Result<Vec<u8>, breezyshim::error::Error> {
+    let chroot_url = server.get_url()?;
+
+    let mut backing = get_transport(&chroot_url, None)?;
     if let Some(c) = campaign {
-        transport = transport
-            .clone(c)
-            .map_err(|e| BzrError::Python(format!("transport.clone({}): {}", c, e)))?;
+        backing = backing.clone(c)?;
         if allow_writes {
             // ensure_base can fail if the parent is missing; log and
             // continue, matching Python's `transport.ensure_base()`
             // which also swallows a FileExists race.
-            if let Err(e) = transport.ensure_base() {
+            if let Err(e) = backing.ensure_base() {
                 debug!("ensure_base({}): {}", c, e);
             }
         }
     }
     if let Some(r) = role {
-        transport = transport
-            .clone(r)
-            .map_err(|e| BzrError::Python(format!("transport.clone({}): {}", r, e)))?;
+        backing = backing.clone(r)?;
         if allow_writes {
-            if let Err(e) = transport.ensure_base() {
+            if let Err(e) = backing.ensure_base() {
                 debug!("ensure_base({}): {}", r, e);
             }
         }
     }
 
-    // Wrap in `readonly+` when writes aren't allowed. url::Url parses
-    // `readonly+file://...` fine (scheme becomes `readonly+file`), and
-    // breezyshim's `get_transport` passes it through to Python as a
-    // string so the compound scheme is preserved.
-    let backing_transport = if allow_writes {
-        transport
-    } else {
-        let base = transport.base();
-        let readonly_url = url::Url::parse(&format!("readonly+{}", base))
-            .map_err(|e| BzrError::Python(format!("readonly url parse: {}", e)))?;
-        breezyshim::transport::get_transport(&readonly_url, None)
-            .map_err(|e| BzrError::Python(format!("get_transport(readonly+...): {}", e)))?
-    };
+    let mut jail = get_transport(&chroot_url, None)?;
+    if !allow_writes {
+        let readonly = |url: &url::Url| url::Url::parse(&format!("readonly+{}", url));
+        backing = get_transport(&readonly(&backing.base())?, None)?;
+        jail = get_transport(&readonly(&chroot_url)?, None)?;
+    }
 
-    let buffer = smart::ResponseBuffer::new()
-        .map_err(|e| BzrError::Python(format!("ResponseBuffer::new: {}", e)))?;
-    let write_func = buffer
-        .write_func()
-        .map_err(|e| BzrError::Python(format!("ResponseBuffer::write_func: {}", e)))?;
+    let buffer = ResponseBuffer::new()?;
+    let write_func = buffer.write_func()?;
 
-    let (factory, unused) = smart::detect_protocol_factory(body)
-        .map_err(|e| BzrError::Python(format!("detect_protocol_factory: {}", e)))?;
-
-    let proto = factory
-        .build(&backing_transport, write_func, ".", &user_transport)
-        .map_err(|e| BzrError::Python(format!("build smart protocol: {}", e)))?;
-
-    proto
-        .accept_bytes(&unused)
-        .map_err(|e| BzrError::Python(format!("accept_bytes: {}", e)))?;
-
-    let next_size = proto
-        .next_read_size()
-        .map_err(|e| BzrError::Python(format!("next_read_size: {}", e)))?;
+    let next_size = Python::attach(|py| -> PyResult<usize> {
+        let pair = py
+            .import("breezy.bzr.smart.medium")?
+            .getattr("_get_protocol_factory_for_bytes")?
+            .call1((PyBytes::new(py, body),))?;
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("root_client_path", py.None())?;
+        kwargs.set_item("jail_root", jail)?;
+        let proto = pair
+            .get_item(0)?
+            .call((backing, write_func), Some(&kwargs))?;
+        proto.call_method1("accept_bytes", (pair.get_item(1)?,))?;
+        proto.call_method0("next_read_size")?.extract()
+    })?;
     if next_size != 0 {
         debug!(
             "incomplete smart protocol request (next_read_size={})",
@@ -148,10 +170,7 @@ fn handle_exchange(
         );
         return Ok(INCOMPLETE_REQUEST_ERROR.to_vec());
     }
-
-    buffer
-        .into_bytes()
-        .map_err(|e| BzrError::Python(format!("ResponseBuffer::into_bytes: {}", e)))
+    buffer.into_bytes()
 }
 
 /// Internal dispatch shared by the three route shapes. Checks the
@@ -190,9 +209,7 @@ pub async fn smart_protocol_dispatch(
     let allow_writes = state.resolve_allow_writes(&headers).await?;
     let repo_path = state.config.repository_path.join(&codebase);
 
-    // Python's flow creates the shared repo on demand (NotBranchError
-    // -> ControlDir.create -> create_repository(shared=True)). Don't
-    // 404 on missing fs dir; Breezy will make it.
+    // Only a write-enabled request creates the shared repo on demand.
     let body_vec = body.to_vec();
     let response_bytes = tokio::task::spawn_blocking(move || {
         handle_exchange(
