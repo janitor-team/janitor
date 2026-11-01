@@ -275,7 +275,7 @@ impl RedisSubscriber {
         let target_branch_url = match approved_run_target(&run) {
             Ok(u) => u,
             Err(e) => {
-                log::warn!("{}: invalid target branch URL: {}", run.id, e);
+                log::warn!("{}: {}", run.id, e);
                 return Ok(());
             }
         };
@@ -357,8 +357,11 @@ impl RedisSubscriber {
 }
 
 /// The URL an approved run is published to, chosen as in the publish loop.
-fn approved_run_target(run: &janitor::state::Run) -> Result<url::Url, url::ParseError> {
-    crate::resolve_target_branch_url(run.target_branch_url.as_deref(), &run.branch_url).parse()
+fn approved_run_target(run: &janitor::state::Run) -> Result<url::Url, String> {
+    let branch_url = run.branch_url.as_deref().ok_or("no branch URL")?;
+    crate::resolve_target_branch_url(run.target_branch_url.as_deref(), branch_url)
+        .parse()
+        .map_err(|e: url::ParseError| format!("invalid target branch URL: {}", e))
 }
 
 /// Health check functionality for Redis connections.

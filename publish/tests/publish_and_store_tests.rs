@@ -14,7 +14,7 @@ use sqlx::PgPool;
 fn make_run(role: &str, revision: Option<&str>) -> janitor::state::Run {
     janitor::state::Run {
         id: RunId::new("run-1").unwrap(),
-        command: "noop".to_string(),
+        command: Some("noop".to_string()),
         description: None,
         result_code: "success".to_string(),
         main_branch_revision: None,
@@ -23,13 +23,13 @@ fn make_run(role: &str, revision: Option<&str>) -> janitor::state::Run {
         result: None,
         suite: Campaign::new("lintian-fixes").unwrap(),
         instigated_context: None,
-        vcs_type: "git".to_string(),
-        branch_url: "https://example.invalid/cb-1".to_string(),
+        vcs_type: Some("git".to_string()),
+        branch_url: Some("https://example.invalid/cb-1".to_string()),
         logfilenames: None,
         worker_name: None,
         result_branches: Some(vec![(
             role.to_string(),
-            role.to_string(),
+            Some(role.to_string()),
             None,
             revision.map(|r| RevisionId::from(r.as_bytes().to_vec())),
         )]),
@@ -115,5 +115,30 @@ test_with_database! {
         let run = make_run("main", Some("rev-tip"));
         let err = publish_main_role(test_db.pool(), &run).await.unwrap_err();
         assert_eq!(err.to_string(), "no VcsManager registered for vcs_type Git");
+    }
+}
+
+test_with_database! {
+    async fn publish_and_store_errors_on_missing_run_fields(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        let mut runs: Vec<_> = (0..4).map(|_| make_run("main", Some("rev-tip"))).collect();
+        runs[0].command = None;
+        runs[1].branch_url = None;
+        runs[2].vcs_type = None;
+        runs[3].result_branches.as_mut().unwrap()[0].1 = None;
+        let mut errors = Vec::new();
+        for run in &runs {
+            let err = publish_main_role(test_db.pool(), run).await.unwrap_err();
+            errors.push(err.to_string());
+        }
+        assert_eq!(
+            errors,
+            [
+                "run run-1 has no command",
+                "run run-1 has no branch URL",
+                "run run-1 has no VCS type",
+                "run run-1 role main has no remote branch name",
+            ]
+        );
     }
 }

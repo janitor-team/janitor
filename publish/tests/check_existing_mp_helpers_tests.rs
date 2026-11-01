@@ -80,8 +80,6 @@ async fn seed_run(
 ) {
     let finish_time = Utc::now() - Duration::minutes(finish_time_offset_minutes);
     let start_time = finish_time - Duration::minutes(1);
-    // `vcs_type` must be non-null: the Rust `Run` struct decodes it
-    // as `String`, not `Option<String>`.
     sqlx::query(
         r#"
         INSERT INTO run (
@@ -255,8 +253,8 @@ test_with_database! {
         assert_eq!(mp_run.campaign, "lintian-fixes");
         assert_eq!(mp_run.codebase, "cb-1");
         assert_eq!(mp_run.role, "main");
-        assert_eq!(mp_run.remote_branch_name, "refs/heads/main");
-        assert_eq!(mp_run.command, "lintian-brush");
+        assert_eq!(mp_run.remote_branch_name.as_deref(), Some("refs/heads/main"));
+        assert_eq!(mp_run.command.as_deref(), Some("lintian-brush"));
         assert_eq!(mp_run.value, 10);
     }
 }
@@ -579,13 +577,13 @@ test_with_database! {
         assert_eq!(run.id, "run-1");
         assert_eq!(run.codebase, "cb-1");
         assert_eq!(run.suite, "lintian-fixes");
-        assert_eq!(run.command, "lintian-brush");
+        assert_eq!(run.command.as_deref(), Some("lintian-brush"));
         assert_eq!(run.result_code, "success");
         assert_eq!(run.value, Some(42));
         let branches = run.result_branches.expect("result_branches missing");
         assert_eq!(branches.len(), 1);
         assert_eq!(branches[0].0, "main");
-        assert_eq!(branches[0].1, "refs/heads/main");
+        assert_eq!(branches[0].1.as_deref(), Some("refs/heads/main"));
     }
 }
 
@@ -673,5 +671,55 @@ test_with_database! {
             .await
             .unwrap();
         assert!(policy.is_none());
+    }
+}
+
+test_with_database! {
+    async fn test_read_run_with_null_columns(test_db: TestDatabase) {
+        setup_test_database(test_db.pool()).await.unwrap();
+        let pool = test_db.pool();
+        let url = "https://example.invalid/cb-1";
+        seed_codebase_and_change_set(pool, "cb-1", "cs-1", "lintian-fixes", url).await;
+        seed_run(
+            pool,
+            "run-1",
+            "cb-1",
+            "lintian-fixes",
+            "lintian-brush",
+            url,
+            Some("rev-tip"),
+            10,
+            "cs-1",
+            5,
+        )
+        .await;
+        seed_result_branch(pool, "run-1", "main", "master", None, Some("rev-tip")).await;
+        seed_merge_proposal(pool, "https://example.invalid/mp/1", "rev-tip", url, "cb-1").await;
+        sqlx::raw_sql(
+            "UPDATE run SET command = NULL, branch_url = NULL, vcs_type = NULL;
+             UPDATE new_result_branch SET remote_name = NULL",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let run = get_run(pool, &RunId::new("run-1").unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (run.command.clone(), run.branch_url.clone(), run.vcs_type.clone()),
+            (None, None, None)
+        );
+        assert_eq!(
+            run.get_result_branch("main"),
+            Some((None, None, Some(breezyshim::RevisionId::from(b"rev-tip".to_vec()))))
+        );
+        let mp_url = "https://example.invalid/mp/1".parse().unwrap();
+        let mp_run = get_merge_proposal_run(pool, &mp_url).await.unwrap().unwrap();
+        assert_eq!(
+            (mp_run.command, mp_run.branch_url, mp_run.remote_branch_name),
+            (None, None, None)
+        );
     }
 }
