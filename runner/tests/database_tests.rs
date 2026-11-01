@@ -71,6 +71,48 @@ async fn test_get_candidates() {
 }
 
 #[tokio::test]
+async fn test_store_builder_result_changes_filenames() {
+    let Some(db) = setup().await else { return };
+    sqlx::raw_sql(
+        "INSERT INTO change_set (id, campaign) VALUES ('cs', 'lintian-fixes');
+         INSERT INTO run (id, command, result_code, suite, logfilenames, change_set, codebase, \
+                          vcs_type, branch_url, start_time, finish_time) \
+         VALUES ('run-1', 'lintian-brush', 'success', 'lintian-fixes', '{}', 'cs', 'foo', \
+                 'git', 'https://example.com/foo', '2024-01-01 00:00:00', '2024-01-01 00:10:00')",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let runner_db = RunnerDatabase::new(db.pool.clone());
+    let run_id = janitor::RunId::new("run-1").unwrap();
+    runner_db
+        .store_builder_result(
+            &run_id,
+            &janitor_runner::BuilderResult::Debian {
+                source: Some("foo".to_string()),
+                build_version: Some("1.0-1".to_string()),
+                build_distribution: Some("unstable".to_string()),
+                changes_filenames: Some(vec!["foo_1.0-1_amd64.changes".to_string()]),
+                lintian_result: None,
+                binary_packages: Some(vec!["foo".to_string()]),
+            },
+        )
+        .await
+        .unwrap();
+
+    let run = runner_db
+        .get_run(&run_id)
+        .await
+        .unwrap()
+        .expect("run was just inserted");
+    let builder_result = run.builder_result.expect("debian_build row exists");
+    assert_eq!(
+        serde_json::to_value(&builder_result).unwrap()["changes_filenames"],
+        json!(["foo_1.0-1_amd64.changes"])
+    );
+}
+
+#[tokio::test]
 async fn test_get_run_debian_build() {
     let Some(db) = setup().await else { return };
     sqlx::raw_sql(
@@ -97,6 +139,7 @@ async fn test_get_run_debian_build() {
             version: "1.0-1".to_string(),
             distribution: "unstable".to_string(),
             binary_packages: Some(vec!["foo".to_string()]),
+            changes_filenames: None,
             lintian_result: None,
         })
     );

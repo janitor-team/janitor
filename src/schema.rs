@@ -88,6 +88,7 @@ mod tests {
             ("distribution", "text", "NO"),
             ("source", "text", "NO"),
             ("binary_packages", "_text", "YES"),
+            ("changes_filenames", "_text", "YES"),
             ("lintian_result", "json", "YES"),
         ];
         assert_eq!(
