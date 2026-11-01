@@ -1,7 +1,7 @@
 use crate::{Campaign, ChangeSetId, CodebaseName};
 use chrono::TimeDelta;
 use sqlx::postgres::types::PgInterval;
-use sqlx::{Error, FromRow, PgPool};
+use sqlx::{Error, FromRow, PgConnection, PgPool};
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 
@@ -182,7 +182,7 @@ impl<'a> Queue<'a> {
     }
 
     pub async fn add(
-        &self,
+        conn: &mut PgConnection,
         codebase: &CodebaseName,
         command: &str,
         campaign: &Campaign,
@@ -220,7 +220,7 @@ impl<'a> Queue<'a> {
         .bind(requester)
         .bind(change_set)
         .bind(codebase)
-        .fetch_optional(self.pool)
+        .fetch_optional(&mut *conn)
         .await?;
 
         if let Some(row) = row {
@@ -232,7 +232,7 @@ impl<'a> Queue<'a> {
             .bind(codebase)
             .bind(campaign)
             .bind(change_set.map_or("", |c| c.as_str()))
-            .fetch_one(self.pool)
+            .fetch_one(&mut *conn)
             .await
         }
     }
@@ -310,41 +310,42 @@ mod tests {
         .await
         .unwrap();
         let queue = Queue::new(db.pool());
+        let mut conn = db.pool().acquire().await.unwrap();
 
-        let (id, bucket) = queue
-            .add(
-                &CodebaseName::new("cb").unwrap(),
-                "cmd",
-                &Campaign::new("lintian-fixes").unwrap(),
-                None,
-                0.0,
-                "missing-deps",
-                None,
-                None,
-                false,
-                None,
-            )
-            .await
-            .unwrap();
+        let (id, bucket) = Queue::add(
+            &mut conn,
+            &CodebaseName::new("cb").unwrap(),
+            "cmd",
+            &Campaign::new("lintian-fixes").unwrap(),
+            None,
+            0.0,
+            "missing-deps",
+            None,
+            None,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(bucket, "missing-deps");
 
         // Re-adding with a lower-priority bucket leaves the existing
         // entry alone and returns it.
-        let (id2, bucket2) = queue
-            .add(
-                &CodebaseName::new("cb").unwrap(),
-                "cmd",
-                &Campaign::new("lintian-fixes").unwrap(),
-                None,
-                0.0,
-                "default",
-                None,
-                None,
-                false,
-                None,
-            )
-            .await
-            .unwrap();
+        let (id2, bucket2) = Queue::add(
+            &mut conn,
+            &CodebaseName::new("cb").unwrap(),
+            "cmd",
+            &Campaign::new("lintian-fixes").unwrap(),
+            None,
+            0.0,
+            "default",
+            None,
+            None,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!((id2, bucket2.as_str()), (id, "missing-deps"));
 
         assert_eq!(
