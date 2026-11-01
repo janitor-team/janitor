@@ -1168,6 +1168,7 @@ struct PublishQuery {
 ///
 /// No rate-limit or already-published check: this endpoint is the
 /// operator override.
+/// A run that a review rejected gets a 400 unless `mode` is given.
 async fn publish(
     State(state): State<Arc<AppState>>,
     Path((campaign, codebase)): Path<(Campaign, CodebaseName)>,
@@ -1204,6 +1205,31 @@ async fn publish(
             );
         }
     };
+
+    if form.mode.is_none() {
+        let rejected: bool = match sqlx::query_scalar(
+            "SELECT EXISTS (SELECT FROM review WHERE run_id = $1 AND verdict = 'rejected')",
+        )
+        .bind(&run.id)
+        .fetch_one(&state.conn)
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                log::error!("Error loading reviews of run {}: {}", run.id, e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    error_response("Database error"),
+                );
+            }
+        };
+        if rejected {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Run was rejected in review", "run_id": run.id})),
+            );
+        }
+    }
 
     let policy_lookup = match crate::get_publish_policy(&state.conn, &codebase, &campaign).await {
         Ok(p) => p,

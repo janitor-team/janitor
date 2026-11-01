@@ -238,3 +238,64 @@ test_with_database! {
         }
     }
 }
+
+test_with_database! {
+    schema = Core;
+    async fn publish_endpoint_respects_reviews(test_db: TestDatabase) {
+        seed_codebase_and_run(test_db.pool(), "cb-1", "lintian-fixes").await;
+        sqlx::raw_sql(
+            "INSERT INTO new_result_branch (run_id, role, remote_name, base_revision, revision)
+             VALUES ('run-1', 'main', 'origin', 'rev-base', 'rev-tip');
+             INSERT INTO named_publish_policy (name, per_branch_policy) VALUES
+             ('p', ARRAY[ROW('main', 'propose'::publish_mode, NULL::int)::branch_publish_policy]);
+             INSERT INTO candidate (suite, value, command, publish_policy, codebase)
+             VALUES ('lintian-fixes', 100, 'noop', 'p', 'cb-1');",
+        )
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+
+        let app = build_app(test_db.pool().clone()).await;
+        for (publish_status, verdict, form, expected) in [
+            ("unknown", None, "", StatusCode::ACCEPTED),
+            ("needs-manual-review", None, "", StatusCode::ACCEPTED),
+            ("approved", Some("approved"), "", StatusCode::ACCEPTED),
+            ("rejected", Some("rejected"), "", StatusCode::BAD_REQUEST),
+            ("rejected", None, "mode=propose", StatusCode::ACCEPTED),
+        ] {
+            sqlx::query("UPDATE run SET publish_status = $1::publish_status WHERE id = 'run-1'")
+                .bind(publish_status)
+                .execute(test_db.pool())
+                .await
+                .unwrap();
+            if let Some(verdict) = verdict {
+                sqlx::query(
+                    "INSERT INTO review (run_id, reviewer, verdict) VALUES ('run-1', $1, $1::verdict)",
+                )
+                .bind(verdict)
+                .execute(test_db.pool())
+                .await
+                .unwrap();
+            }
+            let req = Request::builder()
+                .method("POST")
+                .uri("/lintian-fixes/cb-1/publish")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(form))
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            let status = resp.status();
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(status, expected, "{} {:?}: {}", publish_status, form, body);
+            if expected == StatusCode::BAD_REQUEST {
+                assert_eq!(
+                    body,
+                    serde_json::json!({"error": "Run was rejected in review", "run_id": "run-1"})
+                );
+            }
+        }
+    }
+}
