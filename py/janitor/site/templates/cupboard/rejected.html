@@ -13,11 +13,11 @@
             <ul>
                 {% for run in runs %}
                     <li>
-                        <a href="/cupboard/c/{{ run.codebase }}/{{ run.id }}/">{{ run.suite }} for {{ run.package }}</a>
+                        <a href="/cupboard/c/{{ run.codebase }}/{{ run.id }}/">{{ run.suite }} for {{ run.codebase }}</a>
                         <ul>
                             {% for review in reviews[run.id] %}
                                 <li>
-                                    {{ review.reviewer }}: <b>{{ review.verdict }}</b>: {{ review.comment }}
+                                    {{ review.reviewer }}: <b>{{ review.verdict }}</b>{% if review.comment %}: {{ review.comment }}{% endif %}
                                 </li>
                             {% endfor %}
                         </ul>
