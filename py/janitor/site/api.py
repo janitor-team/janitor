@@ -16,6 +16,7 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
 import asyncio
+import logging
 from typing import Optional
 
 import aiozipkin
@@ -335,12 +336,13 @@ async def handle_diff(request):
                     else NULL_REVISION,
                     run["revision"].encode("utf-8"),
                 )
-        except ClientResponseError as e:
-            return web.Response(status=e.status, text="Unable to retrieve diff")
         except NotImplementedError as e:
             raise web.HTTPBadRequest(
                 text="unsupported vcs {}".format(run["vcs_type"])
             ) from e
+        except RuntimeError as e:
+            logging.warning("Unable to retrieve diff: %s", e)
+            return web.Response(status=502, text="Unable to retrieve diff")
 
         best_match = mimeparse.best_match(
             ["text/x-diff", "text/plain", "text/html"],

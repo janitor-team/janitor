@@ -429,6 +429,55 @@ mod tests {
         );
     }
 
+    /// Serves `body` with `status` for every diff request; `None` refuses connections.
+    async fn diff_store(answer: Option<(u16, &'static str)>) -> Url {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        match answer {
+            Some((status, body)) => {
+                let status = axum::http::StatusCode::from_u16(status).unwrap();
+                let app = axum::Router::new().route(
+                    "/{codebase}/diff",
+                    axum::routing::get(move || async move { (status, body) }),
+                );
+                tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            }
+            None => drop(listener),
+        }
+        url.parse().unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_remote_get_diff() {
+        let revid = |c: &str| RevisionId::from(format!("git-v1:{}", c.repeat(40)).into_bytes());
+        let codebase = CodebaseName::new("foo").unwrap();
+        let bad = "git diff failed: fatal: bad object 1111";
+        let diff = "diff --git a/f b/f\n";
+        let ok = Ok(diff.as_bytes().to_vec());
+        let failed = Err(Some((500, bad.to_string())));
+        for (case, answer, new, expected) in [
+            ("ok", Some((200, diff)), revid("2"), ok),
+            ("same revision", None, revid("1"), Ok(vec![])),
+            ("error status", Some((500, bad)), revid("2"), failed),
+            ("unreachable", None, revid("2"), Err(None)),
+        ] {
+            let base_url = diff_store(answer).await;
+            let managers: [(&str, Box<dyn VcsManager>); 2] = [
+                ("git", Box::new(RemoteGitVcsManager::new(base_url.clone()))),
+                ("bzr", Box::new(RemoteBzrVcsManager::new(base_url))),
+            ];
+            for (kind, manager) in managers {
+                let result = match manager.get_diff(&codebase, &revid("1"), &new).await {
+                    Ok(diff) => Ok(diff),
+                    Err(DiffError::Status(status, body)) => Err(Some((status.as_u16(), body))),
+                    Err(DiffError::Request(_)) => Err(None),
+                    Err(e) => panic!("{kind}: {case}: {e}"),
+                };
+                assert_eq!(result, expected, "{kind}: {case}");
+            }
+        }
+    }
+
     #[test]
     fn test_remote_git_vcs_manager_repository_url() {
         let mgr = RemoteGitVcsManager::new(Url::parse("https://vcs.example.com/git/").unwrap());
@@ -489,6 +538,20 @@ mod tests {
                 .as_str(),
             "https://vcs.example.com/bzr/mycodebase"
         );
+    }
+
+    #[tokio::test]
+    async fn git_get_diff_refuses_option_as_sha() {
+        let base = tempfile::tempdir().unwrap();
+        git2::Repository::init(base.path().join("codebase")).unwrap();
+        let out = base.path().join("out");
+        let old = RevisionId::from(format!("git-v1:--output={}", out.display()).into_bytes());
+        let new = RevisionId::from(b"git-v1:4b825dc642cb6eb9a060e54bf8d69288fbee4904".to_vec());
+        let manager = LocalGitVcsManager::new(base.path().to_path_buf());
+        let codebase = CodebaseName::new("codebase").unwrap();
+        let result = manager.get_diff(&codebase, &old, &new).await;
+        assert!(matches!(result, Err(DiffError::InvalidRevision(ref r)) if *r == old));
+        assert!(!out.exists());
     }
 }
 
@@ -679,6 +742,29 @@ pub struct RevisionInfo {
     pub link: Option<Url>,
 }
 
+/// Why `get_diff` failed.
+#[derive(Debug)]
+pub enum DiffError {
+    /// The VCS store was not reached or its answer not read.
+    Request(reqwest::Error),
+    /// The VCS store answered with an error status and this body.
+    Status(reqwest::StatusCode, String),
+    /// The revision id does not hold a git sha.
+    InvalidRevision(RevisionId),
+}
+
+impl std::fmt::Display for DiffError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Request(e) => write!(f, "VCS store diff request failed: {}", e),
+            Self::Status(status, body) => write!(f, "VCS store diff failed: {}: {}", status, body),
+            Self::InvalidRevision(revid) => write!(f, "not a git revision id: {}", revid),
+        }
+    }
+}
+
+impl std::error::Error for DiffError {}
+
 pub const EMPTY_GIT_TREE: &[u8] = b"4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 #[async_trait]
@@ -710,7 +796,7 @@ pub trait VcsManager: Send + Sync {
         codebase: &CodebaseName,
         old_revid: &RevisionId,
         new_revid: &RevisionId,
-    ) -> Vec<u8>;
+    ) -> Result<Vec<u8>, DiffError>;
 
     async fn get_revision_info(
         &self,
@@ -808,9 +894,9 @@ impl VcsManager for LocalGitVcsManager {
         codebase: &CodebaseName,
         old_revid: &RevisionId,
         new_revid: &RevisionId,
-    ) -> Vec<u8> {
+    ) -> Result<Vec<u8>, DiffError> {
         if old_revid == new_revid {
-            return vec![];
+            return Ok(vec![]);
         }
         let repo = self.get_repository(codebase).unwrap().unwrap();
         let old_sha = if old_revid.is_null() {
@@ -823,12 +909,20 @@ impl VcsManager for LocalGitVcsManager {
         } else {
             repo.lookup_bzr_revision_id(new_revid).unwrap().0
         };
+        let oid = |revid: &RevisionId, sha: &[u8]| {
+            std::str::from_utf8(sha)
+                .ok()
+                .and_then(|sha| git2::Oid::from_str(sha).ok())
+                .ok_or_else(|| DiffError::InvalidRevision(revid.clone()))
+        };
+        let old_sha = oid(old_revid, &old_sha)?;
+        let new_sha = oid(new_revid, &new_sha)?;
         let current_dir = repo.user_transport().local_abspath(Path::new(".")).unwrap();
         drop(repo); // Drop repo before await
         let output = tokio::process::Command::new("git")
             .arg("diff")
-            .arg(std::str::from_utf8(&old_sha).unwrap())
-            .arg(std::str::from_utf8(&new_sha).unwrap())
+            .arg(old_sha.to_string())
+            .arg(new_sha.to_string())
             .current_dir(current_dir)
             .output()
             .await
@@ -839,7 +933,7 @@ impl VcsManager for LocalGitVcsManager {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
-        output.stdout
+        Ok(output.stdout)
     }
 
     async fn get_revision_info(
@@ -851,8 +945,8 @@ impl VcsManager for LocalGitVcsManager {
         let repo = self.get_repository(codebase).unwrap().unwrap();
         let old_sha = repo.lookup_bzr_revision_id(old_revid).unwrap().0;
         let new_sha = repo.lookup_bzr_revision_id(new_revid).unwrap().0;
-        let old_sha_str = std::str::from_utf8(&old_sha).unwrap();
-        let new_sha_str = std::str::from_utf8(&new_sha).unwrap();
+        let old_sha_str = git2::Oid::from_str(std::str::from_utf8(&old_sha).unwrap()).unwrap();
+        let new_sha_str = git2::Oid::from_str(std::str::from_utf8(&new_sha).unwrap()).unwrap();
         let repo_path = repo.user_transport().local_abspath(Path::new(".")).unwrap();
 
         // Use git log with a format that separates commit hash and message with a NUL byte
@@ -977,15 +1071,15 @@ impl VcsManager for LocalBzrVcsManager {
         codebase: &CodebaseName,
         old_revid: &RevisionId,
         new_revid: &RevisionId,
-    ) -> Vec<u8> {
+    ) -> Result<Vec<u8>, DiffError> {
         if old_revid == new_revid {
-            return vec![];
+            return Ok(vec![]);
         }
         let repo = self.get_repository(codebase).unwrap().unwrap();
         let output = tokio::process::Command::new("bzr")
             .arg("diff")
             .arg("-r")
-            .arg(format!("{}..{}", old_revid, new_revid))
+            .arg(format!("revid:{}..revid:{}", old_revid, new_revid))
             .current_dir(repo.user_transport().local_abspath(Path::new(".")).unwrap())
             .output()
             .await
@@ -996,7 +1090,7 @@ impl VcsManager for LocalBzrVcsManager {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
-        output.stdout
+        Ok(output.stdout)
     }
 
     async fn get_revision_info(
@@ -1064,6 +1158,20 @@ mod local_repository_url_tests {
     }
 }
 
+/// Send a diff request to a VCS store and read its answer.
+async fn fetch_diff(request: reqwest::RequestBuilder) -> Result<Vec<u8>, DiffError> {
+    let resp = request.send().await.map_err(DiffError::Request)?;
+    let status = resp.status();
+    let body = resp.bytes().await.map_err(DiffError::Request)?;
+    if !status.is_success() {
+        return Err(DiffError::Status(
+            status,
+            String::from_utf8_lossy(&body).into_owned(),
+        ));
+    }
+    Ok(body.to_vec())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteGitVcsManager {
     base_url: Url,
@@ -1112,21 +1220,12 @@ impl VcsManager for RemoteGitVcsManager {
         codebase: &CodebaseName,
         old_revid: &RevisionId,
         new_revid: &RevisionId,
-    ) -> Vec<u8> {
+    ) -> Result<Vec<u8>, DiffError> {
         if old_revid == new_revid {
-            return vec![];
+            return Ok(vec![]);
         }
         let url = self.get_diff_url(codebase, old_revid, new_revid);
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(url)
-            .send()
-            .await
-            .expect("Git VCS manager should be able to fetch diff");
-        resp.bytes()
-            .await
-            .expect("Git VCS manager should be able to read diff bytes")
-            .to_vec()
+        fetch_diff(reqwest::Client::new().get(url)).await
     }
 
     async fn get_revision_info(
@@ -1250,9 +1349,9 @@ impl VcsManager for RemoteBzrVcsManager {
         codebase: &CodebaseName,
         old_revid: &RevisionId,
         new_revid: &RevisionId,
-    ) -> Vec<u8> {
+    ) -> Result<Vec<u8>, DiffError> {
         if old_revid == new_revid {
-            return vec![];
+            return Ok(vec![]);
         }
         let url = self.get_diff_url(codebase, old_revid, new_revid);
         let client = reqwest::Client::new();
@@ -1263,8 +1362,7 @@ impl VcsManager for RemoteBzrVcsManager {
             request = request.header("x-trace-span-id", format!("{:?}", trace_id));
         }
 
-        let resp = request.send().await.unwrap();
-        resp.bytes().await.unwrap().to_vec()
+        fetch_diff(request).await
     }
 
     async fn get_revision_info(
