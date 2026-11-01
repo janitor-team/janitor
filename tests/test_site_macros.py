@@ -15,6 +15,7 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
+from bs4 import BeautifulSoup
 from jinja2 import Environment, select_autoescape
 
 from janitor.site import template_loader
@@ -115,3 +116,157 @@ def test_display_publish_blockers():
     </ul>
 """
     )
+
+
+# What the worker stores for a real lintian 2.141.0 run on a small package.
+LINTIAN_RESULT = {
+    "groups": [
+        {
+            "group_id": "tiny_1.0-1",
+            "input_files": [
+                {
+                    "hints": [
+                        {
+                            "experimental": False,
+                            "note": "",
+                            "tag": "description-starts-with-package-name",
+                            "visibility": "error",
+                        },
+                        {
+                            "experimental": False,
+                            "note": "usr/share/doc/tiny/changelog.Debian.gz (non-native package)",
+                            "tag": "no-changelog",
+                            "visibility": "error",
+                        },
+                        {
+                            "experimental": False,
+                            "note": "",
+                            "tag": "no-copyright-file",
+                            "visibility": "error",
+                        },
+                        {
+                            "experimental": False,
+                            "note": "",
+                            "pointer": {
+                                "item": {
+                                    "index": "tiny_1.0-1_all.deb (installed)",
+                                    "name": "usr/bin/tiny",
+                                },
+                                "line_position": 0,
+                            },
+                            "tag": "executable-not-elf-or-script",
+                            "visibility": "warning",
+                        },
+                        {
+                            "experimental": False,
+                            "note": "",
+                            "pointer": {
+                                "item": {
+                                    "index": "tiny_1.0-1_all.deb (installed)",
+                                    "name": "usr/bin/tiny",
+                                },
+                                "line_position": 0,
+                            },
+                            "tag": "no-manual-page",
+                            "visibility": "warning",
+                        },
+                    ],
+                    "path": "tiny_1.0-1_all.deb",
+                }
+            ],
+            "source_name": "tiny",
+            "source_version": "1.0-1",
+        }
+    ],
+    "lintian_version": "2.141.0",
+}
+
+
+def normalize_html(html):
+    return BeautifulSoup(html, "html.parser").prettify()
+
+
+def render_lintian_result(lintian_result):
+    template = env.get_template("lintian_util.html")
+    return normalize_html(
+        str(template.module.display_lintian_result(lintian_result))  # type: ignore
+    )
+
+
+def test_display_lintian_result():
+    assert render_lintian_result(LINTIAN_RESULT) == normalize_html("""
+<ul class="lintian-filelist">
+  <li class="lintian-fileitem"><a href="tiny_1.0-1_all.deb">tiny_1.0-1_all.deb</a></li>
+  <ul class="lintian-hintlist">
+    <li class="lintian-hintitem">
+      <span class="tinycode" id="lintian-code-error">e</span>
+      <span class="tinyhint"><a href="https://lintian.debian.org/tags/description-starts-with-package-name">description-starts-with-package-name</a></span>
+      <span class="tinycontext"></span>
+    </li>
+    <li class="lintian-hintitem">
+      <span class="tinycode" id="lintian-code-error">e</span>
+      <span class="tinyhint"><a href="https://lintian.debian.org/tags/no-changelog">no-changelog</a></span>
+      <span class="tinycontext">usr/share/doc/tiny/changelog.Debian.gz (non-native package)</span>
+    </li>
+    <li class="lintian-hintitem">
+      <span class="tinycode" id="lintian-code-error">e</span>
+      <span class="tinyhint"><a href="https://lintian.debian.org/tags/no-copyright-file">no-copyright-file</a></span>
+      <span class="tinycontext"></span>
+    </li>
+    <li class="lintian-hintitem">
+      <span class="tinycode" id="lintian-code-warning">w</span>
+      <span class="tinyhint"><a href="https://lintian.debian.org/tags/executable-not-elf-or-script">executable-not-elf-or-script</a></span>
+      <span class="tinycontext">[usr/bin/tiny]</span>
+    </li>
+    <li class="lintian-hintitem">
+      <span class="tinycode" id="lintian-code-warning">w</span>
+      <span class="tinyhint"><a href="https://lintian.debian.org/tags/no-manual-page">no-manual-page</a></span>
+      <span class="tinycontext">[usr/bin/tiny]</span>
+    </li>
+  </ul>
+</ul>
+<!-- lintian version 2.141.0 -->
+""")
+    template = env.get_template("lintian_util.html")
+    assert str(template.module.lintian_severity_short("info")) == "i"  # type: ignore
+
+
+def test_display_lintian_result_string_hints():
+    # Older lintian emits each hint as a plain string.
+    result = {
+        "groups": [
+            {
+                "group_id": "x_1",
+                "input_files": [
+                    {
+                        "hints": [
+                            "debian-changelog-line-too-long line 1",
+                            "no-copyright-file",
+                        ],
+                        "path": "x.dsc",
+                    }
+                ],
+                "source_name": "x",
+                "source_version": "1",
+            }
+        ],
+        "lintian_version": "2.100.0",
+    }
+    assert render_lintian_result(result) == normalize_html("""
+<ul class="lintian-filelist">
+  <li class="lintian-fileitem"><a href="x.dsc">x.dsc</a></li>
+  <ul class="lintian-hintlist">
+    <li class="lintian-hintitem">
+      <span class="tinycode" id="lintian-code-">?</span>
+      <span class="tinyhint"><a href="https://lintian.debian.org/tags/debian-changelog-line-too-long">debian-changelog-line-too-long</a></span>
+      <span class="tinycontext">line 1</span>
+    </li>
+    <li class="lintian-hintitem">
+      <span class="tinycode" id="lintian-code-">?</span>
+      <span class="tinyhint"><a href="https://lintian.debian.org/tags/no-copyright-file">no-copyright-file</a></span>
+      <span class="tinycontext"></span>
+    </li>
+  </ul>
+</ul>
+<!-- lintian version 2.100.0 -->
+""")
