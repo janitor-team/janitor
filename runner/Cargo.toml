@@ -40,6 +40,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 hostname = "0.4"
 thiserror = "2.0"
+futures = "0.3"
 tempfile = { workspace = true }
 testcontainers = { version = "0.27", default-features = false, features = ["aws-lc-rs"], optional = true }
 testcontainers-modules = { version = "0.15", default-features = false, features = ["redis", "aws-lc-rs"], optional = true }
@@ -52,7 +53,6 @@ tower = { version = "0.5", features = ["util"] }
 hyper = { version = "1.0", features = ["full"] }
 tower-service = "0.3"
 serial_test = "3.1.1"
-futures = "0.3"
 
 [features]
 default = ["debian", "cli"]

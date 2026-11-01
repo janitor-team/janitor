@@ -121,6 +121,24 @@ pub fn create_log_manager(location: Option<&str>) -> Result<LogFileManager, Erro
     }
 }
 
+/// Import a log from `stream`; unlike [`import_log`] there is no fallback, as it is read once.
+pub async fn import_log_stream(
+    log_manager: &LogFileManager,
+    codebase: &CodebaseName,
+    run_id: &RunId,
+    name: &str,
+    stream: impl futures::Stream<Item = io::Result<bytes::Bytes>> + Unpin,
+) -> Result<(), Error> {
+    let result = log_manager
+        .import_log_stream(codebase, run_id, name, stream)
+        .await;
+    match &result {
+        Ok(()) => increment_upload_success(),
+        Err(_) => increment_upload_failed(),
+    }
+    result
+}
+
 /// Import a log with primary and backup log managers
 ///
 /// This function provides sophisticated error handling and fallback mechanisms
