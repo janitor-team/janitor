@@ -45,3 +45,31 @@ async def test_get_unchanged_run(con):
     }
     row = dict(unchanged_run)
     assert {key: row.get(key) for key in expected} == expected
+
+
+async def test_get_unchanged_run_skips_other_change_set(con):
+    await _insert_codebase(con, "foo")
+    now = utcnow()
+    await _insert_run(
+        con,
+        run_id="control-run",
+        codebase="foo",
+        campaign="control",
+        start_time=now - timedelta(hours=2),
+        finish_time=now - timedelta(hours=1),
+    )
+    await _insert_run(
+        con,
+        run_id="other-run",
+        codebase="foo",
+        campaign="unchanged",
+        start_time=now - timedelta(minutes=30),
+        finish_time=now,
+    )
+    # The later run is part of the control run's change set, not its own.
+    await con.execute(
+        "UPDATE run SET change_set = 'control-run' WHERE id = 'other-run'"
+    )
+
+    unchanged_run = await get_unchanged_run(con, "foo", b"revid")
+    assert (unchanged_run["id"], unchanged_run["suite"]) == ("control-run", "control")
