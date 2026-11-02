@@ -48,9 +48,9 @@
 	    var comment = undefined;
 	    if (verdict == 'rejected') {
 		comment = window.prompt('Please specify a comment for the rejection');
-		$("#my-review-comment").html(comment);
+		$("#my-review-comment").text(comment);
 	    } else {
-		$("#my-review-comment").html("");
+		$("#my-review-comment").text("");
 	    }
 	    console.log("Submitting review " + verdict + " for run {{ run_id }} ");
 	    $.post('/api/run/{{ run_id }}', {
