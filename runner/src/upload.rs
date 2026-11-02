@@ -2,10 +2,8 @@
 
 use crate::{BuilderResult, WorkerResult};
 use axum::extract::Multipart;
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 
 /// File uploaded by a worker.
@@ -13,14 +11,8 @@ use tokio::io::AsyncWriteExt;
 pub struct UploadedFile {
     /// Original filename.
     pub filename: String,
-    /// Content type if provided.
-    pub content_type: Option<String>,
-    /// File size in bytes.
-    pub size: u64,
     /// Path where file was stored.
     pub stored_path: PathBuf,
-    /// Upload timestamp.
-    pub uploaded_at: DateTime<Utc>,
 }
 
 /// Complete worker result uploaded via multipart form.
@@ -34,8 +26,6 @@ pub struct UploadedWorkerResult {
     pub artifact_files: Vec<UploadedFile>,
     /// Build output files (for builder results).
     pub build_files: Vec<UploadedFile>,
-    /// Additional metadata files.
-    pub metadata_files: Vec<UploadedFile>,
 }
 
 /// Processor for multipart uploads from workers.
@@ -77,7 +67,6 @@ impl UploadProcessor {
         let mut log_files = Vec::new();
         let mut artifact_files = Vec::new();
         let mut build_files = Vec::new();
-        let mut metadata_files = Vec::new();
         let mut total_size = 0u64;
 
         // Per-category directory layout. Logs follow the FS log
@@ -155,7 +144,7 @@ impl UploadProcessor {
                         // Logs land in `{storage_dir}/{codebase}/{run_id}/<name>`
                         // -- the layout the FS log manager expects.
                         let file = self
-                            .save_field_flat(field, &logs_dir, &mut total_size)
+                            .save_field_flat(field, &logs_dir, "log", &mut total_size)
                             .await?;
                         log_files.push(file);
                     } else {
@@ -187,11 +176,8 @@ impl UploadProcessor {
                     build_files.push(file);
                 }
                 field_name if field_name.starts_with("metadata_") => {
-                    // Process metadata file
-                    let file = self
-                        .save_field_to_file(field, &run_dir, "metadata", &mut total_size)
+                    self.save_field_to_file(field, &run_dir, "metadata", &mut total_size)
                         .await?;
-                    metadata_files.push(file);
                 }
                 _ => {
                     // Unknown field, skip
@@ -215,82 +201,54 @@ impl UploadProcessor {
             log_files,
             artifact_files,
             build_files,
-            metadata_files,
         })
     }
 
     /// Save a multipart field straight into `dir/<filename>` --
     /// no category subfolder. Used for log files which already get
-    /// a per-codebase/per-run directory upstream.
+    /// a per-codebase/per-run directory upstream. `kind` names the
+    /// upload in the log message.
     async fn save_field_flat<'a>(
         &self,
         field: axum::extract::multipart::Field<'a>,
-        dir: &PathBuf,
+        dir: &Path,
+        kind: &str,
         total_size: &mut u64,
     ) -> Result<UploadedFile, UploadError> {
         let filename = field.file_name().unwrap_or("unknown").to_string();
-        let content_type = field.content_type().map(|ct| ct.to_string());
-        let safe_filename = sanitize_filename(&filename);
-        let file_path = dir.join(&safe_filename);
+        let file_path = dir.join(sanitize_filename(&filename));
         let file_size =
             stream_field_to_disk(field, &file_path, self.max_file_size, &filename).await?;
         *total_size += file_size;
         log::info!(
-            "Uploaded log: {} ({} bytes) -> {:?}",
+            "Uploaded {}: {} ({} bytes) -> {:?}",
+            kind,
             filename,
             file_size,
             file_path
         );
         Ok(UploadedFile {
             filename,
-            content_type,
-            size: file_size,
             stored_path: file_path,
-            uploaded_at: Utc::now(),
         })
     }
 
-    /// Save a multipart field to a file.
+    /// Save a multipart field into `run_dir/<category>/<filename>`.
     async fn save_field_to_file<'a>(
         &self,
         field: axum::extract::multipart::Field<'a>,
-        run_dir: &PathBuf,
+        run_dir: &Path,
         category: &str,
         total_size: &mut u64,
     ) -> Result<UploadedFile, UploadError> {
-        let filename = field.file_name().unwrap_or("unknown").to_string();
-
-        let content_type = field.content_type().map(|ct| ct.to_string());
-
         let category_dir = run_dir.join(category);
         tokio::fs::create_dir_all(&category_dir)
             .await
             .map_err(|e| {
                 UploadError::Storage(format!("Failed to create {} directory: {}", category, e))
             })?;
-
-        let safe_filename = sanitize_filename(&filename);
-        let file_path = category_dir.join(&safe_filename);
-
-        let file_size =
-            stream_field_to_disk(field, &file_path, self.max_file_size, &filename).await?;
-
-        *total_size += file_size;
-
-        log::info!(
-            "Uploaded file: {} ({} bytes) -> {:?}",
-            filename,
-            file_size,
-            file_path
-        );
-
-        Ok(UploadedFile {
-            filename,
-            content_type,
-            size: file_size,
-            stored_path: file_path,
-            uploaded_at: Utc::now(),
-        })
+        self.save_field_flat(field, &category_dir, "file", total_size)
+            .await
     }
 
     /// Process uploaded worker result and extract builder result if present.
@@ -304,14 +262,11 @@ impl UploadProcessor {
     /// transaction rolls back, and the run vanishes). Look at
     /// `target.name` whenever `builder_result` is missing so the
     /// per-run extraction still runs.
-    pub fn extract_builder_result(
-        &self,
-        uploaded: &UploadedWorkerResult,
-    ) -> Result<Option<BuilderResult>, UploadError> {
+    pub fn extract_builder_result(&self, uploaded: &UploadedWorkerResult) -> Option<BuilderResult> {
         if let Some(ref builder_result) = uploaded.worker_result.builder_result {
             return match builder_result {
                 BuilderResult::Debian { .. } => self.extract_debian_builder_result(uploaded),
-                BuilderResult::Generic => Ok(Some(BuilderResult::Generic)),
+                BuilderResult::Generic => Some(BuilderResult::Generic),
             };
         }
         match uploaded
@@ -321,8 +276,8 @@ impl UploadProcessor {
             .map(|t| t.name.as_str())
         {
             Some("debian") => self.extract_debian_builder_result(uploaded),
-            Some("generic") => Ok(Some(BuilderResult::Generic)),
-            _ => Ok(None),
+            Some("generic") => Some(BuilderResult::Generic),
+            _ => None,
         }
     }
 
@@ -353,7 +308,7 @@ impl UploadProcessor {
     fn extract_debian_builder_result(
         &self,
         uploaded: &UploadedWorkerResult,
-    ) -> Result<Option<BuilderResult>, UploadError> {
+    ) -> Option<BuilderResult> {
         let lintian_result = uploaded
             .worker_result
             .target
@@ -413,151 +368,18 @@ impl UploadProcessor {
             && build_version.is_none()
             && changes_filenames.is_none()
         {
-            return Ok(None);
+            return None;
         }
 
-        Ok(Some(BuilderResult::Debian {
+        Some(BuilderResult::Debian {
             source,
             build_version,
             build_distribution,
             changes_filenames,
             lintian_result,
             binary_packages,
-        }))
-    }
-
-    /// Get storage statistics.
-    pub async fn get_storage_stats(&self) -> Result<StorageStats, UploadError> {
-        let mut total_files = 0;
-        let mut total_size = 0;
-        let mut categories = HashMap::new();
-
-        if self.storage_dir.exists() {
-            let mut entries = tokio::fs::read_dir(&self.storage_dir).await.map_err(|e| {
-                UploadError::Storage(format!("Failed to read storage directory: {}", e))
-            })?;
-
-            while let Some(entry) = entries.next_entry().await.map_err(|e| {
-                UploadError::Storage(format!("Failed to read directory entry: {}", e))
-            })? {
-                if entry
-                    .file_type()
-                    .await
-                    .map_err(|e| UploadError::Storage(e.to_string()))?
-                    .is_dir()
-                {
-                    // This is a run directory
-                    let run_stats = self.get_run_storage_stats(&entry.path()).await?;
-                    total_files += run_stats.total_files;
-                    total_size += run_stats.total_size;
-
-                    for (category, count) in run_stats.files_by_category {
-                        *categories.entry(category).or_insert(0) += count;
-                    }
-                }
-            }
-        }
-
-        Ok(StorageStats {
-            total_files,
-            total_size,
-            files_by_category: categories,
         })
     }
-
-    /// Get storage statistics for a specific run.
-    async fn get_run_storage_stats(
-        &self,
-        run_dir: &PathBuf,
-    ) -> Result<RunStorageStats, UploadError> {
-        let mut total_files = 0;
-        let mut total_size = 0;
-        let mut files_by_category = HashMap::new();
-
-        let mut entries = tokio::fs::read_dir(run_dir)
-            .await
-            .map_err(|e| UploadError::Storage(format!("Failed to read run directory: {}", e)))?;
-
-        while let Some(entry) = entries
-            .next_entry()
-            .await
-            .map_err(|e| UploadError::Storage(format!("Failed to read directory entry: {}", e)))?
-        {
-            if entry
-                .file_type()
-                .await
-                .map_err(|e| UploadError::Storage(e.to_string()))?
-                .is_dir()
-            {
-                let category = entry.file_name().to_string_lossy().to_string();
-                let category_stats = self.get_category_storage_stats(&entry.path()).await?;
-
-                total_files += category_stats.0;
-                total_size += category_stats.1;
-                files_by_category.insert(category, category_stats.0);
-            }
-        }
-
-        Ok(RunStorageStats {
-            total_files,
-            total_size,
-            files_by_category,
-        })
-    }
-
-    /// Get storage statistics for a category directory.
-    async fn get_category_storage_stats(
-        &self,
-        category_dir: &PathBuf,
-    ) -> Result<(u64, u64), UploadError> {
-        let mut file_count = 0;
-        let mut total_size = 0;
-
-        let mut entries = tokio::fs::read_dir(category_dir).await.map_err(|e| {
-            UploadError::Storage(format!("Failed to read category directory: {}", e))
-        })?;
-
-        while let Some(entry) = entries
-            .next_entry()
-            .await
-            .map_err(|e| UploadError::Storage(format!("Failed to read directory entry: {}", e)))?
-        {
-            if entry
-                .file_type()
-                .await
-                .map_err(|e| UploadError::Storage(e.to_string()))?
-                .is_file()
-            {
-                let metadata = entry.metadata().await.map_err(|e| {
-                    UploadError::Storage(format!("Failed to read file metadata: {}", e))
-                })?;
-
-                file_count += 1;
-                total_size += metadata.len();
-            }
-        }
-
-        Ok((file_count, total_size))
-    }
-}
-
-/// Storage statistics.
-#[derive(Debug, Serialize)]
-pub struct StorageStats {
-    /// Total number of files.
-    pub total_files: u64,
-    /// Total size in bytes.
-    pub total_size: u64,
-    /// Files by category.
-    pub files_by_category: HashMap<String, u64>,
-}
-
-/// Storage statistics for a specific run.
-#[derive(Debug)]
-struct RunStorageStats {
-    total_files: u64,
-    total_size: u64,
-    files_by_category: HashMap<String, u64>,
 }
 
 /// Errors that can occur during upload processing.
