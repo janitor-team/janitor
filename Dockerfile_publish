@@ -43,6 +43,8 @@ RUN apt-get update --yes \
         libssl3 \
         openssh-client \
         python3-breezy \
+        python3-gpg \
+        python3-launchpadlib \
  && apt-get satisfy --yes --no-install-recommends \
         "libpython$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')" \
  && apt-get clean \
