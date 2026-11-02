@@ -573,6 +573,21 @@ TgsWBY8=
 -----END PGP PUBLIC KEY BLOCK-----
 """
 
+# A second one, for a janitor part way through a key rotation.
+ROTATED_KEY = """-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEar0skRYJKwYBBAHaRw8BAQdAdjP/XCUejUxYvBfe37nEIrJAvTae82vu6fK6
+2VEPyk60MEphbml0b3IgUm90YXRpb24gVGVzdCA8cm90YXRpb25AZXhhbXBsZS5p
+bnZhbGlkPoiQBBMWCgA4FiEEPLD9OJtBhxgNbxuyYNypMR4xQyMFAmq9LJECGwEF
+CwkIBwIGFQoJCAsCBBYCAwECHgECF4AACgkQYNypMR4xQyOVMwEA/xWVBmH7Ik5Y
++fK14Gbeo/Jxl5LAr59BaRRRW+cJJacBAPK0h/Yr0xM13MbcmIQk16oqLiWl9rHq
+L8H3TRy4UukF
+=642X
+-----END PGP PUBLIC KEY BLOCK-----
+"""
+
+ROTATED_KEY_FPR = "3CB0FD389B4187180D6F1BB260DCA9311E314323"
+
 
 async def test_keyring_routes_without_keys_return_404(
     aiohttp_client, aiohttp_server, database_location
@@ -610,6 +625,7 @@ async def test_pgp_keys_does_not_serve_other_keys_of_the_keyring(
     "publisher_keys, listed",
     [
         ([], []),
+        ([IMPORTABLE_KEY, ROTATED_KEY], [IMPORTABLE_KEY_FPR, ROTATED_KEY_FPR]),
     ],
 )
 async def test_credentials_lists_only_the_reported_keys(
@@ -626,3 +642,16 @@ async def test_credentials_lists_only_the_reported_keys(
     assert _fingerprints_of(await seeded.read()) == [IMPORTABLE_KEY_FPR]
     resp = await client.get("/credentials")
     assert (resp.status, _listed_fingerprints(await resp.text())) == (200, listed)
+
+
+async def test_pgp_keys_serves_every_reported_key(
+    aiohttp_client, aiohttp_server, database_location
+):
+    client = await _keys_client(
+        aiohttp_client, aiohttp_server, database_location, [IMPORTABLE_KEY, ROTATED_KEY]
+    )
+    resp = await client.get("/pgp_keys")
+    assert (resp.status, _fingerprints_of(await resp.read())) == (
+        200,
+        [IMPORTABLE_KEY_FPR, ROTATED_KEY_FPR],
+    )

@@ -138,7 +138,7 @@ async def handle_merge_proposal(request):
 
 
 def import_pgp_keys(gpg_context, pgp_keys):
-    """Import armored keys. Never return [], as gpg reads "" as every key."""
+    """Import armored keys and return their fingerprints, or 502 if none import."""
     fprs: list[str] = []
     for keydata in pgp_keys:
         result = gpg_context.key_import(keydata.encode("utf-8"))
@@ -158,7 +158,11 @@ def import_pgp_keys(gpg_context, pgp_keys):
 def export_pgp_keys(gpg_context, pgp_keys):
     """Import armored keys into gpg_context and export them again, minimised."""
     fprs = import_pgp_keys(gpg_context, pgp_keys)
-    return gpg_context.key_export_minimal("\0".join(fprs))
+    # gpgme cuts a pattern at its first NUL, so export one key at a time.
+    exported = [gpg_context.key_export_minimal(fpr) for fpr in fprs]
+    if not all(exported):
+        raise web.HTTPBadGateway(text="Some PGP keys could not be exported.")
+    return b"".join(exported)
 
 
 @html_template("credentials.html", headers={"Vary": "Cookie"})
@@ -191,9 +195,7 @@ async def handle_credentials(request):
         "pgp_validity": pgp_validity.get,
         "pgp_algo": gpg.core.pubkey_algo_name,
         "ssh_keys": credentials["ssh_keys"],
-        "pgp_keys": (
-            request.app["gpg"].keylist("\0".join(pgp_fprs)) if pgp_fprs else []
-        ),
+        "pgp_keys": [k for fpr in pgp_fprs for k in request.app["gpg"].keylist(fpr)],
         "hosting": credentials["hosting"],
     }
 
