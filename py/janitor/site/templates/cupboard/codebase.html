@@ -1,0 +1,30 @@
+{% extends "layout.html" %}
+{% from "run_util.html" import display_result_code, display_branch_url %}
+{% block sidebar %}
+    {% include "cupboard/sidebar.html" %}
+{% endblock sidebar %}
+{% block page_title %}
+    Cupboard - Codebase - {{ codebase.name }}
+{% endblock page_title %}
+{% block body %}
+    <div class="section">
+        <h1>{{ codebase.name }}</h1>
+        {% if codebase.url %}<p>Branch URL: {{ display_branch_url(codebase.web_url, codebase.url) }}</p>{% endif %}
+        <h2>Candidates</h2>
+        <ul>
+            {% for candidate in candidates %}
+                <li>
+                    <a href="/{{ candidate.campaign }}/c/{{ codebase.name }}/">{{ candidate.campaign }}</a>
+                </li>
+            {% endfor %}
+        </ul>
+        <h2>Runs</h2>
+        <ul>
+            {% for run in runs %}
+                <li>
+                    <a href="/cupboard/c/{{ codebase.name }}/{{ run.id }}/">{{ format_timestamp(run.finish_time) }} {{ run.campaign }}</a>: {{ display_result_code(run.result_code, run.failure_transient) }}
+                </li>
+            {% endfor %}
+        </ul>
+    </div>
+{% endblock body %}

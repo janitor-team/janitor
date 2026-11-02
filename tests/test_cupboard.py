@@ -37,7 +37,7 @@ from janitor.site import (
     template_loader,
     worker_link_is_global,
 )
-from janitor.site.cupboard import create_app, handle_result_file
+from janitor.site.cupboard import create_app, generate_codebase, handle_result_file
 from janitor.site.cupboard.api import create_app as create_api_app
 from janitor.site.cupboard.api import select_runs_to_reprocess
 from janitor.site.cupboard.publish import iter_publish_history
@@ -231,15 +231,21 @@ def test_run():
     env.get_template("cupboard/run.html")
 
 
-async def test_codebase_redirect_to_latest_run(aiohttp_client, db):
+async def test_codebase(aiohttp_client, db):
     client = await create_client(aiohttp_client, db)
     async with db.acquire() as conn:
         await _insert_codebase(conn, "foo")
+        await _insert_codebase(conn, "bar")
+        await conn.execute(
+            "INSERT INTO candidate (codebase, suite, command) "
+            "VALUES ('foo', 'lintian-fixes', 'true')"
+        )
         now = utcnow()
         await _insert_run(
             conn,
             run_id="older",
             codebase="foo",
+            campaign="unchanged",
             start_time=now - timedelta(hours=2),
             finish_time=now - timedelta(hours=1),
         )
@@ -247,52 +253,43 @@ async def test_codebase_redirect_to_latest_run(aiohttp_client, db):
             conn,
             run_id="newer",
             codebase="foo",
+            campaign="lintian-fixes",
             start_time=now - timedelta(minutes=30),
             finish_time=now,
+            result_code="nothing-to-do",
         )
+        foo = await generate_codebase(conn, "foo")
+        bar = await generate_codebase(conn, "bar")
+
+    assert dict(foo["codebase"]) == {
+        "name": "foo",
+        "url": "https://example.com/foo.git",
+        "web_url": None,
+    }
+    assert [dict(c) for c in foo["candidates"]] == [{"campaign": "lintian-fixes"}]
+    assert [dict(r) for r in foo["runs"]] == [
+        {
+            "id": "newer",
+            "campaign": "lintian-fixes",
+            "finish_time": now,
+            "result_code": "nothing-to-do",
+            "failure_transient": None,
+        },
+        {
+            "id": "older",
+            "campaign": "unchanged",
+            "finish_time": now - timedelta(hours=1),
+            "result_code": "success",
+            "failure_transient": None,
+        },
+    ]
+    assert (bar["candidates"], bar["runs"]) == ([], [])
 
     resp = await client.get("/cupboard/c/foo/", allow_redirects=False)
-    assert resp.status == 302
-    assert resp.headers["Location"] == "/cupboard/c/foo/newer/"
+    assert resp.status == 200
 
 
-async def test_codebase_redirect_prefers_finished_run(aiohttp_client, db):
-    # finish_time DESC NULLS LAST: a finished run wins over an in-progress one
-    # (finish_time IS NULL) that started later
-    client = await create_client(aiohttp_client, db)
-    async with db.acquire() as conn:
-        await _insert_codebase(conn, "foo")
-        now = utcnow()
-        await _insert_run(
-            conn,
-            run_id="done",
-            codebase="foo",
-            start_time=now - timedelta(hours=1),
-            finish_time=now - timedelta(minutes=30),
-        )
-        await _insert_run(
-            conn,
-            run_id="running",
-            codebase="foo",
-            start_time=now,
-            finish_time=None,
-        )
-
-    resp = await client.get("/cupboard/c/foo/", allow_redirects=False)
-    assert resp.status == 302
-    assert resp.headers["Location"] == "/cupboard/c/foo/done/"
-
-
-async def test_codebase_redirect_no_runs_returns_404(aiohttp_client, db):
-    client = await create_client(aiohttp_client, db)
-    async with db.acquire() as conn:
-        await _insert_codebase(conn, "foo")
-
-    resp = await client.get("/cupboard/c/foo/", allow_redirects=False)
-    assert resp.status == 404
-
-
-async def test_codebase_redirect_unknown_codebase_returns_404(aiohttp_client, db):
+async def test_codebase_unknown_returns_404(aiohttp_client, db):
     client = await create_client(aiohttp_client, db)
     resp = await client.get("/cupboard/c/nonexistent/", allow_redirects=False)
     assert resp.status == 404
