@@ -98,12 +98,12 @@ pub fn parse_html_body(contents: &str) -> Option<String> {
 /// Returns `None` if the file cannot be read, the email cannot be parsed,
 /// or no merge proposal URL is found in any text/html or text/plain part.
 pub fn parse_email<F: std::io::Read>(mut file: F) -> Option<String> {
-    let mut data = String::new();
-    file.read_to_string(&mut data)
+    let mut data = Vec::new();
+    file.read_to_end(&mut data)
         .inspect_err(|e| log::error!("Failed to read email: {}", e))
         .ok()?;
 
-    let mail = parse_mail(data.as_bytes())
+    let mail = parse_mail(&data)
         .inspect_err(|e| log::error!("Failed to parse email: {}", e))
         .ok()?;
 
