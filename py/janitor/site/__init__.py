@@ -158,6 +158,14 @@ def classify_result_code(result_code, transient: Optional[bool]):
     return "failure"
 
 
+def backend_url(base, *segments: str) -> URL:
+    """Join segments to a backend URL, each staying one path segment."""
+    for segment in segments:
+        if "/" in segment or segment in (".", ".."):
+            raise web.HTTPNotFound(text="invalid path segment")
+    return URL(base).joinpath(*segments)
+
+
 class DebdiffRetrievalError(Exception):
     """Error occurred while retrieving debdiff."""
 
@@ -178,7 +186,7 @@ async def get_archive_diff(
 ):
     if kind not in ("debdiff", "diffoscope"):
         raise DebdiffRetrievalError(f"invalid diff kind {kind!r}")
-    url = URL(differ_url) / kind / unchanged_run_id / run_id
+    url = backend_url(differ_url, kind, unchanged_run_id, run_id)
     params = {
         "jquery_url": "/_static/jquery.js",
     }
