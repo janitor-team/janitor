@@ -63,6 +63,8 @@ pub struct HealthStatus {
     pub last_ping: Option<DateTime<Utc>>,
     /// Worker's reported uptime.
     pub uptime: Option<Duration>,
+    /// Stage the worker reports it is in.
+    pub current_stage: Option<String>,
 }
 
 #[async_trait]
@@ -93,6 +95,7 @@ pub trait Backchannel {
                 status: "healthy".to_string(),
                 last_ping: Some(Utc::now()),
                 uptime: None,
+                current_stage: None,
             }),
             Err(e) => match e {
                 Error::FatalFailure(_) => Ok(HealthStatus {
@@ -101,6 +104,7 @@ pub trait Backchannel {
                     status: "failed".to_string(),
                     last_ping: Some(Utc::now()),
                     uptime: None,
+                    current_stage: None,
                 }),
                 _ => Err(e),
             },
@@ -217,6 +221,7 @@ impl Backchannel for JenkinsBackchannel {
                     status: "not-found".to_string(),
                     last_ping: Some(Utc::now()),
                     uptime: None,
+                    current_stage: None,
                 })
             }
             Err(_) => return Err(Error::PingTimeout),
@@ -256,6 +261,7 @@ impl Backchannel for JenkinsBackchannel {
             status,
             last_ping: Some(Utc::now()),
             uptime: None, // Jenkins doesn't easily provide uptime
+            current_stage: None,
         })
     }
 }
@@ -436,6 +442,11 @@ impl Backchannel for PollingBackchannel {
                 .and_then(|s| s.as_str())
                 .map(|s| s.to_string());
 
+            let current_stage = status_info
+                .get("current_stage")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string());
+
             let uptime = status_info
                 .get("uptime_seconds")
                 .and_then(|u| u.as_u64())
@@ -467,6 +478,7 @@ impl Backchannel for PollingBackchannel {
                 status: final_status,
                 last_ping: Some(Utc::now()),
                 uptime,
+                current_stage,
             });
         }
 
@@ -480,6 +492,7 @@ impl Backchannel for PollingBackchannel {
                     status: if alive { "running" } else { "different-run" }.to_string(),
                     last_ping: Some(Utc::now()),
                     uptime: None,
+                    current_stage: None,
                 })
             }
             Err(_) => Ok(HealthStatus {
@@ -488,6 +501,7 @@ impl Backchannel for PollingBackchannel {
                 status: "unreachable".to_string(),
                 last_ping: Some(Utc::now()),
                 uptime: None,
+                current_stage: None,
             }),
         }
     }
