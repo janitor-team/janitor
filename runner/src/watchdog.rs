@@ -171,6 +171,8 @@ pub struct Watchdog {
     /// non-idle poll. Used to bound how long we'll wait for a queued
     /// Jenkins build / freshly-assigned worker to actually start.
     idle_since: HashMap<RunId, DateTime<Utc>>,
+    /// Last stage each run's worker reported.
+    last_stage: HashMap<RunId, String>,
 }
 
 impl Watchdog {
@@ -186,6 +188,7 @@ impl Watchdog {
             config,
             health_failures: HashMap::new(),
             idle_since: HashMap::new(),
+            last_stage: HashMap::new(),
         }
     }
 
@@ -224,6 +227,8 @@ impl Watchdog {
         let now = Utc::now();
 
         log::debug!("Checking {} active runs", active_runs.len());
+        self.last_stage
+            .retain(|id, _| active_runs.iter().any(|run| &run.log_id == id));
 
         for run in active_runs {
             if let Err(e) = self.check_single_run(&run, now).await {
@@ -291,6 +296,11 @@ impl Watchdog {
     ) -> Result<Option<TerminationReason>, Box<dyn std::error::Error + Send + Sync>> {
         match run.backchannel.get_health_status(&run.log_id).await {
             Ok(health) => {
+                if let Some(stage) = &health.current_stage {
+                    if health.current_run_id.as_deref() == Some(run.log_id.as_str()) {
+                        self.last_stage.insert(run.log_id.clone(), stage.clone());
+                    }
+                }
                 if let Some(last_ping) = health.last_ping {
                     let heartbeat_timeout =
                         Duration::seconds(self.config.worker_heartbeat_timeout as i64);
@@ -556,6 +566,7 @@ impl Watchdog {
             run.create_result(result_code.to_string(), Some(description.to_string()));
         janitor_result.transient = Some(reason.is_transient());
         janitor_result.failure_details = Some(reason.create_failure_details(run));
+        janitor_result.failure_stage = self.last_stage.remove(&run.log_id).map(|s| vec![s]);
 
         if let Err(e) = self
             .database
@@ -927,5 +938,63 @@ mod tests {
         assert_eq!(compute_run_deadline_secs(&cfg, 30 * 60), 240 * 60);
         // Estimate above floor -> respected verbatim, no upper cap.
         assert_eq!(compute_run_deadline_secs(&cfg, 5 * 60 * 60), 5 * 60 * 60);
+    }
+
+    /// A run that times out is stored with the stage its worker last reported.
+    #[tokio::test]
+    async fn test_timed_out_run_stores_last_stage() {
+        let Some(state) = crate::test_utils::create_test_app_state_if_available()
+            .await
+            .unwrap()
+        else {
+            eprintln!("skipping: no test resources");
+            return;
+        };
+        let pool = state.database.pool().clone();
+        sqlx::query("INSERT INTO codebase (name) VALUES ('watchdog-cb')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO worker (name, password) VALUES ('watchdog-worker', 'x')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let run = ActiveRun {
+            worker_name: "watchdog-worker".to_string(),
+            worker_link: None,
+            queue_id: 1,
+            log_id: rid("watchdog-stage-run"),
+            start_time: Utc::now() - Duration::hours(2),
+            finish_time: None,
+            estimated_duration: None,
+            campaign: janitor::Campaign::new("test-campaign").unwrap(),
+            change_set: None,
+            command: "true".to_string(),
+            codebase: janitor::CodebaseName::new("watchdog-cb").unwrap(),
+            backchannel: crate::Backchannel::None {},
+            vcs_info: crate::VcsInfo::default(),
+            instigated_context: None,
+            resume_from: None,
+        };
+        let mut watchdog = Watchdog::new(
+            state.database.clone(),
+            state.active_runs.clone(),
+            WatchdogConfig::default(),
+        );
+        watchdog
+            .last_stage
+            .insert(run.log_id.clone(), "codemod".to_string());
+        watchdog.check_single_run(&run, Utc::now()).await.unwrap();
+
+        let row: (String, Option<String>) =
+            sqlx::query_as("SELECT result_code, failure_stage FROM run WHERE id = $1")
+                .bind(run.log_id.as_str())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            row,
+            ("worker-timeout".to_string(), Some("{codemod}".to_string()))
+        );
     }
 }
