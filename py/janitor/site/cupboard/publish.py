@@ -4,6 +4,8 @@ from typing import Optional
 from aiohttp import web
 from yarl import URL
 
+from .. import backend_url
+
 
 def _parse_timestamp(value):
     return datetime.fromisoformat(value) if value is not None else None
@@ -35,7 +37,7 @@ async def write_history(client, publisher_url: str, limit: Optional[int] = None)
 
 
 async def write_publish(client, publisher_url: str, publish_id: str):
-    url = URL(publisher_url) / "publish" / publish_id
+    url = backend_url(publisher_url, "publish", publish_id)
     async with client.get(url) as resp:
         if resp.status == 404:
             raise web.HTTPNotFound(text=f"no such publish: {publish_id}")

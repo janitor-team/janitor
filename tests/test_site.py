@@ -17,10 +17,13 @@
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock
 
+import pytest
+from aiohttp import web
 from yarl import URL
 
 from janitor.site import (
     DebdiffRetrievalError,
+    backend_url,
     format_debdiff_error,
     format_duration,
     format_timestamp,
@@ -46,6 +49,16 @@ def test_format_debdiff_error():
         format_debdiff_error(error)
         == "Error retrieving debdiff: dpkg-deb -c a&lt;b&gt;.deb failed"
     )
+
+
+def test_backend_url():
+    assert backend_url("http://runner:9911/", "log", "run-1", "build.log") == URL(
+        "http://runner:9911/log/run-1/build.log"
+    )
+    for segment in ["../../status", "a/b", ".", ".."]:
+        with pytest.raises(web.HTTPNotFound) as e:
+            backend_url("http://runner:9911/", "log", segment)
+        assert e.value.text == "invalid path segment"
 
 
 def _make_request(external_url=None, request_url="https://example.com/some/path"):

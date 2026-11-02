@@ -5,10 +5,12 @@ from typing import Optional
 
 from yarl import URL
 
+from .. import backend_url
+
 
 async def write_merge_proposals(client, publisher_url: str, campaign: Optional[str]):
     if campaign:
-        url = URL(publisher_url) / campaign / "merge-proposals"
+        url = backend_url(publisher_url, campaign, "merge-proposals")
     else:
         url = URL(publisher_url) / "merge-proposals"
     async with client.get(url, raise_for_status=True) as resp:

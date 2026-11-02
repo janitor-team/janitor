@@ -16,6 +16,7 @@ from janitor.config import get_campaign_config
 from janitor.site import (
     BuildDiffUnavailable,
     DebdiffRetrievalError,
+    backend_url,
     format_debdiff_error,
     get_archive_diff,
     update_vars_from_request,
@@ -184,7 +185,7 @@ def _shape_run_detail(data):
 
 async def fetch_run_detail(client, runner_url: str, run_id: str):
     """Fetch a run's detail from the runner, shaped like `get_run`."""
-    url = URL(runner_url) / "runs" / run_id
+    url = backend_url(runner_url, "runs", run_id)
     async with client.get(url) as resp:
         if resp.status == 404:
             return None
@@ -216,7 +217,7 @@ async def _fetch_codebase_merge_proposals(
 ):
     if not publisher_url:
         return []
-    url = URL(publisher_url) / "c" / codebase_name / "merge-proposals"
+    url = backend_url(publisher_url, "c", codebase_name, "merge-proposals")
     async with client.get(
         url, params={"campaign": campaign}, raise_for_status=True
     ) as resp:
