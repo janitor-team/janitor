@@ -74,6 +74,18 @@ oauth2_provider {
 }
 ```
 
+Any account at the provider can log in. `qa_reviewer_group` and
+`admin_group` can be used to restrict some permissions to a select group
+at the provider.
+
+- Every logged-in user can reschedule and review runs, ask for a codebase
+  to be published and have the status of merge proposals read again from
+  the forge.
+- Only reviews by members of `qa_reviewer_group` approve or reject a run
+  for publishing.
+- Members of `admin_group` can also manage workers, runs, merge proposals
+  and publishing.
+
 `client_id`/`client_secret` can go directly in `oauth2_provider`, or be left
 out and set via the `OAUTH2_CLIENT_ID`/`OAUTH2_CLIENT_SECRET` environment
 variables instead, which are used as a fallback if the config fields are empty.
