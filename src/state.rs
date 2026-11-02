@@ -25,6 +25,14 @@ pub async fn create_pool(config: &Config) -> Result<Pool<Postgres>, sqlx::Error>
     Ok(pool)
 }
 
+/// A tag a run created, as stored in the `result_tag` composite type.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::Type)]
+#[sqlx(type_name = "result_tag")]
+pub struct ResultTag {
+    pub actual_name: String,
+    pub revision: RevisionId,
+}
+
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Run {
     pub id: RunId,
@@ -47,7 +55,7 @@ pub struct Run {
     #[sqlx(rename = "worker")]
     pub worker_name: Option<String>,
     pub result_branches: Option<Vec<(String, String, Option<RevisionId>, Option<RevisionId>)>>,
-    pub result_tags: Option<Vec<(String, String)>>,
+    pub result_tags: Option<Vec<ResultTag>>,
     pub target_branch_url: Option<String>,
     pub change_set: ChangeSetId,
     pub failure_details: Option<serde_json::Value>,
@@ -176,7 +184,10 @@ mod tests {
                     None,
                 ),
             ]),
-            result_tags: Some(vec![("v1.0".to_string(), "tag-ref".to_string())]),
+            result_tags: Some(vec![ResultTag {
+                actual_name: "v1.0".to_string(),
+                revision: RevisionId::from(b"tag-ref".to_vec()),
+            }]),
             target_branch_url: Some("https://salsa.debian.org/foo/bar".to_string()),
             change_set: ChangeSetId::new("cs-1").unwrap(),
             failure_details: None,
