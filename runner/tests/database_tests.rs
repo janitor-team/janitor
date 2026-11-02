@@ -62,7 +62,7 @@ async fn test_get_candidates() {
             "campaign": "lintian-fixes",
             "command": "lintian-brush",
             "publish-policy": null,
-            "change_set": null,
+            "change_set": "2938aa67e74ca0622b8afc4f9972de8c",
             "context": "some context",
             "value": 5,
             "success_chance": 0.5,

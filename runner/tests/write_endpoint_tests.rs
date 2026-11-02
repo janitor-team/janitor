@@ -727,6 +727,14 @@ async fn post_schedule_returns_queue_position() {
             "response must include `{key}`, got {body}"
         );
     }
+    let (queued, own): (Option<String>, String) = sqlx::query_as(
+        "SELECT change_set, md5('sched-pos-cb/test-campaign') FROM queue
+         WHERE codebase = 'sched-pos-cb'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("queue row");
+    assert_eq!(queued, Some(own));
 }
 
 /// `POST /candidates` for a known campaign with a known codebase
@@ -745,13 +753,15 @@ async fn post_candidates_success_path_writes_queue_row() {
         "codebase": "cand-ok-cb",
         "campaign": "test-campaign",
     }]);
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/candidates")
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let req = || {
+        Request::builder()
+            .method(Method::POST)
+            .uri("/candidates")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let response = app.clone().oneshot(req()).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = get_body(response).await;
@@ -781,6 +791,26 @@ async fn post_candidates_success_path_writes_queue_row() {
     let (codebase, suite) = queue_row.expect("expected queue row for cand-ok-cb");
     assert_eq!(codebase, "cand-ok-cb");
     assert_eq!(suite, "test-campaign");
+
+    // The candidate got its own change set, kept on a second upload.
+    let response = app.oneshot(req()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let own: String = sqlx::query_scalar("SELECT md5('cand-ok-cb/test-campaign')")
+        .fetch_one(&pool)
+        .await
+        .expect("md5");
+    assert_eq!(get_body(response).await["success"][0]["change_set"], own);
+    let sets: Vec<(String, Option<String>, String)> = sqlx::query_as(
+        "SELECT candidate.change_set, queue.change_set, change_set.state::text
+         FROM candidate
+         JOIN change_set ON change_set.id = candidate.change_set
+         LEFT JOIN queue ON queue.codebase = candidate.codebase
+         WHERE candidate.codebase = 'cand-ok-cb'",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("candidate lookup");
+    assert_eq!(sets, vec![(own.clone(), Some(own), "created".to_string())]);
 }
 
 /// `POST /candidates` with `value: 0` records the candidate in
@@ -1838,20 +1868,21 @@ async fn assign_prefers_higher_success_chance_within_same_priority() {
     // Candidates carry the success_chance the scoring SQL joins on.
     // score-b has the highest -> should win despite identical priority.
     for (cb, chance) in [("score-a", 0.1f64), ("score-b", 0.9), ("score-c", 0.5)] {
-        sqlx::query(
+        let change_set: String = sqlx::query_scalar(
             "INSERT INTO candidate (codebase, suite, command, success_chance)
-             VALUES ($1, 'test-campaign', 'true', $2)",
+             VALUES ($1, 'test-campaign', 'true', $2) RETURNING change_set",
         )
         .bind(cb)
         .bind(chance)
-        .execute(&pool)
+        .fetch_one(&pool)
         .await
         .expect("insert candidate");
         sqlx::query(
-            "INSERT INTO queue (codebase, suite, command, priority)
-             VALUES ($1, 'test-campaign', 'true', 50)",
+            "INSERT INTO queue (codebase, suite, command, priority, change_set)
+             VALUES ($1, 'test-campaign', 'true', 50, $2)",
         )
         .bind(cb)
+        .bind(change_set)
         .execute(&pool)
         .await
         .expect("insert queue row");

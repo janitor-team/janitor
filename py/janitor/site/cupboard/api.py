@@ -86,7 +86,7 @@ WHERE
 EXISTS (SELECT FROM candidate WHERE
 run.codebase = candidate.codebase AND
 run.suite = candidate.suite AND
-(run.change_set = candidate.change_set OR candidate.change_set IS NULL))
+(run.change_set = candidate.change_set OR candidate.change_set = own_change_set(candidate.codebase, candidate.suite)))
 AND """
         where = []
         params = []

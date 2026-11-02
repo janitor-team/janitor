@@ -162,7 +162,7 @@ async def handle_result_codes(request):
                 " AND EXISTS (SELECT FROM candidate WHERE "
                 "run.codebase = candidate.codebase AND "
                 "run.suite = candidate.suite AND "
-                "(run.change_set = candidate.change_set OR candidate.change_set is NULL))"
+                "(run.change_set = candidate.change_set OR candidate.change_set = own_change_set(candidate.codebase, candidate.suite)))"
             )
         query += " group by 1"
         if not exclude_never_processed:
@@ -207,7 +207,7 @@ async def handle_failure_stages(request):
                 " AND EXISTS (SELECT FROM candidate WHERE "
                 "run.codebase = candidate.codebase AND "
                 "run.suite = candidate.suite AND "
-                "(run.change_set = candidate.change_set OR candidate.change_set is NULL))"
+                "(run.change_set = candidate.change_set OR candidate.change_set = own_change_set(candidate.codebase, candidate.suite)))"
             )
         query += " group by 1"
         return {
@@ -246,7 +246,7 @@ async def handle_result_code(request):
             " AND EXISTS (SELECT FROM candidate WHERE "
             "run.codebase = candidate.codebase AND "
             "run.suite = candidate.suite AND "
-            "(run.change_set = candidate.change_set OR candidate.change_set IS NULL))"
+            "(run.change_set = candidate.change_set OR candidate.change_set = own_change_set(candidate.codebase, candidate.suite)))"
         )
     all_campaigns = [c.name for c in request.app["config"].campaign]
     async with request.app["pool"].acquire() as conn:

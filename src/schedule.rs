@@ -378,6 +378,19 @@ fn calculate_offset(
     estimated_cost / estimated_value
 }
 
+/// The change set a run without one counts for: its candidate's (see schema/state.sql).
+async fn lookup_candidate_change_set(
+    conn: &PgPool,
+    codebase: &CodebaseName,
+    campaign: &Campaign,
+) -> Result<Option<ChangeSetId>, sqlx::Error> {
+    sqlx::query_scalar("SELECT candidate_change_set($1, $2)")
+        .bind(codebase)
+        .bind(campaign)
+        .fetch_one(conn)
+        .await
+}
+
 /// Schedule a regular (non-control) queue item for the given campaign
 /// and codebase, computing an offset from the estimated success
 /// probability, duration and candidate value.
@@ -397,6 +410,11 @@ pub async fn do_schedule_regular(
     refresh: bool,
     bucket: Option<&str>,
 ) -> Result<(f64, chrono::Duration, i32, String), Error> {
+    let candidate_change_set = match change_set {
+        Some(_) => None,
+        None => lookup_candidate_change_set(conn, codebase, campaign).await?,
+    };
+    let change_set = change_set.or(candidate_change_set.as_ref());
     let (candidate_value, success_chance, command, context) = if candidate_value.is_none()
         || success_chance.is_none()
         || command.is_none()
@@ -895,7 +913,11 @@ mod tests {
         assert_eq!(req.context, "ctx");
         assert_eq!(req.command, "lintian-brush");
         assert_eq!(req.success_chance, 0.5);
-        assert_eq!(req.change_set, None);
+        // The candidate's own change set: md5 of "cb/lintian-fixes".
+        assert_eq!(
+            req.change_set,
+            Some(ChangeSetId::new("0a1a373e4017121e376e3932b84a0225").unwrap())
+        );
         // Candidate value plus the value of the "propose" publish mode.
         assert_eq!(req.value, 405);
     }
@@ -1001,6 +1023,11 @@ pub async fn do_schedule(
         }
         candidate.unwrap().0
     };
+    let candidate_change_set = match change_set {
+        Some(_) => None,
+        None => lookup_candidate_change_set(conn, codebase, campaign).await?,
+    };
+    let change_set = change_set.or(candidate_change_set.as_ref());
     let estimated_duration = if let Some(estimated_duration) = estimated_duration {
         estimated_duration
     } else {

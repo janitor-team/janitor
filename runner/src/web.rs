@@ -1130,7 +1130,7 @@ async fn upload_candidates(
             }
         };
 
-        let insert_result = sqlx::query_scalar::<_, i32>(
+        let insert_result = sqlx::query_as::<_, (i32, ChangeSetId)>(
             r#"
             INSERT INTO candidate
             (suite, command, change_set, context, value, success_chance, publish_policy, codebase)
@@ -1143,7 +1143,7 @@ async fn upload_candidates(
                 command = EXCLUDED.command,
                 publish_policy = EXCLUDED.publish_policy,
                 codebase = EXCLUDED.codebase
-            RETURNING id
+            RETURNING id, change_set
             "#,
         )
         .bind(&campaign)
@@ -1157,8 +1157,8 @@ async fn upload_candidates(
         .fetch_one(&mut *tx)
         .await;
 
-        let candidate_id: i32 = match insert_result {
-            Ok(id) => id,
+        let (candidate_id, change_set) = match insert_result {
+            Ok(row) => row,
             Err(sqlx::Error::Database(db_err))
                 if db_err
                     .constraint()
@@ -1311,7 +1311,7 @@ async fn upload_candidates(
             Some(&requester),
             0.0,
             context.as_deref(),
-            change_set.as_ref(),
+            Some(&change_set),
             false,
             refresh,
             bucket_override.as_deref(),
@@ -2003,8 +2003,8 @@ async fn admin_cleanup_runs(
     let mut rescheduled = 0i64;
     for (_id, codebase, suite, command) in rows.iter() {
         let r = sqlx::query(
-            "INSERT INTO queue (codebase, suite, command, priority, bucket, requester) \
-             VALUES ($1, $2::suite_name, $3, 0, 'reschedule', $4) \
+            "INSERT INTO queue (codebase, suite, command, priority, bucket, requester, change_set) \
+             VALUES ($1, $2::suite_name, $3, 0, 'reschedule', $4, candidate_change_set($1, $2)) \
              ON CONFLICT (codebase, suite, coalesce(change_set, '')) DO UPDATE \
              SET priority = LEAST(queue.priority, 0), \
                  bucket = 'reschedule', \

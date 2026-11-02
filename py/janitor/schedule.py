@@ -297,6 +297,15 @@ def calculate_offset(
     return estimated_cost / estimated_value
 
 
+async def _candidate_change_set(
+    conn: asyncpg.Connection, codebase: str, campaign: str
+) -> Optional[str]:
+    # The change set a run without one counts for (see schema/state.sql).
+    return await conn.fetchval(
+        "SELECT candidate_change_set($1, $2)", codebase, campaign
+    )
+
+
 async def do_schedule_regular(
     conn: asyncpg.Connection,
     *,
@@ -316,6 +325,8 @@ async def do_schedule_regular(
 ) -> tuple[float, Optional[timedelta], int, str]:
     assert codebase is not None
     assert campaign is not None
+    if change_set is None:
+        change_set = await _candidate_change_set(conn, codebase, campaign)
     if candidate_value is None or success_chance is None or command is None:
         row = await conn.fetchrow(
             "SELECT value, success_chance, command, context FROM candidate "
@@ -607,6 +618,8 @@ async def do_schedule(
         if not candidate:
             raise CandidateUnavailable(campaign, codebase)
         command = candidate["command"]
+    if change_set is None:
+        change_set = await _candidate_change_set(conn, codebase, campaign)
     if estimated_duration is None:
         estimated_duration = await estimate_duration(conn, codebase, campaign)
     queue = Queue(conn)

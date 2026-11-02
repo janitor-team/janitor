@@ -191,7 +191,7 @@ CREATE TABLE IF NOT EXISTS candidate (
    success_chance float,
    command text not null,
    publish_policy text references named_publish_policy (name),
-   change_set text references change_set(id) on delete cascade,
+   change_set text not null references change_set(id) on delete cascade,
    codebase text not null,
    id serial primary key not null,
    check (command != ''),
@@ -201,6 +201,48 @@ CREATE TABLE IF NOT EXISTS candidate (
 CREATE UNIQUE INDEX candidate_codebase_suite_set ON candidate (codebase, suite, coalesce(change_set, ''));
 CREATE INDEX ON candidate (suite);
 CREATE INDEX ON candidate(change_set);
+
+-- The change set of a candidate uploaded without one.
+CREATE OR REPLACE FUNCTION own_change_set(codebase text, suite text)
+  RETURNS text
+  LANGUAGE SQL IMMUTABLE
+  AS $$ SELECT md5(codebase || '/' || suite) $$;
+
+-- The change set a run of codebase/suite counts for: its candidate's, its own one first.
+CREATE OR REPLACE FUNCTION candidate_change_set(_codebase text, _suite text)
+  RETURNS text
+  LANGUAGE SQL STABLE
+  AS $$
+    SELECT change_set FROM candidate WHERE codebase = _codebase AND suite = _suite
+    ORDER BY change_set = own_change_set(_codebase, _suite) DESC LIMIT 1
+  $$;
+
+CREATE OR REPLACE FUNCTION candidate_default_change_set()
+  RETURNS TRIGGER
+  LANGUAGE PLPGSQL
+  AS $$
+    BEGIN
+    IF NEW.change_set IS NULL THEN
+        NEW.change_set := own_change_set(NEW.codebase, NEW.suite);
+        INSERT INTO change_set (id, campaign) VALUES (NEW.change_set, NEW.suite) ON CONFLICT DO NOTHING;
+    END IF;
+    RETURN NEW;
+    END;
+$$;
+
+CREATE OR REPLACE TRIGGER candidate_default_change_set
+  BEFORE INSERT OR UPDATE OF change_set
+  ON candidate
+  FOR EACH ROW
+  EXECUTE FUNCTION candidate_default_change_set();
+
+-- On an existing database: the trigger fills in the missing change sets.
+UPDATE candidate SET change_set = NULL WHERE change_set IS NULL;
+ALTER TABLE candidate ALTER COLUMN change_set SET NOT NULL;
+UPDATE queue SET change_set = own_change_set(codebase, suite)
+  WHERE change_set IS NULL
+    AND EXISTS (SELECT FROM candidate WHERE change_set = own_change_set(queue.codebase, queue.suite))
+    AND NOT EXISTS (SELECT FROM queue q WHERE q.change_set = own_change_set(queue.codebase, queue.suite));
 
 CREATE TABLE last_run (
    codebase text not null references codebase(name),
