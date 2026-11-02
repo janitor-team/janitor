@@ -11,7 +11,7 @@ build = "build.rs"
 include = ["src/**/*", "schema/state.sql", "schema/debian/debian.sql", "README.md"]
 
 [dependencies]
-breezyshim = { workspace = true }
+breezyshim = { workspace = true, features = ["sqlx"] }
 chrono = { workspace = true, features = ["serde"] }
 env_logger = { workspace = true }
 log = { workspace = true }
