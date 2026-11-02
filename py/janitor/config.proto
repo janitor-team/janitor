@@ -69,6 +69,9 @@ message Config {
   repeated BugTracker bugtracker = 17;
 
   repeated AptRepository apt_repository = 19;
+
+  // Hide reviewer e-mail addresses from visitors who are not logged in
+  optional bool hide_reviewer_identities = 20 [default=false];
 }
 
 message MergeProposalConfig {

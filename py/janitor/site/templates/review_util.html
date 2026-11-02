@@ -1,6 +1,13 @@
 {% macro trimmed_comment(comment) %}
     {% if comment %}<span title="{{ comment }}">{{ comment|truncate(100) }}</span>{% endif %}
 {% endmacro %}
+{% macro display_reviewer(reviewer) %}
+    {%- if user or not config.hide_reviewer_identities -%}
+        {{ reviewer }}
+    {%- else -%}
+        <a href="/login?url={{ url | urlencode }}">Login to see reviewer identities</a>
+    {%- endif -%}
+{% endmacro %}
 {% macro display_reviews_table(reviews, user=None) %}
     <table class="reviews">
         <thead>
@@ -16,7 +23,7 @@
                 {% set ns.my_review = review %}
             {% else %}
                 <tr>
-                    <td>{{ review['reviewer'] }}</td>
+                    <td>{{ display_reviewer(review['reviewer']) }}</td>
                     <td>
                         <span class="review-{{ review['verdict'] }}">{{ review['verdict'] }}</span>
                     </td>

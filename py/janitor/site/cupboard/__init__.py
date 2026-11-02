@@ -49,7 +49,7 @@ routes = web.RouteTableDef()
 
 
 @routes.get("/cupboard/rejected", name="cupboard-rejected")
-@html_template("cupboard/rejected.html")
+@html_template("cupboard/rejected.html", headers={"Vary": "Cookie"})
 async def handle_rejected(request):
     from .review import generate_rejected
 
