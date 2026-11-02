@@ -81,6 +81,7 @@ pub fn push_branch(
 ///
 /// # Returns
 /// * `Ok(())` if the branches were successfully imported.
+#[allow(clippy::too_many_arguments)]
 fn import_branches_bzr(
     repo_url: &Url,
     local_branch: &dyn breezyshim::branch::PyBranch,
@@ -89,15 +90,16 @@ fn import_branches_bzr(
     branches: &Vec<(String, String, Option<RevisionId>, Option<RevisionId>)>,
     tags: Vec<(String, Option<RevisionId>)>,
     update_current: bool,
+    possible_transports: &mut Option<Vec<Transport>>,
 ) -> Result<(), BrzError> {
     let format = breezyshim::controldir::FORMAT_REGISTRY
         .make_controldir("bzr")
         .ok_or(BrzError::UnknownFormat("bzr".to_string()))?;
     for (f, _n, _br, r) in branches.iter() {
-        let rootcd = match breezyshim::controldir::open(repo_url, None) {
+        let rootcd = match breezyshim::controldir::open(repo_url, possible_transports.as_mut()) {
             Ok(cd) => cd,
             Err(BrzError::NotBranchError(..)) => {
-                breezyshim::controldir::create(repo_url, &format, None)?
+                breezyshim::controldir::create(repo_url, &format, possible_transports.as_mut())?
             }
             Err(e) => {
                 return Err(e);
@@ -188,6 +190,7 @@ fn import_branches_bzr(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn import_branches_git(
     repo_url: &Url,
     local_branch: &dyn breezyshim::branch::PyBranch,
@@ -196,10 +199,12 @@ fn import_branches_git(
     branches: &Vec<(String, String, Option<RevisionId>, Option<RevisionId>)>,
     tags: Vec<(String, Option<RevisionId>)>,
     update_current: bool,
+    possible_transports: &mut Option<Vec<Transport>>,
 ) -> Result<(), BrzError> {
-    let vcs_result_controldir = match breezyshim::controldir::open(repo_url, None) {
+    let transport = breezyshim::transport::get_transport(repo_url, possible_transports.as_mut())?;
+    let vcs_result_controldir = match breezyshim::controldir::open_from_transport(&transport, None)
+    {
         Err(BrzError::NotBranchError(..)) => {
-            let transport = breezyshim::transport::get_transport(repo_url, None).unwrap();
             if !transport.has(".")? {
                 match transport.ensure_base() {
                     Err(BrzError::NoSuchFile(..)) => {
@@ -216,7 +221,7 @@ fn import_branches_git(
             let format = breezyshim::controldir::FORMAT_REGISTRY
                 .make_controldir("git-bare")
                 .unwrap();
-            format.initialize(repo_url)?
+            format.initialize_on_transport(&transport)?
         }
         Ok(cd) => cd,
         Err(e) => {
@@ -295,6 +300,7 @@ pub fn import_branches(
     branches: &Vec<(String, String, Option<RevisionId>, Option<RevisionId>)>,
     tags: Vec<(String, Option<RevisionId>)>,
     update_current: bool,
+    possible_transports: &mut Option<Vec<Transport>>,
 ) -> Result<(), BrzError> {
     let import = match vcs_type {
         janitor::vcs::VcsType::Git => import_branches_git,
@@ -308,6 +314,7 @@ pub fn import_branches(
         branches,
         tags,
         update_current,
+        possible_transports,
     )
 }
 
@@ -393,6 +400,7 @@ mod tests {
             )],
             vec![("tag".to_string(), Some(revid1.clone()))],
             false,
+            &mut None,
         )
         .unwrap();
         let target_branch_foo = breezyshim::branch::open(
@@ -450,6 +458,7 @@ mod tests {
             )],
             vec![("tag".to_string(), Some(revid1.clone()))],
             true,
+            &mut None,
         )
         .unwrap();
         let target_branch_foo = target.open_branch(Some("campaign/main")).unwrap();

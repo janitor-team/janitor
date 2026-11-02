@@ -747,6 +747,7 @@ pub fn run_worker(
         &result_branches,
         changer_result.tags(),
         false,
+        possible_transports,
     )
     .map_err(|e| push_error_to_worker_failure(e, vec!["result-push".to_string()]))?;
 
@@ -787,6 +788,7 @@ pub fn run_worker(
         &result_branches,
         changer_result.tags(),
         true,
+        possible_transports,
     )
     .map_err(|e| push_error_to_worker_failure(e, vec!["result-sym".to_owned()]))?;
 
