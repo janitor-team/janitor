@@ -40,6 +40,9 @@ committer: "Janitor Bot <janitor@jelmer.uk>"
 # Origin set in published archives
 origin: "janitor.debian.net"
 
+# Default bug tracker, shown as a "File a bug against <name>" button on
+# each run page in the cupboard. kind is gitlab, github or debian.
+# Optional, can be specified more than once.
 bugtracker {
   kind: gitlab
   url: "https://salsa.debian.org/jelmer/some-project"
@@ -62,6 +65,8 @@ distribution {
   lintian_suppress_tag: "source-nmu-has-incorrect-version-number"
   lintian_suppress_tag: "changelog-distribution-does-not-match-changes-file"
   lintian_suppress_tag: "distribution-and-changes-mismatch"
+  # Build command for campaigns whose base_distribution is this one. A
+  # campaign's debian_build build_command overrides it. Optional.
   build_command: "sbuild -Asv --no-clean-source"
   vendor: "debian"
   # Extra suites to add as apt sources when creating the sbuild chroot.
@@ -89,6 +94,8 @@ campaign {
     # Optional.
     # chroot: "lintian-fixes-amd64-sbuild"
   }
+  # Where to file bugs about this campaign, with its own button after the
+  # default one. Optional, can be specified more than once.
   bugtracker {
     kind: debian
     url: "https://bugs.debian.org/lintian-brush"
