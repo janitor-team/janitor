@@ -54,7 +54,7 @@ impl PubSubMessage for ArchiveEvent {
 /// targets, or messages missing the campaign field or carrying an
 /// invalid campaign name.
 pub fn extract_debian_success_campaign(payload: &str) -> Option<Campaign> {
-    let parsed: serde_json::Value = match serde_json::from_str(payload) {
+    let parsed: RunnerResult = match serde_json::from_str(payload) {
         Ok(v) => v,
         Err(e) => {
             debug!("Ignoring malformed runner result JSON: {}", e);
@@ -62,14 +62,11 @@ pub fn extract_debian_success_campaign(payload: &str) -> Option<Campaign> {
         }
     };
 
-    if parsed.get("code").and_then(|v| v.as_str()) != Some("success") {
+    if parsed.code.as_deref() != Some("success") {
         return None;
     }
 
-    let target_name = parsed
-        .get("target")
-        .and_then(|t| t.get("name"))
-        .and_then(|n| n.as_str());
+    let target_name = parsed.target.as_ref().and_then(|t| t.name.as_deref());
     if target_name != Some("debian") {
         debug!(
             "Ignoring non-debian build result (target: {:?})",
@@ -78,14 +75,28 @@ pub fn extract_debian_success_campaign(payload: &str) -> Option<Campaign> {
         return None;
     }
 
-    let name = parsed.get("campaign").and_then(|c| c.as_str())?;
-    match Campaign::new(name) {
+    let name = parsed.campaign?;
+    match Campaign::new(&name) {
         Ok(campaign) => Some(campaign),
         Err(e) => {
             warn!("Ignoring runner result: {}", e);
             None
         }
     }
+}
+
+/// The fields of a runner `result` message consulted by
+/// [`extract_debian_success_campaign`].
+#[derive(Debug, Deserialize)]
+struct RunnerResult {
+    code: Option<String>,
+    target: Option<RunnerResultTarget>,
+    campaign: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RunnerResultTarget {
+    name: Option<String>,
 }
 
 impl ArchiveEvent {
