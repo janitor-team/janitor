@@ -97,6 +97,9 @@ message Campaign {
 
   optional bool default_empty = 11 [default=false];
 
+  // Only offer to publish or merge the changes of successful runs.
+  optional bool publish_successful_only = 12 [default=false];
+
   oneof build {
     DebianBuild debian_build = 3;
     GenericBuild generic_build = 4;
