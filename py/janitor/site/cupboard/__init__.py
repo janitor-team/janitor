@@ -484,26 +484,29 @@ async def handle_run_redirect(request):
         )
 
 
-@routes.get("/cupboard/c/{codebase}/", name="cupboard-codebase-redirect")
-async def handle_codebase_redirect(request):
-    codebase = request.match_info["codebase"]
+async def generate_codebase(conn, codebase):
+    row = await conn.fetchrow(
+        "SELECT name, url, web_url FROM codebase WHERE name = $1", codebase
+    )
+    if row is None:
+        raise web.HTTPNotFound(text=f"No such codebase: {codebase}")
+    candidates = await conn.fetch(
+        "SELECT DISTINCT suite AS campaign FROM candidate WHERE codebase = $1 ORDER BY suite",
+        codebase,
+    )
+    runs = await conn.fetch(
+        "SELECT id, suite AS campaign, finish_time, result_code, failure_transient "
+        "FROM run WHERE codebase = $1 ORDER BY finish_time DESC",
+        codebase,
+    )
+    return {"codebase": row, "candidates": candidates, "runs": runs}
 
+
+@routes.get("/cupboard/c/{codebase}/", name="cupboard-codebase")
+@html_template("cupboard/codebase.html", headers={"Vary": "Cookie"})
+async def handle_codebase(request):
     async with request.app["pool"].acquire() as conn:
-        run_id = await conn.fetchval(
-            "SELECT id FROM run WHERE codebase = $1 "
-            "ORDER BY finish_time DESC NULLS LAST, start_time DESC LIMIT 1",
-            codebase,
-        )
-        if run_id is None:
-            raise web.HTTPNotFound(text=f"No runs yet for codebase: {codebase}")
-        # A temporary redirect, not permanent - the most recent run for a
-        # codebase changes every time a new one completes, so this target
-        # must never be cached indefinitely by a client.
-        raise web.HTTPFound(
-            location=request.app.router["cupboard-run"].url_for(
-                codebase=codebase, run_id=run_id
-            )
-        )
+        return await generate_codebase(conn, request.match_info["codebase"])
 
 
 @routes.get("/cupboard/merge-proposals", name="cupboard-merge-proposals")
