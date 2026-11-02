@@ -2801,7 +2801,7 @@ pub async fn publish_from_policy(
     // fact that there's no real PublishOneResult and fill the
     // store_publish fields with our known locals.
     let (code, description, publish_result_opt) = match publish_outcome {
-        Ok(r) => ("success".to_string(), "Success".to_string(), Some(r)),
+        Ok(r) => ("success".to_string(), None, Some(r)),
         Err(PublishError::BranchBusy(url)) => {
             log::info!("Branch {} was busy", url);
             return Ok(None);
@@ -2814,7 +2814,7 @@ pub async fn publish_from_policy(
             } else {
                 log::info!("Failed({}): {}", code, description);
             }
-            (code, description, None)
+            (code, Some(description), None)
         }
         Err(other) => return Err(Box::new(other)),
     };
@@ -2865,7 +2865,7 @@ pub async fn publish_from_policy(
         role,
         effective_mode,
         &code,
-        &description,
+        description.as_deref(),
         proposal_url_for_store.as_ref(),
         Some(&publish_id),
         requester,
@@ -3082,7 +3082,7 @@ pub async fn publish_and_store(
                 role,
                 mode,
                 &code,
-                &description,
+                Some(&description),
                 None, // merge_proposal_url
                 Some(publish_id),
                 requester,
@@ -3135,7 +3135,7 @@ pub async fn publish_and_store(
                 role,
                 effective_mode,
                 "success",
-                "Success",
+                None,
                 publish_result.proposal_url(),
                 Some(publish_id),
                 requester,
@@ -4152,7 +4152,7 @@ async fn check_existing_mp(
                     &mp_run.role,
                     Mode::Propose,
                     "success",
-                    &description,
+                    Some(&description),
                     publish_result.proposal_url(),
                     Some(&publish_id),
                     Some("publisher (regular refresh)"),
@@ -4251,7 +4251,7 @@ async fn check_existing_mp(
                     &mp_run.role,
                     Mode::Propose,
                     &code,
-                    &description,
+                    Some(&description),
                     Some(&mp_url),
                     Some(&publish_id),
                     Some("publisher (regular refresh)"),

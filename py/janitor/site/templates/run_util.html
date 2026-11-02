@@ -271,15 +271,17 @@ cd {{ codebase }}
             Failed to create merge proposal: <span class="publish-failure">{{ code }}</span>
         {% endif %}
     {% endif %}
-    (
-    {%- if '\n' in description -%}
-        <pre>{{ description }}</pre>
-    {%- else -%}
-        {%- set d = description[:-1] if description.endswith('.') else description -%}
-        {%- set w = d.split(' ')[0][1:] -%}
-        {{ d[:1]|lower ~ d[1:] if w == w|lower else d }}
-    {%- endif -%}
-    )
+    {% if description %}
+        (
+        {%- if '\n' in description -%}
+            <pre>{{ description }}</pre>
+        {%- else -%}
+            {%- set d = description[:-1] if description.endswith('.') else description -%}
+            {%- set w = d.split(' ')[0][1:] -%}
+            {{ d[:1]|lower ~ d[1:] if w == w|lower else d }}
+        {%- endif -%}
+        )
+    {% endif %}
 {% endmacro %}
 {% macro describe_publish_policy(publish_policy) %}
     {% for pp in publish_policy %}
