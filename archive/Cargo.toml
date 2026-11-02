@@ -23,7 +23,7 @@ async-stream = "0.3"
 async-trait = "0.1"
 num_cpus = "1.0"
 sqlx = { workspace = true, features = ["postgres", "chrono", "uuid", "migrate", "macros", "runtime-tokio", "tls-native-tls"] }
-janitor = { path = ".." }
+janitor = { path = "..", default-features = false, features = ["gcp", "gcs", "debian"] }
 # Reading .deb file trees in-process (for Contents-<arch>): outer
 # ar archive, inner data.tar.{,gz,bz2,xz,zst}.
 ar = "0.9"
@@ -48,6 +48,6 @@ opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace"] }
 
 [dev-dependencies]
-janitor = { path = "..", features = ["testing"] }
+janitor = { path = "..", default-features = false, features = ["testing"] }
 serial_test = "3"
 tempfile = "3"

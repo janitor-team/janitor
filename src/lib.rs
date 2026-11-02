@@ -23,11 +23,13 @@ pub mod schedule;
 pub mod schema;
 pub mod security;
 pub mod shared_config;
+#[cfg(feature = "breezy")]
 pub mod state;
 #[cfg(feature = "testing")]
 pub mod test_utils;
 pub mod tracing;
 pub mod utils;
+#[cfg(feature = "breezy")]
 pub mod vcs;
 pub mod worker_auth;
 

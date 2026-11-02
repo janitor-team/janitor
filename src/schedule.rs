@@ -1,6 +1,7 @@
 use crate::publish::Mode;
 use crate::queue::Queue;
 use crate::{Campaign, ChangeSetId, CodebaseName};
+#[cfg(feature = "breezy")]
 use breezyshim::RevisionId;
 use chrono::Duration;
 use debian_control::lossless::relations::{Relation, Relations};
@@ -627,6 +628,7 @@ async fn deps_satisfied(
     Ok(true)
 }
 
+#[cfg(feature = "breezy")]
 pub async fn do_schedule_control(
     conn: &PgPool,
     codebase: &CodebaseName,

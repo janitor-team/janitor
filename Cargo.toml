@@ -11,7 +11,7 @@ build = "build.rs"
 include = ["src/**/*", "schema/state.sql", "schema/debian/debian.sql", "README.md"]
 
 [dependencies]
-breezyshim = { workspace = true, features = ["sqlx"] }
+breezyshim = { workspace = true, features = ["sqlx"], optional = true }
 chrono = { workspace = true, features = ["serde"] }
 env_logger = { workspace = true }
 log = { workspace = true }
@@ -21,7 +21,7 @@ serde_json = { workspace = true }
 stackdriver_logger = { version = "0.8", optional = true }
 url = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive", "env"] }
-silver-platter = { workspace = true }
+silver-platter = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["fs", "process", "rt-multi-thread", "sync"] }
 regex = "1.11.0"
 lazy-regex = "3.2.0"
@@ -120,7 +120,8 @@ edition = "2021"
 version = "0.1.0"
 
 [features]
-default = ["gcp", "gcs", "debian"]
+default = ["gcp", "gcs", "debian", "breezy"]
+breezy = ["dep:breezyshim", "dep:silver-platter"]
 debian = ["dep:debversion"]
 gcp = ["stackdriver_logger", "gcs"]
 gcs = ["object_store/gcp"]

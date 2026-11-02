@@ -1,5 +1,6 @@
 //! This module contains the API definitions for the various janitor components.
 pub mod runner;
+#[cfg(feature = "breezy")]
 pub mod worker;
 
 use serde::{Deserialize, Serialize};

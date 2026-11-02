@@ -43,6 +43,7 @@ impl std::str::FromStr for MergeProposalStatus {
     }
 }
 
+#[cfg(feature = "breezy")]
 impl From<breezyshim::forge::MergeProposalStatus> for MergeProposalStatus {
     fn from(status: breezyshim::forge::MergeProposalStatus) -> Self {
         match status {
@@ -98,6 +99,7 @@ impl std::str::FromStr for Mode {
     }
 }
 
+#[cfg(feature = "breezy")]
 impl TryFrom<Mode> for silver_platter::Mode {
     type Error = String;
 
@@ -224,6 +226,7 @@ mod tests {
         assert!("invalid".parse::<MergeProposalStatus>().is_err());
     }
 
+    #[cfg(feature = "breezy")]
     #[test]
     fn test_mode_try_into_silver_platter() {
         assert_eq!(
@@ -247,6 +250,7 @@ mod tests {
         assert!(silver_platter::Mode::try_from(Mode::Bts).is_err());
     }
 
+    #[cfg(feature = "breezy")]
     #[test]
     fn test_merge_proposal_status_from_breezyshim() {
         assert_eq!(
