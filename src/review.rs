@@ -1,7 +1,7 @@
 //! Review management functionality for the Janitor platform
 
 use crate::api::runner::UpdateRunRequest;
-use crate::api::RunPublishStatus;
+use crate::api::PublishStatus;
 use crate::error::JanitorError;
 use crate::schedule::do_schedule;
 use crate::{Campaign, CodebaseName, RunId};
@@ -118,17 +118,15 @@ pub async fn store_review(
     // Update publish status if reviewer has QA privileges and didn't abstain
     if actual_verdict != ReviewVerdict::Abstained && is_qa_reviewer {
         let publish_status = match &actual_verdict {
-            ReviewVerdict::Approved => RunPublishStatus::Approved,
-            ReviewVerdict::Rejected => RunPublishStatus::Rejected,
+            ReviewVerdict::Approved => PublishStatus::Approved,
+            ReviewVerdict::Rejected => PublishStatus::Rejected,
             _ => unreachable!(),
         };
 
         // Call runner API to update publish status
         let response = http_client
             .post(runner_url.join(&format!("runs/{}", run_id))?)
-            .json(&UpdateRunRequest {
-                publish_status: publish_status.clone(),
-            })
+            .json(&UpdateRunRequest { publish_status })
             .send()
             .await
             .map_err(|e| JanitorError::Http(e))?;

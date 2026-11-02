@@ -279,10 +279,6 @@ pub struct ReasonDetailResponse {
     pub detail: String,
 }
 
-/// Empty object response: `{}`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EmptyResponse {}
-
 /// Response for `GET /queue/position`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueuePositionEta {
@@ -437,21 +433,7 @@ pub struct RunSummary {
     /// Campaign name.
     pub campaign: Campaign,
     /// Publish status of the run.
-    pub publish_status: String,
-}
-
-/// Response for `POST /runs/{id}`, also published on the
-/// `publish-status` channel.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PublishStatusUpdate {
-    /// Run ID.
-    pub run_id: RunId,
-    /// New publish status.
-    pub publish_status: String,
-    /// Codebase name.
-    pub codebase: CodebaseName,
-    /// Campaign name.
-    pub campaign: Campaign,
+    pub publish_status: janitor::api::PublishStatus,
 }
 
 /// Response for `GET /active-runs/+peek`.
@@ -621,19 +603,7 @@ pub struct ResumeConsistencyResponse {
 }
 
 /// Response for a successful `POST /active-runs/{id}/finish`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FinishResponse {
-    /// Run ID.
-    pub id: RunId,
-    /// Uploaded filenames.
-    pub filenames: Vec<String>,
-    /// Log filenames.
-    pub logs: Vec<String>,
-    /// Artifact names; null when storing the artifacts failed.
-    pub artifacts: Option<Vec<String>>,
-    /// Result information.
-    pub result: JanitorResultJson,
-}
+pub type FinishResponse = janitor::api::runner::FinishResponse<JanitorResultJson>;
 
 /// 409 response for a `POST /active-runs/{id}/finish` of a run that was
 /// already stored.
@@ -887,13 +857,6 @@ pub struct BackchannelRequest {
     pub url: Option<String>,
     /// Jenkins metadata.
     pub jenkins: Option<serde_json::Value>,
-}
-
-/// Request for updating run publish status.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UpdateRunRequest {
-    /// New publish status.
-    pub publish_status: String,
 }
 
 /// Request for resume information.

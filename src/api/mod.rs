@@ -4,24 +4,19 @@ pub mod worker;
 
 use serde::{Deserialize, Serialize};
 
+/// Response with an empty JSON object as its body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmptyResponse {}
+
 /// The publish status of a run.
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub enum RunPublishStatus {
-    #[serde(rename = "unknown")]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, sqlx::Type)]
+#[serde(rename_all = "kebab-case")]
+#[sqlx(type_name = "publish_status", rename_all = "kebab-case")]
+pub enum PublishStatus {
     Unknown,
-
-    #[serde(rename = "blocked")]
     Blocked,
-
-    #[serde(rename = "needs-manual-review")]
     NeedsManualReview,
-
-    #[serde(rename = "rejected")]
     Rejected,
-
-    #[serde(rename = "approved")]
     Approved,
-
-    #[serde(rename = "ignored")]
     Ignored,
 }

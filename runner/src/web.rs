@@ -1,14 +1,14 @@
 use crate::api_types::{
     AdminWorkerInfo, AssignRequest, AssignWorkerError, AssignmentBody, AssignmentBranch,
     AssignmentTargetRepository, BuildAssignment, BuildAssignmentConfig, CandidateUpload,
-    CleanupRunsResponse, CurrentStageResponse, DebianBuildAssignment, EmptyResponse, ErrorResponse,
+    CleanupRunsResponse, CurrentStageResponse, DebianBuildAssignment, ErrorResponse,
     FinishConflictResponse, FinishResponse, GenericBuildAssignment, MessageResponse, PeekResponse,
-    PublicRunHealth, PublicWorkerInfo, PublishStatusUpdate, QueueEntry, QueuePositionEta,
-    QueueStatusResponse, RateLimitedResponse, ReasonDetailResponse, ReasonResponse,
-    ResumeAssignment, ResumeChainResponse, ResumeCheckResponse, ResumeConsistencyResponse,
-    ResumeDescendantsResponse, ResumeInfoRequest, RunSummary, RunnerStatus, ScheduleControlRequest,
-    ScheduleRequest, ScheduleResponse, ScheduledCandidate, ScheduledRun, UpdateRunRequest,
-    UploadCandidatesResponse, WatchdogHealthResponse, WorkerCounts, WorkerListResponse,
+    PublicRunHealth, PublicWorkerInfo, QueueEntry, QueuePositionEta, QueueStatusResponse,
+    RateLimitedResponse, ReasonDetailResponse, ReasonResponse, ResumeAssignment,
+    ResumeChainResponse, ResumeCheckResponse, ResumeConsistencyResponse, ResumeDescendantsResponse,
+    ResumeInfoRequest, RunSummary, RunnerStatus, ScheduleControlRequest, ScheduleRequest,
+    ScheduleResponse, ScheduledCandidate, ScheduledRun, UploadCandidatesResponse,
+    WatchdogHealthResponse, WorkerCounts, WorkerListResponse,
 };
 use crate::{
     get_builder, metrics::MetricsCollector, ActiveRun, AppState, Backchannel, BuilderResult,
@@ -23,6 +23,8 @@ use axum::{
     Extension, Json, Router,
 };
 use chrono::Utc;
+use janitor::api::runner::{PublishStatusUpdate, UpdateRunRequest};
+use janitor::api::EmptyResponse;
 use janitor::{Campaign, ChangeSetId, CodebaseName, RunId};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -1204,8 +1206,8 @@ async fn upload_candidates(
 /// publish_status}` triple. Only those three fields are returned,
 /// not the entire run row.
 async fn get_run(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> Response {
-    let row: Result<Option<(CodebaseName, Campaign, String)>, _> =
-        sqlx::query_as("SELECT codebase, suite, publish_status::text FROM run WHERE id = $1")
+    let row: Result<Option<(CodebaseName, Campaign, janitor::api::PublishStatus)>, _> =
+        sqlx::query_as("SELECT codebase, suite, publish_status FROM run WHERE id = $1")
             .bind(&id)
             .fetch_optional(state.database.pool())
             .await;
@@ -1235,7 +1237,7 @@ async fn update_run(
 ) -> Response {
     match state
         .database
-        .update_run_publish_status(&id, &request.publish_status)
+        .update_run_publish_status(&id, request.publish_status)
         .await
     {
         Ok(Some((run_id, codebase, suite))) => {

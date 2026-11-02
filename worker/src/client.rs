@@ -1,5 +1,6 @@
 use crate::get_build_arch;
 use backoff::ExponentialBackoff;
+use janitor::api::runner::FinishResponse;
 use janitor::api::worker::{Assignment, Metadata};
 use janitor::{Campaign, CodebaseName, RunId};
 use reqwest::multipart::{Form, Part};
@@ -31,19 +32,6 @@ struct AssignRequest<'a> {
 #[derive(Debug, Serialize, Deserialize)]
 struct ReasonResponse {
     reason: Option<String>,
-}
-
-/// Response to uploading the results of a run.
-#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
-pub struct FinishResponse {
-    pub id: RunId,
-    /// All files the runner received.
-    pub filenames: Vec<String>,
-    pub logs: Vec<String>,
-    /// Stored artifact names; null when storing the artifacts failed.
-    pub artifacts: Option<Vec<String>>,
-    /// The stored run result, whose shape is up to the runner.
-    pub result: serde_json::Value,
 }
 
 #[derive(Debug)]

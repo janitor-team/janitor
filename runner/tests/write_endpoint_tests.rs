@@ -9,14 +9,16 @@ use axum::body::{to_bytes, Body};
 use axum::http::{Method, Request, StatusCode};
 use chrono::Utc;
 use futures::TryStreamExt;
+use janitor::api::runner::{PublishStatusUpdate, UpdateRunRequest};
+use janitor::api::PublishStatus;
 use janitor::queue::VcsInfo;
 use janitor_runner::api_types::{
     AssignRequest, AssignmentBody, BuildAssignmentConfig, CandidateUpload, CleanupRunsResponse,
     CurrentStageResponse, ErrorResponse, FinishResponse, GenericBuildAssignment, PeekResponse,
-    PublicWorkerInfo, PublishStatusUpdate, QueueEntry, QueueStatusResponse, ReasonResponse,
-    ResumeChainResponse, ResumeCheckResponse, ResumeConsistencyResponse, ResumeInfoRequest,
-    RunSummary, RunnerStatus, ScheduleRequest, ScheduleResponse, UpdateRunRequest,
-    UploadCandidatesResponse, WatchdogHealthResponse, WorkerCounts, WorkerListResponse,
+    PublicWorkerInfo, QueueEntry, QueueStatusResponse, ReasonResponse, ResumeChainResponse,
+    ResumeCheckResponse, ResumeConsistencyResponse, ResumeInfoRequest, RunSummary, RunnerStatus,
+    ScheduleRequest, ScheduleResponse, UploadCandidatesResponse, WatchdogHealthResponse,
+    WorkerCounts, WorkerListResponse,
 };
 use janitor_runner::database::CodebaseUpload;
 use janitor_runner::{test_utils, ActiveRun, ActiveRunJson, AppState, Backchannel, HealthReport};
@@ -251,7 +253,7 @@ async fn post_update_run_missing_returns_404() {
     };
 
     let body = UpdateRunRequest {
-        publish_status: "approved".to_string(),
+        publish_status: PublishStatus::Approved,
     };
     let req = Request::builder()
         .method(Method::POST)
@@ -306,7 +308,7 @@ async fn post_update_run_persists_publish_status() {
     .expect("insert run");
 
     let body = UpdateRunRequest {
-        publish_status: "approved".to_string(),
+        publish_status: PublishStatus::Approved,
     };
     let req = Request::builder()
         .method(Method::POST)
@@ -321,7 +323,7 @@ async fn post_update_run_persists_publish_status() {
         get_body::<PublishStatusUpdate>(response).await,
         PublishStatusUpdate {
             run_id: janitor::RunId::new("run-upd-1").unwrap(),
-            publish_status: "approved".to_string(),
+            publish_status: PublishStatus::Approved,
             codebase: janitor::CodebaseName::new("update-run-codebase").unwrap(),
             campaign: janitor::Campaign::new("test-campaign").unwrap(),
         }
@@ -519,8 +521,14 @@ async fn get_run_returns_codebase_campaign_publish_status() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let body: RunSummary = get_body(response).await;
-    assert_eq!(body.codebase, "get-run-cb");
-    assert_eq!(body.campaign, "test-campaign");
+    assert_eq!(
+        body,
+        RunSummary {
+            codebase: janitor::CodebaseName::new("get-run-cb").unwrap(),
+            campaign: janitor::Campaign::new("test-campaign").unwrap(),
+            publish_status: PublishStatus::Unknown,
+        }
+    );
 }
 
 /// `GET /runs/{id}` on an unknown run returns 404 with the
@@ -1891,7 +1899,7 @@ async fn post_update_run_publishes_publish_status_event() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let body = UpdateRunRequest {
-        publish_status: "rejected".to_string(),
+        publish_status: PublishStatus::Rejected,
     };
     let req = Request::builder()
         .method(Method::POST)
@@ -1911,7 +1919,7 @@ async fn post_update_run_publishes_publish_status_event() {
         parsed,
         PublishStatusUpdate {
             run_id: janitor::RunId::new("run-pubsub-1").unwrap(),
-            publish_status: "rejected".to_string(),
+            publish_status: PublishStatus::Rejected,
             codebase: janitor::CodebaseName::new("pubsub-cb").unwrap(),
             campaign: janitor::Campaign::new("test-campaign").unwrap(),
         }

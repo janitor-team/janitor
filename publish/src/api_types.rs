@@ -341,7 +341,3 @@ impl ErrorResponse {
         Self::new("Internal server error").with_code("internal_error")
     }
 }
-
-/// Response with an empty JSON object as its body.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EmptyResponse {}

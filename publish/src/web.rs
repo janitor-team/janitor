@@ -1,4 +1,4 @@
-use crate::api_types::{EmptyResponse, ErrorResponse, NotFoundResponse, SuccessWithUrlResponse};
+use crate::api_types::{ErrorResponse, NotFoundResponse, SuccessWithUrlResponse};
 use crate::health;
 use crate::AppState;
 use axum::extract::{Path, Query, State};
@@ -7,6 +7,7 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{delete, get, post, put};
 use axum::Router;
 use breezyshim::error::Error as BrzError;
+use janitor::api::EmptyResponse;
 use janitor::{Campaign, ChangeSetId, CodebaseName, PublishId, RunId};
 use log::error;
 use sequoia_openpgp::armor;

@@ -589,11 +589,10 @@ INSERT INTO run (
     pub async fn update_run_publish_status(
         &self,
         run_id: &RunId,
-        publish_status: &str,
+        publish_status: janitor::api::PublishStatus,
     ) -> Result<Option<(RunId, CodebaseName, Campaign)>, sqlx::Error> {
-        // `publish_status` is a Postgres ENUM and `suite` is a custom
-        // domain -- cast both explicitly so sqlx's text-based encode
-        // and decode paths succeed.
+        // `suite` is a custom domain -- cast it explicitly so sqlx's
+        // text-based decode path succeeds.
         #[derive(sqlx::FromRow)]
         struct UpdatedRow {
             id: RunId,
@@ -601,7 +600,7 @@ INSERT INTO run (
             suite: Campaign,
         }
         let row: Option<UpdatedRow> = sqlx::query_as(
-            "UPDATE run SET publish_status = $2::publish_status \
+            "UPDATE run SET publish_status = $2 \
              WHERE id = $1 \
              RETURNING id, codebase, suite::text AS suite",
         )
