@@ -149,7 +149,18 @@ async def test_reprocess_logs_requires_admin(aiohttp_client, db, user):
     client = await create_client(
         aiohttp_client, db, user=user, config=ADMIN_GROUP_CONFIG
     )
-    resp = await client.get("/cupboard/reprocess-logs")
+    resp = await client.get(
+        "/cupboard/reprocess-logs",
+        headers={"Sec-Fetch-Mode": "navigate"},
+        allow_redirects=False,
+    )
+    if user is None:
+        page = client.make_url("/cupboard/reprocess-logs")
+        assert resp.status == 302
+        assert resp.headers["Location"] == f"/login?url={page}"
+    else:
+        assert resp.status == 401
+    resp = await client.get("/cupboard/reprocess-logs", allow_redirects=False)
     assert resp.status == 401
 
 
