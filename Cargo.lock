@@ -3416,6 +3416,7 @@ dependencies = [
  "janitor-service",
  "janitor-types",
  "libc",
+ "lru",
  "metrics",
  "nix",
  "pyo3",
