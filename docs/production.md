@@ -130,6 +130,30 @@ Run the script again after adding a campaign, and at least once a week:
 `sbuild` stops using a tarball older than `$unshare_mmdebstrap_max_age` (one
 week by default).
 
+## Publishing limits
+
+Every `--interval` seconds (7200 by default), `janitor-publish` publishes
+the runs that are ready and checks the merge proposals it has opened. After it
+starts, it publishes only once a check has gone through all merge proposals.
+It stops publishing if no check has done so for a week. These flags limit
+what it does:
+
+- `--max-mps-per-bucket <n>`: keep at most n merge proposals open per rate
+  limit bucket, which a publish policy sets with `rate_limit_bucket`.
+- `--modify-mp-limit <n>`: once a check has updated more than n merge
+  proposals, it only reads the rest; a later check updates them.
+- `--unexpected-mp-limit <n>`: stop a check after more than n unexpected
+  errors; a stopped check has not gone through all merge proposals.
+- `--require-binary-diff`: publish a run in the `propose` and
+  `attempt-push` modes only once the diff of its built packages against its
+  control run is available. Publishing asked for on the site does not wait
+  for the diff.
+- `--no-auto-publish`: skip the timed publishing of ready runs. Merge
+  proposals are still checked, and a run is still published as soon as it
+  is approved.
+- `--once`: publish the ready runs a single time, without waiting for a
+  check, then exit.
+
 ## Registering workers
 
 Workers authenticate to the site with a name and password stored in the `worker`
