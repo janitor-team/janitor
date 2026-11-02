@@ -348,7 +348,7 @@ pub async fn publish_pending_ready(
     );
 
     // Unix seconds since epoch.
-    ::metrics::gauge!(crate::metrics::LAST_PUBLISH_PENDING_SUCCESS)
+    ::metrics::gauge!(crate::metrics::LAST_PUBLISH_PENDING_SUCCESS_TIMESTAMP_SECONDS)
         .set(chrono::Utc::now().timestamp() as f64);
 
     if published_count > 0 {
