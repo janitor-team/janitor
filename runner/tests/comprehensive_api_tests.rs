@@ -153,6 +153,34 @@ async fn test_queue_position_without_active_runs() {
     );
 }
 
+/// A queue item with no `estimated_duration` has no wait time.
+#[tokio::test]
+async fn test_queue_position_without_estimated_duration() {
+    require_test_app!(app, state);
+    let pool = state.database.pool().clone();
+    insert_codebase(&pool, "no-estimate-cb").await;
+    sqlx::query(
+        "INSERT INTO queue (codebase, suite, command, estimated_duration)
+         VALUES ('no-estimate-cb', 'test-campaign', 'true', NULL)",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert queue row");
+
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri("/queue/position?codebase=no-estimate-cb&campaign=test-campaign")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        get_json(response).await,
+        json!({"position": 1, "wait_time": null, "cumulative_wait_time": null})
+    );
+}
+
 /// `POST /schedule-control` takes the same body as Python's handler.
 #[tokio::test]
 async fn test_schedule_control_compatibility() {

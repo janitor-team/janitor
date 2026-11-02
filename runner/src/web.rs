@@ -243,7 +243,8 @@ async fn queue_position(
     let active_count = state.active_runs.len().await as i64;
     let cumulative_wait_seconds = eta
         .as_ref()
-        .map(|e| e.wait_time.microseconds as f64 / 1_000_000.0);
+        .and_then(|e| e.wait_time.as_ref())
+        .map(|w| w.microseconds as f64 / 1_000_000.0);
     let per_run_wait_seconds = match (cumulative_wait_seconds, active_count) {
         (Some(total), n) if n > 0 => Some(total / n as f64),
         _ => None,
@@ -496,7 +497,7 @@ async fn schedule(
                 .get_queue_position(&codebase, &campaign)
                 .await
             {
-                Ok(Some((pos, wait))) => (Some(pos), Some(wait.as_secs_f64())),
+                Ok(Some((pos, wait))) => (Some(pos), wait.map(|w| w.as_secs_f64())),
                 _ => (None, None),
             };
             (
