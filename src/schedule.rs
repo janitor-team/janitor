@@ -15,6 +15,9 @@ pub const FIRST_RUN_BONUS: f64 = 100.0;
 pub const DEFAULT_ESTIMATED_DURATION: i64 = 15;
 pub const DEFAULT_SCHEDULE_OFFSET: f64 = -1.0;
 
+// Runs back per halving of a run's weight in the success estimate.
+pub const SUCCESS_WEIGHT_HALVING_RUNS: usize = 5;
+
 fn publish_mode_value(mode: &Mode) -> usize {
     match mode {
         Mode::Skip => 0,
@@ -186,9 +189,9 @@ async fn estimate_success_probability_and_duration(
     campaign: &Campaign,
     context: Option<&str>,
 ) -> Result<(f64, chrono::Duration, usize), sqlx::Error> {
-    // TODO(jelmer): Bias this towards recent runs?
     let mut total = 0;
-    let mut success = 0;
+    let mut weighted_total = 0.0;
+    let mut weighted_success = 0.0;
     let mut same_context_multiplier = if context.is_none() { 0.5 } else { 1.0 };
     let mut durations = vec![];
     #[derive(sqlx::FromRow)]
@@ -234,9 +237,11 @@ ORDER BY start_time DESC
         }
 
         durations.push(total_seconds(interval_to_duration(&run.duration)));
+        let weight = 0.5_f64.powi((total / SUCCESS_WEIGHT_HALVING_RUNS) as i32);
         total += 1;
+        weighted_total += weight;
         if run.result_code == "success" {
-            success += 1;
+            weighted_success += weight;
         }
         let mut same_context = context != Some("")
             && context.is_some()
@@ -270,7 +275,7 @@ ORDER BY start_time DESC
                     .collect()
             };
             if deps_satisfied(conn, campaign, groups).await? {
-                success += 1;
+                weighted_success += weight;
                 same_context = false;
             }
         }
@@ -301,7 +306,7 @@ ORDER BY start_time DESC
     };
 
     Ok((
-        ((success * 10 + 1) as f64 / (total * 10 + 1) as f64 * same_context_multiplier),
+        ((weighted_success * 10.0 + 1.0) / (weighted_total * 10.0 + 1.0) * same_context_multiplier),
         estimated_duration,
         total,
     ))
@@ -968,6 +973,40 @@ mod tests {
         assert_eq!(total, 1);
         assert_eq!(duration, Duration::seconds(60));
         assert_eq!(probability, 0.5);
+    }
+
+    #[cfg(feature = "testing")]
+    #[tokio::test]
+    async fn test_estimate_success_probability_favours_recent_runs() {
+        let Some(db) = setup_run_database(&CodebaseName::new("cb").unwrap()).await else {
+            return;
+        };
+        let pool = db.pool();
+        sqlx::query(
+            "INSERT INTO run (id, codebase, suite, change_set, logfilenames, result_code,
+                              start_time, finish_time)
+             SELECT 'r' || i, 'cb', 'lintian-fixes', 'cs', '{}',
+                    CASE WHEN i > 5 THEN 'success' ELSE 'some-failure' END,
+                    '2024-01-01'::timestamp + i * interval '1 day',
+                    '2024-01-01'::timestamp + i * interval '1 day' + interval '1 minute'
+             FROM generate_series(1, 10) AS i",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let (probability, duration, total) = estimate_success_probability_and_duration(
+            pool,
+            &CodebaseName::new("cb").unwrap(),
+            &Campaign::new("lintian-fixes").unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        // 5 recent successes at weight 1 and 5 older failures at weight 0.5; flat is 51/101.
+        assert_eq!(probability, 51.0 / 76.0 * 0.5);
+        assert_eq!(duration, Duration::seconds(60));
+        assert_eq!(total, 10);
     }
 }
 
