@@ -12,7 +12,7 @@ $ sudo apt install \
 $ make build-all
 ```
 
-## Database
+## PostgreSQL
 
 The services share a single PostgreSQL database. Before starting anything,
 load the schema:
@@ -36,6 +36,15 @@ give any worker one. `janitor-worker` looks for them in this order:
 `--credentials <file>` (a JSON file with `login`/`password`) or the
 `WORKER_NAME`/`WORKER_PASSWORD` environment variables. Passwords embedded in
 `--base-url` are rejected, since the URL ends up in logs.
+
+## Redis
+
+Janitor needs a running Redis server. Set `redis_location` in
+`janitor.conf`:
+
+```
+redis_location: "redis://localhost"
+```
 
 ## Forge credentials
 
