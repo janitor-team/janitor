@@ -385,3 +385,41 @@ async def test_review_without_oauth2_provider_is_not_qa_review(aiohttp_client, d
     async with db.acquire() as conn:
         rows = await conn.fetch("SELECT run_id, reviewer, verdict FROM review")
     assert [tuple(row) for row in rows] == [("r1", "alice@example.com", "approved")]
+
+
+async def test_run_logs(aiohttp_client, db, tmp_path):
+    async with db.acquire() as conn:
+        await _insert_codebase(conn, "foo")
+        now = utcnow()
+        await _insert_run(
+            conn,
+            run_id="r1",
+            codebase="foo",
+            start_time=now - timedelta(hours=1),
+            finish_time=now,
+        )
+        await conn.execute(
+            "UPDATE run SET logfilenames = ARRAY['build.log', 'worker.log']"
+        )
+    logs = tmp_path / "logs"
+    (logs / "foo" / "r1").mkdir(parents=True)
+    log = logs / "foo" / "r1" / "worker.log"
+    log.write_text("Opening branch\n")
+    client = await create_client(aiohttp_client, db, config=f'logs_location: "{logs}"')
+
+    resp = await client.get("/run/r1/logs")
+    assert await resp.json() == ["build.log", "worker.log"]
+    resp = await client.get("/run/r1/logs/worker.log")
+    assert resp.content_type == "text/plain"
+    assert await resp.text() == "Opening branch\n"
+    for path in [
+        "/run/r1/logs/build.log",
+        "/run/r1/logs/x.log",
+        "/run/r2/logs",
+        "/run/r2/logs/worker.log",
+    ]:
+        resp = await client.get(path)
+        assert resp.status == 404
+    log.chmod(0)
+    resp = await client.get("/run/r1/logs/worker.log")
+    assert resp.status == 502
