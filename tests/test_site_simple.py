@@ -16,6 +16,7 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
 import asyncio
+import base64
 import json
 import tempfile
 
@@ -480,3 +481,68 @@ async def test_logout_without_session_cookie_still_redirects(
     resp = await client.post("/logout", allow_redirects=False)
     assert resp.status == 302
     assert resp.headers["Location"] == "/"
+
+
+async def _keys_client(
+    aiohttp_client,
+    aiohttp_server,
+    database_location,
+    publisher_keys=None,
+    archiver_keys=None,
+):
+    """A site client whose publisher and archiver report the given keys."""
+
+    async def handle_credentials(request):
+        return web.json_response(
+            {"ssh_keys": [], "pgp_keys": publisher_keys, "hosting": []}
+        )
+
+    async def handle_pgp_keys(request):
+        return web.json_response(archiver_keys)
+
+    keys_app = web.Application()
+    keys_app.router.add_get("/credentials", handle_credentials)
+    keys_app.router.add_get("/pgp_keys", handle_pgp_keys)
+    url = str((await aiohttp_server(keys_app)).make_url("/"))
+    _private_app, app = await create_app(
+        config=create_config(database_location),
+        redis=FakeRedis(),
+        publisher_url=None if publisher_keys is None else url,
+        archiver_url=None if archiver_keys is None else url,
+    )
+    return await aiohttp_client(app)
+
+
+# A real throwaway ed25519 public key, generated for these tests only.
+IMPORTABLE_KEY = """-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEar0oJhYJKwYBBAHaRw8BAQdAWau9EcHXu85QZP6cSXl9uDQKWcUj6Tgc5RmJ
+43UAUYu0Lkphbml0b3IgQXJjaGl2ZSBUZXN0IDxhcmNoaXZlQGV4YW1wbGUuaW52
+YWxpZD6IkAQTFgoAOBYhBN0jaZX8b8oPr+Lq8hAB/UU1IsftBQJqvSgmAhsBBQsJ
+CAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJEBAB/UU1Isft02IBAMrmlhteLroJuhsx
+4iq/LqRXcMt5een+7jJ4EJWQPOoGAP4qjF1yjfQ0uXEHv2FK3rzd19WzeyH2TJJM
+fQ0QDRZHAg==
+=6omt
+-----END PGP PUBLIC KEY BLOCK-----
+"""
+# The packets inside the armor, which a minimal export of the key gives back.
+IMPORTABLE_KEY_PACKETS = base64.b64decode("".join(IMPORTABLE_KEY.splitlines()[2:-2]))
+
+
+@pytest.mark.parametrize(
+    "publisher, archiver, path",
+    [(True, False, "/pgp_keys"), (False, True, "/archive-keyring.gpg")],
+)
+async def test_keyring_route_with_only_one_url(
+    aiohttp_client, aiohttp_server, database_location, publisher, archiver, path
+):
+    keys = [IMPORTABLE_KEY]
+    client = await _keys_client(
+        aiohttp_client,
+        aiohttp_server,
+        database_location,
+        keys if publisher else None,
+        keys if archiver else None,
+    )
+    resp = await client.get(path)
+    assert (resp.status, await resp.read()) == (200, IMPORTABLE_KEY_PACKETS)
