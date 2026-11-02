@@ -186,7 +186,7 @@ mod tests {
         }
         assert_eq!(
             snapshot,
-            Snapshot::from([("debsign_failed".to_string(), Value::Counter(1))])
+            Snapshot::from([(crate::DEBSIGN_FAILED_COUNT.to_string(), Value::Counter(1))])
         );
     }
 
@@ -218,7 +218,7 @@ mod tests {
         }
         assert_eq!(
             snapshot,
-            Snapshot::from([("upload_failed".to_string(), Value::Counter(1))])
+            Snapshot::from([(crate::UPLOAD_FAILED_COUNT.to_string(), Value::Counter(1))])
         );
     }
 }
