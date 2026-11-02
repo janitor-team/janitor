@@ -6,6 +6,7 @@ use std::process;
 use clap::Parser;
 use log::{error, info};
 use reqwest::blocking::Client;
+use serde::Serialize;
 
 #[derive(Parser)]
 struct Args {
@@ -19,11 +20,18 @@ struct Args {
     input: String,
 }
 
+#[derive(Serialize)]
+struct RefreshProposalRequest<'a> {
+    url: &'a str,
+}
+
 fn refresh_merge_proposal(api_url: &str, merge_proposal_url: &str) -> Result<(), String> {
     let client = Client::new();
     let res = client
         .post(api_url)
-        .json(&serde_json::json!({"url": merge_proposal_url}))
+        .json(&RefreshProposalRequest {
+            url: merge_proposal_url,
+        })
         .send()
         .map_err(|e| e.to_string())?;
 

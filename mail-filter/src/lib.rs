@@ -8,7 +8,8 @@
 use mailparse::{parse_mail, MailHeaderMap};
 use select::document::Document;
 use select::predicate::{And, Attr, Name};
-use serde_json::Value;
+use serde::de::IgnoredAny;
+use serde::Deserialize;
 
 /// Parse a plain text email body to extract a merge proposal URL.
 ///
@@ -41,6 +42,33 @@ pub fn parse_plain_text_body(text: &str) -> Option<String> {
     None
 }
 
+/// The parts of a schema.org JSON-LD document that carry a merge proposal URL.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum JsonLd {
+    List(Vec<JsonLd>),
+    Object(JsonLdObject),
+    Other(IgnoredAny),
+}
+
+#[derive(Debug, Deserialize)]
+struct JsonLdObject {
+    #[serde(rename = "@context")]
+    context: String,
+    #[serde(rename = "@type")]
+    type_: String,
+    action: Option<JsonLdAction>,
+    #[serde(rename = "potentialAction")]
+    potential_action: Option<JsonLdAction>,
+}
+
+#[derive(Debug, Deserialize)]
+struct JsonLdAction {
+    #[serde(rename = "@type")]
+    type_: String,
+    url: Option<String>,
+}
+
 /// Parse JSON-LD data to extract a merge proposal URL.
 ///
 /// # Arguments
@@ -48,29 +76,25 @@ pub fn parse_plain_text_body(text: &str) -> Option<String> {
 ///
 /// # Returns
 /// An Option containing the merge proposal URL if found
-fn parse_json_ld(ld: &Value) -> Option<String> {
+fn parse_json_ld(ld: &JsonLd) -> Option<String> {
     match ld {
-        Value::Array(ld_array) => ld_array.iter().find_map(parse_json_ld),
-        Value::Object(ld_object) => {
-            let context = ld_object.get("@context")?;
-            if context == &Value::String("https://schema.org".to_string())
-                || context == &Value::String("http://schema.org".to_string())
+        JsonLd::List(items) => items.iter().find_map(parse_json_ld),
+        JsonLd::Object(obj) => {
+            if !matches!(
+                obj.context.as_str(),
+                "https://schema.org" | "http://schema.org"
+            ) || obj.type_ != "EmailMessage"
             {
-                let type_ = ld_object.get("@type")?;
-                if type_ == &Value::String("EmailMessage".to_string()) {
-                    let action = ld_object
-                        .get("action")
-                        .or_else(|| ld_object.get("potentialAction"))?;
-                    let action_type = action.get("@type")?;
-                    if action_type == &Value::String("ViewAction".to_string()) {
-                        let url = action.get("url")?.as_str()?;
-                        return Some(url.split('#').next().unwrap().to_string());
-                    }
-                }
+                return None;
             }
-            None
+            let action = obj.action.as_ref().or(obj.potential_action.as_ref())?;
+            if action.type_ != "ViewAction" {
+                return None;
+            }
+            let url = action.url.as_deref()?;
+            Some(url.split('#').next().unwrap().to_string())
         }
-        _ => None,
+        JsonLd::Other(_) => None,
     }
 }
 
@@ -86,7 +110,7 @@ pub fn parse_html_body(contents: &str) -> Option<String> {
     let ld = document
         .find(And(Name("script"), Attr("type", "application/ld+json")))
         .next()?;
-    if let Ok(ld_json) = serde_json::from_str(ld.text().as_str()) {
+    if let Ok(ld_json) = serde_json::from_str::<JsonLd>(ld.text().as_str()) {
         parse_json_ld(&ld_json)
     } else {
         None

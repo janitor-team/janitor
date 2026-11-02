@@ -263,85 +263,82 @@ fn test_parse_html_wrong_action_type() {
     assert_eq!(parse_html_body(html), None);
 }
 
-// Unit tests for parse_json_ld
+fn email_message(type_: &str, action_type: &str, url: Option<&str>) -> JsonLd {
+    JsonLd::Object(JsonLdObject {
+        context: "https://schema.org".to_string(),
+        type_: type_.to_string(),
+        action: None,
+        potential_action: Some(JsonLdAction {
+            type_: action_type.to_string(),
+            url: url.map(str::to_string),
+        }),
+    })
+}
+
 #[test]
 fn test_parse_json_ld_valid() {
-    let json = serde_json::json!({
-        "@context": "https://schema.org",
-        "@type": "EmailMessage",
-        "potentialAction": {
-            "@type": "ViewAction",
-            "url": "https://github.com/user/repo/pull/456#comment"
-        }
-    });
-
-    let result = parse_json_ld(&json);
+    let ld = email_message(
+        "EmailMessage",
+        "ViewAction",
+        Some("https://github.com/user/repo/pull/456#comment"),
+    );
     assert_eq!(
-        result,
+        parse_json_ld(&ld),
         Some("https://github.com/user/repo/pull/456".to_string())
     );
 }
 
 #[test]
 fn test_parse_json_ld_array() {
-    let json = serde_json::json!([
-        {
-            "@context": "https://schema.org",
-            "@type": "EmailMessage",
-            "potentialAction": {
-                "@type": "ViewAction",
-                "url": "https://github.com/user/repo/pull/789"
-            }
-        }
-    ]);
-
-    let result = parse_json_ld(&json);
+    let ld = JsonLd::List(vec![email_message(
+        "EmailMessage",
+        "ViewAction",
+        Some("https://github.com/user/repo/pull/789"),
+    )]);
     assert_eq!(
-        result,
+        parse_json_ld(&ld),
         Some("https://github.com/user/repo/pull/789".to_string())
     );
 }
 
 #[test]
-fn test_parse_json_ld_wrong_type() {
-    let json = serde_json::json!({
-        "@context": "https://schema.org",
-        "@type": "Article",
-        "potentialAction": {
-            "@type": "ViewAction",
-            "url": "https://github.com/user/repo/pull/123"
-        }
-    });
+fn test_parse_json_ld_array_skips_non_objects() {
+    let ld: JsonLd = serde_json::from_str(
+        r#"["x", {"@context": "http://schema.org"}, {
+            "@context": "http://schema.org",
+            "@type": "EmailMessage",
+            "action": {"@type": "ViewAction", "url": "https://example.com/mp/1"}
+        }]"#,
+    )
+    .unwrap();
+    assert_eq!(
+        parse_json_ld(&ld),
+        Some("https://example.com/mp/1".to_string())
+    );
+}
 
-    let result = parse_json_ld(&json);
-    assert_eq!(result, None);
+#[test]
+fn test_parse_json_ld_wrong_type() {
+    let ld = email_message(
+        "Article",
+        "ViewAction",
+        Some("https://github.com/user/repo/pull/123"),
+    );
+    assert_eq!(parse_json_ld(&ld), None);
 }
 
 #[test]
 fn test_parse_json_ld_wrong_action_type() {
-    let json = serde_json::json!({
-        "@context": "https://schema.org",
-        "@type": "EmailMessage",
-        "potentialAction": {
-            "@type": "EditAction",
-            "url": "https://github.com/user/repo/pull/123"
-        }
-    });
-
-    let result = parse_json_ld(&json);
-    assert_eq!(result, None);
+    let ld = email_message(
+        "EmailMessage",
+        "EditAction",
+        Some("https://github.com/user/repo/pull/123"),
+    );
+    assert_eq!(parse_json_ld(&ld), None);
 }
 
 #[test]
 fn test_parse_json_ld_missing_url() {
-    let json = serde_json::json!({
-        "@context": "https://schema.org",
-        "@type": "EmailMessage",
-        "potentialAction": {
-            "@type": "ViewAction"
-        }
-    });
-
-    let result = parse_json_ld(&json);
-    assert_eq!(result, None);
+    let ld = email_message("EmailMessage", "ViewAction", None);
+    assert_eq!(parse_json_ld(&ld), None);
 }

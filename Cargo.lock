@@ -3457,6 +3457,7 @@ dependencies = [
  "mailparse",
  "reqwest 0.13.5",
  "select",
+ "serde",
  "serde_json",
 ]
 
