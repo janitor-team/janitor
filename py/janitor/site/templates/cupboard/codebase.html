@@ -1,5 +1,5 @@
 {% extends "layout.html" %}
-{% from "run_util.html" import display_result_code, display_branch_url %}
+{% from "run_util.html" import display_result_code, display_branch_url, describe_publish_policy %}
 {% block sidebar %}
     {% include "cupboard/sidebar.html" %}
 {% endblock sidebar %}
@@ -9,15 +9,56 @@
 {% block body %}
     <div class="section">
         <h1>{{ codebase.name }}</h1>
-        {% if codebase.url %}<p>Branch URL: {{ display_branch_url(codebase.web_url, codebase.url) }}</p>{% endif %}
-        <h2>Candidates</h2>
-        <ul>
-            {% for candidate in candidates %}
-                <li>
-                    <a href="/{{ candidate.campaign }}/c/{{ codebase.name }}/">{{ candidate.campaign }}</a>
-                </li>
-            {% endfor %}
+        <ul class="metadata">
+            {% if codebase.url %}<li>Branch URL: {{ display_branch_url(codebase.web_url, codebase.url) }}</li>{% endif %}
+            {% if codebase.branch %}<li>Branch: {{ codebase.branch }}</li>{% endif %}
+            {% if codebase.subpath %}<li>Subpath: {{ codebase.subpath }}</li>{% endif %}
+            {% if codebase.vcs_type %}<li>VCS type: {{ codebase.vcs_type }}</li>{% endif %}
+            {% if codebase.vcs_last_revision %}<li>Last revision: {{ codebase.vcs_last_revision }}</li>{% endif %}
+            {% if codebase.last_scanned %}<li>Last scanned: {{ format_timestamp(codebase.last_scanned) }}</li>{% endif %}
+            {% if codebase.value is not none %}<li>Value: {{ codebase.value }}</li>{% endif %}
+            {% if codebase.inactive %}<li>Inactive</li>{% endif %}
         </ul>
+        <h2>Candidates</h2>
+        <table class="docutils" border="1">
+            <thead valign="bottom">
+                <tr class="row-odd">
+                    <th class="head">Campaign</th>
+                    <th class="head">Command</th>
+                    <th class="head">Value</th>
+                    <th class="head">Publish modes</th>
+                    <th class="head">Details</th>
+                </tr>
+            </thead>
+            <tbody valign="top">
+                {% for candidate in candidates %}
+                    <tr class="row-even">
+                        <td>
+                            <a href="/{{ candidate.campaign }}/c/{{ codebase.name }}/">{{ candidate.campaign }}</a>
+                        </td>
+                        <td>
+                            <code>{{ candidate.command }}</code>
+                        </td>
+                        <td>{{ candidate.value if candidate.value is not none }}</td>
+                        <td>{{ describe_publish_policy(candidate.per_branch_policy) if candidate.per_branch_policy }}</td>
+                        <td>
+                            {% if candidate.context or candidate.success_chance is not none or candidate.publish_policy or candidate.change_set %}
+                                <details>
+                                    <summary>More</summary>
+                                    <ul>
+                                        {% if candidate.context %}<li>Context: <code>{{ candidate.context }}</code></li>{% endif %}
+                                        {% if candidate.success_chance is not none %}<li>Success chance: {{ candidate.success_chance|round(2) }}</li>{% endif %}
+                                        {% if candidate.publish_policy %}<li>Publish policy: {{ candidate.publish_policy }}</li>{% endif %}
+                                        {% if candidate.rate_limit_bucket %}<li>Rate limit bucket: {{ candidate.rate_limit_bucket }}</li>{% endif %}
+                                        {% if candidate.change_set %}<li>Changeset: <a href="/cupboard/cs/{{ candidate.change_set }}/">{{ candidate.change_set }}</a></li>{% endif %}
+                                    </ul>
+                                </details>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
         <h2>Runs</h2>
         <ul>
             {% for run in runs %}
