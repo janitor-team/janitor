@@ -314,7 +314,6 @@ async def handle_generic_codebase_query_redirect(request):
 async def handle_generic_codebase(request):
     from .common import generate_codebase_context
 
-    # TODO(jelmer): Handle Accept: text/diff
     codebase = request.match_info["codebase"]
     run_id = request.match_info.get("run_id")
     return await generate_codebase_context(

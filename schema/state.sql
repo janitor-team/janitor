@@ -79,7 +79,6 @@ CREATE TABLE IF NOT EXISTS run (
    description text,
    start_time timestamp,
    finish_time timestamp,
-   -- Disabled for now: requires postgresql > 12
    duration interval generated always as (finish_time - start_time) stored,
    result_code text not null,
    instigated_context text,

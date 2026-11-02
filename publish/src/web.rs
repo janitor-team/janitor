@@ -2008,9 +2008,6 @@ struct RunDetails {
 ///   * change_set: change_set state is 'publishing' or 'ready'
 ///   * previous_mp: no previous merge proposal for this codebase +
 ///     campaign was rejected or plain-closed
-///
-/// Python deliberately does NOT include a forge_rate_limit blocker
-/// (there's a TODO comment on it), so neither do we.
 async fn get_blockers(
     State(state): State<Arc<AppState>>,
     Path(id): Path<RunId>,

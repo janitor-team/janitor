@@ -178,7 +178,6 @@ async def get_archive_diff(
     params = {
         "jquery_url": "/_static/jquery.js",
     }
-    # TODO(jelmer): Set css_url
     if filter_boring:
         params["filter_boring"] = "yes"
     headers = {}

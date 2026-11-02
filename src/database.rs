@@ -133,7 +133,6 @@ impl Database {
     /// This is useful for test scenarios where you have an existing pool
     /// but want to preserve configuration information.
     pub fn from_pool_and_config(pool: PgPool, _config: DatabaseConfig) -> Self {
-        // For now, we don't need to store the config, just use the pool
         Self { pool, redis: None }
     }
 

@@ -247,7 +247,6 @@ fn import_branches_git(
             );
             if update_current {
                 let branchname = format!("refs/heads/{}/{}", campaign_, f);
-                // TODO(jelmer): Ideally this would be a symref:
                 changed_refs.insert(branchname.as_bytes().to_vec(), changed_refs.get(tagname.as_bytes()).unwrap().clone());
             }
         }

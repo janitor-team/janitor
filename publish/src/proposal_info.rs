@@ -195,9 +195,6 @@ impl ProposalInfoManager {
         // revision: the extra SELECTs leak invented rows into the DB
         // and break rate-limit bucket counts and change_set
         // done-detection.
-        //
-        // TODO(jelmer): check if changes were applied manually and
-        // mark as applied rather than closed.
         let effective_status = status;
         let url = match mp.url() {
             Ok(url) => url,

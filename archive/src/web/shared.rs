@@ -1,5 +1,5 @@
 //! Minimal shared web helpers for the archive service: a plain
-//! `/health` endpoint and a placeholder `/metrics` endpoint. Kept
+//! `/health` endpoint and a `/metrics` endpoint. Kept
 //! local so this crate stays self-contained.
 
 use axum::{
@@ -13,8 +13,7 @@ pub async fn health_ok() -> Response {
 }
 
 /// Prometheus metrics endpoint. Returns an empty text/plain body so
-/// scrapers that hit `/metrics` succeed rather than 404. A future
-/// change can encode a real prometheus registry.
+/// scrapers that hit `/metrics` succeed rather than 404.
 pub async fn metrics_ok() -> Response {
     (
         StatusCode::OK,

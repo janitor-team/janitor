@@ -58,7 +58,6 @@ impl ArchiveConfig {
     }
 }
 
-// TODO(jelmer): Don't hardcode this
 fn default_architectures() -> Vec<String> {
     vec!["amd64".to_string()]
 }

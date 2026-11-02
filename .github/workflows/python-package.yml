@@ -13,7 +13,6 @@ concurrency:
 
 env:
   # Standard packages: ./CONTRIBUTING.md (also ./Dockerfile_*)
-  #   Dirty hack for the lack of YAML anchors
   CORE_DEB: |
             cargo
             g++
@@ -120,10 +119,6 @@ jobs:
       #   https://hub.docker.com/_/debian
       image: docker.io/debian:testing-slim
 
-    # There is a lot here that is duplicated (build-container & build)
-    #   Can be made 'better' when GitLab actions support YAML anchors
-    #   https://github.com/actions/runner/issues/1182
-    #   Using system environments as a temp/dirty hack
     # Steps to perform in job
     steps:
       - name: Checkout code

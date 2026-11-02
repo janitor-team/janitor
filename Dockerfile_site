@@ -1,6 +1,3 @@
-# TODO: config
-# TODO: service discovery
-
 # https://hub.docker.com/_/debian
 FROM docker.io/debian:testing-slim AS build
 MAINTAINER Jelmer Vernooij <jelmer@jelmer.uk>

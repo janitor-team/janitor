@@ -104,8 +104,6 @@ INSERT INTO site_session (id, userinfo) VALUES ($1, $2)
             userinfo,
         )
 
-    # TODO(jelmer): Store access token / refresh token?
-
     callback_path = request.app.router["oauth2-callback"].url_for()
     resp = web.HTTPFound(back_url)
 

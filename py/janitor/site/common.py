@@ -206,7 +206,6 @@ async def generate_codebase_context(
     publisher_url: Optional[str] = None,
 ):
     async with db.acquire() as conn:
-        # TODO(jelmer): Run these in parallel with gather()
         with span.new_child("sql:codebase"):
             codebase = await conn.fetchrow(
                 """\

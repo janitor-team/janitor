@@ -148,7 +148,7 @@ pub struct RevisionInfo {
 #[derive(Clone)]
 pub struct PyO3RepositoryManager {
     base_path: PathBuf,
-    #[allow(dead_code)] // reserved for future codebase-exists checks
+    #[allow(dead_code)]
     database: DatabaseManager,
     prefer_pyo3: bool,
 }

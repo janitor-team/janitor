@@ -1168,9 +1168,6 @@ impl VcsManager for RemoteGitVcsManager {
         branch_name: &str,
     ) -> Result<Option<breezyshim::branch::GenericBranch>, BranchOpenError> {
         let url = self.get_branch_url(codebase, branch_name);
-        // TODO: plumb tracing::Span::current() into `open_cached_branch`
-        // as an `x-trace-span-id` header so upstream git-store logs can
-        // be correlated with our spans.
         open_cached_branch(&url).map_err(|e| BranchOpenError::from_err(url, &e))
     }
 
@@ -1306,8 +1303,6 @@ impl VcsManager for RemoteBzrVcsManager {
         branch_name: &str,
     ) -> Result<Option<breezyshim::branch::GenericBranch>, BranchOpenError> {
         let url = self.get_branch_url(codebase, branch_name);
-        // TODO: plumb tracing::Span::current() into `open_cached_branch`
-        // as an `x-trace-span-id` header for cross-service correlation.
         open_cached_branch(&url).map_err(|e| BranchOpenError::from_err(url, &e))
     }
 

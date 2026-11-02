@@ -2,10 +2,6 @@
 //!
 //! Metric names are the contract with the existing Grafana dashboards
 //! and alerting rules, so they are unprefixed (no `janitor_publish_`).
-//!
-//! Not every counter has a call site wired up yet. Registering them
-//! anyway means dashboards see the metric at zero rather than
-//! "metric not found"; the call-site wiring is a follow-up task.
 
 use lazy_static::lazy_static;
 use prometheus::{

@@ -186,7 +186,6 @@ async fn estimate_success_probability_and_duration(
     campaign: &Campaign,
     context: Option<&str>,
 ) -> Result<(f64, chrono::Duration, usize), sqlx::Error> {
-    // TODO(jelmer): Bias this towards recent runs?
     let mut total = 0;
     let mut success = 0;
     let mut same_context_multiplier = if context.is_none() { 0.5 } else { 1.0 };

@@ -791,7 +791,6 @@ pub fn run_worker(
     .map_err(|e| push_error_to_worker_failure(e, vec!["result-sym".to_owned()]))?;
 
     if let Some(cached_branch_url) = cached_branch_url.as_ref() {
-        // TODO(jelmer): integrate into import_branches_git / import_branches_bzr
         log::info!("Pushing packaging branch cache to {}", cached_branch_url);
 
         let vendor = vendor.to_string();

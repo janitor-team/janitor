@@ -153,7 +153,6 @@ async def estimate_success_probability_and_duration(
     campaign: str,
     context: Optional[str] = None,
 ) -> tuple[float, timedelta, int]:
-    # TODO(jelmer): Bias this towards recent runs?
     total = 0
     success = 0
     if context is None:

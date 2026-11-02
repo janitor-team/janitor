@@ -743,5 +743,4 @@ def create_app(
     else:
         app["pool"] = db
 
-    # app.middlewares.append(apispec_validation_middleware)
     return app
