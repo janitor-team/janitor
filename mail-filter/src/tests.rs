@@ -55,6 +55,24 @@ https://code.launchpad.net/~user/project/trunk/+merge/123456\r\n";
 }
 
 #[test]
+fn test_parse_latin1_8bit_email() {
+    let email = b"From: GitLab <gitlab@example.com>\r\n\
+Subject: Re: Fix lintian issues (!3)\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: text/plain; charset=ISO-8859-1\r\n\
+Content-Transfer-Encoding: 8bit\r\n\
+\r\n\
+Jos\xe9 commented:\r\n\
+\r\n\
+Merge Request URL: https://gitlab.example.com/example/hello/-/merge_requests/3\r\n";
+
+    assert_eq!(
+        Some("https://gitlab.example.com/example/hello/-/merge_requests/3"),
+        parse_email(std::io::Cursor::new(email)).as_deref()
+    );
+}
+
+#[test]
 fn test_parse_nested_multipart_email() {
     let email = b"From: Example <noreply@github.com>\r\n\
 Subject: Merged\r\n\
