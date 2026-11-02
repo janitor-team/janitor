@@ -67,9 +67,7 @@ pub struct AppState {
     pub health_checker: Arc<HealthChecker>,
     /// Which app this state drives (admin vs public).
     pub role: AppRole,
-    /// Parsed `janitor.conf`: used to validate campaign names on smart
-    /// protocol requests, matching Python's `get_campaign_config(...)`
-    /// call.
+    /// Parsed `janitor.conf`.
     pub janitor_config: Arc<janitor::config::Config>,
     /// Insert-once cache of per-codebase loggerhead browse routers.
     pub browse_routers: BrowseRouters,
@@ -152,10 +150,6 @@ pub struct RepositoryListResponse {
 }
 
 /// Build both admin and public applications.
-///
-/// `janitor_config` is the parsed `janitor.conf`; it's used to validate
-/// campaign names on smart protocol requests (matches the Python
-/// `get_campaign_config(app["config"], name)` check).
 pub async fn create_applications(
     config: Config,
     janitor_config: Arc<janitor::config::Config>,

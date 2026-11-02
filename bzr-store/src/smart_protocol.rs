@@ -155,8 +155,7 @@ fn handle_exchange(
 }
 
 /// Internal dispatch shared by the three route shapes. Checks the
-/// codebase in the DB, validates the campaign against `janitor.conf`
-/// campaigns, and runs the smart protocol exchange with per-app
+/// codebase in the DB and runs the smart protocol exchange with per-app
 /// `allow_writes` semantics.
 pub async fn smart_protocol_dispatch(
     state: AppState,
@@ -176,15 +175,6 @@ pub async fn smart_protocol_dispatch(
         return Err(BzrError::PathNotFound {
             path: codebase.into_string(),
         });
-    }
-
-    if let Some(c) = campaign.as_ref() {
-        if state.janitor_config.get_campaign(c).is_none() {
-            warn!("unknown campaign: {}", c);
-            return Err(BzrError::PathNotFound {
-                path: format!("campaign/{}", c),
-            });
-        }
     }
 
     let allow_writes = state.resolve_allow_writes(&headers).await?;
