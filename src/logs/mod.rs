@@ -88,6 +88,11 @@ fn increment_upload_success() {
     }
 }
 
+/// Create a log file manager in the system temporary directory.
+pub fn temp_log_manager() -> Result<LogFileManager, Error> {
+    LogFileManager::local(std::env::temp_dir())
+}
+
 /// Create a log file manager based on the location string.
 ///
 /// Supported location formats:
@@ -96,12 +101,7 @@ fn increment_upload_success() {
 /// - S3 URL (e.g., "s3://bucket-name", "s3://bucket-name/logs"), with the
 ///   endpoint in `AWS_ENDPOINT_URL` for servers other than AWS
 /// - Any other URL that `object_store` knows (e.g., "memory:///")
-/// - None/empty: Uses temporary directory
-pub fn create_log_manager(location: Option<&str>) -> Result<LogFileManager, Error> {
-    let loc = match location {
-        None | Some("") => return LogFileManager::local(std::env::temp_dir()),
-        Some(loc) => loc,
-    };
+pub fn create_log_manager(loc: &str) -> Result<LogFileManager, Error> {
     let url = match url::Url::parse(loc) {
         Ok(url) => url,
         Err(url::ParseError::RelativeUrlWithoutBase) => return LogFileManager::local(loc),
@@ -310,11 +310,11 @@ mod tests {
 
     #[test]
     fn test_create_log_manager_s3() {
-        create_log_manager(Some("s3://janitor-logs")).unwrap();
-        create_log_manager(Some("s3://janitor-logs/logs")).unwrap();
-        create_log_manager(Some("memory:///logs")).unwrap();
+        create_log_manager("s3://janitor-logs").unwrap();
+        create_log_manager("s3://janitor-logs/logs").unwrap();
+        create_log_manager("memory:///logs").unwrap();
         for location in ["s3://", "https://s3.example.com/janitor-logs"] {
-            let err = create_log_manager(Some(location)).unwrap_err();
+            let err = create_log_manager(location).unwrap_err();
             assert!(matches!(err, Error::Other(_)), "got {err:?}");
             assert!(err.to_string().contains(location), "got {err}");
         }

@@ -192,7 +192,7 @@ async fn test_log_manager() {
     let temp_path = temp_dir.path().to_str().unwrap();
 
     // Create the log manager
-    let manager = create_log_manager(Some(temp_path)).unwrap();
+    let manager = create_log_manager(temp_path).unwrap();
 
     // Test data
     let codebase = &janitor::CodebaseName::new("test-package").unwrap();

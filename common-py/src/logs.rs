@@ -93,15 +93,21 @@ impl LogFileManager {
 }
 
 #[pyfunction]
-#[pyo3(signature = (location=None))]
-fn get_log_manager(location: Option<&str>) -> PyResult<LogFileManager> {
+fn get_log_manager(location: &str) -> PyResult<LogFileManager> {
     let manager = janitor::logs::create_log_manager(location).map_err(convert_logs_error_to_py)?;
+    Ok(LogFileManager(Arc::new(manager)))
+}
+
+#[pyfunction]
+fn temp_log_manager() -> PyResult<LogFileManager> {
+    let manager = janitor::logs::temp_log_manager().map_err(convert_logs_error_to_py)?;
     Ok(LogFileManager(Arc::new(manager)))
 }
 
 pub(crate) fn init(py: Python, module: &Bound<PyModule>) -> PyResult<()> {
     module.add_class::<LogFileManager>()?;
     module.add_function(wrap_pyfunction!(get_log_manager, module)?)?;
+    module.add_function(wrap_pyfunction!(temp_log_manager, module)?)?;
     module.add("ServiceUnavailable", py.get_type::<ServiceUnavailable>())?;
     module.add("LogRetrievalError", py.get_type::<LogRetrievalError>())?;
     Ok(())

@@ -61,10 +61,14 @@ def setup_postgres(app):
 
 
 def setup_logfile_manager(app):
-    from ..logs import get_log_manager
+    from ..logs import get_log_manager, temp_log_manager
 
     async def startup_logfile_manager(app):
-        app["logfile_manager"] = get_log_manager(app["config"].logs_location)
+        logs_location = app["config"].logs_location
+        if logs_location is None:
+            app["logfile_manager"] = temp_log_manager()
+        else:
+            app["logfile_manager"] = get_log_manager(logs_location)
         await app["logfile_manager"].__aenter__()
 
     app.on_startup.append(startup_logfile_manager)
