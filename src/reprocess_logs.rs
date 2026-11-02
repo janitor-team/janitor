@@ -1,4 +1,5 @@
 use crate::analyze_log::AnalyzeLogFn;
+use crate::identifiers::LogFilename;
 use crate::logs::LogFileManager;
 use crate::{Campaign, ChangeSetId, CodebaseName, RunId};
 use futures::TryStreamExt;
@@ -19,7 +20,7 @@ pub async fn reprocess_run_logs(
     result_code: &str,
     description: &str,
     failure_details: &serde_json::Value,
-    process_fns: &[(String, String, AnalyzeLogFn<Box<dyn std::io::Read>>)],
+    process_fns: &[(String, LogFilename, AnalyzeLogFn<Box<dyn std::io::Read>>)],
     dry_run: bool,
     reschedule: bool,
     log_timeout: Option<chrono::Duration>,
