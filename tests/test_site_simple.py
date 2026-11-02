@@ -226,6 +226,43 @@ async def test_webhook_gitlab_push_matches_codebase(aiohttp_client, database_loc
     )
 
 
+async def test_webhook_launchpad_push_matches_codebase(
+    aiohttp_client, database_location
+):
+    repo = "https://git.launchpad.net/launchpad"
+    conn = await asyncpg.connect(database_location)
+    try:
+        await conn.executemany(
+            "INSERT INTO codebase (name, branch_url, url, branch, vcs_type) "
+            "VALUES ($1, $2, $3, $4, 'git')",
+            [
+                ("lp-master", repo, repo, "master"),
+                ("lp-feature", repo + ",branch=feature", repo, "feature"),
+            ],
+        )
+    finally:
+        await conn.close()
+
+    _private_app, app = await create_app(
+        config=create_config(database_location), redis=FakeRedis()
+    )
+    client = await aiohttp_client(app)
+    urls = []
+    for ref in ["refs/heads/feature", "refs/heads/master"]:
+        resp = await client.post(
+            "/webhook",
+            headers={"X-Launchpad-Event-Type": "git:push:0.1"},
+            json={
+                "git_repository": "/~launchpad/launchpad/+git/launchpad",
+                "git_repository_path": "launchpad",
+                "ref_changes": {ref: {"old": None, "new": {"commit_sha1": "0" * 40}}},
+            },
+        )
+        assert resp.status == 200, await resp.text()
+        urls.append((await resp.json())["urls"])
+    assert urls == [[repo + ",branch=feature"], [repo]]
+
+
 async def test_candidates_with_multiple_unscored_does_not_500(
     aiohttp_client, database_location
 ):

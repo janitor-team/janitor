@@ -60,7 +60,7 @@ def _launchpad_git_push(repository, path, ref_changes):
         "ref_changes": ref_changes,
     }
     return [
-        (change.urls, change.after)
+        (change.urls, change.after, change.branch)
         for change in webhook.get_git_changes_from_launchpad_webhook(body)
     ]
 
@@ -85,6 +85,7 @@ def test_launchpad_git_push_updates_creates_and_deletes_refs():
                 "git+ssh://git.launchpad.net/~user/project/+git/repo,branch=master",
             ],
             b"b" * 40,
+            "master",
         ),
         (
             [
@@ -92,9 +93,8 @@ def test_launchpad_git_push_updates_creates_and_deletes_refs():
                 "git+ssh://git.launchpad.net/~user/project/+git/repo,ref=refs%2Ftags%2F2.0",
             ],
             b"d" * 40,
+            None,
         ),
-        (["https://git.launchpad.net/~user/project/+git/repo"], None),
-        (["git+ssh://git.launchpad.net/~user/project/+git/repo"], None),
     ]
 
 
@@ -113,9 +113,6 @@ def test_launchpad_git_push_to_default_repository():
                 "git+ssh://git.launchpad.net/project,branch=main",
             ],
             b"e" * 40,
+            "main",
         ),
-        (["https://git.launchpad.net/~user/project/+git/project"], None),
-        (["git+ssh://git.launchpad.net/~user/project/+git/project"], None),
-        (["https://git.launchpad.net/project"], None),
-        (["git+ssh://git.launchpad.net/project"], None),
     ]

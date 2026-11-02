@@ -17,7 +17,7 @@
 
 import json
 import logging
-from typing import Union
+from typing import Optional, Union
 
 import asyncpg
 from aiohttp import ClientSession, web
@@ -124,7 +124,10 @@ class GitChange:
     urls: set[str]
     after: bytes
 
-    def __init__(self, urls, after) -> None:
+    def __init__(self, urls, after, repository_urls=(), branch=None) -> None:
+        # Also matched on the codebase url and branch columns.
+        self.repository_urls = list(repository_urls)
+        self.branch: Optional[str] = branch
         self.urls = urls
         self.after = after
 
@@ -137,6 +140,8 @@ class GitChange:
 class BzrChange:
     urls: set[str]
     after: bytes
+    repository_urls: list[str] = []
+    branch: Optional[str] = None
 
     def __init__(self, urls, after) -> None:
         self.urls = urls
@@ -200,11 +205,18 @@ def get_git_changes_from_launchpad_webhook(body):
         urls = []
         for base_url in base_urls:
             urls.append(git_url_to_bzr_url(base_url, ref=ref.encode()))
-        ret.append(GitChange(urls, after=changes["new"]["commit_sha1"].encode()))
-    # No idea what the default branch is, so let's trigger on everything
-    # for now:
-    for base_url in base_urls:
-        ret.append(GitChange([git_url_to_bzr_url(base_url)], after=None))
+        try:
+            branch = ref_to_branch_name(ref.encode())
+        except ValueError:
+            branch = None
+        ret.append(
+            GitChange(
+                urls,
+                after=changes["new"]["commit_sha1"].encode(),
+                repository_urls=base_urls,
+                branch=branch,
+            )
+        )
     return ret
 
 
@@ -235,11 +247,12 @@ FROM
   codebase
 WHERE
   branch_url = ANY($1::text[])
+  OR (url = ANY($2::text[]) AND branch = $3)
 """
     candidates = []
     for url in change.urls:
         candidates.extend([url.rstrip("/"), url.rstrip("/") + "/"])
-    return await conn.fetch(query, candidates)
+    return await conn.fetch(query, candidates, change.repository_urls, change.branch)
 
 
 async def parse_webhook(request, db):
