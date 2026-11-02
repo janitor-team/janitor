@@ -733,6 +733,7 @@ pub async fn git_backend(
     if auth_context.allow_writes {
         cmd.args(["-c", "http.receivepack=1"]);
     }
+    cmd.args(["-c", "http.getanyfile=false"]);
     cmd.arg("http-backend");
 
     // Setup environment variables for Git HTTP backend
@@ -740,7 +741,11 @@ pub async fn git_backend(
     env_vars.insert("GIT_HTTP_EXPORT_ALL".to_string(), "true".to_string());
     env_vars.insert("REQUEST_METHOD".to_string(), method_str.to_string());
     env_vars.insert("CONTENT_TYPE".to_string(), content_type.to_string());
-    env_vars.insert("QUERY_STRING".to_string(), query_string.to_string());
+    // Pass on only the checked service, so git reads the query as we did.
+    let git_query = service
+        .map(|s| format!("service={}", s))
+        .unwrap_or_default();
+    env_vars.insert("QUERY_STRING".to_string(), git_query);
 
     // Set the repository path
     let full_path = repo_path.join(subpath.trim_start_matches('/'));
