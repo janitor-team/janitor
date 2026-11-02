@@ -1009,6 +1009,11 @@ async fn handle_precache(
     Ok((StatusCode::ACCEPTED, "Precaching started").into_response())
 }
 
+#[derive(serde::Serialize)]
+struct PrecacheAllResponse {
+    count: usize,
+}
+
 async fn handle_precache_all(State(state): State<Arc<AppState>>) -> Result<Response> {
     let rows = sqlx::query_as::<_, (RunId, RunId)>(
         r#"SELECT run.id, unchanged_run.id
@@ -1025,18 +1030,14 @@ async fn handle_precache_all(State(state): State<Arc<AppState>>) -> Result<Respo
     .await?;
 
     if rows.is_empty() {
-        return Ok((StatusCode::OK, Json(serde_json::json!({"count": 0}))).into_response());
+        return Ok((StatusCode::OK, Json(PrecacheAllResponse { count: 0 })).into_response());
     }
 
     let count = rows.len();
     for (new_id, old_id) in rows {
         spawn_precache(&state, old_id, new_id, "precache-all");
     }
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(serde_json::json!({"count": count})),
-    )
-        .into_response())
+    Ok((StatusCode::ACCEPTED, Json(PrecacheAllResponse { count })).into_response())
 }
 
 fn spawn_precache(state: &Arc<AppState>, old_id: RunId, new_id: RunId, trigger: &'static str) {
@@ -1454,6 +1455,13 @@ mod tests {
     use axum::http::header::HeaderValue;
     use std::str::FromStr;
 
+    /// The JSON error envelope produced by `Error::into_response`.
+    #[derive(Debug, Deserialize)]
+    struct ErrorBody {
+        reason: String,
+        message: String,
+    }
+
     fn run_with(build_version: Option<debversion::Version>, build_source: Option<String>) -> Run {
         Run {
             result_code: "success".to_string(),
@@ -1597,15 +1605,12 @@ mod tests {
 
     #[tokio::test]
     async fn error_status_and_body_for_each_variant() {
-        use serde_json::Value;
-
-        async fn body_of(resp: Response) -> (StatusCode, Value) {
+        async fn body_of(resp: Response) -> (StatusCode, ErrorBody) {
             let status = resp.status();
             let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
                 .await
                 .unwrap();
-            let json: Value = serde_json::from_slice(&bytes).unwrap();
-            (status, json)
+            (status, serde_json::from_slice(&bytes).unwrap())
         }
 
         let cases: Vec<(Error, StatusCode, &str, Option<&str>)> = vec![
@@ -1678,8 +1683,8 @@ mod tests {
                 .map(|v| v.to_str().unwrap().to_string());
             let (status, body) = body_of(resp).await;
             assert_eq!(status, want_status, "status for {want_reason}");
-            assert_eq!(body["reason"], want_reason);
-            assert!(body["message"].is_string(), "message for {want_reason}");
+            assert_eq!(body.reason, want_reason);
+            assert!(!body.message.is_empty(), "message for {want_reason}");
             assert_eq!(
                 unavailable.as_deref(),
                 want_run_id,
@@ -1805,7 +1810,7 @@ mod tests {
                 .to_vec()
         }
 
-        async fn body_json(resp: Response) -> serde_json::Value {
+        async fn error_body(resp: Response) -> ErrorBody {
             serde_json::from_slice(&body_bytes(resp).await).unwrap()
         }
 
@@ -1844,8 +1849,8 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-            let body = body_json(resp).await;
-            assert_eq!(body["reason"], "invalid-run-id");
+            let body = error_body(resp).await;
+            assert_eq!(body.reason, "invalid-run-id");
         }
 
         #[tokio::test]
@@ -1858,7 +1863,7 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-            assert_eq!(body_json(resp).await["reason"], "invalid-run-id");
+            assert_eq!(error_body(resp).await.reason, "invalid-run-id");
         }
 
         #[tokio::test]
@@ -1871,7 +1876,7 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-            assert_eq!(body_json(resp).await["reason"], "invalid-run-id");
+            assert_eq!(error_body(resp).await.reason, "invalid-run-id");
         }
 
         #[tokio::test]
@@ -1886,10 +1891,10 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::NOT_ACCEPTABLE);
-            let body = body_json(resp).await;
-            assert_eq!(body["reason"], "not-acceptable");
+            let body = error_body(resp).await;
+            assert_eq!(body.reason, "not-acceptable");
             // The envelope lists the types we do offer.
-            let msg = body["message"].as_str().unwrap();
+            let msg = &body.message;
             for offered in ["text/x-diff", "text/plain", "text/markdown", "text/html"] {
                 assert!(msg.contains(offered), "message missing {offered}: {msg:?}");
             }
@@ -1905,7 +1910,7 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::NOT_ACCEPTABLE);
-            assert_eq!(body_json(resp).await["reason"], "not-acceptable");
+            assert_eq!(error_body(resp).await.reason, "not-acceptable");
         }
 
         #[tokio::test]
@@ -2015,7 +2020,7 @@ mod tests {
 
             let resp = router.oneshot(get("/health")).await.unwrap();
             assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
-            assert_eq!(body_json(resp).await["reason"], "database-error");
+            assert_eq!(error_body(resp).await.reason, "database-error");
         }
 
         #[tokio::test]
