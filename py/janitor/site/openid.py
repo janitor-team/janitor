@@ -43,6 +43,28 @@ async def openid_middleware(request, handler):
     return resp
 
 
+async def _site_path(request, raw: str) -> Optional[str]:
+    """Return raw as a path, if it is on this site and one of its routes serves it."""
+    try:
+        url = URL(raw)
+        host = url.host
+    except ValueError:
+        return None
+    if url.absolute:
+        # The login links carry the full URL of the page.
+        site = request.app["external_url"] or request.url
+        # Not origin(): it keeps a written default port, so :443 would not match.
+        if (url.scheme, host, url.port) != (site.scheme, site.host, site.port):
+            return None
+        url = url.relative()
+    elif url.scheme:
+        return None
+    match = await request.app.router.resolve(request.clone(rel_url=url))
+    if match.http_exception is not None:
+        return None
+    return str(url)
+
+
 async def handle_oauth_callback(request):
     code = request.query.get("code")
     state_code = request.query.get("state")
@@ -81,10 +103,7 @@ async def handle_oauth_callback(request):
         refresh_token = resp["refresh_token"]  # noqa: F841
         access_token = resp["access_token"]
 
-    try:
-        back_url = request.cookies["back_url"]
-    except KeyError:
-        back_url = "/"
+    back_url = await _site_path(request, request.cookies.get("back_url", "/")) or "/"
 
     async with request.app["http_client_session"].get(
         request.app["openid_config"]["userinfo_endpoint"],
@@ -157,11 +176,10 @@ async def handle_login(request):
         "state", state, max_age=60, path=callback_path, httponly=True, secure=True
     )
     if "url" in request.query:
-        try:
-            response.set_cookie("back_url", str(URL(request.query["url"]).relative()))
-        except ValueError as e:
-            # 'url' is not a URL
-            raise web.HTTPBadRequest(text="invalid url") from e
+        target = await _site_path(request, request.query["url"])
+        if target is None:
+            raise web.HTTPBadRequest(text="invalid url")
+        response.set_cookie("back_url", target)
     return response
 
 
