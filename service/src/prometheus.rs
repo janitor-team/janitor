@@ -1,3 +1,6 @@
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
+use prometheus::Encoder;
 use reqwest::Client;
 use std::collections::HashMap;
 use url::Url;
@@ -27,6 +30,25 @@ pub async fn push_to_gateway(
         return Err(format!("Unexpected status code: {}", response.status()).into());
     }
     Ok(())
+}
+
+/// `GET /metrics`: the default registry in the Prometheus text format.
+pub async fn metrics_handler() -> Response {
+    let encoder = prometheus::TextEncoder::new();
+    let mut buffer = Vec::new();
+    match encoder.encode(&prometheus::gather(), &mut buffer) {
+        Ok(()) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, encoder.format_type())],
+            buffer,
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("metrics error: {e}"),
+        )
+            .into_response(),
+    }
 }
 
 #[cfg(test)]
