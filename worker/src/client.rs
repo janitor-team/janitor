@@ -416,6 +416,16 @@ impl std::fmt::Display for UploadFailure {
 
 impl std::error::Error for UploadFailure {}
 
+fn send_error_to_backoff(e: reqwest::Error) -> backoff::Error<UploadFailure> {
+    let failure = UploadFailure(format!("Error creating multipart: {}", e));
+    // Request errors (connect, timeout, dropped connection) can pass on a retry; others would not.
+    if e.is_request() {
+        backoff::Error::transient(failure)
+    } else {
+        backoff::Error::permanent(failure)
+    }
+}
+
 pub async fn upload_results(
     client: &reqwest::Client,
     credentials: &Credentials,
@@ -465,9 +475,7 @@ where
             })?;
         let response = async { send(builder.multipart(bundle_info.form).build()?).await }
             .await
-            .map_err(|e| {
-                backoff::Error::permanent(UploadFailure(format!("Error creating multipart: {}", e)))
-            })?;
+            .map_err(send_error_to_backoff)?;
 
         match response.status() {
             StatusCode::NOT_FOUND => {
@@ -770,5 +778,73 @@ mod tests {
 
         assert_eq!(err.to_string(), "unknown-run");
         assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn send_error_to_backoff_retries_request_errors_only() {
+        use tokio::io::AsyncReadExt;
+
+        let refusing = reqwest::Client::builder()
+            .connector_layer(tower::layer::layer_fn(|_inner| {
+                tower::service_fn(|_dst| async { Err("refused".into()) })
+            }))
+            .build()
+            .unwrap();
+        let refused = refusing
+            .post("http://runner.invalid/")
+            .send()
+            .await
+            .unwrap_err();
+
+        // A runner that accepts the connection but never answers.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (_conn, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        });
+        let timed_out = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(500))
+            .build()
+            .unwrap()
+            .post(format!("http://{}/", addr))
+            .body("x")
+            .send()
+            .await
+            .unwrap_err();
+
+        // A runner that drops the connection part way through the upload.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut conn, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = conn.read(&mut buf).await;
+        });
+        let dropped = reqwest::Client::new()
+            .post(format!("http://{}/", addr))
+            .body(vec![b'x'; 1024 * 1024])
+            .send()
+            .await
+            .unwrap_err();
+
+        assert!(timed_out.is_timeout());
+        for e in [refused, timed_out, dropped] {
+            assert!(e.is_request());
+            assert!(matches!(
+                send_error_to_backoff(e),
+                backoff::Error::Transient {
+                    retry_after: None,
+                    ..
+                }
+            ));
+        }
+
+        let bad_url = refusing.post("not a url").build().unwrap_err();
+        assert!(bad_url.is_builder());
+        assert!(matches!(
+            send_error_to_backoff(bad_url),
+            backoff::Error::Permanent(_)
+        ));
     }
 }
