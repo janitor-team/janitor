@@ -60,24 +60,24 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-const PRIMARY_LOGFILE_UPLOAD_FAILED_COUNT: &str = "primary_logfile_upload_failed";
-const LOGFILE_UPLOADED_COUNT: &str = "logfile_uploads";
+const PRIMARY_LOGFILE_UPLOAD_FAILURES_TOTAL: &str = "primary_logfile_upload_failures_total";
+const LOGFILE_UPLOADS_TOTAL: &str = "logfile_uploads_total";
 
 /// Describe the log upload metrics to the installed metrics recorder.
 pub fn describe_metrics() {
     metrics::describe_counter!(
-        PRIMARY_LOGFILE_UPLOAD_FAILED_COUNT,
+        PRIMARY_LOGFILE_UPLOAD_FAILURES_TOTAL,
         "Number of failed logs to primary logfile target"
     );
-    metrics::describe_counter!(LOGFILE_UPLOADED_COUNT, "Number of uploaded log files");
+    metrics::describe_counter!(LOGFILE_UPLOADS_TOTAL, "Number of uploaded log files");
 }
 
 fn increment_upload_failed() {
-    metrics::counter!(PRIMARY_LOGFILE_UPLOAD_FAILED_COUNT).increment(1);
+    metrics::counter!(PRIMARY_LOGFILE_UPLOAD_FAILURES_TOTAL).increment(1);
 }
 
 fn increment_upload_success() {
-    metrics::counter!(LOGFILE_UPLOADED_COUNT).increment(1);
+    metrics::counter!(LOGFILE_UPLOADS_TOTAL).increment(1);
 }
 
 /// Create a log file manager in the system temporary directory.
