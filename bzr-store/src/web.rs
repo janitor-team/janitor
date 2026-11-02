@@ -262,7 +262,6 @@ fn web_config(client_max_size: usize) -> janitor::shared_config::WebConfig {
         } else {
             client_max_size
         },
-        ..janitor::shared_config::WebConfig::default()
     }
 }
 
