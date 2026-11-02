@@ -209,7 +209,6 @@ async def handle_run_reprocess_logs(request):
         reprocess_run_logs,
     )
 
-    check_admin(request)
     post = await request.post()
     run_id = request.match_info["run_id"]
     dry_run = "dry_run" in post
