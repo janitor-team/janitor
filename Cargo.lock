@@ -3215,6 +3215,7 @@ dependencies = [
  "async-trait",
  "axum",
  "breezyshim 0.8.0",
+ "buildlog-consultant",
  "bytes",
  "chrono",
  "clap",

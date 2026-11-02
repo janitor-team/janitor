@@ -1,10 +1,12 @@
 use crate::publish::Mode;
 use crate::queue::Queue;
 use breezyshim::RevisionId;
+use buildlog_consultant::problems::debian::UnsatisfiedAptDependencies;
 use chrono::Duration;
-use debian_control::lossless::relations::{Relation, Relations};
+use debian_control::lossy::{Relation, Relations};
 use debian_control::relations::VersionConstraint;
 use janitor_types::{Campaign, ChangeSetId, CodebaseName};
+use serde::Deserialize;
 use sqlx::postgres::types::PgInterval;
 use sqlx::PgPool;
 use std::collections::HashMap;
@@ -253,37 +255,26 @@ ORDER BY start_time DESC
         let mut same_context = context != Some("")
             && context.is_some()
             && [run.instigated_context.as_deref(), run.context.as_deref()].contains(&context);
-        if run.result_code == "install-deps-unsatisfied-dependencies"
-            && run
-                .failure_details
-                .as_ref()
-                .is_some_and(|d| d.get("relations").is_some())
+        if let Some(details) = run
+            .failure_details
+            .as_ref()
+            .filter(|_| run.result_code == "install-deps-unsatisfied-dependencies")
         {
-            // Parse `Relations` and eagerly materialise the group
-            // structure into owned `Relation` values, then drop
-            // `Relations` before hitting any `.await`. `Relations`
-            // holds Python handles (through debian-control's rowan
-            // tree) and is `!Send`; keeping it in scope across an
-            // await would make this whole future non-`Send`, which
-            // in turn prevents `tokio::spawn`ing callers.
-            let groups: Vec<Vec<RelationRef>> = {
-                let relations: Relations = run.failure_details.as_ref().unwrap()["relations"]
-                    .as_str()
-                    .unwrap()
-                    .parse()
-                    .unwrap();
-                relations
-                    .entries()
-                    .map(|dep| {
-                        dep.relations()
-                            .map(|r| RelationRef::from_relation(&r))
-                            .collect()
-                    })
-                    .collect()
-            };
-            if deps_satisfied(conn, campaign, groups).await? {
-                success += 1;
-                same_context = false;
+            match relation_groups(details) {
+                Ok(relations) => {
+                    if deps_satisfied(conn, campaign, &relations).await? {
+                        success += 1;
+                        same_context = false;
+                    }
+                }
+                Err(e) => {
+                    log::error!(
+                        "Bad relations in a {} run for {}: {}",
+                        campaign,
+                        codebase,
+                        e
+                    );
+                }
             }
         }
         if same_context {
@@ -560,27 +551,21 @@ pub async fn bulk_add_to_queue(
     Ok(())
 }
 
-/// Send-safe extract of a debian-control `Relation`: package name
-/// plus an optional (constraint, version) pair. `Relation` itself
-/// isn't `Send` (it wraps a `!Send` rowan syntax tree), so callers
-/// that need to hold dependency data across an `.await` must convert
-/// to this shape first.
-#[derive(Debug, Clone)]
-struct RelationRef {
-    name: String,
-    constraint: Option<(VersionConstraint, debversion::Version)>,
-}
-
-impl RelationRef {
-    fn from_relation(rel: &Relation) -> Self {
-        Self {
-            name: rel.try_name().expect("relation has no name"),
-            constraint: rel.version(),
-        }
+/// Parse the relations in the failure details of a run.
+fn relation_groups(details: &serde_json::Value) -> Result<Relations, String> {
+    let details = UnsatisfiedAptDependencies::deserialize(details)
+        .map_err(|e| format!("invalid failure details: {}", e))?;
+    let relations: Relations = details
+        .relations
+        .parse()
+        .map_err(|e| format!("cannot parse {:?}: {}", details.relations, e))?;
+    if relations.is_empty() {
+        return Err(format!("no relations in {:?}", details.relations));
     }
+    Ok(relations)
 }
 
-async fn dep_available(conn: &PgPool, rel: &RelationRef) -> Result<bool, sqlx::Error> {
+async fn dep_available(conn: &PgPool, rel: &Relation) -> Result<bool, sqlx::Error> {
     let mut query = sqlx::QueryBuilder::new(
         r###"
 SELECT
@@ -592,7 +577,7 @@ WHERE
     );
     query.push_bind(rel.name.clone());
 
-    if let Some((constraint, version)) = rel.constraint.as_ref() {
+    if let Some((constraint, version)) = rel.version.as_ref() {
         query.push(" AND version ");
         query.push(match constraint {
             VersionConstraint::Equal => "=",
@@ -612,12 +597,12 @@ WHERE
 async fn deps_satisfied(
     conn: &PgPool,
     _campaign: &Campaign,
-    dependencies: Vec<Vec<RelationRef>>,
+    dependencies: &Relations,
 ) -> Result<bool, sqlx::Error> {
-    for group in dependencies {
+    for group in dependencies.iter() {
         let mut found = false;
         for subdep in group {
-            if dep_available(conn, &subdep).await? {
+            if dep_available(conn, subdep).await? {
                 found = true;
                 break;
             }
@@ -1068,5 +1053,73 @@ mod tests {
         assert_eq!(total, 1);
         assert_eq!(duration, Duration::seconds(60));
         assert_eq!(probability, 0.5);
+    }
+
+    #[cfg(feature = "testing")]
+    #[tokio::test]
+    async fn test_estimate_success_probability_with_bad_relations() {
+        let Some(db) = setup_run_database(&CodebaseName::new("foo").unwrap()).await else {
+            return;
+        };
+        sqlx::query(
+            r#"INSERT INTO run (id, command, codebase, campaign, change_set, logfilenames, result_code,
+                                start_time, finish_time, failure_details) VALUES
+             ('r1', '', 'foo', 'lintian-fixes', 'cs', '{}', 'install-deps-unsatisfied-dependencies',
+              '2024-01-01 10:00:00', '2024-01-01 10:01:00',
+              '{"relations": "libbaz-dev (>= 1.0!x)"}'),
+             ('r2', '', 'foo', 'lintian-fixes', 'cs', '{}', 'install-deps-unsatisfied-dependencies',
+              '2024-01-02 10:00:00', '2024-01-02 10:01:00', '{"relations": ""}')"#,
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        let (probability, duration, total) = estimate_success_probability_and_duration(
+            db.pool(),
+            &CodebaseName::new("foo").unwrap(),
+            &Campaign::new("lintian-fixes").unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(probability, 1.0 / 21.0 * 0.5);
+        assert_eq!(duration, Duration::seconds(60));
+        assert_eq!(total, 2);
+    }
+
+    #[test]
+    fn test_relation_groups() {
+        assert_eq!(
+            relation_groups(&serde_json::json!({"relations": "foo (>= 1.0), bar | baz"})).unwrap(),
+            Relations(vec![
+                vec![Relation::build("foo")
+                    .version(VersionConstraint::GreaterThanEqual, "1.0")
+                    .build()],
+                vec![
+                    Relation::build("bar").build(),
+                    Relation::build("baz").build()
+                ],
+            ])
+        );
+        let e = relation_groups(&serde_json::json!({"relations": ["foo"]})).unwrap_err();
+        assert!(e.starts_with("invalid failure details: "), "{}", e);
+        for relations in [
+            "foo (>= 1.0",
+            "foo (== 1.0)",
+            "foo (1.0)",
+            "foo (>= 99999999999999999999:1.0)",
+        ] {
+            let e = relation_groups(&serde_json::json!({ "relations": relations })).unwrap_err();
+            assert!(
+                e.starts_with(&format!("cannot parse {:?}: ", relations)),
+                "{}",
+                e
+            );
+        }
+        for relations in ["", ","] {
+            assert_eq!(
+                relation_groups(&serde_json::json!({ "relations": relations })).unwrap_err(),
+                format!("no relations in {:?}", relations)
+            );
+        }
     }
 }

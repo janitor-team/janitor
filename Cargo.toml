@@ -43,6 +43,7 @@ reqwest = { workspace = true, features = ["json", "query"] }
 debian-control.workspace = true
 shlex.workspace = true
 metrics = { workspace = true }
+buildlog-consultant = { workspace = true }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 redis = { workspace = true }
