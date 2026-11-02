@@ -81,9 +81,10 @@ the VCS.
 The publisher can be manually operated, e.g. if somebody
 requests a run from the web UI that is always executed.
 
-Each candidate has a "publish_policy" associated with it, which
-describes the mode to use ("push", "propose", "attempt-push") and
-a rate limiting bucket. So long as the number of
+A candidate can name a publish policy, set with the publisher's
+`PUT /policy/{name}` API. The policy gives the mode to use for each
+branch of the run ("push", "propose", "attempt-push", "push-derived",
+"build-only" or "skip") and a rate limiting bucket. So long as the number of
 open merge proposals is below the rate-limiting threshold,
 new merge proposals can be created. Different algorithms
 for rate-limiting are supported, but the default is slow-start.
