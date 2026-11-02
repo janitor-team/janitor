@@ -82,6 +82,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         log::debug!("breezy plugins were already loaded");
     }
 
+    let metrics = janitor_worker::client::Metrics::new(prometheus::default_registry())?;
+
     let state = Arc::new(RwLock::new(AppState {
         assignment: None,
         output_directory: None,
@@ -228,9 +230,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = janitor_worker::web::app(state.clone());
     let state = state.clone();
     tokio::spawn(async move {
-        let client =
-            janitor_worker::client::Client::new(base_url, auth, janitor_worker::DEFAULT_USER_AGENT)
-                .expect("Failed to create HTTP client");
+        let client = janitor_worker::client::Client::new(
+            base_url,
+            auth,
+            janitor_worker::DEFAULT_USER_AGENT,
+            metrics,
+        )
+        .expect("Failed to create HTTP client");
         loop {
             let exit_code = match janitor_worker::process_single_item(
                 &client,
