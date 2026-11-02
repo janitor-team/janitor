@@ -3046,9 +3046,22 @@ async fn finish_run_multipart_internal(
                 .and_then(BuilderResult::from_target_details)
         });
 
+    let branch_url = match worker_result.branch_url.clone() {
+        Some(url) => Some(url),
+        None => match active_run.branch_url() {
+            Ok(url) => url,
+            Err(e) => {
+                return error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Invalid branch URL for run {}: {}", run_id, e),
+                );
+            }
+        },
+    };
     let mut janitor_result = active_run.create_result(
         worker_result.code.clone(),
         worker_result.description.clone(),
+        branch_url,
     );
 
     janitor_result.codemod = worker_result.codemod;
@@ -3076,9 +3089,6 @@ async fn finish_run_multipart_internal(
     janitor_result.builder_result = builder_result;
     janitor_result.transient = worker_result.transient;
     janitor_result.target_branch_url = worker_result.target_branch_url;
-    janitor_result.branch_url = worker_result
-        .branch_url
-        .unwrap_or(janitor_result.branch_url);
     janitor_result.vcs_type = worker_result.vcs_type;
     janitor_result.subpath = worker_result.subpath;
 
@@ -3401,11 +3411,29 @@ async fn abort_assignment(
     code: &str,
     description: &str,
 ) {
+    let branch_url = match assignment
+        .vcs_info
+        .branch_url
+        .as_deref()
+        .map(url::Url::parse)
+        .transpose()
+    {
+        Ok(url) => url,
+        Err(e) => {
+            log::warn!(
+                "Failed to record aborted assignment for queue item {} ({}): invalid branch URL: {}",
+                assignment.queue_item.id,
+                code,
+                e
+            );
+            return;
+        }
+    };
     let now = Utc::now();
     let log_id = new_run_id();
     let mut result = crate::JanitorResult {
         log_id,
-        branch_url: assignment.vcs_info.branch_url.clone().unwrap_or_default(),
+        branch_url,
         subpath: assignment.vcs_info.subpath.clone(),
         code: code.to_string(),
         transient: Some(false),

@@ -423,7 +423,7 @@ pub struct JanitorResult {
     /// Unique identifier for the log.
     pub log_id: RunId,
     /// URL of the branch that was processed.
-    pub branch_url: String,
+    pub branch_url: Option<url::Url>,
     /// Optional subpath within the repository.
     pub subpath: Option<String>,
     /// Result code.
@@ -666,7 +666,7 @@ pub struct WorkerResult {
     /// Target branch URL.
     pub target_branch_url: Option<String>,
     /// Branch URL.
-    pub branch_url: Option<String>,
+    pub branch_url: Option<url::Url>,
     /// VCS type.
     pub vcs_type: Option<String>,
     /// Subpath within repository.
@@ -736,11 +736,25 @@ impl ActiveRun {
         self.vcs_info.subpath.as_deref()
     }
 
+    /// Parse the URL of the branch this run works on.
+    pub fn branch_url(&self) -> Result<Option<url::Url>, url::ParseError> {
+        self.vcs_info
+            .branch_url
+            .as_deref()
+            .map(url::Url::parse)
+            .transpose()
+    }
+
     /// Create a JanitorResult from this active run.
-    pub fn create_result(&self, code: String, description: Option<String>) -> JanitorResult {
+    pub fn create_result(
+        &self,
+        code: String,
+        description: Option<String>,
+        branch_url: Option<url::Url>,
+    ) -> JanitorResult {
         JanitorResult {
             log_id: self.log_id.clone(),
-            branch_url: self.vcs_info.branch_url.clone().unwrap_or_default(),
+            branch_url,
             subpath: self.vcs_info.subpath.clone(),
             code,
             transient: None,
@@ -1927,8 +1941,11 @@ mod tests {
             Some("https://github.com/example/repo.git")
         );
 
-        let result =
-            active_run.create_result("success".to_string(), Some("Test completed".to_string()));
+        let result = active_run.create_result(
+            "success".to_string(),
+            Some("Test completed".to_string()),
+            active_run.branch_url().unwrap(),
+        );
         assert_eq!(result.code, "success");
         assert_eq!(result.description, Some("Test completed".to_string()));
         assert_eq!(result.codebase, "test-codebase");
@@ -2234,7 +2251,7 @@ mod tests {
     fn test_janitor_result_serde() {
         let result = JanitorResult {
             log_id: RunId::new("log-123").unwrap(),
-            branch_url: "https://example.com/repo".to_string(),
+            branch_url: Some("https://example.com/repo".parse().unwrap()),
             subpath: Some("debian/".to_string()),
             code: "success".to_string(),
             transient: Some(false),
@@ -2276,7 +2293,7 @@ mod tests {
     fn test_janitor_result_with_failure() {
         let result = JanitorResult {
             log_id: RunId::new("log-456").unwrap(),
-            branch_url: "https://example.com/repo".to_string(),
+            branch_url: Some("https://example.com/repo".parse().unwrap()),
             subpath: None,
             code: "build-failed".to_string(),
             transient: Some(true),
@@ -2316,7 +2333,7 @@ mod tests {
     fn test_janitor_result_with_resume() {
         let result = JanitorResult {
             log_id: RunId::new("log-789").unwrap(),
-            branch_url: "https://example.com/repo".to_string(),
+            branch_url: Some("https://example.com/repo".parse().unwrap()),
             subpath: None,
             code: "success".to_string(),
             transient: None,
