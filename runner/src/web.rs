@@ -3227,8 +3227,7 @@ async fn assign_work_internal(
 
     // The worker sends its backchannel as `{"kind": "http"|"jenkins",
     // "url": "..."}` (see janitor-worker::client::get_assignment_raw)
-    // but Backchannel's own deserializer expects `{"my_url": ...}` for
-    // Polling or `{"my_url": ..., "jenkins": ...}` for Jenkins. Translate
+    // but Backchannel's own deserializer expects its tagged form. Translate
     // the wire format here so we don't silently fall back to
     // Backchannel::None and then fail every health-check with "No
     // backchannel available".
@@ -3247,7 +3246,13 @@ async fn assign_work_internal(
                 },
                 // Default to polling for `http`, no kind, or anything
                 // unknown: the worker's reported url is a polling target.
-                (_, Some(u)) => Backchannel::Polling { my_url: u },
+                (_, Some(u)) => match u.parse() {
+                    Ok(my_url) => Backchannel::Polling { my_url },
+                    Err(e) => {
+                        log::warn!("Invalid backchannel URL {}: {}", u, e);
+                        Backchannel::default()
+                    }
+                },
                 _ => {
                     log::warn!("Invalid backchannel configuration (no url): {:?}", bc_json);
                     Backchannel::default()
