@@ -27,7 +27,9 @@ RUN apt-get update --yes \
 
 COPY . /code
 
-RUN cargo build --release --manifest-path /code/bzr-store/Cargo.toml --bin janitor-bzr-store
+# loggerhead's CSS, images and JavaScript, which it serves at run time.
+RUN cargo build --release --manifest-path /code/bzr-store/Cargo.toml --bin janitor-bzr-store \
+ && cp -r /root/.cargo/registry/src/*/loggerhead-*/static /code/loggerhead-static
 
 FROM docker.io/debian:testing-slim
 MAINTAINER Jelmer Vernooij <jelmer@jelmer.uk>
@@ -49,6 +51,10 @@ RUN apt-get update --yes \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /code/target/release/janitor-bzr-store /usr/local/bin/janitor-bzr-store
+
+COPY --from=build /code/loggerhead-static /usr/local/share/loggerhead/static
+
+ENV LOGGERHEAD_STATIC_DIR=/usr/local/share/loggerhead/static
 
 VOLUME /bzr
 
