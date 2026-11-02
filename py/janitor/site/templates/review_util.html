@@ -1,3 +1,6 @@
+{% macro trimmed_comment(comment) %}
+    {% if comment %}<span title="{{ comment }}">{{ comment|truncate(100) }}</span>{% endif %}
+{% endmacro %}
 {% macro display_reviews_table(reviews, user=None) %}
     <table class="reviews">
         <thead>
@@ -17,7 +20,7 @@
                     <td>
                         <span class="review-{{ review['verdict'] }}">{{ review['verdict'] }}</span>
                     </td>
-                    <td>{{ review['review_comment'] }}</td>
+                    <td>{{ trimmed_comment(review['comment']) }}</td>
                 </tr>
             {% endif %}
         {% endfor %}
@@ -61,9 +64,7 @@
                     </script>
                 </td>
                 <td id="my-review-comment">
-                    {% if ns.my_review %}
-                        {{ ns.my_review.review_comment }}
-                    {% endif %}
+                    {% if ns.my_review %}{{ trimmed_comment(ns.my_review.comment) }}{% endif %}
                 </td>
             </tr>
         {% endif %}

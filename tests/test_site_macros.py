@@ -15,6 +15,7 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
+from bs4 import BeautifulSoup
 from jinja2 import Environment, select_autoescape
 
 from janitor.site import template_loader
@@ -52,6 +53,60 @@ def test_display_branch_url():
     
 """
     )
+
+
+def test_display_reviews_table():
+    template = env.get_template("review_util.html")
+    long_comment = (
+        "Please split this into smaller changes, one for each fix, "
+        "so that each one can be reviewed and landed on its own."
+    )
+    reviews = [
+        {
+            "reviewer": "other@example.com",
+            "verdict": "rejected",
+            "comment": long_comment,
+        },
+        {"reviewer": "third@example.com", "verdict": "approved", "comment": None},
+        {"reviewer": "me@example.com", "verdict": "rejected", "comment": "too big"},
+    ]
+    soup = BeautifulSoup(
+        str(
+            template.module.display_reviews_table(  # type: ignore
+                reviews, "me@example.com"
+            )
+        ),
+        "html.parser",
+    )
+    rows = []
+    for tr in soup.select("table.reviews tr"):
+        row: list[object] = []
+        for cell in tr.find_all(["th", "td"], recursive=False):
+            select = cell.find("select")
+            span = cell.find("span", title=True)
+            if select is not None:
+                row.append(
+                    [o["value"] for o in select.find_all("option", selected=True)]
+                )
+            elif span is not None:
+                row.append((span.get_text(), span["title"]))
+            else:
+                row.append(cell.get_text(strip=True))
+        rows.append(row)
+    assert rows == [
+        ["Reviewer", "Verdict", "Comment"],
+        [
+            "other@example.com",
+            "rejected",
+            (
+                "Please split this into smaller changes, one for each fix, "
+                "so that each one can be reviewed and...",
+                long_comment,
+            ),
+        ],
+        ["third@example.com", "approved", ""],
+        ["Your review", ["rejected"], ("too big", "too big")],
+    ]
 
 
 def _render_local_command(vcs, **context):
