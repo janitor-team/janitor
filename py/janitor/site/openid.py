@@ -78,7 +78,6 @@ async def handle_oauth_callback(request):
                 status=500,
                 text="Expected bearer token, got {}".format(resp["token_type"]),
             )
-        refresh_token = resp["refresh_token"]  # noqa: F841
         access_token = resp["access_token"]
 
     try:
