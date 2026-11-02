@@ -294,7 +294,6 @@ async def _start_provider(aiohttp_server, *, discovery=None, userinfo=None):
             {
                 "token_type": "Bearer",
                 "access_token": "the-access-token",
-                "refresh_token": "the-refresh-token",
             }
         )
 
