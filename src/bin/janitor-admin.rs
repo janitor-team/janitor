@@ -26,6 +26,10 @@ struct Cli {
     #[arg(long, env = "JANITOR_PASSWORD")]
     password: Option<String>,
 
+    /// API token created at the site's /api-tokens, sent as a Bearer token.
+    #[arg(long, env = "JANITOR_TOKEN", hide_env_values = true, conflicts_with_all = ["user", "password"])]
+    token: Option<String>,
+
     #[command(subcommand)]
     command: Command,
 
@@ -159,15 +163,22 @@ struct ApiClient {
     base: Url,
     user: Option<String>,
     password: Option<String>,
+    token: Option<String>,
 }
 
 impl ApiClient {
-    fn new(base: Url, user: Option<String>, password: Option<String>) -> reqwest::Result<Self> {
+    fn new(
+        base: Url,
+        user: Option<String>,
+        password: Option<String>,
+        token: Option<String>,
+    ) -> reqwest::Result<Self> {
         Ok(Self {
             http: Client::builder().build()?,
             base,
             user,
             password,
+            token,
         })
     }
 
@@ -176,6 +187,9 @@ impl ApiClient {
         let mut req = self.http.request(method, url);
         if let Some(user) = &self.user {
             req = req.basic_auth(user, self.password.as_deref());
+        }
+        if let Some(token) = &self.token {
+            req = req.bearer_auth(token);
         }
         Ok(req)
     }
@@ -391,7 +405,7 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
     cli.logging.init();
 
-    let client = match ApiClient::new(cli.url, cli.user, cli.password) {
+    let client = match ApiClient::new(cli.url, cli.user, cli.password, cli.token) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("failed to build HTTP client: {}", e);
