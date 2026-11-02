@@ -301,7 +301,7 @@ $$;
 -- Triggered when:
 -- - New successful publish created
 -- - New run created
--- - Result branch changed to 'absorbed'
+-- - Result branch created or changed to 'absorbed'
 
 CREATE OR REPLACE FUNCTION refresh_change_set_state(change_set_id text)
   RETURNS text
@@ -312,6 +312,12 @@ CREATE OR REPLACE FUNCTION refresh_change_set_state(change_set_id text)
     BEGIN
     SELECT change_set.state INTO STRICT row FROM change_set WHERE id = change_set_id;
     _state := row.state;
+    IF _state = 'done' THEN
+       PERFORM FROM change_set_unpublished WHERE change_set = change_set_id;
+       IF FOUND THEN
+          _state := 'working';
+       END IF;
+    END IF;
     IF _state = 'created' THEN
        PERFORM FROM run WHERE change_set = change_set_id;
        IF FOUND THEN
@@ -356,9 +362,6 @@ CREATE OR REPLACE FUNCTION new_result_branch_trigger_refresh()
 
     if (TG_OP = 'INSERT') then
         perform refresh_last_run(new.run_id);
-    end if;
-
-    if (TG_OP = 'INSERT' AND NEW.absorbed) then
         SELECT change_set INTO STRICT change_set_id FROM run WHERE id = NEW.run_id;
         perform refresh_change_set_state(change_set_id);
     end if;

@@ -2575,6 +2575,51 @@ async fn result_branch_writes_refresh_last_unabsorbed_run() {
     assert_eq!(seen, vec![None, run.clone(), None, run, None, None]);
 }
 
+/// A candidate's own change set goes from run to publish to done, and back.
+#[tokio::test]
+async fn candidate_change_set_follows_runs_and_publishes() {
+    let Some((_app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let pool = state.database.pool().clone();
+    insert_codebase(&pool, "cs-cycle-cb").await;
+    let own: String = sqlx::query_scalar(
+        "INSERT INTO candidate (codebase, suite, command)
+         VALUES ('cs-cycle-cb', 'test-campaign', 'true') RETURNING change_set",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("insert candidate");
+
+    let mut seen = vec![change_set_state(&pool, &own).await];
+    for run in ["run-cs-cycle-1", "run-cs-cycle-2"] {
+        insert_success_run(&pool, run, "cs-cycle-cb", &own).await;
+        for sql in [
+            "INSERT INTO new_result_branch (run_id, role) VALUES ($1, 'main')",
+            "INSERT INTO publish (id, change_set, mode, result_code, codebase)
+             SELECT $1 || '-publish', change_set, 'push', 'success', codebase
+             FROM run WHERE id = $1",
+            "UPDATE new_result_branch SET absorbed = true WHERE run_id = $1",
+        ] {
+            sqlx::query(sql).bind(run).execute(&pool).await.expect(sql);
+            seen.push(change_set_state(&pool, &own).await);
+        }
+    }
+    assert_eq!(
+        seen,
+        vec![
+            "created",
+            "ready",
+            "publishing",
+            "done",
+            "publishing",
+            "publishing",
+            "done"
+        ]
+    );
+}
+
 /// When the main artifact manager fails, artifacts go to the backup
 /// artifact manager and the run keeps its result code.
 #[tokio::test]
