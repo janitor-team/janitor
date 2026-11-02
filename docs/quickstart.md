@@ -145,6 +145,15 @@ diff. Each log file is also served on its own, for example `worker.log`:
 $ curl http://localhost:8090/cupboard/c/my-project/$RUN_ID/worker.log
 ```
 
+The API also lists the names of the run's logs and serves each one, without
+the codebase name in the URL:
+
+```console
+$ curl http://localhost:8090/api/run/$RUN_ID/logs
+["build.log", "worker.log", "codemod.log"]
+$ curl http://localhost:8090/api/run/$RUN_ID/logs/build.log
+```
+
 The diff of a successful run is served too, as a plain diff with this
 `Accept` header and as HTML without it:
 
