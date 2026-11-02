@@ -8,7 +8,7 @@
 {% from "lintian_util.html" import display_lintian_result with context %}
 {% from "review_util.html" import display_reviews_table with context %}
 {% block page_title %}
-    Cupboard - Run details - {{ run.codebase }}
+    Cupboard - Run of {{ suite }} for {{ run.codebase }}
 {% endblock page_title %}
 {% block body %}
     <div class="section" id="{{ run_id }}">
@@ -27,7 +27,7 @@
                 Codebase: <a class="reference external" href="..">{{ run.codebase }}</a>
             </li>
             <li>
-                Change set: <a href="/cupboard/cs/{{ run.change_set }}/">{{ run.change_set }}</a>
+                Changeset: <a href="/cupboard/cs/{{ run.change_set }}/">{{ run.change_set }}</a>
             </li>
             {% if vcs_url %}<li>Branch URL: {{ display_branch_url(vcs_browse, vcs_url) }}</li>{% endif %}
             {% if run.result and 'upstream_branch_url' in run.result %}

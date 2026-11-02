@@ -7,11 +7,11 @@
     {% endif %}
 {% endblock sidebar %}
 {% block page_title %}
-    Merge proposal status
+    Merge proposals
 {% endblock page_title %}
 {% block body %}
     <div class="section" id="merge-proposal-status">
-        <h1>Merge proposal status</h1>
+        <h1>Merge proposals</h1>
         <p><em>Status of merge proposals opened for this campaign.</em></p>
         {% macro display_merge_proposal(proposal) %}
             <a class="reference external" href="{{ proposal.url }}">
