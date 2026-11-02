@@ -93,6 +93,7 @@ enum Cmd {
 async fn main() -> ArchiveResult<()> {
     let cli = Cli::parse();
     janitor_service::metrics::install(&[]);
+    janitor_archive::manager::register_metrics();
 
     // `--verbose` -> DEBUG level; `--gcp-logging` -> JSON output for
     // GCP log ingestion.

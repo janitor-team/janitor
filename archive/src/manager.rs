@@ -17,7 +17,18 @@ use crate::config::{AptRepositoryConfig, ArchiveConfig};
 use crate::error::{ArchiveError, ArchiveResult};
 use crate::repository::RepositoryGenerator;
 
-/// Notify the last-publish observer (if any) that a repository has
+const LAST_CAMPAIGN_PUBLISH_SUCCESS: &str = "last_campaign_publish_success";
+
+/// Register the archive's metrics; call after installing the recorder.
+pub fn register_metrics() {
+    metrics::describe_gauge!(
+        LAST_CAMPAIGN_PUBLISH_SUCCESS,
+        "Last time publishing a campaign succeeded"
+    );
+}
+
+/// Set the `last_campaign_publish_success` gauge and notify the
+/// last-publish observer (if any) that a repository has
 /// been successfully published. Public within the crate so the
 /// spawn path in `trigger_repository` can invoke it consistently
 /// with any future callers; kept in a helper so it can be unit-
@@ -26,9 +37,12 @@ pub(crate) async fn record_publish_completion(
     observer: &Arc<RwLock<Option<crate::web::LastPublishTimes>>>,
     repo_name: &str,
 ) {
+    let now = chrono::Utc::now();
+    metrics::gauge!(LAST_CAMPAIGN_PUBLISH_SUCCESS, "campaign" => repo_name.to_string())
+        .set(now.timestamp() as f64);
     if let Some(times) = observer.read().await.as_ref() {
         let mut map = times.write().await;
-        map.insert(repo_name.to_string(), chrono::Utc::now());
+        map.insert(repo_name.to_string(), now);
     }
 }
 
@@ -359,15 +373,19 @@ mod tests {
     /// guards against silently dropping the update if the slot is
     /// wrapped in a Mutex-vs-RwLock mismatch or the notify path
     /// forgets to `write()`.
-    #[tokio::test]
-    async fn record_publish_completion_writes_to_wired_observer() {
+    #[test]
+    fn record_publish_completion_writes_to_wired_observer() {
+        use janitor_service::testing::{capture_async, Snapshot, Value};
         let times = crate::web::new_last_publish_times();
         let observer = Arc::new(RwLock::new(Some(times.clone())));
-        record_publish_completion(&observer, "unstable").await;
-        let map = times.read().await;
-        assert!(
-            map.contains_key("unstable"),
-            "expected timestamp for unstable"
+        let ((), snapshot) = capture_async(record_publish_completion(&observer, "unstable"));
+        let published = times.blocking_read()["unstable"];
+        assert_eq!(
+            snapshot,
+            Snapshot::from([(
+                "last_campaign_publish_success{campaign=\"unstable\"}".to_string(),
+                Value::Gauge(published.timestamp() as f64)
+            )])
         );
     }
 
