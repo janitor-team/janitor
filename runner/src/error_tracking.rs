@@ -1,6 +1,7 @@
 //! Error tracking and logging for the runner.
 
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
@@ -355,23 +356,46 @@ impl ErrorTracker {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use tokio::io::AsyncWriteExt;
 
-        let log_entry = serde_json::json!({
-            "timestamp": error.timestamp.to_rfc3339(),
-            "id": error.id,
-            "severity": error.severity.to_string(),
-            "category": error.category.to_string(),
-            "component": error.component,
-            "operation": error.operation,
-            "message": error.message,
-            "details": error.details,
-            "context": error.context,
-            "correlation_id": error.correlation_id,
-            "user_id": error.user_id,
-            "request_id": error.request_id,
-            "retry_count": error.retry_count,
-            "is_transient": error.is_transient,
-            "stack_trace": if self.config.enable_stack_traces { error.stack_trace.as_ref() } else { None }
-        });
+        #[derive(Serialize)]
+        struct LogEntry<'a> {
+            timestamp: String,
+            id: &'a str,
+            severity: String,
+            category: String,
+            component: &'a str,
+            operation: &'a str,
+            message: &'a str,
+            details: Option<&'a str>,
+            context: &'a HashMap<String, String>,
+            correlation_id: Option<&'a str>,
+            user_id: Option<&'a str>,
+            request_id: Option<&'a str>,
+            retry_count: u32,
+            is_transient: bool,
+            stack_trace: Option<&'a str>,
+        }
+
+        let log_entry = LogEntry {
+            timestamp: error.timestamp.to_rfc3339(),
+            id: &error.id,
+            severity: error.severity.to_string(),
+            category: error.category.to_string(),
+            component: &error.component,
+            operation: &error.operation,
+            message: &error.message,
+            details: error.details.as_deref(),
+            context: &error.context,
+            correlation_id: error.correlation_id.as_deref(),
+            user_id: error.user_id.as_deref(),
+            request_id: error.request_id.as_deref(),
+            retry_count: error.retry_count,
+            is_transient: error.is_transient,
+            stack_trace: if self.config.enable_stack_traces {
+                error.stack_trace.as_deref()
+            } else {
+                None
+            },
+        };
 
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
@@ -379,7 +403,8 @@ impl ErrorTracker {
             .open(log_path)
             .await?;
 
-        file.write_all(log_entry.to_string().as_bytes()).await?;
+        file.write_all(serde_json::to_string(&log_entry)?.as_bytes())
+            .await?;
         file.write_all(b"\n").await?;
         file.flush().await?;
 

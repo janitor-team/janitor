@@ -1,8 +1,8 @@
 //! Tests for `RunnerDatabase` queries against a real Postgres schema.
 
 use janitor::test_utils::{TestDatabase, TestSchema};
-use janitor_runner::database::{DebianBuildRow, RunnerDatabase};
-use serde_json::json;
+use janitor_runner::database::{CandidateRow, CodebaseRow, DebianBuildRow, RunnerDatabase};
+use janitor_runner::{BuilderResult, DebianTargetDetails};
 
 async fn setup() -> Option<TestDatabase> {
     let Ok(Some(db)) = TestDatabase::new_optional_with_schema(TestSchema::Debian).await else {
@@ -24,20 +24,19 @@ async fn test_get_codebases() {
     let Some(db) = setup().await else { return };
     let runner_db = RunnerDatabase::new(db.pool.clone());
 
-    let codebases = serde_json::to_value(runner_db.get_codebases().await.unwrap()).unwrap();
     assert_eq!(
-        codebases,
-        json!([{
-            "name": "foo",
-            "branch_url": "https://example.com/foo",
-            "url": "https://example.com/foo",
-            "branch": null,
-            "subpath": "",
-            "vcs_type": "git",
-            "web_url": null,
-            "vcs_last_revision": null,
-            "value": 10,
-        }])
+        runner_db.get_codebases().await.unwrap(),
+        vec![CodebaseRow {
+            name: Some(janitor::CodebaseName::new("foo").unwrap()),
+            branch_url: Some("https://example.com/foo".to_string()),
+            url: Some("https://example.com/foo".to_string()),
+            branch: None,
+            subpath: Some("".to_string()),
+            vcs_type: Some("git".to_string()),
+            web_url: None,
+            vcs_last_revision: None,
+            value: Some(10),
+        }]
     );
 }
 
@@ -53,20 +52,19 @@ async fn test_get_candidates() {
     .unwrap();
     let runner_db = RunnerDatabase::new(db.pool.clone());
 
-    let candidates = serde_json::to_value(runner_db.get_candidates().await.unwrap()).unwrap();
     assert_eq!(
-        candidates,
-        json!([{
-            "id": 1,
-            "codebase": "foo",
-            "campaign": "lintian-fixes",
-            "command": "lintian-brush",
-            "publish-policy": null,
-            "change_set": null,
-            "context": "some context",
-            "value": 5,
-            "success_chance": 0.5,
-        }])
+        runner_db.get_candidates().await.unwrap(),
+        vec![CandidateRow {
+            id: 1,
+            codebase: janitor::CodebaseName::new("foo").unwrap(),
+            campaign: janitor::Campaign::new("lintian-fixes").unwrap(),
+            command: "lintian-brush".to_string(),
+            publish_policy: None,
+            change_set: None,
+            context: Some("some context".to_string()),
+            value: Some(5),
+            success_chance: Some(0.5),
+        }]
     );
 }
 
@@ -116,28 +114,27 @@ async fn test_get_run_debian_build() {
     assert!(run.remotes.is_none());
     let builder_result = run.builder_result.expect("debian_build row exists");
     assert_eq!(
-        serde_json::to_value(&builder_result).unwrap(),
-        json!({
-            "kind": "debian",
-            "source": "foo",
-            "build_version": "1.0-1",
-            "build_distribution": "unstable",
-            "changes_filenames": null,
-            "lintian_result": null,
-            "binary_packages": ["foo"],
-        })
+        builder_result,
+        BuilderResult::Debian {
+            source: Some("foo".to_string()),
+            build_version: Some("1.0-1".to_string()),
+            build_distribution: Some("unstable".to_string()),
+            changes_filenames: None,
+            lintian_result: None,
+            binary_packages: Some(vec!["foo".to_string()]),
+        }
     );
     let target = run.target.expect("debian_build row exists");
     assert_eq!(target.name, "debian");
     assert_eq!(
-        target.details,
-        json!({
-            "source": "foo",
-            "build_version": "1.0-1",
-            "build_distribution": "unstable",
-            "changes_filenames": null,
-            "lintian": null,
-            "binary_packages": ["foo"],
-        })
+        serde_json::from_value::<DebianTargetDetails>(target.details).unwrap(),
+        DebianTargetDetails {
+            source: Some("foo".to_string()),
+            build_version: Some("1.0-1".to_string()),
+            build_distribution: Some("unstable".to_string()),
+            changes_filenames: None,
+            binary_packages: Some(vec!["foo".to_string()]),
+            lintian: None,
+        }
     );
 }

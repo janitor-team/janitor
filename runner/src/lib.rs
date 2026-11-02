@@ -519,53 +519,124 @@ impl JanitorResult {
         Duration::from_secs(duration.num_seconds().max(0) as u64)
     }
 
-    /// Convert to JSON representation.
-    pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "codebase": self.codebase,
-            "campaign": self.campaign,
-            "change_set": self.change_set,
-            "log_id": self.log_id,
-            "description": self.description,
-            "code": self.code,
-            "failure_details": self.failure_details,
-            "failure_stage": self.failure_stage,
-            "duration": self.duration().as_secs_f64(),
-            "finish_time": self.finish_time.to_rfc3339(),
-            "start_time": self.start_time.to_rfc3339(),
-            "transient": self.transient,
-            "target": self.target.as_ref().map(|t| serde_json::json!({
-                "name": t.name,
-                "details": t.details
-            })).unwrap_or_else(|| serde_json::json!({})),
-            "logfilenames": self.logfilenames,
-            "codemod": self.codemod,
-            "value": self.value,
-            "remotes": self.remotes,
-            "branch_url": self.branch_url,
-            "resume": self.resume.as_ref().map(|r| serde_json::json!({"run_id": r.run_id})),
-            "branches": self.branches.as_ref().map(|branches| {
-                branches.iter().map(|(fn_name, name, br, r)| {
-                    serde_json::json!([
-                        fn_name,
-                        name,
-                        br.as_ref().map(|b| b.to_string()),
-                        r.as_ref().map(|r| r.to_string())
-                    ])
-                }).collect::<Vec<_>>()
+    /// Convert to the JSON representation used in API responses and
+    /// pub/sub messages.
+    pub fn to_json(&self) -> JanitorResultJson {
+        JanitorResultJson {
+            codebase: self.codebase.clone(),
+            campaign: self.campaign.clone(),
+            change_set: self.change_set.clone(),
+            log_id: self.log_id.clone(),
+            description: self.description.clone(),
+            code: self.code.clone(),
+            failure_details: self.failure_details.clone(),
+            failure_stage: self.failure_stage.clone(),
+            duration: self.duration().as_secs_f64(),
+            finish_time: self.finish_time.to_rfc3339(),
+            start_time: self.start_time.to_rfc3339(),
+            transient: self.transient,
+            target: match &self.target {
+                Some(t) => TargetOrEmpty::Target(t.clone()),
+                None => TargetOrEmpty::Empty {},
+            },
+            logfilenames: self.logfilenames.clone(),
+            codemod: self.codemod.clone(),
+            value: self.value,
+            remotes: self.remotes.clone(),
+            branch_url: self.branch_url.clone(),
+            resume: self.resume.clone(),
+            branches: self.branches.as_ref().map(|branches| {
+                branches
+                    .iter()
+                    .map(|(fn_name, name, br, r)| {
+                        (
+                            fn_name.clone(),
+                            name.clone(),
+                            br.as_ref().map(|b| b.to_string()),
+                            r.as_ref().map(|r| r.to_string()),
+                        )
+                    })
+                    .collect()
             }),
-            "tags": self.tags.as_ref().map(|tags| {
-                tags.iter().map(|(name, rev)| {
-                    serde_json::json!([
-                        name,
-                        rev.as_ref().map(|r| r.to_string())
-                    ])
-                }).collect::<Vec<_>>()
+            tags: self.tags.as_ref().map(|tags| {
+                tags.iter()
+                    .map(|(name, rev)| (name.clone(), rev.as_ref().map(|r| r.to_string())))
+                    .collect()
             }),
-            "revision": self.revision.as_ref().map(|r| r.to_string()),
-            "main_branch_revision": self.main_branch_revision.as_ref().map(|r| r.to_string())
-        })
+            revision: self.revision.as_ref().map(|r| r.to_string()),
+            main_branch_revision: self.main_branch_revision.as_ref().map(|r| r.to_string()),
+        }
     }
+}
+
+/// JSON representation of a [`JanitorResult`], as sent in API responses
+/// and on the `result` pub/sub channel.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct JanitorResultJson {
+    /// Name of the codebase.
+    pub codebase: CodebaseName,
+    /// Name of the campaign.
+    pub campaign: Campaign,
+    /// Change set the run belongs to.
+    pub change_set: Option<ChangeSetId>,
+    /// Run ID.
+    pub log_id: RunId,
+    /// Human-readable description of the result.
+    pub description: Option<String>,
+    /// Result code.
+    pub code: String,
+    /// Details about the failure.
+    pub failure_details: Option<serde_json::Value>,
+    /// Stages where the failure occurred.
+    pub failure_stage: Option<Vec<String>>,
+    /// Duration of the run in seconds.
+    pub duration: f64,
+    /// Finish time (RFC 3339).
+    pub finish_time: String,
+    /// Start time (RFC 3339).
+    pub start_time: String,
+    /// Whether the result is transient.
+    pub transient: Option<bool>,
+    /// Target information, or an empty object if there is none.
+    pub target: TargetOrEmpty,
+    /// Names of log files.
+    pub logfilenames: Vec<String>,
+    /// Result of the codemod.
+    pub codemod: Option<serde_json::Value>,
+    /// Value associated with the result.
+    pub value: Option<u64>,
+    /// Remote repositories.
+    pub remotes: Option<HashMap<String, ResultRemote>>,
+    /// URL of the branch that was processed.
+    pub branch_url: String,
+    /// The run this run resumed from.
+    pub resume: Option<ResultResume>,
+    /// Branches as `(function, name, base_revision, revision)`.
+    pub branches: Option<Vec<BranchJson>>,
+    /// Tags as `(name, revision)`.
+    pub tags: Option<Vec<(String, Option<String>)>>,
+    /// Revision of the branch after processing.
+    pub revision: Option<String>,
+    /// Revision of the main branch.
+    pub main_branch_revision: Option<String>,
+}
+
+/// A branch as `(function, name, base_revision, revision)`.
+pub type BranchJson = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+/// A [`ResultTarget`], serialized as an empty object when absent.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum TargetOrEmpty {
+    /// Target information.
+    Target(ResultTarget),
+    /// No target.
+    Empty {},
 }
 
 /// Information about resuming a previous run.
@@ -631,7 +702,7 @@ pub struct WorkerResult {
     /// Tag information.
     pub tags: Option<Vec<(String, Option<RevisionId>)>>,
     /// Remote repository information.
-    pub remotes: Option<HashMap<String, HashMap<String, serde_json::Value>>>,
+    pub remotes: Option<HashMap<String, ResultRemote>>,
     /// Failure details.
     pub details: Option<serde_json::Value>,
     /// Failure stage.
@@ -791,31 +862,67 @@ impl ActiveRun {
         }
     }
 
-    /// Convert to JSON representation.
-    pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "queue_id": self.queue_id,
-            "id": self.log_id,
-            "codebase": self.codebase,
-            "change_set": self.change_set,
-            "campaign": self.campaign,
-            "command": self.command,
-            "estimated_duration": self.estimated_duration.map(|d| d.as_secs_f64()),
-            "current_duration": self.current_duration().as_secs_f64(),
-            "start_time": self.start_time.to_rfc3339(),
-            "worker": self.worker_name,
-            "worker_link": self.worker_link,
-            "vcs": self.vcs_info,
-            "backchannel": self.backchannel.to_json(),
-            "instigated_context": self.instigated_context,
-            "resume_from": self.resume_from
-        })
+    /// Convert to the JSON representation used in API responses.
+    pub fn to_json(&self) -> ActiveRunJson {
+        ActiveRunJson {
+            queue_id: self.queue_id,
+            id: self.log_id.clone(),
+            codebase: self.codebase.clone(),
+            change_set: self.change_set.clone(),
+            campaign: self.campaign.clone(),
+            command: self.command.clone(),
+            estimated_duration: self.estimated_duration.map(|d| d.as_secs_f64()),
+            current_duration: self.current_duration().as_secs_f64(),
+            start_time: self.start_time.to_rfc3339(),
+            worker: self.worker_name.clone(),
+            worker_link: self.worker_link.clone(),
+            vcs: self.vcs_info.clone(),
+            backchannel: self.backchannel.clone(),
+            instigated_context: self.instigated_context.clone(),
+            resume_from: self.resume_from.clone(),
+        }
     }
 
     /// Ping the worker to check if it's still alive.
     pub async fn ping(&self) -> Result<(), PingError> {
         self.backchannel.ping(&self.log_id).await
     }
+}
+
+/// JSON representation of an [`ActiveRun`].
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ActiveRunJson {
+    /// Queue ID.
+    pub queue_id: i64,
+    /// Run ID.
+    pub id: RunId,
+    /// Codebase name.
+    pub codebase: CodebaseName,
+    /// Change set.
+    pub change_set: Option<ChangeSetId>,
+    /// Campaign name.
+    pub campaign: Campaign,
+    /// Command being executed.
+    pub command: String,
+    /// Estimated duration in seconds.
+    pub estimated_duration: Option<f64>,
+    /// Time the run has been going for, in seconds.
+    pub current_duration: f64,
+    /// Start time (RFC 3339).
+    pub start_time: String,
+    /// Worker name.
+    pub worker: String,
+    /// Worker link.
+    pub worker_link: Option<String>,
+    /// VCS information.
+    pub vcs: VcsInfo,
+    /// Backchannel, in its untagged form.
+    #[serde(serialize_with = "Backchannel::serialize_untagged")]
+    pub backchannel: Backchannel,
+    /// Instigated context.
+    pub instigated_context: Option<serde_json::Value>,
+    /// Run this run resumes from.
+    pub resume_from: Option<RunId>,
 }
 
 /// Backchannel communication types.
@@ -866,30 +973,30 @@ impl<'de> Deserialize<'de> for Backchannel {
         // `jenkins` field's presence (not its value -- it can be null)
         // is the discriminator there: Jenkins always serialised it,
         // Polling never had it.
-        let v = serde_json::Value::deserialize(deserializer)?;
-        let obj = v
-            .as_object()
-            .ok_or_else(|| serde::de::Error::custom("Backchannel: expected a JSON object"))?;
+        #[derive(Deserialize)]
+        struct RawBackchannel {
+            #[serde(rename = "type")]
+            kind: Option<String>,
+            my_url: Option<String>,
+            // Outer None: key absent; Some(None): key present but null.
+            #[serde(default, with = "serde_with::rust::double_option")]
+            jenkins: Option<Option<serde_json::Value>>,
+        }
 
-        if let Some(tag) = obj.get("type").and_then(|t| t.as_str()) {
+        let raw = RawBackchannel::deserialize(deserializer)?;
+        let my_url = || {
+            raw.my_url
+                .clone()
+                .ok_or_else(|| serde::de::Error::missing_field("my_url"))
+        };
+
+        if let Some(tag) = raw.kind.as_deref() {
             return match tag {
-                "jenkins" => {
-                    let my_url = obj
-                        .get("my_url")
-                        .and_then(|u| u.as_str())
-                        .ok_or_else(|| serde::de::Error::missing_field("my_url"))?
-                        .to_string();
-                    let jenkins = obj.get("jenkins").cloned();
-                    Ok(Backchannel::Jenkins { my_url, jenkins })
-                }
-                "polling" => {
-                    let my_url = obj
-                        .get("my_url")
-                        .and_then(|u| u.as_str())
-                        .ok_or_else(|| serde::de::Error::missing_field("my_url"))?
-                        .to_string();
-                    Ok(Backchannel::Polling { my_url })
-                }
+                "jenkins" => Ok(Backchannel::Jenkins {
+                    my_url: my_url()?,
+                    jenkins: raw.jenkins.clone().flatten(),
+                }),
+                "polling" => Ok(Backchannel::Polling { my_url: my_url()? }),
                 "none" => Ok(Backchannel::None {}),
                 other => Err(serde::de::Error::custom(format!(
                     "Backchannel: unknown type {:?}",
@@ -901,19 +1008,14 @@ impl<'de> Deserialize<'de> for Backchannel {
         // Legacy untagged form. Presence of a `jenkins` key (even
         // null) means Jenkins; lone `my_url` means Polling; empty
         // object means None.
-        if obj.contains_key("jenkins") {
-            let my_url = obj
-                .get("my_url")
-                .and_then(|u| u.as_str())
-                .ok_or_else(|| serde::de::Error::missing_field("my_url"))?
-                .to_string();
-            let jenkins = obj.get("jenkins").cloned();
-            return Ok(Backchannel::Jenkins { my_url, jenkins });
-        }
-        if let Some(my_url) = obj.get("my_url").and_then(|u| u.as_str()) {
-            return Ok(Backchannel::Polling {
-                my_url: my_url.to_string(),
+        if let Some(jenkins) = raw.jenkins.clone() {
+            return Ok(Backchannel::Jenkins {
+                my_url: my_url()?,
+                jenkins,
             });
+        }
+        if let Some(my_url) = raw.my_url {
+            return Ok(Backchannel::Polling { my_url });
         }
         Ok(Backchannel::None {})
     }
@@ -963,16 +1065,14 @@ impl Backchannel {
                                 response.status()
                             )))
                         } else {
-                            match response.json::<serde_json::Value>().await {
+                            match response.json::<crate::backchannel::JenkinsJob>().await {
                                 Ok(job) => {
-                                    if let Some(result) = job.get("result") {
-                                        if result == "FAILURE" {
-                                            if let Some(job_id) = job.get("id") {
-                                                return Err(PingError::Fatal(format!(
-                                                    "Jenkins lists job {} for run {} as failed",
-                                                    job_id, expected_log_id
-                                                )));
-                                            }
+                                    if job.result.as_deref() == Some("FAILURE") {
+                                        if let Some(job_id) = job.id {
+                                            return Err(PingError::Fatal(format!(
+                                                "Jenkins lists job {} for run {} as failed",
+                                                job_id, expected_log_id
+                                            )));
                                         }
                                     }
                                     Ok(())
@@ -1369,18 +1469,30 @@ impl Backchannel {
         }
     }
 
-    /// Convert to JSON representation.
-    pub fn to_json(&self) -> serde_json::Value {
-        match self {
-            Backchannel::None {} => serde_json::json!({}),
-            Backchannel::Jenkins { my_url, jenkins } => serde_json::json!({
-                "my_url": my_url,
-                "jenkins": jenkins
-            }),
-            Backchannel::Polling { my_url } => serde_json::json!({
-                "my_url": my_url
-            }),
+    /// Serialize in the legacy untagged form used in API responses:
+    /// `{"my_url", "jenkins"}`, `{"my_url"}` or `{}`.
+    pub fn serialize_untagged<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        #[serde(untagged)]
+        enum Untagged<'a> {
+            Jenkins {
+                my_url: &'a str,
+                jenkins: &'a Option<serde_json::Value>,
+            },
+            Polling {
+                my_url: &'a str,
+            },
+            None {},
         }
+        match self {
+            Backchannel::Jenkins { my_url, jenkins } => Untagged::Jenkins { my_url, jenkins },
+            Backchannel::Polling { my_url } => Untagged::Polling { my_url },
+            Backchannel::None {} => Untagged::None {},
+        }
+        .serialize(serializer)
     }
 
     /// Ask the worker which lifecycle stage it's currently in.
@@ -1433,20 +1545,22 @@ impl Backchannel {
                         resp.status()
                     )));
                 }
-                let body: serde_json::Value = resp.json().await.map_err(|e| {
+                #[derive(Deserialize)]
+                struct WorkerStatus {
+                    #[serde(default)]
+                    current_stage: Option<String>,
+                }
+                let body: WorkerStatus = resp.json().await.map_err(|e| {
                     PingError::Retriable(format!("Failed to parse /status from {}: {}", my_url, e))
                 })?;
-                Ok(body
-                    .get("current_stage")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string()))
+                Ok(body.current_stage)
             }
         }
     }
 }
 
 /// Builder result types.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "kind")]
 pub enum BuilderResult {
     /// Generic build result.
@@ -1475,26 +1589,26 @@ pub enum BuilderResult {
 /// worker only fills the ones it has: the `.changes`-derived fields
 /// come from parsing the artifacts directory on upload, and
 /// `lintian` is only present when sbuild + lintian actually ran.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct DebianTargetDetails {
     /// Source package name from the produced `.changes` file.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub source: Option<String>,
     /// Source-package version from the produced `.changes` file.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub build_version: Option<String>,
     /// Distribution the build targeted.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub build_distribution: Option<String>,
     /// Names of the `.changes` files produced. Multi-arch builds
     /// produce one per arch.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub changes_filenames: Option<Vec<String>>,
     /// Binary package names listed in the produced `.changes` file.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub binary_packages: Option<Vec<String>>,
     /// Raw lintian output.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub lintian: Option<serde_json::Value>,
 }
 
@@ -1553,10 +1667,10 @@ impl BuilderResult {
         }
     }
 
-    /// Convert to JSON.
+    /// Convert to the `target.details` JSON representation.
     pub fn to_json(&self) -> serde_json::Value {
         match self {
-            BuilderResult::Generic => serde_json::json!({}),
+            BuilderResult::Generic => serde_json::Value::Object(serde_json::Map::new()),
             BuilderResult::Debian {
                 source,
                 build_version,
@@ -1564,14 +1678,15 @@ impl BuilderResult {
                 changes_filenames,
                 lintian_result,
                 binary_packages,
-            } => serde_json::json!({
-                "source": source,
-                "build_version": build_version,
-                "build_distribution": build_distribution,
-                "changes_filenames": changes_filenames,
-                "lintian": lintian_result,
-                "binary_packages": binary_packages
-            }),
+            } => serde_json::to_value(DebianTargetDetails {
+                source: source.clone(),
+                build_version: build_version.clone(),
+                build_distribution: build_distribution.clone(),
+                changes_filenames: changes_filenames.clone(),
+                binary_packages: binary_packages.clone(),
+                lintian: lintian_result.clone(),
+            })
+            .expect("DebianTargetDetails is plain data"),
         }
     }
 
@@ -1634,7 +1749,7 @@ pub struct QueueItem {
     /// Command to execute.
     pub command: String,
     /// Estimated duration of the run.
-    #[serde(with = "serde_with::As::<Option<serde_with::DurationSeconds<f64>>>")]
+    #[serde(with = "serde_with::As::<Option<serde_with::DurationSecondsWithFrac<f64>>>")]
     pub estimated_duration: Option<Duration>,
     /// Campaign name.
     pub campaign: Campaign,
@@ -1646,23 +1761,6 @@ pub struct QueueItem {
     pub change_set: Option<ChangeSetId>,
     /// Name of the codebase.
     pub codebase: CodebaseName,
-}
-
-impl QueueItem {
-    /// Convert to JSON representation.
-    pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "id": self.id,
-            "context": self.context,
-            "command": self.command,
-            "estimated_duration": self.estimated_duration.map(|d| d.as_secs_f64()),
-            "campaign": self.campaign,
-            "refresh": self.refresh,
-            "requester": self.requester,
-            "change_set": self.change_set,
-            "codebase": self.codebase
-        })
-    }
 }
 
 /// Queue assignment result.
@@ -2197,19 +2295,21 @@ mod tests {
     /// actually emits: a `target` field instead of `builder_result`.
     #[test]
     fn test_worker_result_deserializes_target_field() {
-        let body = serde_json::json!({
-            "code": "success",
-            "description": "ok",
-            "target": {
-                "name": "debian",
-                "details": {
+        let metadata = janitor::api::worker::Metadata {
+            code: Some("success".to_string()),
+            description: Some("ok".to_string()),
+            target: Some(janitor::api::worker::TargetDetails::new(
+                "debian".to_string(),
+                serde_json::json!({
                     "source": "x",
                     "build_version": "1.0",
                     "build_distribution": "sid"
-                }
-            }
-        });
-        let wr: WorkerResult = serde_json::from_value(body).unwrap();
+                }),
+            )),
+            ..Default::default()
+        };
+        let wr: WorkerResult =
+            serde_json::from_str(&serde_json::to_string(&metadata).unwrap()).unwrap();
         assert!(wr.builder_result.is_none());
         let target = wr.target.expect("target should be parsed");
         let br = BuilderResult::from_target_details(&target).unwrap();
@@ -2553,12 +2653,14 @@ mod tests {
     // which made every /finish upload silently fail to parse.
     #[test]
     fn test_worker_result_accepts_string_stage() {
-        let payload = serde_json::json!({
-            "code": "build-failed",
-            "description": "boom",
-            "stage": "build",
-        });
-        let wr: WorkerResult = serde_json::from_value(payload).unwrap();
+        let metadata = janitor::api::worker::Metadata {
+            code: Some("build-failed".to_string()),
+            description: Some("boom".to_string()),
+            stage: Some("build".to_string()),
+            ..Default::default()
+        };
+        let wr: WorkerResult =
+            serde_json::from_str(&serde_json::to_string(&metadata).unwrap()).unwrap();
         assert_eq!(wr.stage.as_deref(), Some("build"));
     }
 
@@ -2570,30 +2672,31 @@ mod tests {
 
     #[test]
     fn test_worker_result_accepts_missing_refreshed() {
-        let payload = serde_json::json!({
-            "code": "success",
-        });
-        let wr: WorkerResult = serde_json::from_value(payload).unwrap();
+        let wr: WorkerResult = serde_json::from_str(r#"{"code": "success"}"#).unwrap();
         assert_eq!(wr.refreshed, None);
     }
 
     #[test]
     fn test_worker_result_accepts_null_refreshed() {
-        let payload = serde_json::json!({
-            "code": "success",
-            "refreshed": null,
-        });
-        let wr: WorkerResult = serde_json::from_value(payload).unwrap();
+        let metadata = janitor::api::worker::Metadata {
+            code: Some("success".to_string()),
+            refreshed: None,
+            ..Default::default()
+        };
+        let wr: WorkerResult =
+            serde_json::from_str(&serde_json::to_string(&metadata).unwrap()).unwrap();
         assert_eq!(wr.refreshed, None);
     }
 
     #[test]
     fn test_worker_result_accepts_explicit_refreshed() {
-        let payload = serde_json::json!({
-            "code": "success",
-            "refreshed": true,
-        });
-        let wr: WorkerResult = serde_json::from_value(payload).unwrap();
+        let metadata = janitor::api::worker::Metadata {
+            code: Some("success".to_string()),
+            refreshed: Some(true),
+            ..Default::default()
+        };
+        let wr: WorkerResult =
+            serde_json::from_str(&serde_json::to_string(&metadata).unwrap()).unwrap();
         assert_eq!(wr.refreshed, Some(true));
     }
 }
