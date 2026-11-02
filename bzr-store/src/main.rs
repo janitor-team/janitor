@@ -38,9 +38,7 @@ struct Cli {
     listen_address: String,
 
     /// Path to the janitor configuration file. Must parse with the
-    /// same protobuf-text format `janitor::config::read_file` expects;
-    /// provides the campaign list used to validate smart protocol
-    /// campaign names.
+    /// same protobuf-text format `janitor::config::read_file` expects.
     #[arg(long, default_value = "janitor.conf")]
     config: PathBuf,
 
