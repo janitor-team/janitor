@@ -3,7 +3,11 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use janitor::{test_utils::TestDatabase, test_with_database};
+use janitor::{test_utils::TestDatabase, test_with_database, ChangeSetId};
+use janitor_publish::web::{
+    Blocker, BlockerBackoffDetails, BlockerChangeSetDetails, BlockerCommandDetails,
+    BlockerInactiveDetails, BlockerInfo, BlockerPublishStatusDetails, BlockerSuccessDetails,
+};
 use janitor_publish::{AppState, PublishWorker};
 use sqlx::PgPool;
 use tower::ServiceExt;
@@ -212,6 +216,89 @@ test_with_database! {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+test_with_database! {
+    schema = Core;
+    async fn blockers_after_failed_publish_without_rate_limit_bucket(test_db: TestDatabase) {
+        seed_codebase_and_run(test_db.pool(), "cb-1", "lintian-fixes").await;
+        sqlx::raw_sql(
+            "INSERT INTO named_publish_policy (name, per_branch_policy) VALUES ('policy', ARRAY[
+                 ROW('main', 'propose'::publish_mode, NULL::int)::branch_publish_policy]);
+             INSERT INTO candidate (suite, value, command, publish_policy, codebase)
+                 VALUES ('lintian-fixes', 100, 'noop', 'policy', 'cb-1');
+             UPDATE run SET start_time = '2026-01-02 02:04:05', finish_time = '2026-01-02 03:04:05';
+             INSERT INTO publish (id, change_set, target_branch_url, revision, mode, result_code)
+                 VALUES ('p1', 'cs-1', 'https://example.invalid/cb-1', 'rev-tip', 'propose',
+                         'publish-failed')",
+        )
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+
+        let app = build_app(test_db.pool().clone()).await;
+        let req = Request::builder()
+            .uri("/blockers/run-1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let blockers: BlockerInfo = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            blockers,
+            BlockerInfo {
+                success: Blocker {
+                    result: true,
+                    details: BlockerSuccessDetails {
+                        result_code: "success".to_string(),
+                    },
+                },
+                inactive: Blocker {
+                    result: true,
+                    details: BlockerInactiveDetails { inactive: false },
+                },
+                command: Blocker {
+                    result: true,
+                    details: BlockerCommandDetails {
+                        correct: "noop".to_string(),
+                        actual: "noop".to_string(),
+                    },
+                },
+                publish_status: Blocker {
+                    result: false,
+                    details: BlockerPublishStatusDetails {
+                        status: "unknown".to_string(),
+                        reviews: HashMap::new(),
+                    },
+                },
+                backoff: Blocker {
+                    result: true,
+                    details: BlockerBackoffDetails {
+                        attempt_count: 1,
+                        next_try_time: "2026-01-02T05:04:05Z".parse().unwrap(),
+                    },
+                },
+                propose_rate_limit: Blocker {
+                    result: true,
+                    details: serde_json::json!({"bucket": null}),
+                },
+                change_set: Blocker {
+                    result: true,
+                    details: BlockerChangeSetDetails {
+                        change_set_id: ChangeSetId::new("cs-1").unwrap(),
+                        change_set_state: "ready".to_string(),
+                    },
+                },
+                previous_mp: Blocker {
+                    result: true,
+                    details: vec![],
+                },
+            }
+        );
     }
 }
 
