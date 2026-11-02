@@ -1,9 +1,9 @@
-use crate::api_types::{NotFoundResponse, SuccessWithUrlResponse};
+use crate::api_types::{EmptyResponse, ErrorResponse, NotFoundResponse, SuccessWithUrlResponse};
 use crate::health;
 use crate::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Json};
+use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{delete, get, post, put};
 use axum::Router;
 use breezyshim::error::Error as BrzError;
@@ -14,33 +14,12 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Helper function to serialize values to JSON with error handling
-fn json_response<T: serde::Serialize>(
-    value: T,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    serde_json::to_value(value).map(Json).map_err(|e| {
-        log::error!("JSON serialization error: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            error_response("Internal serialization error"),
-        )
-    })
+fn json<T: serde::Serialize>(value: T) -> Response {
+    Json(value).into_response()
 }
 
-/// Helper function to serialize success responses
-fn success_json<T: serde::Serialize>(value: T) -> impl IntoResponse {
-    match json_response(value) {
-        Ok(json) => (StatusCode::OK, json),
-        Err(err) => err,
-    }
-}
-
-/// Helper function to create error responses safely
-fn error_response(msg: &str) -> Json<serde_json::Value> {
-    Json(
-        serde_json::to_value(crate::api_types::ErrorResponse::new(msg.to_string()))
-            .unwrap_or_else(|_| serde_json::json!({"error": "Serialization failed"})),
-    )
+fn error_response(msg: &str) -> Response {
+    json(ErrorResponse::new(msg))
 }
 
 /// Slim merge-proposal listing row. Matches the JSON shape
@@ -116,7 +95,7 @@ async fn get_merge_proposals_by_campaign(
     Path(campaign): Path<Campaign>,
 ) -> impl IntoResponse {
     match fetch_merge_proposal_list(&state.conn, None, Some(&campaign)).await {
-        Ok(rows) => (StatusCode::OK, Json(serde_json::to_value(rows).unwrap())),
+        Ok(rows) => (StatusCode::OK, json(rows)),
         Err(e) => {
             log::error!(
                 "Error fetching merge proposals for campaign {}: {}",
@@ -136,7 +115,7 @@ async fn get_merge_proposals_by_codebase(
     Path(codebase): Path<CodebaseName>,
 ) -> impl IntoResponse {
     match fetch_merge_proposal_list(&state.conn, Some(&codebase), None).await {
-        Ok(rows) => (StatusCode::OK, Json(serde_json::to_value(rows).unwrap())),
+        Ok(rows) => (StatusCode::OK, json(rows)),
         Err(e) => {
             log::error!(
                 "Error fetching merge proposals for codebase {}: {}",
@@ -153,7 +132,7 @@ async fn get_merge_proposals_by_codebase(
 
 async fn list_merge_proposals(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match fetch_merge_proposal_list(&state.conn, None, None).await {
-        Ok(rows) => (StatusCode::OK, Json(serde_json::to_value(rows).unwrap())),
+        Ok(rows) => (StatusCode::OK, json(rows)),
         Err(e) => {
             log::error!("Error fetching merge proposals: {}", e);
             (
@@ -283,22 +262,12 @@ async fn absorbed(
             log::error!("Failed to fetch absorbed runs: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(
-                    serde_json::to_value(crate::api_types::ErrorResponse::new(
-                        "Failed to fetch absorbed runs",
-                    ))
-                    .unwrap_or_else(
-                        |_| serde_json::json!({"error": "Failed to fetch absorbed runs"}),
-                    ),
-                ),
+                error_response("Failed to fetch absorbed runs"),
             );
         }
     }
 
-    (
-        StatusCode::OK,
-        json_response(absorbed_runs).unwrap_or_else(|(_, msg)| msg),
-    )
+    (StatusCode::OK, json(absorbed_runs))
 }
 
 /// Per-role branch policy entry as it appears on the wire. Matches
@@ -443,19 +412,11 @@ async fn get_policy(
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(
-                    serde_json::to_value(NotFoundResponse {
-                        reason: "Publish policy not found".to_string(),
-                        name: Some(name),
-                        url: None,
-                        id: None,
-                        bucket: None,
-                        run_id: None,
-                        campaign: None,
-                        codebase: None,
-                    })
-                    .unwrap(),
-                ),
+                json(NotFoundResponse {
+                    reason: "Publish policy not found".to_string(),
+                    name: Some(name),
+                    ..Default::default()
+                }),
             );
         }
     };
@@ -475,10 +436,7 @@ async fn get_policy(
         rate_limit_bucket,
         per_branch,
     };
-    (
-        StatusCode::OK,
-        Json(serde_json::to_value(document).unwrap()),
-    )
+    (StatusCode::OK, json(document))
 }
 
 async fn get_policies(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -629,7 +587,7 @@ async fn put_policy(
     match upsert_named_publish_policy(&state.conn, &name, &document).await {
         Ok(()) => {
             log::info!("Successfully created/updated policy: {}", name);
-            (StatusCode::OK, Json(serde_json::json!({})))
+            (StatusCode::OK, json(EmptyResponse {}))
         }
         Err(e) => {
             log::error!("Error creating/updating policy {}: {}", name, e);
@@ -666,13 +624,7 @@ async fn put_policies(
             let _ = tx.rollback().await;
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(
-                    serde_json::to_value(crate::api_types::ErrorResponse::new(format!(
-                        "Failed to update policy {}",
-                        name
-                    )))
-                    .unwrap(),
-                ),
+                error_response(&format!("Failed to update policy {}", name)),
             );
         }
         keep_names.push(name.clone());
@@ -696,11 +648,11 @@ async fn put_policies(
         log::error!("Failed to commit transaction: {}", e);
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "Database error"})),
+            error_response("Database error"),
         );
     }
 
-    (StatusCode::OK, Json(serde_json::json!({})))
+    (StatusCode::OK, json(EmptyResponse {}))
 }
 
 /// Form body for `POST /merge-proposal`. Matches the urlencoded shape
@@ -809,19 +761,11 @@ async fn update_merge_proposal(
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(
-                    serde_json::to_value(NotFoundResponse {
-                        reason: "No such merge proposal".to_string(),
-                        url: Some(form.url),
-                        name: None,
-                        id: None,
-                        bucket: None,
-                        run_id: None,
-                        campaign: None,
-                        codebase: None,
-                    })
-                    .unwrap(),
-                ),
+                json(NotFoundResponse {
+                    reason: "No such merge proposal".to_string(),
+                    url: Some(form.url),
+                    ..Default::default()
+                }),
             );
         }
     };
@@ -970,13 +914,10 @@ async fn update_merge_proposal(
     log::info!("Successfully updated merge proposal: {}", form.url);
     (
         StatusCode::OK,
-        Json(
-            serde_json::to_value(SuccessWithUrlResponse {
-                status: "success".to_string(),
-                url: form.url,
-            })
-            .unwrap(),
-        ),
+        json(SuccessWithUrlResponse {
+            status: "success".to_string(),
+            url: form.url,
+        }),
     )
 }
 
@@ -994,13 +935,13 @@ async fn delete_policy(
         .execute(&state.conn)
         .await
     {
-        Ok(_) => (StatusCode::OK, Json(serde_json::json!({}))),
+        Ok(_) => (StatusCode::OK, json(EmptyResponse {})),
         Err(e)
             if e.as_database_error()
                 .map(|e| e.is_foreign_key_violation())
                 .unwrap_or(false) =>
         {
-            (StatusCode::PRECONDITION_FAILED, Json(serde_json::json!({})))
+            (StatusCode::PRECONDITION_FAILED, json(EmptyResponse {}))
         }
         Err(e) => {
             log::warn!("Error deleting policy {}: {}", name, e);
@@ -1054,7 +995,7 @@ async fn consider(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> 
     }
 
     tokio::spawn(run(state.clone(), id));
-    (StatusCode::OK, Json(serde_json::json!({})))
+    (StatusCode::OK, json(EmptyResponse {}))
 }
 
 #[derive(serde::Serialize, serde::Deserialize, sqlx::FromRow)]
@@ -1102,39 +1043,21 @@ WHERE id = $1
             log::error!("Failed to fetch publish details for id {}: {}", id, e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(
-                    serde_json::to_value(crate::api_types::ErrorResponse::new(
-                        "Failed to fetch publish details",
-                    ))
-                    .unwrap_or_else(
-                        |_| serde_json::json!({"error": "Failed to fetch publish details"}),
-                    ),
-                ),
+                error_response("Failed to fetch publish details"),
             );
         }
     };
 
     if let Some(details) = publish {
-        match json_response(details) {
-            Ok(json) => (StatusCode::OK, json),
-            Err((status, msg)) => (status, msg),
-        }
+        (StatusCode::OK, json(details))
     } else {
         (
             StatusCode::NOT_FOUND,
-            Json(
-                serde_json::to_value(NotFoundResponse {
-                    reason: "No such publish".to_string(),
-                    id: Some(id),
-                    name: None,
-                    url: None,
-                    bucket: None,
-                    run_id: None,
-                    campaign: None,
-                    codebase: None,
-                })
-                .unwrap(),
-            ),
+            json(NotFoundResponse {
+                reason: "No such publish".to_string(),
+                id: Some(id),
+                ..Default::default()
+            }),
         )
     }
 }
@@ -1181,7 +1104,10 @@ async fn publish(
         if !matches!(m, "push-derived" | "push" | "propose" | "attempt-push") {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "Invalid mode", "mode": m})),
+                json(InvalidModeResponse {
+                    error: "Invalid mode".to_string(),
+                    mode: m.to_string(),
+                }),
             );
         }
     }
@@ -1189,7 +1115,7 @@ async fn publish(
     let run = match crate::state::get_last_effective_run(&state.conn, &codebase, &campaign).await {
         Ok(Some(r)) => Arc::new(r),
         Ok(None) => {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({})));
+            return (StatusCode::BAD_REQUEST, json(EmptyResponse {}));
         }
         Err(e) => {
             log::error!(
@@ -1223,9 +1149,10 @@ async fn publish(
     if policy_lookup.is_none() && form.mode.is_none() {
         return (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "reason": format!("no publish policy for {}/{}", codebase, campaign),
-            })),
+            json(NotFoundResponse {
+                reason: format!("no publish policy for {}/{}", codebase, campaign),
+                ..Default::default()
+            }),
         );
     }
     let (publish_policy, _cmd, rate_limit_bucket) =
@@ -1339,22 +1266,45 @@ async fn publish(
     if publish_ids.is_empty() {
         return (
             StatusCode::OK,
-            Json(serde_json::json!({
-                "run_id": run.id,
-                "code": "done",
-                "description": "Nothing to do",
-            })),
+            json(PublishNothingToDoResponse {
+                run_id: run.id.clone(),
+                code: "done".to_string(),
+                description: "Nothing to do".to_string(),
+            }),
         );
     }
 
     (
         StatusCode::ACCEPTED,
-        Json(serde_json::json!({
-            "run_id": run.id,
-            "mode": form.mode,
-            "publish_ids": publish_ids,
-        })),
+        json(PublishQueuedResponse {
+            run_id: run.id.clone(),
+            mode: form.mode,
+            publish_ids,
+        }),
     )
+}
+
+/// Body of a 400 response for an unrecognised publish mode.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct InvalidModeResponse {
+    error: String,
+    mode: String,
+}
+
+/// Body of a 200 response when a publish request has no roles to publish.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PublishNothingToDoResponse {
+    run_id: RunId,
+    code: String,
+    description: String,
+}
+
+/// Body of a 202 response when at least one role was queued for publishing.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PublishQueuedResponse {
+    run_id: RunId,
+    mode: Option<String>,
+    publish_ids: HashMap<String, PublishId>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1599,7 +1549,7 @@ async fn check_stragglers(
     }
     tokio::spawn(scan(state.conn.clone(), state.redis.clone(), urls.clone()));
 
-    (StatusCode::OK, Json(serde_json::to_value(&urls).unwrap()))
+    (StatusCode::OK, json(&urls))
 }
 
 /// `POST /scan`: kick off a background `check_existing` pass over every
@@ -1751,6 +1701,12 @@ struct AutopublishQuery {
     push_limit: Option<usize>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AutopublishStartedResponse {
+    message: String,
+    push_limit: Option<usize>,
+}
+
 async fn autopublish(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(query): axum::extract::Query<AutopublishQuery>,
@@ -1767,10 +1723,10 @@ async fn autopublish(
     });
     (
         StatusCode::ACCEPTED,
-        Json(serde_json::json!({
-            "message": "Autopublish started.",
-            "push_limit": push_limit,
-        })),
+        json(AutopublishStartedResponse {
+            message: "Autopublish started.".to_string(),
+            push_limit,
+        }),
     )
 }
 
@@ -1795,10 +1751,7 @@ async fn get_rate_limit(
             error!("Failed to acquire rate limiter lock: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(
-                    serde_json::to_value(crate::api_types::ErrorResponse::internal_server_error())
-                        .unwrap(),
-                ),
+                json(ErrorResponse::internal_server_error()),
             );
         }
     };
@@ -1806,14 +1759,11 @@ async fn get_rate_limit(
     let remaining = crate::rate_limit_remaining(current_open, max_open);
     (
         StatusCode::OK,
-        Json(
-            serde_json::to_value(&BucketRateLimit {
-                open: current_open,
-                max_open,
-                remaining,
-            })
-            .unwrap(),
-        ),
+        json(BucketRateLimit {
+            open: current_open,
+            max_open,
+            remaining,
+        }),
     )
 }
 
@@ -1839,57 +1789,49 @@ struct RateLimitsInfo {
 /// about; `per_forge` is the in-memory forge rate-limit table. Both
 /// bucket figures come from the same lock acquisition.
 async fn get_all_rate_limits(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let proposals_per_bucket: HashMap<String, BucketRateLimit> = match state
-        .bucket_rate_limiter
-        .lock()
-    {
-        Ok(limiter) => {
-            let stats = limiter.get_stats();
-            let mut out = HashMap::new();
-            if let Some(stats) = stats {
-                for (bucket, current_open) in stats.per_bucket.iter() {
-                    let max_open = limiter.get_max_open(bucket);
-                    let remaining = max_open.map(|m| m.saturating_sub(*current_open));
-                    out.insert(
-                        bucket.clone(),
-                        BucketRateLimit {
-                            open: Some(*current_open),
-                            max_open,
-                            remaining,
-                        },
-                    );
+    let proposals_per_bucket: HashMap<String, BucketRateLimit> =
+        match state.bucket_rate_limiter.lock() {
+            Ok(limiter) => {
+                let stats = limiter.get_stats();
+                let mut out = HashMap::new();
+                if let Some(stats) = stats {
+                    for (bucket, current_open) in stats.per_bucket.iter() {
+                        let max_open = limiter.get_max_open(bucket);
+                        let remaining = max_open.map(|m| m.saturating_sub(*current_open));
+                        out.insert(
+                            bucket.clone(),
+                            BucketRateLimit {
+                                open: Some(*current_open),
+                                max_open,
+                                remaining,
+                            },
+                        );
+                    }
                 }
+                out
             }
-            out
-        }
-        Err(e) => {
-            error!("Failed to acquire rate limiter lock: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(
-                    serde_json::to_value(crate::api_types::ErrorResponse::internal_server_error())
-                        .unwrap(),
-                ),
-            );
-        }
-    };
+            Err(e) => {
+                error!("Failed to acquire rate limiter lock: {}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json(ErrorResponse::internal_server_error()),
+                );
+            }
+        };
 
     (
         StatusCode::OK,
-        Json(
-            serde_json::to_value(&RateLimitsInfo {
-                proposals_per_bucket,
-                per_forge: state
-                    .forge_rate_limiter
-                    .read()
-                    .unwrap()
-                    .iter()
-                    .map(|(f, t)| (f.to_string(), *t))
-                    .collect(),
-                push_limit: state.push_limit,
-            })
-            .unwrap(),
-        ),
+        json(RateLimitsInfo {
+            proposals_per_bucket,
+            per_forge: state
+                .forge_rate_limiter
+                .read()
+                .unwrap()
+                .iter()
+                .map(|(f, t)| (f.to_string(), *t))
+                .collect(),
+            push_limit: state.push_limit,
+        }),
     )
 }
 
@@ -1951,6 +1893,19 @@ struct BlockerPreviousMpDetails {
     status: String,
 }
 
+/// Details for the `propose_rate_limit` blocker.
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+enum ProposeRateLimitDetails {
+    /// The limiter is currently rate-limiting the bucket.
+    Limited {
+        open: Option<usize>,
+        max_open: Option<usize>,
+    },
+    /// The bucket is allowed, or the run has no bucket at all.
+    Bucket { bucket: Option<String> },
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct BlockerInfo {
     success: Blocker<BlockerSuccessDetails>,
@@ -1958,17 +1913,7 @@ struct BlockerInfo {
     command: Blocker<BlockerCommandDetails>,
     publish_status: Blocker<BlockerPublishStatusDetails>,
     backoff: Blocker<BlockerBackoffDetails>,
-    /// `details` here is shape-flexible because Python emits two
-    /// different shapes:
-    ///
-    ///   * `{"bucket": "..."}` when the bucket is allowed (or the
-    ///     run has no bucket at all).
-    ///   * `{"open": <usize>, "max_open": <usize>}` when the
-    ///     limiter is currently rate-limiting the bucket.
-    ///
-    /// Match by emitting a serde_json::Value rather than a fixed
-    /// struct.
-    propose_rate_limit: Blocker<serde_json::Value>,
+    propose_rate_limit: Blocker<ProposeRateLimitDetails>,
     change_set: Blocker<BlockerChangeSetDetails>,
     previous_mp: Blocker<Vec<BlockerPreviousMpDetails>>,
 }
@@ -2048,19 +1993,11 @@ WHERE run.id = $1
         Ok(None) => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(
-                    serde_json::to_value(NotFoundResponse {
-                        reason: "No such publish-ready run".to_string(),
-                        run_id: Some(id),
-                        name: None,
-                        url: None,
-                        id: None,
-                        bucket: None,
-                        campaign: None,
-                        codebase: None,
-                    })
-                    .unwrap(),
-                ),
+                json(NotFoundResponse {
+                    reason: "No such publish-ready run".to_string(),
+                    run_id: Some(id),
+                    ..Default::default()
+                }),
             );
         }
         Err(e) => {
@@ -2197,7 +2134,9 @@ WHERE run.id = $1
                 if allowed {
                     Blocker {
                         result: true,
-                        details: serde_json::json!({"bucket": bucket}),
+                        details: ProposeRateLimitDetails::Bucket {
+                            bucket: Some(bucket.to_string()),
+                        },
                     }
                 } else {
                     let stats = limiter.get_stats();
@@ -2207,17 +2146,14 @@ WHERE run.id = $1
                     let max_open = limiter.get_max_open(bucket);
                     Blocker {
                         result: false,
-                        details: serde_json::json!({
-                            "open": open,
-                            "max_open": max_open,
-                        }),
+                        details: ProposeRateLimitDetails::Limited { open, max_open },
                     }
                 }
             } else {
                 // No bucket configured: treat as unconstrained.
                 Blocker {
                     result: true,
-                    details: serde_json::json!({"bucket": serde_json::Value::Null}),
+                    details: ProposeRateLimitDetails::Bucket { bucket: None },
                 }
             }
         }
@@ -2252,19 +2188,16 @@ WHERE run.id = $1
 
     (
         StatusCode::OK,
-        Json(
-            serde_json::to_value(&BlockerInfo {
-                success,
-                previous_mp,
-                change_set,
-                inactive,
-                command,
-                publish_status,
-                backoff,
-                propose_rate_limit,
-            })
-            .unwrap(),
-        ),
+        json(BlockerInfo {
+            success,
+            previous_mp,
+            change_set,
+            inactive,
+            command,
+            publish_status,
+            backoff,
+            propose_rate_limit,
+        }),
     )
 }
 
@@ -2338,9 +2271,45 @@ async fn metrics_handler() -> impl IntoResponse {
 mod tests {
     use super::{
         classify_mp_status_transition, project_per_branch_policy, MpStatusTransition,
-        PerBranchPolicy, PolicyDocument,
+        PerBranchPolicy, PolicyDocument, ProposeRateLimitDetails,
     };
     use std::collections::HashMap;
+
+    #[test]
+    fn test_propose_rate_limit_details_wire_format() {
+        for (details, wire) in [
+            (
+                ProposeRateLimitDetails::Bucket {
+                    bucket: Some("b".to_string()),
+                },
+                r#"{"bucket":"b"}"#,
+            ),
+            (
+                ProposeRateLimitDetails::Bucket { bucket: None },
+                r#"{"bucket":null}"#,
+            ),
+            (
+                ProposeRateLimitDetails::Limited {
+                    open: Some(3),
+                    max_open: Some(2),
+                },
+                r#"{"open":3,"max_open":2}"#,
+            ),
+            (
+                ProposeRateLimitDetails::Limited {
+                    open: None,
+                    max_open: None,
+                },
+                r#"{"open":null,"max_open":null}"#,
+            ),
+        ] {
+            assert_eq!(serde_json::to_string(&details).unwrap(), wire);
+            assert_eq!(
+                serde_json::from_str::<ProposeRateLimitDetails>(wire).unwrap(),
+                details
+            );
+        }
+    }
 
     // --- classify_mp_status_transition ---
 

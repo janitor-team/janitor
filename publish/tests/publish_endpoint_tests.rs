@@ -4,7 +4,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use janitor::{test_utils::TestDatabase, test_with_database};
+use janitor_publish::api_types::{ErrorResponse, NotFoundResponse, SuccessWithUrlResponse};
 use janitor_publish::{AppState, PublishWorker};
+use serde::de::DeserializeOwned;
 use sqlx::PgPool;
 use tower::ServiceExt;
 
@@ -84,11 +86,11 @@ async fn build_app(pool: PgPool) -> axum::Router {
     janitor_publish::web::app(state)
 }
 
-async fn post_merge_proposal_status(
+async fn post_merge_proposal_status<T: DeserializeOwned>(
     app: &axum::Router,
     url: &str,
     status: &str,
-) -> (StatusCode, serde_json::Value) {
+) -> (StatusCode, T) {
     let body = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("url", url)
         .append_pair("status", status)
@@ -137,7 +139,11 @@ test_with_database! {
             post_merge_proposal_status(&app, missing_url, "closed").await,
             (
                 StatusCode::NOT_FOUND,
-                serde_json::json!({"reason": "No such merge proposal", "url": missing_url}),
+                NotFoundResponse {
+                    reason: "No such merge proposal".to_string(),
+                    url: Some(missing_url.to_string()),
+                    ..Default::default()
+                },
             )
         );
 
@@ -145,14 +151,14 @@ test_with_database! {
             post_merge_proposal_status(&app, open_url, "open").await,
             (
                 StatusCode::BAD_REQUEST,
-                serde_json::json!({"error": "no transition from open to open"}),
+                ErrorResponse::new("no transition from open to open"),
             )
         );
         assert_eq!(
             post_merge_proposal_status(&app, closed_url, "open").await,
             (
                 StatusCode::BAD_REQUEST,
-                serde_json::json!({"error": "no transition from closed to open"}),
+                ErrorResponse::new("no transition from closed to open"),
             )
         );
         assert_eq!(merge_proposal_status(test_db.pool(), open_url).await, "open");
@@ -161,7 +167,10 @@ test_with_database! {
             post_merge_proposal_status(&app, closed_url, "abandoned").await,
             (
                 StatusCode::OK,
-                serde_json::json!({"status": "success", "url": closed_url}),
+                SuccessWithUrlResponse {
+                    status: "success".to_string(),
+                    url: closed_url.to_string(),
+                },
             )
         );
         assert_eq!(
@@ -189,11 +198,13 @@ test_with_database! {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        let reason = body["reason"].as_str().expect("reason field");
-        assert!(
-            reason.contains("cb-1") && reason.contains("lintian-fixes"),
-            "reason should name the codebase/campaign: {reason}"
+        let body: NotFoundResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            body,
+            NotFoundResponse {
+                reason: "no publish policy for cb-1/lintian-fixes".to_string(),
+                ..Default::default()
+            }
         );
     }
 }

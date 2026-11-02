@@ -195,7 +195,7 @@ pub struct SuccessWithNameResponse {
 }
 
 /// Success response with URL
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SuccessWithUrlResponse {
     /// Status message indicating success
     pub status: String,
@@ -204,7 +204,7 @@ pub struct SuccessWithUrlResponse {
 }
 
 /// Not found response with reason
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotFoundResponse {
     /// Reason why the resource was not found
     pub reason: String,
@@ -302,7 +302,7 @@ pub struct AutopublishResponse {
 }
 
 /// Simple error response, matching the shape used across janitor services.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorResponse {
     /// Human-readable error message.
     pub error: String,
@@ -341,3 +341,7 @@ impl ErrorResponse {
         Self::new("Internal server error").with_code("internal_error")
     }
 }
+
+/// Response with an empty JSON object as its body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmptyResponse {}

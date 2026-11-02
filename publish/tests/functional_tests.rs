@@ -36,11 +36,10 @@ fn merge_proposal_list_entry_serializes_to_url_status_pair() {
         url: "https://github.com/owner/repo/pull/1".into(),
         status: Some("open".into()),
     };
-    let json = serde_json::to_value(&entry).unwrap();
-    let obj = json.as_object().expect("JSON object");
-    assert_eq!(obj.len(), 2);
-    assert_eq!(json["url"], "https://github.com/owner/repo/pull/1");
-    assert_eq!(json["status"], "open");
+    assert_eq!(
+        serde_json::to_string(&entry).unwrap(),
+        r#"{"url":"https://github.com/owner/repo/pull/1","status":"open"}"#
+    );
 }
 
 #[test]

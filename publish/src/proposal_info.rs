@@ -6,6 +6,21 @@ use janitor::{Campaign, CodebaseName};
 use redis::AsyncCommands;
 use sqlx::PgPool;
 
+/// Message published on the `merge-proposal` Redis channel after a
+/// proposal's state has been recorded.
+#[derive(Debug, serde::Serialize)]
+struct MergeProposalUpdateMessage<'a> {
+    url: &'a url::Url,
+    target_branch_url: &'a url::Url,
+    rate_limit_bucket: Option<&'a str>,
+    status: MergeProposalStatus,
+    codebase: Option<&'a CodebaseName>,
+    merged_by: Option<&'a str>,
+    merged_by_url: Option<&'a url::Url>,
+    merged_at: Option<&'a DateTime<Utc>>,
+    campaign: Option<&'a Campaign>,
+}
+
 /// Information about a merge proposal stored in the database.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ProposalInfo {
@@ -313,17 +328,17 @@ impl ProposalInfoManager {
             redis
                 .publish::<_, _, i32>(
                     "merge-proposal",
-                    serde_json::to_string(&serde_json::json!({
-                        "url": url,
-                        "target_branch_url": target_branch_url,
-                        "rate_limit_bucket": rate_limit_bucket,
-                        "status": effective_status,
-                        "codebase": codebase,
-                        "merged_by": merged_by,
-                        "merged_by_url": merged_by_url,
-                        "merged_at": merged_at,
-                        "campaign": campaign,
-                    }))
+                    serde_json::to_string(&MergeProposalUpdateMessage {
+                        url: &url,
+                        target_branch_url,
+                        rate_limit_bucket,
+                        status: effective_status,
+                        codebase,
+                        merged_by: merged_by.as_deref(),
+                        merged_by_url: merged_by_url.as_ref(),
+                        merged_at: merged_at.as_ref(),
+                        campaign,
+                    })
                     .unwrap(),
                 )
                 .await

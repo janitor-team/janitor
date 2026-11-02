@@ -737,6 +737,14 @@ impl std::fmt::Display for WorkerInvalidResponse {
 
 impl std::error::Error for WorkerInvalidResponse {}
 
+/// Decoded output of a `janitor-publish-one` worker process.
+enum WorkerResponse {
+    /// The worker exited with status 0.
+    Success(Box<PublishOneResult>),
+    /// The worker exited with status 1.
+    Failure(PublishOneError),
+}
+
 /// Run a worker process with the given arguments and request.
 ///
 /// # Arguments
@@ -744,11 +752,11 @@ impl std::error::Error for WorkerInvalidResponse {}
 /// * `request` - The publish request to send to the worker
 ///
 /// # Returns
-/// A tuple of the exit code and the response value, or an error
+/// The decoded worker response, or an error
 async fn run_worker_process(
     args: Vec<String>,
     request: PublishOneRequest,
-) -> Result<(i32, serde_json::Value), WorkerInvalidResponse> {
+) -> Result<WorkerResponse, WorkerInvalidResponse> {
     let mut p = tokio::process::Command::new(&args[0])
         .args(&args[1..])
         .stdin(std::process::Stdio::piped())
@@ -777,9 +785,8 @@ async fn run_worker_process(
         let mut output = Vec::new();
         tokio::io::AsyncReadExt::read_to_end(&mut stdout, &mut output).await?;
 
-        let response =
-            serde_json::from_reader(&mut output.as_slice()).map_err(WorkerInvalidResponse::from)?;
-        Ok((status.code().unwrap_or(-1), response))
+        let response = serde_json::from_slice(&output).map_err(WorkerInvalidResponse::from)?;
+        Ok(WorkerResponse::Success(Box::new(response)))
     } else if status.code() == Some(1) {
         let mut stdout = p.stdout.take().ok_or_else(|| {
             WorkerInvalidResponse::from("Failed to get stdout handle".to_string())
@@ -789,13 +796,12 @@ async fn run_worker_process(
         })?;
         let mut output = Vec::new();
         tokio::io::AsyncReadExt::read_to_end(&mut stdout, &mut output).await?;
-        let response =
-            serde_json::from_reader(&mut output.as_slice()).map_err(WorkerInvalidResponse::from)?;
+        let response = serde_json::from_slice(&output).map_err(WorkerInvalidResponse::from)?;
         let mut error = Vec::new();
         tokio::io::AsyncReadExt::read_to_end(&mut stderr, &mut error).await?;
         use std::io::Write;
         std::io::stderr().write_all(&error)?;
-        return Ok((status.code().unwrap_or(1), response));
+        return Ok(WorkerResponse::Failure(response));
     } else {
         let mut stderr = p.stderr.take().ok_or_else(|| {
             WorkerInvalidResponse::from("Failed to get stderr handle".to_string())
@@ -916,7 +922,7 @@ impl PublishWorker {
             ));
         }
 
-        let (returncode, response) = if let Some(lock_manager) = &self.lock_manager {
+        let response = if let Some(lock_manager) = &self.lock_manager {
             match lock_manager
                 .lock(
                     format!("publish:{}", target_branch_url).as_bytes(),
@@ -925,8 +931,8 @@ impl PublishWorker {
                 .await
             {
                 Ok(rl) => {
-                    let (returncode, response) = match run_worker_process(args, request).await {
-                        Ok((returncode, response)) => (returncode, response),
+                    let response = match run_worker_process(args, request).await {
+                        Ok(response) => response,
                         Err(e) => {
                             return Err(PublishError::Failure {
                                 code: "publisher-invalid-response".to_string(),
@@ -935,7 +941,7 @@ impl PublishWorker {
                         }
                     };
                     lock_manager.unlock(&rl).await;
-                    (returncode, response)
+                    response
                 }
                 Err(_) => {
                     return Err(PublishError::BranchBusy(target_branch_url.clone()));
@@ -943,7 +949,7 @@ impl PublishWorker {
             }
         } else {
             match run_worker_process(args, request).await {
-                Ok((returncode, response)) => (returncode, response),
+                Ok(response) => response,
                 Err(e) => {
                     return Err(PublishError::Failure {
                         code: "publisher-invalid-response".to_string(),
@@ -953,63 +959,51 @@ impl PublishWorker {
             }
         };
 
-        if returncode == 1 {
-            let error: PublishOneError =
-                serde_json::from_value(response).map_err(|e| PublishError::Failure {
-                    code: "publisher-invalid-response".to_string(),
-                    description: e.to_string(),
-                })?;
-            return Err(PublishError::Failure {
-                code: error.code,
-                description: error.description,
-            });
-        }
+        let result = match response {
+            WorkerResponse::Failure(error) => {
+                return Err(PublishError::Failure {
+                    code: error.code,
+                    description: error.description,
+                });
+            }
+            WorkerResponse::Success(result) => *result,
+        };
 
-        if returncode == 0 {
-            let result: PublishOneResult =
-                serde_json::from_value(response).map_err(|e| PublishError::Failure {
-                    code: "publisher-invalid-response".to_string(),
-                    description: e.to_string(),
-                })?;
+        if result.proposal_url.is_some() && result.is_new.unwrap_or(false) {
+            // Publish merge proposal event to Redis
+            if let Some(redis_manager) = self.redis_manager.as_ref() {
+                let event = crate::redis::MergeProposalEvent {
+                    url: result
+                        .proposal_url
+                        .as_ref()
+                        .expect("proposal_url just checked to be Some")
+                        .to_string(),
+                    web_url: result.proposal_web_url.as_ref().map(|u| u.to_string()),
+                    status: "open".to_string(),
+                    codebase: codebase.clone(),
+                    campaign: campaign.clone(),
+                    target_branch_url: result.target_branch_url.to_string(),
+                    target_branch_web_url: result
+                        .target_branch_web_url
+                        .as_ref()
+                        .map(|u| u.to_string()),
+                    timestamp: chrono::Utc::now(),
+                };
 
-            if result.proposal_url.is_some() && result.is_new.unwrap_or(false) {
-                // Publish merge proposal event to Redis
-                if let Some(redis_manager) = self.redis_manager.as_ref() {
-                    let event = crate::redis::MergeProposalEvent {
-                        url: result
-                            .proposal_url
-                            .as_ref()
-                            .expect("proposal_url just checked to be Some")
-                            .to_string(),
-                        web_url: result.proposal_web_url.as_ref().map(|u| u.to_string()),
-                        status: "open".to_string(),
-                        codebase: codebase.clone(),
-                        campaign: campaign.clone(),
-                        target_branch_url: result.target_branch_url.to_string(),
-                        target_branch_web_url: result
-                            .target_branch_web_url
-                            .as_ref()
-                            .map(|u| u.to_string()),
-                        timestamp: chrono::Utc::now(),
-                    };
-
-                    let publisher = crate::redis::RedisPublisher::new(redis_manager.clone());
-                    if let Err(e) = publisher.publish_merge_proposal(&event).await {
-                        log::warn!("Failed to publish merge proposal event to Redis: {}", e);
-                    }
-                }
-
-                if let Some(bucket) = rate_limit_bucket {
-                    if let Some(rate_limiter) = bucket_rate_limiter.as_mut() {
-                        rate_limiter.inc(bucket);
-                    }
+                let publisher = crate::redis::RedisPublisher::new(redis_manager.clone());
+                if let Err(e) = publisher.publish_merge_proposal(&event).await {
+                    log::warn!("Failed to publish merge proposal event to Redis: {}", e);
                 }
             }
 
-            return Ok(result);
+            if let Some(bucket) = rate_limit_bucket {
+                if let Some(rate_limiter) = bucket_rate_limiter.as_mut() {
+                    rate_limiter.inc(bucket);
+                }
+            }
         }
 
-        unreachable!();
+        Ok(result)
     }
 }
 
@@ -1691,22 +1685,22 @@ mod tests {
             code: "merge-conflict".to_string(),
             description: "Could not merge".to_string(),
         };
-        let json = serde_json::to_value(&err).unwrap();
-        assert_eq!(json["code"], "merge-conflict");
-        assert_eq!(json["description"], "Could not merge");
+        assert_eq!(
+            serde_json::to_string(&err).unwrap(),
+            r#"{"code":"merge-conflict","description":"Could not merge"}"#
+        );
 
         let err = PublishError::NothingToDo("No changes".to_string());
-        let json = serde_json::to_value(&err).unwrap();
-        assert_eq!(json["code"], "nothing-to-do");
-        assert_eq!(json["description"], "No changes");
+        assert_eq!(
+            serde_json::to_string(&err).unwrap(),
+            r#"{"code":"nothing-to-do","description":"No changes"}"#
+        );
 
         let url = url::Url::parse("https://github.com/foo/bar").unwrap();
         let err = PublishError::BranchBusy(url);
-        let json = serde_json::to_value(&err).unwrap();
-        assert_eq!(json["code"], "branch-busy");
         assert_eq!(
-            json["description"],
-            "Branch is busy: https://github.com/foo/bar"
+            serde_json::to_string(&err).unwrap(),
+            r#"{"code":"branch-busy","description":"Branch is busy: https://github.com/foo/bar"}"#
         );
     }
 
@@ -2916,21 +2910,21 @@ pub async fn publish_from_policy(
     };
 
     if let Some(manager) = redis_manager {
-        let entry = serde_json::json!({
-            "id": publish_id,
-            "codebase": run.codebase,
-            "campaign": run.suite,
-            "proposal_url": proposal_url_for_store.as_ref().map(|u| u.to_string()),
-            "mode": effective_mode.to_string(),
-            "main_branch_url": target_url_for_store.to_string(),
-            "main_branch_browse_url": target_web_url_for_store,
-            "branch_name": branch_name_for_store,
-            "result_code": code,
-            "result": run.result.clone().unwrap_or(serde_json::Value::Null),
-            "role": role,
-            "run_id": run.id,
-            "publish_delay": publish_delay_secs,
-        });
+        let entry = crate::redis::PublishResultMessage {
+            id: &publish_id,
+            codebase: &run.codebase,
+            campaign: &run.suite,
+            proposal_url: proposal_url_for_store.as_ref(),
+            mode: effective_mode,
+            main_branch_url: &target_url_for_store,
+            main_branch_browse_url: target_web_url_for_store.as_deref(),
+            branch_name: branch_name_for_store.as_deref(),
+            result_code: &code,
+            result: run.result.as_ref(),
+            role,
+            run_id: &run.id,
+            publish_delay: publish_delay_secs,
+        };
         let payload = serde_json::to_string(&entry)?;
         manager
             .publisher()
@@ -3098,16 +3092,16 @@ pub async fn publish_and_store(
             .await?;
 
             if let Some(manager) = redis_manager {
-                let entry = serde_json::json!({
-                    "id": publish_id,
-                    "mode": mode.to_string(),
-                    "result_code": code,
-                    "description": description,
-                    "campaign": run.suite,
-                    "main_branch_url": target_branch_url.to_string(),
-                    "result": run.result.clone().unwrap_or(serde_json::Value::Null),
-                    "codebase": run.codebase,
-                });
+                let entry = crate::redis::PublishFailureMessage {
+                    id: publish_id,
+                    mode,
+                    result_code: &code,
+                    description: &description,
+                    campaign: &run.suite,
+                    main_branch_url: &target_branch_url,
+                    result: run.result.as_ref(),
+                    codebase: &run.codebase,
+                };
                 let payload = serde_json::to_string(&entry)?;
                 manager
                     .publisher()
@@ -3167,21 +3161,23 @@ pub async fn publish_and_store(
             crate::metrics::PUBLISH_LATENCY.observe(publish_delay_secs);
 
             if let Some(manager) = redis_manager {
-                let entry = serde_json::json!({
-                    "id": publish_id,
-                    "campaign": run.suite,
-                    "proposal_url": publish_result.proposal_url().map(|u| u.to_string()),
-                    "mode": effective_mode.to_string(),
-                    "main_branch_url": publish_result.target_branch_url().to_string(),
-                    "main_branch_browse_url": publish_result.target_branch_web_url().map(|u| u.to_string()),
-                    "branch_name": publish_result.branch_name(),
-                    "result_code": "success",
-                    "result": run.result.clone().unwrap_or(serde_json::Value::Null),
-                    "role": role,
-                    "publish_delay": publish_delay_secs,
-                    "run_id": run.id,
-                    "codebase": run.codebase,
-                });
+                let entry = crate::redis::PublishResultMessage {
+                    id: publish_id,
+                    codebase: &run.codebase,
+                    campaign: &run.suite,
+                    proposal_url: publish_result.proposal_url(),
+                    mode: effective_mode,
+                    main_branch_url: publish_result.target_branch_url(),
+                    main_branch_browse_url: publish_result
+                        .target_branch_web_url()
+                        .map(|u| u.as_str()),
+                    branch_name: Some(publish_result.branch_name()),
+                    result_code: "success",
+                    result: run.result.as_ref(),
+                    role,
+                    run_id: &run.id,
+                    publish_delay: Some(publish_delay_secs),
+                };
                 let payload = serde_json::to_string(&entry)?;
                 manager
                     .publisher()

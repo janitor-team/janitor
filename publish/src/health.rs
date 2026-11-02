@@ -44,7 +44,24 @@ pub struct ComponentHealth {
     pub error: Option<String>,
     /// Additional structured details.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub details: Option<serde_json::Value>,
+    pub details: Option<ComponentDetails>,
+}
+
+/// Component-specific details attached to a [`ComponentHealth`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ComponentDetails {
+    /// Connection pool figures for the database.
+    Database(DatabasePoolDetails),
+}
+
+/// Connection pool figures reported by [`DatabaseHealthChecker`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabasePoolDetails {
+    /// Number of connections currently in the pool, active or idle.
+    pub pool_size: u32,
+    /// Number of idle connections in the pool.
+    pub idle_connections: usize,
 }
 
 /// Trait implemented by things that can answer health / liveness / readiness
@@ -154,9 +171,9 @@ impl ComponentChecker for DatabaseHealthChecker {
                 name: self.name().to_string(),
                 status: HealthStatus::Healthy,
                 error: None,
-                details: Some(serde_json::json!({
-                    "pool_size": self.pool.size(),
-                    "idle_connections": self.pool.num_idle(),
+                details: Some(ComponentDetails::Database(DatabasePoolDetails {
+                    pool_size: self.pool.size(),
+                    idle_connections: self.pool.num_idle(),
                 })),
             },
             Err(e) => ComponentHealth {

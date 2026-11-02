@@ -5,8 +5,9 @@
 
 use std::sync::Arc;
 
+use janitor::publish::Mode;
 use janitor::redis::{PubSubMessage, RedisManager};
-use janitor::{Campaign, CodebaseName, RunId};
+use janitor::{Campaign, CodebaseName, PublishId, RunId};
 use log::{debug, error, info};
 use redis::aio::ConnectionManager;
 use tokio::sync::mpsc;
@@ -139,6 +140,60 @@ impl PubSubMessage for MergeProposalEvent {
     fn channel() -> &'static str {
         "merge-proposal"
     }
+}
+
+/// Message published on the `publish` channel after a publish attempt
+/// that produced a result.
+#[derive(Debug, serde::Serialize)]
+pub struct PublishResultMessage<'a> {
+    /// Identifier of the publish row.
+    pub id: &'a PublishId,
+    /// Codebase that was published.
+    pub codebase: &'a CodebaseName,
+    /// Campaign the run belongs to.
+    pub campaign: &'a Campaign,
+    /// URL of the merge proposal, if one was created or updated.
+    pub proposal_url: Option<&'a url::Url>,
+    /// Effective publish mode.
+    pub mode: Mode,
+    /// URL of the target branch.
+    pub main_branch_url: &'a url::Url,
+    /// Browsable URL of the target branch.
+    pub main_branch_browse_url: Option<&'a str>,
+    /// Name of the published branch.
+    pub branch_name: Option<&'a str>,
+    /// Result code of the publish attempt.
+    pub result_code: &'a str,
+    /// Codemod result of the run.
+    pub result: Option<&'a serde_json::Value>,
+    /// Branch role that was published.
+    pub role: &'a str,
+    /// Run that was published.
+    pub run_id: &'a RunId,
+    /// Seconds between the run finishing and it being published.
+    pub publish_delay: Option<f64>,
+}
+
+/// Message published on the `publish` channel when publishing a run
+/// failed.
+#[derive(Debug, serde::Serialize)]
+pub struct PublishFailureMessage<'a> {
+    /// Identifier of the publish row.
+    pub id: &'a PublishId,
+    /// Requested publish mode.
+    pub mode: Mode,
+    /// Failure code.
+    pub result_code: &'a str,
+    /// Human-readable failure description.
+    pub description: &'a str,
+    /// Campaign the run belongs to.
+    pub campaign: &'a Campaign,
+    /// URL of the target branch.
+    pub main_branch_url: &'a url::Url,
+    /// Codemod result of the run.
+    pub result: Option<&'a serde_json::Value>,
+    /// Codebase of the run.
+    pub codebase: &'a CodebaseName,
 }
 
 /// Message broadcast by the runner on the `publish-status` channel
