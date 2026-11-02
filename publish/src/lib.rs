@@ -2496,12 +2496,19 @@ pub async fn publish_from_policy(
         None
     };
 
-    // Scoped hack: skip the binary diff requirement when the control run
-    // failed with the metadata-invalid error on the lintian-fixes campaign.
+    // No binary diff for lintian-fixes when the control run failed on invalid upstream metadata.
     let mut require_binary_diff = require_binary_diff;
-    if let Some((_, ref code)) = unchanged_run {
-        if code == "debian-upstream-metadata-invalid" && run.campaign == "lintian-fixes" {
-            require_binary_diff = false;
+    if require_binary_diff && run.campaign == "lintian-fixes" && unchanged_run.is_none() {
+        if let Some(br) = base_revision.as_ref() {
+            require_binary_diff = !sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS (SELECT 1 FROM last_runs \
+                 WHERE codebase = $1 AND revision = $2 AND campaign = 'control' \
+                 AND result_code = 'debian-upstream-metadata-invalid')",
+            )
+            .bind(&run.codebase)
+            .bind(br.to_string())
+            .fetch_one(conn)
+            .await?;
         }
     }
 
