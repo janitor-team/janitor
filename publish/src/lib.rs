@@ -214,13 +214,12 @@ pub async fn handle_publish_failure(
 
     let main_branch_revision_str = run.main_branch_revision.as_ref().map(|r| r.to_string());
 
-    // Lookup the most recent successful unchanged/control run for this
-    // codebase at the same upstream revision, used by the
-    // missing-build-diff-control branch below.
+    // Look up the control run for this codebase at the same upstream
+    // revision, used by the missing-build-diff-control branch below.
     let unchanged_run: Option<(String, String)> = if let Some(rev) = &main_branch_revision_str {
         sqlx::query_as::<_, (String, String)>(
             "SELECT result_code, revision FROM last_runs \
-             WHERE revision = $2 AND codebase = $1 AND result_code = 'success'",
+             WHERE revision = $2 AND codebase = $1 AND suite = 'control'",
         )
         .bind(&run.codebase)
         .bind(rev)
