@@ -297,6 +297,9 @@ WHERE followup.origin = $1""",
         else:
             primary_log = None
 
+    if run.get("failure_stage") == "assign":
+        primary_log = None
+
     if primary_log == "dist":
         logf = await get_log(DIST_LOG_FILENAME)
         line_count, include_lines, highlight_lines = find_dist_log_failure(
