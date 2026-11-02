@@ -92,7 +92,8 @@ token" in the sidebar of the cupboard pages. A token lasts 180 days, or
 fewer if you enter fewer days next to the button. The site shows the new
 token once and keeps only its sha256 hash. Send it as an
 `Authorization: Bearer <token>` header to act as the user who made it.
-Once a token expires, the site answers 401.
+`janitor-admin --token <token>` sends the header for you. Once a token
+expires, the site answers 401.
 `GET /api-tokens` lists your tokens by hash, creation and expiry time, and
 `DELETE /api-tokens/<hash>` deletes one.
 
