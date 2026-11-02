@@ -228,6 +228,11 @@ impl Campaign {
     }
 
     #[getter]
+    pub fn publish_successful_only(&self) -> bool {
+        self.0.publish_successful_only.unwrap_or(false)
+    }
+
+    #[getter]
     pub fn bugtracker(&self) -> Vec<BugTracker> {
         self.0
             .bugtracker

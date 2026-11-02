@@ -110,6 +110,9 @@ campaign {
   # starting from an empty tree instead of aborting as not-in-vcs. Optional;
   # defaults to false.
   # default_empty: false
+  # Only offer to publish or merge the changes of successful runs on the
+  # site. Optional; defaults to false.
+  # publish_successful_only: false
 }
 
 # The runner queues a "control" run (the unchanged branch) after each successful run.
