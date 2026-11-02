@@ -76,8 +76,7 @@ pub struct PackageScanner {
 impl PackageScanner {
     /// Create a new package scanner from an artifact-manager URL.
     ///
-    /// The location is passed straight to `get_artifact_manager`, so
-    /// it is either a `gs://` URL or a local path.
+    /// The location is passed straight to `get_artifact_manager`.
     pub async fn new(artifact_location: &str) -> ArchiveResult<Self> {
         Self::with_cache(artifact_location, None).await
     }
