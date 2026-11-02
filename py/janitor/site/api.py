@@ -16,6 +16,7 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
 import asyncio
+import logging
 from typing import Optional
 
 import aiozipkin
@@ -37,6 +38,7 @@ from yarl import URL
 
 from janitor.config import Config
 
+from ..logs import LogRetrievalError
 from ..vcs import VcsManager
 from . import (
     BuildDiffUnavailable,
@@ -440,6 +442,44 @@ async def handle_archive_diff(request):
         content_type=content_type,
         headers={"Vary": "Accept"},
     )
+
+
+@docs()
+@routes.get("/run/{run_id}/logs", name="run-logs")
+async def handle_run_logs(request):
+    run_id = request.match_info["run_id"]
+    async with request.app["pool"].acquire() as conn:
+        logfilenames = await conn.fetchval(
+            "SELECT logfilenames FROM run WHERE id = $1", run_id
+        )
+    if logfilenames is None:
+        raise web.HTTPNotFound(text=f"No such run: {run_id}")
+    return web.json_response(logfilenames)
+
+
+@docs()
+@routes.get("/run/{run_id}/logs/{filename}", name="run-log-file")
+async def handle_run_log_file(request):
+    run_id = request.match_info["run_id"]
+    filename = request.match_info["filename"]
+    async with request.app["pool"].acquire() as conn:
+        run = await conn.fetchrow(
+            "SELECT codebase, logfilenames FROM run WHERE id = $1", run_id
+        )
+    if run is None or filename not in run["logfilenames"]:
+        raise web.HTTPNotFound(text=f"No log file {filename} for run {run_id}")
+    try:
+        logfile = await request.app["logfile_manager"].get_log(
+            run["codebase"], run_id, filename
+        )
+    except FileNotFoundError as e:
+        raise web.HTTPNotFound(text=f"No log file {filename} for run {run_id}") from e
+    except (PermissionError, LogRetrievalError) as e:
+        logging.warning("Unable to read log %s for run %s: %s", filename, run_id, e)
+        raise web.HTTPBadGateway(
+            text=f"Unable to read log file {filename} for run {run_id}"
+        ) from e
+    return web.Response(content_type="text/plain", charset="utf-8", body=logfile)
 
 
 @docs()
