@@ -810,22 +810,23 @@ pub fn run_worker(
                 Some(Box::new(tag_selector)),
                 possible_transports,
             ) {
-                Err(
-                    e @ BrzError::InvalidHttpResponse(..)
-                    | e @ BrzError::IncompleteRead(..)
-                    | e @ BrzError::UnexpectedHttpStatus { .. }
-                    | e @ BrzError::TransportError(..)
-                    | e @ BrzError::TransportNotPossible(..)
-                    | e @ BrzError::RemoteGitError(..),
-                ) => {
-                    log::warn!("unable to push to cache URL {}: {}", cached_branch_url, e);
-                }
-                Err(e) => {
-                    panic!(
-                        "Unexpected error pushing to cache URL {}: {}",
-                        cached_branch_url, e
-                    );
-                }
+                Err(e) => match cache_push_error_kind(&e) {
+                    Some(CachePushError::Transient) => {
+                        log::warn!("unable to push to cache URL {}: {}", cached_branch_url, e);
+                    }
+                    Some(CachePushError::Permanent) => {
+                        return Err(push_error_to_worker_failure(
+                            e,
+                            vec!["result-cache".to_owned()],
+                        ));
+                    }
+                    None => {
+                        panic!(
+                            "Unexpected error pushing to cache URL {}: {}",
+                            cached_branch_url, e
+                        );
+                    }
+                },
                 Ok(_) => {
                     log::info!("Pushed packaging branch cache to {}", cached_branch_url);
                 }
@@ -1051,6 +1052,30 @@ pub async fn process_single_item(
     Ok(())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum CachePushError {
+    /// Worth trying again on the next run.
+    Transient,
+    /// The next run would fail the same way, so the run fails.
+    Permanent,
+}
+
+/// Sorts a cache push error, giving None for errors not seen before.
+fn cache_push_error_kind(e: &BrzError) -> Option<CachePushError> {
+    match e {
+        BrzError::InvalidHttpResponse(..)
+        | BrzError::IncompleteRead(..)
+        | BrzError::UnexpectedHttpStatus { .. }
+        | BrzError::TransportError(..)
+        | BrzError::TransportNotPossible(..)
+        | BrzError::RemoteGitError(..)
+        | BrzError::ConnectionError(..) => Some(CachePushError::Transient),
+        // e.g. a TLS failure
+        BrzError::Socket(..) => Some(CachePushError::Permanent),
+        _ => None,
+    }
+}
+
 fn push_error_to_worker_failure(e: BrzError, stage: Vec<String>) -> WorkerFailure {
     match e {
         BrzError::UnexpectedHttpStatus {
@@ -1166,6 +1191,25 @@ mod tests {
                 "Script foobar failed to run with code 1",
                 ["codemod"]
             )
+        );
+    }
+
+    #[test]
+    fn test_cache_push_error_kind() {
+        let errors = [
+            BrzError::ConnectionError("Connection refused".to_string()),
+            BrzError::TransportError("Broken pipe".to_string()),
+            BrzError::Socket(std::io::Error::from_raw_os_error(1), None),
+            BrzError::NoSuchFile(PathBuf::from("/srv/cache")),
+        ];
+        assert_eq!(
+            errors.iter().map(cache_push_error_kind).collect::<Vec<_>>(),
+            vec![
+                Some(CachePushError::Transient),
+                Some(CachePushError::Transient),
+                Some(CachePushError::Permanent),
+                None,
+            ]
         );
     }
 
