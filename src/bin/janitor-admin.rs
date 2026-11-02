@@ -3,7 +3,7 @@
 //! Talks to a running janitor site instance over its public HTTP API.
 
 use clap::{Args, Parser, Subcommand};
-use janitor::{Campaign, RunId};
+use janitor::{Campaign, CodebaseName, RunId};
 use reqwest::{Client, RequestBuilder, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -152,6 +152,13 @@ struct AddWorkerResponse {
     name: String,
     link: Option<String>,
     password: String,
+}
+
+/// One entry of the `cupboard/api/mass-reschedule` response.
+#[derive(Debug, Deserialize)]
+struct MassRescheduleEntry {
+    codebase: CodebaseName,
+    campaign: Campaign,
 }
 
 struct ApiClient {
@@ -318,12 +325,10 @@ async fn cmd_reschedule(client: &ApiClient, args: &RescheduleArgs) -> Result<(),
         .await
         .map_err(|e| e.to_string())?;
     let resp = expect_success(resp).await?;
-    let scheduled: Vec<Value> = resp.json().await.map_err(|e| e.to_string())?;
+    let scheduled: Vec<MassRescheduleEntry> = resp.json().await.map_err(|e| e.to_string())?;
     println!("Queued {} run(s) for reschedule.", scheduled.len());
     for entry in scheduled {
-        let codebase = entry.get("codebase").and_then(Value::as_str).unwrap_or("?");
-        let campaign = entry.get("campaign").and_then(Value::as_str).unwrap_or("?");
-        println!("  {} / {}", codebase, campaign);
+        println!("  {} / {}", entry.codebase, entry.campaign);
     }
     Ok(())
 }

@@ -348,23 +348,21 @@ impl JanitorError {
     }
 
     /// Get service-specific error details
-    pub fn error_details(&self) -> Option<serde_json::Value> {
+    pub fn error_details(&self) -> Option<ErrorDetails> {
         match self {
-            Self::NotFound { resource, id } => Some(serde_json::json!({
-                "resource_type": resource,
-                "resource_id": id
-            })),
-            Self::AlreadyExists { resource, id } => Some(serde_json::json!({
-                "resource_type": resource,
-                "resource_id": id
-            })),
-            Self::ExternalService { service, .. } => Some(serde_json::json!({
-                "service": service
-            })),
-            Self::Process { command, .. } => Some(serde_json::json!({
-                "command": command,
-                "failure_reason": "process execution failed"
-            })),
+            Self::NotFound { resource, id } | Self::AlreadyExists { resource, id } => {
+                Some(ErrorDetails::Resource {
+                    resource_type: resource.clone(),
+                    resource_id: id.clone(),
+                })
+            }
+            Self::ExternalService { service, .. } => Some(ErrorDetails::ExternalService {
+                service: service.clone(),
+            }),
+            Self::Process { command, .. } => Some(ErrorDetails::Process {
+                command: command.clone(),
+                failure_reason: "process execution failed",
+            }),
             _ => None,
         }
     }
@@ -416,6 +414,23 @@ pub struct StandardErrorResponse {
     pub service: Option<String>,
 }
 
+/// Service-specific details attached to an error response.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(untagged)]
+pub enum ErrorDetails {
+    Resource {
+        resource_type: String,
+        resource_id: String,
+    },
+    ExternalService {
+        service: String,
+    },
+    Process {
+        command: String,
+        failure_reason: &'static str,
+    },
+}
+
 /// Detailed error information
 #[derive(serde::Serialize)]
 pub struct ErrorInfo {
@@ -424,7 +439,7 @@ pub struct ErrorInfo {
     pub message: String, // Human-readable message
     pub transient: bool, // Whether retry makes sense
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub details: Option<serde_json::Value>, // Service-specific details
+    pub details: Option<ErrorDetails>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub help_url: Option<String>, // Link to documentation
 }
@@ -481,7 +496,7 @@ impl StandardErrorResponse {
     }
 
     /// Add service-specific error details
-    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+    pub fn with_details(mut self, details: ErrorDetails) -> Self {
         self.error.details = Some(details);
         self
     }
@@ -904,16 +919,35 @@ mod tests {
     #[test]
     fn test_error_details() {
         let err = JanitorError::not_found("run", "test-123");
-        let details = err.error_details().unwrap();
-        assert_eq!(details["resource_type"], "run");
-        assert_eq!(details["resource_id"], "test-123");
+        assert_eq!(
+            err.error_details(),
+            Some(ErrorDetails::Resource {
+                resource_type: "run".to_string(),
+                resource_id: "test-123".to_string(),
+            })
+        );
 
         let process_err = JanitorError::process("cargo build", "compilation failed");
-        let process_details = process_err.error_details().unwrap();
-        assert_eq!(process_details["command"], "cargo build");
         assert_eq!(
-            process_details["failure_reason"],
-            "process execution failed"
+            process_err.error_details(),
+            Some(ErrorDetails::Process {
+                command: "cargo build".to_string(),
+                failure_reason: "process execution failed",
+            })
+        );
+    }
+
+    #[test]
+    fn test_error_details_serialization() {
+        let details = JanitorError::not_found("run", "test-123").error_details();
+        assert_eq!(
+            serde_json::to_string(&details).unwrap(),
+            r#"{"resource_type":"run","resource_id":"test-123"}"#
+        );
+        let details = JanitorError::process("make", "boom").error_details();
+        assert_eq!(
+            serde_json::to_string(&details).unwrap(),
+            r#"{"command":"make","failure_reason":"process execution failed"}"#
         );
     }
 
@@ -1033,12 +1067,19 @@ mod tests {
             StandardErrorResponse::new("validation", "INVALID_INPUT", "Input is required", false)
                 .with_request_id("req-123".to_string())
                 .with_service("runner".to_string())
-                .with_details(serde_json::json!({"field": "name", "constraint": "required"}))
+                .with_details(ErrorDetails::ExternalService {
+                    service: "vcs".to_string(),
+                })
                 .with_help_url("https://docs.example.com/validation".to_string());
 
         assert_eq!(response.request_id, Some("req-123".to_string()));
         assert_eq!(response.service, Some("runner".to_string()));
-        assert_eq!(response.error.details.unwrap()["field"], "name");
+        assert_eq!(
+            response.error.details,
+            Some(ErrorDetails::ExternalService {
+                service: "vcs".to_string()
+            })
+        );
         assert_eq!(
             response.error.help_url,
             Some("https://docs.example.com/validation".to_string())
