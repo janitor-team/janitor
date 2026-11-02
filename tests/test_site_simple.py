@@ -415,3 +415,20 @@ async def test_result_file_unreadable_log_returns_502(tmp_path):
     with pytest.raises(web.HTTPBadGateway) as e:
         await handle_result_file(request)
     assert str(e.value.__cause__) == "Unable to read build.log"
+
+
+async def test_oauth_callback_clears_state_cookie_with_matching_path(
+    aiohttp_client, aiohttp_server, database_location
+):
+    provider = await _start_provider(
+        aiohttp_server, userinfo={"email": "alice@example.com", "groups": []}
+    )
+    client = await _openid_site(aiohttp_client, database_location, provider)
+    resp = await _callback(client)
+    state = resp.cookies["state"]
+    assert (resp.status, state.value, state["path"], state["max-age"]) == (
+        302,
+        "",
+        "/oauth/callback",
+        "0",
+    )
