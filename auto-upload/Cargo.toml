@@ -19,6 +19,7 @@ tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2.0"
 prometheus = { version = "0.13", features = ["process"] }
+lazy_static = "1.4"
 tempfile = { workspace = true }
 silver-platter = { workspace = true, features = ["debian"] }
 janitor = { path = "..", features = ["debian"] }

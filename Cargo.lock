@@ -3344,6 +3344,7 @@ dependencies = [
  "janitor",
  "janitor-service",
  "janitor-types",
+ "lazy_static",
  "nix",
  "prometheus 0.13.4",
  "redis 1.7.0",
