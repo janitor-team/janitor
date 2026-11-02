@@ -302,7 +302,6 @@ async def handle_codebase_names(request):
 
 @docs()
 @routes.get("/run/{run_id}/diff", name="run-diff")
-@routes.get("/run/{run_id}/diff/{role}", name="run-diff-role")
 async def handle_diff(request):
     role = request.query.get("role", "main")
     run_id = request.match_info["run_id"]
