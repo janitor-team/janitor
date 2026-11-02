@@ -1,14 +1,18 @@
 # Logs location; can be:
 #  + a local file path
 #  + a GCS location (gs://BUCKET-NAME/)
-#  + a S3 location (s3://BUCKET-NAME[/PREFIX]), with the endpoint,
+#  + an S3 location (s3://BUCKET-NAME[/PREFIX]), with the endpoint,
 #    credentials and region read from the AWS_ENDPOINT_URL,
 #    AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_REGION variables
+#  + any other URL that object_store supports
 logs_location: "s3://janitor-logs"
 
 # Artifact location: used to store build results. Can be:
 #  + a local file path
 #  + a GCS location (gs://BUCKET-NAME/)
+#  + an S3 location (s3://BUCKET-NAME[/PREFIX]), set up from the same AWS_*
+#    variables as logs_location
+#  + any other URL that object_store supports
 artifact_location: "/home/janitor/artifacts"
 
 # Database location: must be a valid postgresql URL

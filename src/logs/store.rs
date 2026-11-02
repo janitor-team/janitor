@@ -87,24 +87,6 @@ impl LogFileManager {
         Ok(Self::new(Arc::new(store)))
     }
 
-    /// Create a manager storing logs in an S3 bucket, given as
-    /// `s3://bucket[/prefix]`.
-    ///
-    /// The endpoint, region and credentials are picked up from the `AWS_*`
-    /// environment variables.
-    pub fn s3(location: &str) -> Result<Self, Error> {
-        let url = url::Url::parse(location)
-            .map_err(|e| Error::Other(format!("Invalid S3 URL {}: {}", location, e)))?;
-        let prefix = ObjectPath::from_url_path(url.path()).map_err(object_store::Error::from)?;
-        let store = object_store::aws::AmazonS3Builder::from_env()
-            .with_url(location)
-            .with_allow_http(true)
-            .build()?;
-        Ok(Self::new(Arc::new(object_store::prefix::PrefixStore::new(
-            store, prefix,
-        ))))
-    }
-
     async fn find_log(
         &self,
         codebase: &CodebaseName,
