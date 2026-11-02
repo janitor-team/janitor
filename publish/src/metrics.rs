@@ -135,6 +135,7 @@ pub fn install() {
 fn register() {
     describe();
     crate::middleware::describe_metrics();
+    janitor::schedule::describe_metrics();
     for name in [
         NEW_MERGE_PROPOSAL_COUNT,
         EXPONENTIAL_BACKOFF_COUNT,
