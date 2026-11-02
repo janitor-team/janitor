@@ -536,6 +536,14 @@ CREATE OR REPLACE TRIGGER expire_site_session_delete_old_rows_trigger
    AFTER INSERT ON site_session
    EXECUTE FUNCTION expire_site_session_delete_old_rows();
 
+CREATE TABLE site_api_token (
+  hash text primary key,
+  owner text not null,
+  userinfo json not null,
+  created timestamp not null default now(),
+  expires_at timestamp not null
+);
+
 CREATE OR REPLACE VIEW queue_positions AS SELECT
     id,
     codebase,

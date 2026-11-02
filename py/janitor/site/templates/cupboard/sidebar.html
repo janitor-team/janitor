@@ -12,6 +12,11 @@
             <form action="/logout" method="post">
                 <input type="submit" value="Log out" />
             </form>
+            <form method="post" action="/api-tokens">
+                <input type="number" name="days" min="1" max="180" value="180" />
+                days
+                <input type="submit" value="Create API token" />
+            </form>
         {% else %}
             {% include "login.html" %}
         {% endif %}

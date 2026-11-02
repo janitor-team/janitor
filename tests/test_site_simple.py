@@ -16,6 +16,7 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
 import asyncio
+import hashlib
 import json
 import tempfile
 
@@ -408,6 +409,75 @@ async def test_oauth_callback_defaults_missing_groups_claim(
     )
     stored = await _get_session(client, session_id)
     assert (resp.status, page.status, stored["groups"]) == (302, 200, groups)
+
+
+async def test_api_tokens(aiohttp_client, aiohttp_server, database_location):
+    alice = {"sub": "alice", "groups": ["admins"]}
+    provider = await _start_provider(aiohttp_server, userinfo=alice)
+    client = await _openid_site(
+        aiohttp_client, database_location, provider, groups='admin_group: "admins"'
+    )
+    cookie = (await _callback(client)).cookies["session_id"]
+    alice_session = {"session_id": cookie.value}
+    async with client.app.database.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO site_session (id, userinfo) VALUES ('bob', $1)",
+            {"sub": "bob", "groups": []},
+        )
+    bob_session = {"session_id": "bob"}
+
+    async def call(method, path, cookies=None, token=None, data=None):
+        headers = {} if token is None else {"Authorization": f"Bearer {token}"}
+        resp = await client.request(
+            method, path, cookies=cookies, headers=headers, data=data
+        )
+        return resp.status, await resp.text()
+
+    async def create(days):
+        resp = await client.post(
+            "/api-tokens", cookies=alice_session, data={"days": days}
+        )
+        soup = BeautifulSoup(await resp.text(), "html.parser")
+        return resp.status, soup.find(id="token").get_text()
+
+    (status, token), (_, short_token) = await create(""), await create("1")
+    tokens = await (await client.get("/api-tokens", cookies=alice_session)).json()
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    short_hash = hashlib.sha256(short_token.encode()).hexdigest()
+    async with client.app.database.acquire() as conn:
+        lifetimes = await conn.fetch(
+            "SELECT (expires_at - created)::text FROM site_api_token ORDER BY created"
+        )
+        await conn.execute(
+            "UPDATE site_api_token SET expires_at = NOW() - INTERVAL '1 second' "
+            "WHERE hash = $1",
+            short_hash,
+        )
+    assert status == 201
+    assert [t["hash"] for t in tokens] == [token_hash, short_hash]
+    assert [r[0] for r in lifetimes] == ["180 days", "1 day"]
+    path = f"/api-tokens/{token_hash}"
+    assert [
+        await call("GET", "/cupboard/api/workers", token=token),
+        await call("GET", "/cupboard/api/workers", token=short_token),
+        await call("GET", "/cupboard/api/workers", token="the-access-token"),
+        await call("POST", "/api-tokens", token=token),
+        await call("POST", "/api-tokens", cookies=alice_session, data={"days": 181}),
+        await call("GET", "/api-tokens", cookies=bob_session),
+        await call("DELETE", path, cookies=bob_session),
+        await call("DELETE", path, cookies=alice_session),
+        await call("GET", "/cupboard/api/workers", token=token),
+    ] == [
+        (200, "[]"),
+        (401, "token expired"),
+        (401, "invalid token"),
+        (401, "401: Unauthorized"),
+        (400, "days must be from 1 to 180"),
+        (200, "[]"),
+        (404, "no such token"),
+        (204, ""),
+        (401, "invalid token"),
+    ]
 
 
 async def test_result_file_unreadable_log_returns_502(tmp_path):
