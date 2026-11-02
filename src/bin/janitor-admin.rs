@@ -12,19 +12,15 @@ use std::io::Write;
 use std::process::ExitCode;
 
 #[derive(Parser)]
-#[command(version, about = "Administer a janitor instance over its HTTP API")]
+#[command(
+    version,
+    about = "Administer a janitor instance over its HTTP API",
+    after_help = "Set JANITOR_TOKEN to an API token created at the site's /api-tokens."
+)]
 struct Cli {
     /// Base URL of the janitor site (e.g. https://janitor.debian.net).
     #[arg(long, env = "JANITOR_URL")]
     url: Url,
-
-    /// Username for HTTP basic auth (admin).
-    #[arg(long, env = "JANITOR_USER")]
-    user: Option<String>,
-
-    /// Password for HTTP basic auth (admin).
-    #[arg(long, env = "JANITOR_PASSWORD")]
-    password: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -157,25 +153,23 @@ struct AddWorkerResponse {
 struct ApiClient {
     http: Client,
     base: Url,
-    user: Option<String>,
-    password: Option<String>,
+    token: Option<String>,
 }
 
 impl ApiClient {
-    fn new(base: Url, user: Option<String>, password: Option<String>) -> reqwest::Result<Self> {
+    fn new(base: Url, token: Option<String>) -> reqwest::Result<Self> {
         Ok(Self {
             http: Client::builder().build()?,
             base,
-            user,
-            password,
+            token,
         })
     }
 
     fn request(&self, method: reqwest::Method, path: &str) -> Result<RequestBuilder, String> {
         let url = api_url(&self.base, path).map_err(|e| e.to_string())?;
         let mut req = self.http.request(method, url);
-        if let Some(user) = &self.user {
-            req = req.basic_auth(user, self.password.as_deref());
+        if let Some(token) = &self.token {
+            req = req.bearer_auth(token);
         }
         Ok(req)
     }
@@ -391,7 +385,7 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
     cli.logging.init();
 
-    let client = match ApiClient::new(cli.url, cli.user, cli.password) {
+    let client = match ApiClient::new(cli.url, std::env::var("JANITOR_TOKEN").ok()) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("failed to build HTTP client: {}", e);
