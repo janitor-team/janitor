@@ -42,14 +42,9 @@ reqwest = { workspace = true, features = ["json", "query"] }
 debian-control.workspace = true
 shlex.workspace = true
 prometheus = { version = "0.14.0", features = ["reqwest"] }
-buildlog-consultant = { workspace = true }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-tracing-appender = "0.2"
 redis = { workspace = true }
-axum = { workspace = true }
-rand = "0.9"
-base64 = ">=0.22,<0.24"
 pyo3 = { workspace = true, features = ["auto-initialize"] }
 opentelemetry = { version = "0.33", optional = true }
 opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"], optional = true }
@@ -103,7 +98,6 @@ pyo3-filelike = "0.5"
 pyo3-async-runtimes = "0.30"
 tower = "0.5"
 tracing = "0.1"
-base64 = "0.22"
 sequoia-openpgp = { version = "2.4", default-features = false, features = ["crypto-nettle"] }
 nix = ">=0.30,<0.32"
 askama = ">=0.15,<0.17"
