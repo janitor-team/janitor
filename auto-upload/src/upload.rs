@@ -10,7 +10,7 @@ use silver_platter::debian::uploader as sp_uploader;
 use tracing::info;
 
 use crate::error::{Result, UploadError};
-use crate::{DEBSIGN_FAILED_COUNT, UPLOAD_FAILED_COUNT};
+use crate::{DEBSIGN_FAILURES_TOTAL, UPLOAD_FAILURES_TOTAL};
 
 /// Sign the `.changes` file at `changes_path` with `debsign`, optionally
 /// under GPG key `keyid`.
@@ -23,7 +23,7 @@ pub async fn sign_package(changes_path: &Path, keyid: Option<&str>) -> Result<()
         .await
         .map_err(|e| UploadError::DebsignFailure(format!("debsign task panicked: {}", e)))?
         .map_err(|e| {
-            metrics::counter!(DEBSIGN_FAILED_COUNT).increment(1);
+            metrics::counter!(DEBSIGN_FAILURES_TOTAL).increment(1);
             match e {
                 sp_uploader::SignError::Failed(msg) => UploadError::DebsignFailure(msg),
                 sp_uploader::SignError::IOError(e) => UploadError::Io(e),
@@ -47,7 +47,7 @@ pub async fn upload_package(changes_path: &Path, dput_host: Option<&str>) -> Res
         .await
         .map_err(|e| UploadError::DputFailure(format!("dput task panicked: {}", e)))?
         .map_err(|e| {
-            metrics::counter!(UPLOAD_FAILED_COUNT).increment(1);
+            metrics::counter!(UPLOAD_FAILURES_TOTAL).increment(1);
             match e {
                 sp_uploader::UploadError::Failed(msg) => UploadError::DputFailure(msg),
                 sp_uploader::UploadError::IOError(e) => UploadError::Io(e),
@@ -186,7 +186,7 @@ mod tests {
         }
         assert_eq!(
             snapshot,
-            Snapshot::from([("debsign_failed".to_string(), Value::Counter(1))])
+            Snapshot::from([(crate::DEBSIGN_FAILURES_TOTAL.to_string(), Value::Counter(1))])
         );
     }
 
@@ -218,7 +218,7 @@ mod tests {
         }
         assert_eq!(
             snapshot,
-            Snapshot::from([("upload_failed".to_string(), Value::Counter(1))])
+            Snapshot::from([(crate::UPLOAD_FAILURES_TOTAL.to_string(), Value::Counter(1))])
         );
     }
 }
