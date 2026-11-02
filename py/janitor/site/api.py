@@ -57,6 +57,7 @@ from . import (
     is_qa_reviewer,
     serve_run_log,
 )
+from .api_tokens import api_token_middleware
 from .common import render_template_for_request
 from .setup import setup_postgres
 
@@ -925,7 +926,7 @@ def create_app(
     db=None,
 ) -> web.Application:
     trailing_slash_redirect = normalize_path_middleware(append_slash=True)
-    app = web.Application(middlewares=[trailing_slash_redirect])
+    app = web.Application(middlewares=[trailing_slash_redirect, api_token_middleware])
     app.router.add_routes(routes)
 
     async def persistent_session(app):

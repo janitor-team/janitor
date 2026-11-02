@@ -36,6 +36,7 @@ from yarl import URL
 from janitor import CAMPAIGN_REGEX, utcnow, version_string
 
 from .. import check_admin, worker_link_is_global
+from ..api_tokens import api_token_middleware
 from ..setup import setup_logfile_manager, setup_postgres
 
 BUILD_LOG_FILENAME = "build.log"
@@ -591,7 +592,7 @@ async def handle_workers_delete(request):
 
 
 def create_app(*, config, publisher_url, runner_url, trace_configs=None, db=None):
-    app = web.Application()
+    app = web.Application(middlewares=[api_token_middleware])
     app["config"] = config
     app.router.add_routes(routes)
 
