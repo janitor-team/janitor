@@ -24,6 +24,7 @@ async-trait = "0.1.88"
 url.workspace = true
 debversion = { workspace = true, optional = true, features = ["sqlx"] }
 debian-control = { version = "0.3.13", optional = true }
+sha2 = { version = "0.10", optional = true }
 log.workspace = true
 silver-platter = { workspace = true, features = ["debian"] }
 reqwest.workspace = true
@@ -56,7 +57,7 @@ futures = "0.3"
 
 [features]
 default = ["debian", "cli"]
-debian = ["janitor/debian", "dep:debversion", "dep:debian-control"]
+debian = ["janitor/debian", "dep:debversion", "dep:debian-control", "dep:sha2"]
 cli = ["dep:clap"]
 gcs = ["janitor/gcs"]
 gcp = ["gcs", "janitor/gcp"]
