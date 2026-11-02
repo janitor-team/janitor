@@ -76,6 +76,7 @@
             <li style="display: none">Build version: {{ run.build_version }}</li>
         </ul>
         {{ local_command(command, run.codebase, vcs_type, campaign_name) }}
+        {% set offer_publish = run.result_branches and (result_code == 'success' or not campaign.publish_successful_only) %}
         {% if branch_url or campaign.default_empty %}
             {{ reschedule_button(campaign_name, codebase, "Reschedule") }}
             {{ reschedule_button(campaign_name, codebase, "Reschedule (from scratch)", data={"refresh": "1"}, id="reschedule-refresh") }}
@@ -83,7 +84,7 @@
         {{ reprocess_logs_button(run_id) }}
         {{ file_bug_buttons(config.bugtracker, run_id, result_code, verbatim_id="#log") }}
         {{ file_bug_buttons(campaign.bugtracker, run_id, result_code, verbatim_id="#log") }}
-        {% if run.result_branches %}
+        {% if offer_publish %}
             {% if campaign_name not in ('unchanged', 'control') %}
                 {{ merge_command(run.codebase, campaign_name, run.result_branches, vcs_type) }}
             {% endif %}
