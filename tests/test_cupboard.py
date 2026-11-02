@@ -41,6 +41,7 @@ from janitor.site import (
 from janitor.site.cupboard import create_app, generate_codebase, handle_result_file
 from janitor.site.cupboard.api import create_app as create_api_app
 from janitor.site.cupboard.api import select_runs_to_reprocess
+from janitor.site.cupboard.queue import write_queue
 from janitor.site.pkg import read_log
 
 from .conftest import _insert_codebase, _insert_run
@@ -170,8 +171,49 @@ async def test_history(aiohttp_client, db):
 
 async def test_queue(aiohttp_client, db):
     client = await create_client(aiohttp_client, db)
+    client.app["runner_status"] = {
+        "processing": [
+            {
+                "queue_id": 1,
+                "id": "run-id",
+                "codebase": "sl",
+                "campaign": "lintian-fixes",
+                "estimated_duration": 120.0,
+                "current_duration": 75.5,
+                "start_time": "2026-11-02T18:00:00+00:00",
+                "worker": "worker1",
+                "worker_link": None,
+                "backchannel": {},
+            }
+        ],
+        "avoid_hosts": [],
+        "rate_limit_hosts": {"salsa.debian.org": "2099-01-01T00:00:00+00:00"},
+    }
     resp = await client.get("/cupboard/queue")
     assert resp.status == 200
+
+    result = await write_queue(db, queue_status=client.app["runner_status"])
+    processing = list(result["processing"])
+    # The current duration depends on the clock.
+    del processing[0]["current_duration"]
+    assert processing == [
+        {
+            "queue_id": 1,
+            "id": "run-id",
+            "codebase": "sl",
+            "campaign": "lintian-fixes",
+            "estimated_duration": timedelta(seconds=120),
+            "start_time": datetime(2026, 11, 2, 18, 0),
+            "worker": "worker1",
+            "worker_link": None,
+            "backchannel": {},
+        }
+    ]
+    assert (
+        result["active_queue_ids"],
+        result["avoid_hosts"],
+        result["rate_limit_hosts"],
+    ) == ({1}, [], {"salsa.debian.org": datetime(2099, 1, 1)})
 
 
 async def test_publish_history(aiohttp_client, aiohttp_server, db):
