@@ -44,13 +44,19 @@ struct Args {
     logging: janitor::logging::LoggingArgs,
 }
 
+#[derive(serde::Serialize)]
+struct DistFailure<'a> {
+    result_code: &'a str,
+    description: &'a str,
+}
+
 fn report_failure(kind: &str, description: &str) -> ! {
     log::error!("{}: {}", kind, description);
     if let Ok(path) = std::env::var("DIST_RESULT") {
-        let result = serde_json::json!({
-            "result_code": kind,
-            "description": description,
-        });
+        let result = DistFailure {
+            result_code: kind,
+            description,
+        };
         std::fs::write(path, serde_json::to_string(&result).unwrap()).unwrap();
     }
     std::process::exit(1);

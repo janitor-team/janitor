@@ -1212,10 +1212,7 @@ check:
             &Campaign::new("mycampaign").unwrap(),
             Some(&wt.branch().get_user_url()),
             &RunId::new("run-id").unwrap(),
-            &serde_json::json!({
-                "chroot": serde_json::Value::Null,
-                "dep_server_url": serde_json::Value::Null,
-            }),
+            &serde_json::to_value(janitor::api::worker::GenericBuildConfig::default()).unwrap(),
             HashMap::new(),
             vec!["sh", "-c", "echo foo > bar"],
             &output_dir,
@@ -1309,7 +1306,7 @@ check:
                 tags: vec![],
                 target: Some(janitor::api::worker::TargetDetails {
                     name: "generic".to_string(),
-                    details: serde_json::json!({}),
+                    details: serde_json::to_value(crate::generic::GenericBuildResult {}).unwrap(),
                 }),
                 target_branch_url: None,
                 value: None,
@@ -1351,10 +1348,7 @@ check:
             &Campaign::new("mycampaign").unwrap(),
             Some(&wt.branch().get_user_url()),
             &RunId::new("run-id").unwrap(),
-            &serde_json::json!({
-                "chroot": serde_json::Value::Null,
-                "dep_server_url": serde_json::Value::Null,
-            }),
+            &serde_json::to_value(janitor::api::worker::GenericBuildConfig::default()).unwrap(),
             HashMap::new(),
             vec!["sh", "-c", "echo foo > bar"],
             &output_dir,

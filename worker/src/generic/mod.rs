@@ -11,6 +11,10 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
 
+/// Target details for a successful generic build.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct GenericBuildResult {}
+
 pub fn generic_make_changes(
     local_tree: &breezyshim::workingtree::GenericWorkingTree,
     subpath: &Path,
@@ -108,7 +112,7 @@ pub fn build_from_config(
     output_directory: &std::path::Path,
     config: &GenericBuildConfig,
     _env: &HashMap<String, String>,
-) -> Result<serde_json::Value, WorkerFailure> {
+) -> Result<GenericBuildResult, WorkerFailure> {
     build(
         local_tree,
         subpath,
@@ -124,7 +128,7 @@ fn build(
     output_directory: &Path,
     schroot: Option<&str>,
     dep_server_url: Option<&url::Url>,
-) -> Result<serde_json::Value, WorkerFailure> {
+) -> Result<GenericBuildResult, WorkerFailure> {
     use ognibuild::session::Session;
     #[cfg(target_os = "linux")]
     let mut session: Box<dyn Session> = if let Some(schroot) = schroot {
@@ -372,7 +376,7 @@ fn build(
         }
     }
 
-    Ok(serde_json::json!({}))
+    Ok(GenericBuildResult {})
 }
 
 pub struct GenericTarget {
@@ -406,6 +410,7 @@ impl crate::Target for GenericTarget {
             .with_transient(false)
         })?;
         build_from_config(local_tree, subpath, output_directory, &config, &self.env)
+            .map(|x| serde_json::to_value(x).unwrap())
     }
 
     fn validate(

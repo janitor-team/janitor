@@ -577,10 +577,11 @@ mod tests {
             .validate(
                 &tree,
                 std::path::Path::new(""),
-                &serde_json::json!({
-                    "lintian": {},
-                    "base-apt-repository": "nonsense",
-                }),
+                &serde_json::to_value(DebianBuildConfig {
+                    apt_repository: Some("nonsense".to_string()),
+                    ..Default::default()
+                })
+                .unwrap(),
             )
             .unwrap_err();
 

@@ -4,8 +4,47 @@ use janitor::api::worker::{Assignment, Metadata};
 use janitor::{Campaign, CodebaseName, RunId};
 use reqwest::multipart::{Form, Part};
 use reqwest::{Error as ReqwestError, Response, StatusCode, Url};
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::path::Path;
+
+/// How the runner can reach back to the worker.
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum Backchannel<'a> {
+    Http { url: &'a Url },
+    Jenkins { url: &'a Url },
+}
+
+/// Body of a request for a new assignment.
+#[derive(Debug, Serialize)]
+struct AssignRequest<'a> {
+    node: &'a str,
+    archs: Vec<String>,
+    worker_link: Option<&'a Url>,
+    backchannel: Option<Backchannel<'a>>,
+    codebase: Option<&'a CodebaseName>,
+    campaign: Option<&'a Campaign>,
+}
+
+/// Error body returned by the runner.
+#[derive(Debug, Serialize, Deserialize)]
+struct ReasonResponse {
+    reason: Option<String>,
+}
+
+/// Response to uploading the results of a run.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
+pub struct FinishResponse {
+    pub id: RunId,
+    /// All files the runner received.
+    pub filenames: Vec<String>,
+    pub logs: Vec<String>,
+    /// Stored artifact names; null when storing the artifacts failed.
+    pub artifacts: Option<Vec<String>>,
+    /// The stored run result, whose shape is up to the runner.
+    pub result: serde_json::Value,
+}
 
 #[derive(Debug)]
 pub enum AssignmentError {
@@ -47,46 +86,34 @@ pub async fn get_assignment_raw(
             )))
         }
     };
-    let mut json = serde_json::json!({
-        "node": node_name,
-        "archs": [build_arch],
-        "worker_link": null,
-        "codebase": codebase,
-        "campaign": campaign,
-    });
-    json["backchannel"] = if let Some(ref url) = my_url {
-        serde_json::json!({
-            "kind": "http",
-            "url": url.to_string(),
-        })
-    } else if let Some(url) = jenkins_build_url {
-        serde_json::json!({
-            "kind": "jenkins",
-            "url": url,
-        })
-    } else {
-        serde_json::json![null]
+    let backchannel = my_url
+        .map(|url| Backchannel::Http { url })
+        .or_else(|| jenkins_build_url.map(|url| Backchannel::Jenkins { url }));
+    let request = AssignRequest {
+        node: node_name,
+        archs: vec![build_arch],
+        worker_link: jenkins_build_url.or(my_url),
+        backchannel,
+        codebase,
+        campaign,
     };
-    if let Some(url) = jenkins_build_url.or(my_url) {
-        json["worker_link"] = serde_json::Value::String(url.to_string());
-    }
     async fn send_assignment_request(
         session: reqwest::Client,
         assign_url: Url,
         credentials: &Credentials,
-        json: &serde_json::Value,
+        request: &AssignRequest<'_>,
     ) -> Result<Response, ReqwestError> {
         let mut builder = session.post(assign_url);
         builder = credentials.set_credentials(builder);
         builder = builder.header("Content-Type", "application/json");
-        log::debug!("Sending assignment request: {:?}", json);
-        builder = builder.json(json);
+        log::debug!("Sending assignment request: {:?}", request);
+        builder = builder.json(request);
         builder.send().await
     }
     let assignment = backoff::future::retry(ExponentialBackoff::default(), || async {
         let session = session.clone();
         let assign_url = assign_url.clone();
-        match send_assignment_request(session, assign_url, credentials, &json).await {
+        match send_assignment_request(session, assign_url, credentials, &request).await {
             Ok(resp) => {
                 if resp.status().as_u16() == StatusCode::CREATED {
                     let data = resp.json::<serde_json::Value>().await.map_err(|e| {
@@ -97,17 +124,17 @@ pub async fn get_assignment_raw(
                     })?;
                     Ok(data)
                 } else if resp.status().as_u16() == 503 {
-                    let json = resp.json::<serde_json::Value>().await.map_err(|e| {
+                    let body = resp.json::<ReasonResponse>().await.map_err(|e| {
                         backoff::Error::Permanent(AssignmentError::Failure(format!(
                             "Failed to parse assignment response: {}",
                             e
                         )))
                     })?;
-                    if json["reason"] == "queue empty" {
+                    if body.reason.as_deref() == Some("queue empty") {
                         Err(backoff::Error::Permanent(AssignmentError::EmptyQueue))
                     } else {
                         Err(backoff::Error::transient(AssignmentError::Failure(
-                            format!("Failed to get assignment: {:?}", json),
+                            format!("Failed to get assignment: {:?}", body),
                         )))
                     }
                 } else if resp.status().is_server_error() {
@@ -337,7 +364,7 @@ impl Client {
         run_id: &RunId,
         metadata: &Metadata,
         output_directory: Option<&Path>,
-    ) -> Result<serde_json::Value, UploadFailure> {
+    ) -> Result<FinishResponse, UploadFailure> {
         upload_results(
             &self.client,
             &self.credentials,
@@ -419,7 +446,7 @@ pub async fn upload_results(
     run_id: &RunId,
     metadata: &Metadata,
     output_directory: Option<&Path>,
-) -> Result<serde_json::Value, UploadFailure> {
+) -> Result<FinishResponse, UploadFailure> {
     backoff::future::retry(ExponentialBackoff::default(), || async {
         let finish_url = base_url
             .join(&format!("active-runs/{}/finish", run_id))
@@ -439,19 +466,16 @@ pub async fn upload_results(
 
         match response.status() {
             StatusCode::NOT_FOUND => {
-                let resp_json = response.json::<serde_json::Value>().await.map_err(|e| {
+                let body = response.json::<ReasonResponse>().await.map_err(|e| {
                     backoff::Error::permanent(UploadFailure(format!(
                         "Error parsing 404 response: {}",
                         e
                     )))
                 })?;
-                let reason = resp_json
-                    .get("reason")
-                    .and_then(|r| r.as_str())
-                    .unwrap_or("Runner returned 404");
-                Err(backoff::Error::permanent(
-                    UploadFailure(reason.to_string()),
-                ))
+                let reason = body
+                    .reason
+                    .unwrap_or_else(|| "Runner returned 404".to_string());
+                Err(backoff::Error::permanent(UploadFailure(reason)))
             }
             StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE => {
                 let status = response.status();
@@ -468,7 +492,7 @@ pub async fn upload_results(
                 ))))
             }
             StatusCode::OK | StatusCode::CREATED => {
-                let json = response.json::<serde_json::Value>().await.map_err(|e| {
+                let finish = response.json::<FinishResponse>().await.map_err(|e| {
                     backoff::Error::permanent(UploadFailure(format!(
                         "Error parsing response: {}",
                         e
@@ -478,16 +502,8 @@ pub async fn upload_results(
                     // Use the filenames we already collected during bundle creation
                     let local_filenames = &bundle_info.filenames;
 
-                    let runner_filenames: std::collections::HashSet<_> = json
-                        .get("filenames")
-                        .and_then(|f| f.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|name| name.as_str())
-                                .map(|name| name.to_owned())
-                                .collect()
-                        })
-                        .unwrap_or_else(std::collections::HashSet::new);
+                    let runner_filenames: std::collections::HashSet<_> =
+                        finish.filenames.iter().cloned().collect();
 
                     if local_filenames != &runner_filenames {
                         log::warn!(
@@ -498,7 +514,7 @@ pub async fn upload_results(
                     }
                 }
 
-                Ok(json)
+                Ok(finish)
             }
             _ => {
                 let status = response.status();
@@ -551,7 +567,7 @@ mod tests {
         http::StatusCode as AxumStatus,
         response::IntoResponse,
         routing::post,
-        Json, Router,
+        Router,
     };
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
@@ -576,6 +592,52 @@ mod tests {
             .get_credentials("https", "github.com", None, None, None, None)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn assign_request_wire_format() {
+        let url: Url = "http://worker.example.com:8080/".parse().unwrap();
+        let request = AssignRequest {
+            node: "node1",
+            archs: vec!["amd64".to_string()],
+            worker_link: Some(&url),
+            backchannel: Some(Backchannel::Http { url: &url }),
+            codebase: None,
+            campaign: None,
+        };
+        let expected: serde_json::Value = serde_json::from_str(
+            r#"{
+                "node": "node1",
+                "archs": ["amd64"],
+                "worker_link": "http://worker.example.com:8080/",
+                "backchannel": {"kind": "http", "url": "http://worker.example.com:8080/"},
+                "codebase": null,
+                "campaign": null
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(serde_json::to_value(&request).unwrap(), expected);
+
+        let request = AssignRequest {
+            node: "node1",
+            archs: vec![],
+            worker_link: None,
+            backchannel: None,
+            codebase: None,
+            campaign: None,
+        };
+        let expected: serde_json::Value = serde_json::from_str(
+            r#"{
+                "node": "node1",
+                "archs": [],
+                "worker_link": null,
+                "backchannel": null,
+                "codebase": null,
+                "campaign": null
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(serde_json::to_value(&request).unwrap(), expected);
     }
 
     #[tokio::test]
@@ -609,7 +671,7 @@ mod tests {
     #[derive(Clone)]
     struct MockState {
         status: AxumStatus,
-        body: serde_json::Value,
+        body: String,
         hits: Arc<AtomicUsize>,
     }
 
@@ -619,7 +681,18 @@ mod tests {
         _body: axum::body::Bytes,
     ) -> impl IntoResponse {
         state.hits.fetch_add(1, Ordering::SeqCst);
-        (state.status, Json(state.body.clone()))
+        (
+            state.status,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            state.body,
+        )
+    }
+
+    fn reason_body(reason: &str) -> String {
+        serde_json::to_string(&ReasonResponse {
+            reason: Some(reason.to_string()),
+        })
+        .unwrap()
     }
 
     async fn spawn_mock(state: MockState) -> Url {
@@ -639,9 +712,16 @@ mod tests {
     #[tokio::test]
     async fn upload_results_success_returns_parsed_json() {
         let hits = Arc::new(AtomicUsize::new(0));
+        let expected = FinishResponse {
+            id: RunId::new("run-1").unwrap(),
+            filenames: vec![],
+            logs: vec![],
+            artifacts: None,
+            result: serde_json::Value::Null,
+        };
         let state = MockState {
             status: AxumStatus::OK,
-            body: serde_json::json!({"filenames": []}),
+            body: serde_json::to_string(&expected).unwrap(),
             hits: hits.clone(),
         };
         let base_url = spawn_mock(state).await;
@@ -658,7 +738,7 @@ mod tests {
         .await
         .expect("expected success");
 
-        assert_eq!(result, serde_json::json!({"filenames": []}));
+        assert_eq!(result, expected);
         assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 
@@ -667,7 +747,7 @@ mod tests {
         let hits = Arc::new(AtomicUsize::new(0));
         let state = MockState {
             status: AxumStatus::CONFLICT,
-            body: serde_json::json!({"reason": "already-processed"}),
+            body: reason_body("already-processed"),
             hits: hits.clone(),
         };
         let base_url = spawn_mock(state).await;
@@ -705,7 +785,7 @@ mod tests {
         let hits = Arc::new(AtomicUsize::new(0));
         let state = MockState {
             status: AxumStatus::NOT_FOUND,
-            body: serde_json::json!({"reason": "unknown-run"}),
+            body: reason_body("unknown-run"),
             hits: hits.clone(),
         };
         let base_url = spawn_mock(state).await;
