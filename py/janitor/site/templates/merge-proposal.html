@@ -45,7 +45,7 @@
                     </select>
                     <script>
                         function submit_status(status) {
-                            console.log("Changing of merge proposal {{ proposal.url }} to " + status);
+                            console.log("Changing of merge proposal " + {{ proposal.url | tojson }} + " to " + status);
                             $.post('/api/merge-proposal', {
                                 'status': status,
                                 'url': {{ proposal.url | tojson }}
