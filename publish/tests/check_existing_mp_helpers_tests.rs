@@ -25,7 +25,7 @@ use janitor::test_with_database;
 use janitor::{Campaign, CodebaseName, RunId};
 use janitor_publish::state::{
     get_last_effective_run, get_merge_proposal_run, get_run, guess_proposal_info_from_revision,
-    iter_publish_ready,
+    iter_publish_ready, mark_closed_proposal_applied,
 };
 use janitor_publish::{derived_branch_name, get_publish_policy};
 use sqlx::PgPool;
@@ -260,6 +260,38 @@ test_with_database! {
         assert_eq!(mp_run.remote_branch_name, "refs/heads/main");
         assert_eq!(mp_run.command, "lintian-brush");
         assert_eq!(mp_run.value, 10);
+
+        // Closed proposals turn applied once a later run finds nothing to do.
+        let pool = test_db.pool();
+        assert!(!mark_closed_proposal_applied(pool, &url).await.unwrap());
+        sqlx::query("UPDATE merge_proposal SET status = 'closed'")
+            .execute(pool)
+            .await
+            .unwrap();
+        assert!(!mark_closed_proposal_applied(pool, &url).await.unwrap());
+        seed_run(
+            pool,
+            "run-fresh",
+            "cb-1",
+            "lintian-fixes",
+            "lintian-brush",
+            "https://example.invalid/cb-1",
+            None,
+            0,
+            "cs-1",
+            1,
+        )
+        .await;
+        sqlx::query("UPDATE run SET result_code = 'nothing-to-do' WHERE id = 'run-fresh'")
+            .execute(pool)
+            .await
+            .unwrap();
+        assert!(mark_closed_proposal_applied(pool, &url).await.unwrap());
+        let status: String = sqlx::query_scalar("SELECT status::text FROM merge_proposal")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(status, "applied");
     }
 }
 

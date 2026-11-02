@@ -565,6 +565,30 @@ LIMIT 1
     .await
 }
 
+/// Mark a closed proposal as applied when a run after it found nothing to do.
+pub async fn mark_closed_proposal_applied(
+    conn: &PgPool,
+    mp_url: &url::Url,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        r#"
+UPDATE merge_proposal SET status = 'applied'
+WHERE url = $1 AND status = 'closed' AND EXISTS (
+    SELECT FROM new_result_branch rb
+    JOIN run ON rb.run_id = run.id
+    JOIN last_run lr ON lr.codebase = run.codebase AND lr.campaign = run.suite
+    JOIN run ler ON ler.id = lr.last_effective_run_id
+    WHERE rb.revision = merge_proposal.revision
+      AND ler.result_code = 'nothing-to-do'
+      AND ler.start_time > run.finish_time)
+"#,
+    )
+    .bind(mp_url.to_string())
+    .execute(conn)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// Fetch a single run by id, reconstructing `result_branches` from
 /// `new_result_branch` the same way `py/janitor/publish.py::get_run`
 /// does. Used by the publish-status Redis listener to resolve the

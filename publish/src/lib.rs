@@ -3220,7 +3220,20 @@ async fn check_existing_mp(
     // Load whatever we already know about this proposal.
     let mut proposal_info_manager =
         crate::proposal_info::ProposalInfoManager::new(conn.clone(), redis.clone()).await;
-    let old_proposal_info = proposal_info_manager.get_proposal_info(&mp_url).await?;
+    let mut old_proposal_info = proposal_info_manager.get_proposal_info(&mp_url).await?;
+
+    // A closed proposal whose last run found nothing to do has landed by hand.
+    if status == breezyshim::forge::MergeProposalStatus::Closed {
+        if let Some(info) = old_proposal_info.as_mut().filter(|i| i.status == "closed") {
+            if crate::state::mark_closed_proposal_applied(conn, &mp_url).await? {
+                log::info!(
+                    "{}: Last run found nothing to do; marking as applied.",
+                    mp_url
+                );
+                info.status = "applied".to_string();
+            }
+        }
+    }
 
     let (mut codebase, mut rate_limit_bucket) = if let Some(info) = &old_proposal_info {
         // info.codebase is Option<CodebaseName> - the merge_proposal
@@ -3533,6 +3546,34 @@ async fn check_existing_mp(
             .or_default()
             .entry(bucket.to_string())
             .or_insert(0) += 1;
+    }
+
+    // Closed on the forge: a fresh run tells whether the changes landed by hand.
+    if effective_status == janitor::publish::MergeProposalStatus::Closed
+        && matches!(&old_proposal_info, Some(info) if info.status == "open")
+    {
+        if let Some(run) = mp_run.as_ref() {
+            match janitor::schedule::do_schedule(
+                conn,
+                &run.campaign,
+                &run.codebase,
+                "update-existing-mp",
+                None,
+                None,
+                true,
+                Some("publisher (closed merge proposal)"),
+                None,
+                None,
+            )
+            .await
+            {
+                Ok(_) => log::info!("{}: Closed; scheduled a fresh run.", mp_url),
+                Err(janitor::schedule::Error::CandidateUnavailable { .. }) => {
+                    log::info!("{}: Closed; no candidate for a fresh run.", mp_url)
+                }
+                Err(janitor::schedule::Error::SqlError(e)) => return Err(e.into()),
+            }
+        }
     }
 
     // Non-open / check_only proposals: nothing else to do.
