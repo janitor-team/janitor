@@ -1,10 +1,14 @@
 use crate::publish::Mode;
 use crate::queue::Queue;
 use breezyshim::RevisionId;
+use buildlog_consultant::problems::debian::UnsatisfiedAptDependencies;
 use chrono::Duration;
 use debian_control::lossless::relations::{Relation, Relations};
 use debian_control::relations::VersionConstraint;
 use janitor_types::{Campaign, ChangeSetId, CodebaseName};
+use lazy_static::lazy_static;
+use prometheus::{register_int_counter, IntCounter};
+use serde::Deserialize;
 use sqlx::postgres::types::PgInterval;
 use sqlx::PgPool;
 use std::collections::HashMap;
@@ -241,11 +245,10 @@ ORDER BY start_time DESC
         let mut same_context = context != Some("")
             && context.is_some()
             && [run.instigated_context.as_deref(), run.context.as_deref()].contains(&context);
-        if run.result_code == "install-deps-unsatisfied-dependencies"
-            && run
-                .failure_details
-                .as_ref()
-                .is_some_and(|d| d.get("relations").is_some())
+        if let Some(details) = run
+            .failure_details
+            .as_ref()
+            .filter(|_| run.result_code == "install-deps-unsatisfied-dependencies")
         {
             // Parse `Relations` and eagerly materialise the group
             // structure into owned `Relation` values, then drop
@@ -254,24 +257,22 @@ ORDER BY start_time DESC
             // tree) and is `!Send`; keeping it in scope across an
             // await would make this whole future non-`Send`, which
             // in turn prevents `tokio::spawn`ing callers.
-            let groups: Vec<Vec<RelationRef>> = {
-                let relations: Relations = run.failure_details.as_ref().unwrap()["relations"]
-                    .as_str()
-                    .unwrap()
-                    .parse()
-                    .unwrap();
-                relations
-                    .entries()
-                    .map(|dep| {
-                        dep.relations()
-                            .map(|r| RelationRef::from_relation(&r))
-                            .collect()
-                    })
-                    .collect()
-            };
-            if deps_satisfied(conn, campaign, groups).await? {
-                success += 1;
-                same_context = false;
+            match relation_groups(details) {
+                Ok(groups) => {
+                    if deps_satisfied(conn, campaign, groups).await? {
+                        success += 1;
+                        same_context = false;
+                    }
+                }
+                Err(e) => {
+                    BAD_RELATIONS_COUNT.inc();
+                    log::error!(
+                        "Bad relations in a {} run for {}: {}",
+                        campaign,
+                        codebase,
+                        e
+                    );
+                }
             }
         }
         if same_context {
@@ -570,12 +571,40 @@ struct RelationRef {
 }
 
 impl RelationRef {
-    fn from_relation(rel: &Relation) -> Self {
-        Self {
-            name: rel.try_name().expect("relation has no name"),
+    fn from_relation(rel: &Relation) -> Option<Self> {
+        Some(Self {
+            name: rel.try_name()?,
             constraint: rel.version(),
-        }
+        })
     }
+}
+
+lazy_static! {
+    static ref BAD_RELATIONS_COUNT: IntCounter = register_int_counter!(
+        "schedule_bad_relations_total",
+        "Number of unsatisfied-dependencies runs whose relations could not be read"
+    )
+    .unwrap();
+}
+
+/// Parse the failure details of a run into groups of alternative relations.
+fn relation_groups(details: &serde_json::Value) -> Result<Vec<Vec<RelationRef>>, String> {
+    let details = UnsatisfiedAptDependencies::deserialize(details).map_err(|e| e.to_string())?;
+    let relations: Relations = details
+        .relations
+        .parse()
+        .map_err(|e: String| e.replace('\n', "; "))?;
+    relations
+        .entries()
+        .map(|dep| {
+            dep.relations()
+                .map(|r| {
+                    RelationRef::from_relation(&r)
+                        .ok_or_else(|| format!("no package name in {:?}", details.relations))
+                })
+                .collect()
+        })
+        .collect()
 }
 
 async fn dep_available(conn: &PgPool, rel: &RelationRef) -> Result<bool, sqlx::Error> {
@@ -1013,6 +1042,60 @@ mod tests {
         assert_eq!(total, 1);
         assert_eq!(duration, Duration::seconds(60));
         assert_eq!(probability, 0.5);
+    }
+
+    #[cfg(feature = "testing")]
+    #[tokio::test]
+    async fn test_estimate_success_probability_with_bad_relations() {
+        let Some(db) = setup_run_database(&CodebaseName::new("foo").unwrap()).await else {
+            return;
+        };
+        let pool = db.pool();
+        sqlx::query(
+            r#"INSERT INTO run (id, codebase, suite, change_set, logfilenames, result_code,
+                                start_time, finish_time, failure_details) VALUES
+             ('r1', 'foo', 'lintian-fixes', 'cs', '{}', 'install-deps-unsatisfied-dependencies',
+              '2024-01-01 10:00:00', '2024-01-01 10:01:00',
+              '{"relations": "libbaz-dev (>= 1.0!x)"}'),
+             ('r2', 'foo', 'lintian-fixes', 'cs', '{}', 'install-deps-unsatisfied-dependencies',
+              '2024-01-02 10:00:00', '2024-01-02 10:01:00', '{"relations": ["foo"]}')"#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            estimate_success_probability_and_duration(
+                pool,
+                &CodebaseName::new("foo").unwrap(),
+                &Campaign::new("lintian-fixes").unwrap(),
+                None
+            )
+            .await
+            .unwrap(),
+            (1.0 / 21.0 * 0.5, Duration::seconds(60), 2)
+        );
+    }
+
+    #[test]
+    fn test_relation_groups() {
+        let groups =
+            relation_groups(&serde_json::json!({"relations": "foo (>= 1.0), bar | baz"})).unwrap();
+        assert_eq!(
+            groups
+                .iter()
+                .map(|g| g.iter().map(|r| r.name.as_str()).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            vec![vec!["foo"], vec!["bar", "baz"]]
+        );
+        assert_eq!(
+            relation_groups(&serde_json::json!({"relations": ["foo"]})).unwrap_err(),
+            "invalid type: sequence, expected a string"
+        );
+        assert_eq!(
+            relation_groups(&serde_json::json!({})).unwrap_err(),
+            "missing field `relations`"
+        );
     }
 }
 

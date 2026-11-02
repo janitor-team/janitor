@@ -26,6 +26,7 @@ silver-platter = { workspace = true }
 tokio = { workspace = true, features = ["fs", "process", "rt-multi-thread", "sync"] }
 regex = "1.11.0"
 lazy-regex = "3.2.0"
+lazy_static = "1.4"
 fancy-regex = ">=0.17,<0.20"
 askama = { workspace = true }
 futures = "0.3.30"
