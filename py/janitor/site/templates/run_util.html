@@ -239,14 +239,14 @@ cd {{ codebase }}
 {% endmacro %}
 {% macro display_branch_url(vcs_browse, vcs_url) %}
     {% if vcs_browse %}
-        <a href="{{ vcs_browse }}">{{ vcs_url }}</a>
+        <a href="{{ safe_url(vcs_browse) }}">{{ vcs_url }}</a>
     {% else %}
-        <a href="{{ vcs_url }}">{{ vcs_url }}</a>
+        <a href="{{ safe_url(vcs_url) }}">{{ vcs_url }}</a>
     {% endif %}
 {% endmacro %}
 {% macro display_upstream_branch_url(result) %}
     {% if result.get('upstream_branch_browse') %}
-        <a href="{{ result['upstream_branch_browse'] }}">{{ result['upstream_branch_url'] }}</a>
+        <a href="{{ safe_url(result['upstream_branch_browse']) }}">{{ result['upstream_branch_url'] }}</a>
     {% else %}
         {{ result['upstream_branch_url'] }}
     {% endif %}
@@ -276,7 +276,7 @@ cd {{ codebase }}
     {% elif mode == 'propose' %}
         {% if code == 'success' %}
             {% if mp_url %}
-                <a href="{{ mp_url }}">Merge proposal</a> updated
+                <a href="{{ safe_url(mp_url) }}">Merge proposal</a> updated
             {% else %}
                 Changes not significant enough for merge request.
             {% endif %}
@@ -386,7 +386,7 @@ cd {{ codebase }}
                         {%- if not d -%}no relevant previous merge proposals
                         {%- else -%}merge proposals for previous run were not rejected:
                             {% for (url, status) in d %}
-                                <a href="{{ url }}">{{ status }}</a>
+                                <a href="{{ safe_url(url) }}">{{ status }}</a>
                                 {% if not loop.last %},{% endif %}
                             {% endfor %}
                             .
@@ -394,7 +394,7 @@ cd {{ codebase }}
                     {%- else -%}
                         merge proposals for previous run were rejected:
                         {% for (url, status) in d %}
-                            <a href="{{ url }}">{{ status }}</a>
+                            <a href="{{ safe_url(url) }}">{{ status }}</a>
                             {% if not loop.last %},{% endif %}
                         {% endfor %}
                         .

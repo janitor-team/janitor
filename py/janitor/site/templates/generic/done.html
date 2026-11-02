@@ -44,7 +44,7 @@
                 <li>
                     <a href="c/{{ run.codebase }}/{{ run.id }}">{{ run.codebase }}</a>
                     {% if run.merged_by %}
-                        <em>(<a href="{{ run.merge_proposal_url }}">merged</a> by
+                        <em>(<a href="{{ safe_url(run.merge_proposal_url) }}">merged</a> by
                             {% if run.merged_by_url %}
                                 <a href="{{ run.merged_by_url }}">{{ run.merged_by }}</a>
                             {% else %}

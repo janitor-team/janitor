@@ -34,6 +34,7 @@ from janitor.site import (
     classify_result_code,
     format_duration,
     format_timestamp,
+    safe_url,
     template_loader,
     worker_link_is_global,
 )
@@ -82,7 +83,8 @@ def test_render_merge_proposal():
         proposal={
             "url": "https://github.com/jelmer/example/pulls/1",
             "package": "zz",
-        }
+        },
+        safe_url=safe_url,
     )
 
 

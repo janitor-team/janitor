@@ -23,7 +23,7 @@ $(document).ready(function() {
         <p><em>Status of this specific merge proposal.</em></p>
         <ul>
             <li>
-                URL: <a href="{{ proposal.url }}">{{ proposal.url }}</a>
+                URL: <a href="{{ safe_url(proposal.url) }}">{{ proposal.url }}</a>
                 <button id="refresh">Refresh</button>
             </li>
             {% if proposal.codebase %}

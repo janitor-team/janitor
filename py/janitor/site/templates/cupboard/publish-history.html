@@ -62,11 +62,11 @@
                             {% endif %}
                             {% if mode == 'propose' %}
                                 {% if merge_proposal_url %}
-                                    - <a href="{{ merge_proposal_url }}">Merge proposal</a> (<a href="../merge-proposal?url={{ merge_proposal_url|urlencode }}">Info</a>)
+                                    - <a href="{{ safe_url(merge_proposal_url) }}">Merge proposal</a> (<a href="../merge-proposal?url={{ merge_proposal_url|urlencode }}">Info</a>)
                                 {% endif %}
                             {% endif %}
                             {% if mode == 'push' and result_code == 'success' %}
-                                {% if vcs_browser %}- <a href="{{ vcs_browser }}">Branch</a>{% endif %}
+                                {% if vcs_browser %}- <a href="{{ safe_url(vcs_browser) }}">Branch</a>{% endif %}
                             {% endif %}
                         </td>
                     </tr>

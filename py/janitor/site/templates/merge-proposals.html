@@ -14,7 +14,7 @@
         <h1>Merge proposals</h1>
         <p><em>Status of merge proposals opened for this campaign.</em></p>
         {% macro display_merge_proposal(proposal) %}
-            <a class="reference external" href="{{ proposal.url }}">
+            <a class="reference external" href="{{ safe_url(proposal.url) }}">
                 {% if proposal.codebase %}
                     {{ proposal.codebase }}
                 {% else %}

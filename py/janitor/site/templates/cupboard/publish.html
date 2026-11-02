@@ -24,10 +24,10 @@
                     {{ publish.description }}
                 {% endif %}
                 {% if publish.mode == 'propose' %}
-                    {% if publish.merge_proposal_url %}- <a href="{{ publish.merge_proposal_url }}">Merge proposal</a>{% endif %}
+                    {% if publish.merge_proposal_url %}- <a href="{{ safe_url(publish.merge_proposal_url) }}">Merge proposal</a>{% endif %}
                 {% endif %}
                 {% if publish.mode == 'push' and result_code == 'success' %}
-                    {% if publish.vcs_browse %}- <a href="{{ publish.vcs_browse }}">Branch</a>{% endif %}
+                    {% if publish.vcs_browse %}- <a href="{{ safe_url(publish.vcs_browse) }}">Branch</a>{% endif %}
                 {% endif %}
             </li>
         </ul>

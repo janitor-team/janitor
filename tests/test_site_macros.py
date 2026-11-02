@@ -18,10 +18,11 @@
 from bs4 import BeautifulSoup
 from jinja2 import Environment, select_autoescape
 
-from janitor.site import template_loader
+from janitor.site import TEMPLATE_ENV, template_loader
 from janitor.vcs import RemoteBzrVcsManager, RemoteGitVcsManager
 
 env = Environment(loader=template_loader, autoescape=select_autoescape(["html", "xml"]))
+env.globals.update(TEMPLATE_ENV)
 
 
 def test_display_branch_url():
@@ -50,6 +51,20 @@ def test_display_branch_url():
 
     
         <a href="https://github.com/jelmer/example.git">https://github.com/jelmer/example</a>
+    
+"""
+    )
+    assert (
+        str(
+            template.module.display_branch_url(  # type: ignore
+                "javascript:alert(1)",
+                "https://github.com/jelmer/example",
+            )
+        )
+        == """\
+
+    
+        <a href="#">https://github.com/jelmer/example</a>
     
 """
     )

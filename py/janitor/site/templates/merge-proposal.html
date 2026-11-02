@@ -15,7 +15,7 @@
         <h1>Merge proposal status</h1>
         <ul>
             <li>
-                URL: <a href="{{ proposal.url }}">{{ proposal.url }}</a>
+                URL: <a href="{{ safe_url(proposal.url) }}">{{ proposal.url }}</a>
             </li>
             {% if proposal.codebase %}
                 <li>

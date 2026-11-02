@@ -256,6 +256,13 @@ def worker_link_is_global(url):
         return True
 
 
+def safe_url(url):
+    # Keep javascript: and other schemes out of href attributes.
+    if url.lower().startswith(("http://", "https://")):
+        return url
+    return "#"
+
+
 TEMPLATE_ENV = {
     "utcnow": utcnow,
     "enumerate": enumerate,
@@ -265,4 +272,5 @@ TEMPLATE_ENV = {
     "classify_result_code": classify_result_code,
     "URL": URL,
     "worker_link_is_global": worker_link_is_global,
+    "safe_url": safe_url,
 }

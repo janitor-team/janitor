@@ -31,7 +31,7 @@
                 {% for mp_url, campaign, codebase, run_id, result_code, finish_time, description in broken_mps %}
                     <tr class="row-even">
                         <td>
-                            <a class="reference external" href="{{ mp_url }}">Merge proposal</a>
+                            <a class="reference external" href="{{ safe_url(mp_url) }}">Merge proposal</a>
                         </td>
                         <td>
                             <a class="reference external" href="/cupboard/c/{{ codebase }}/">{{ codebase }}</a>

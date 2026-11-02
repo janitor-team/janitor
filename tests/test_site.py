@@ -20,7 +20,12 @@ from unittest.mock import MagicMock
 
 from yarl import URL
 
-from janitor.site import format_duration, format_timestamp, update_vars_from_request
+from janitor.site import (
+    format_duration,
+    format_timestamp,
+    safe_url,
+    update_vars_from_request,
+)
 
 
 def test_duration():
@@ -33,6 +38,29 @@ def test_duration():
 
 def test_timestamp():
     assert "2022-10-01T11:10" == format_timestamp(datetime(2022, 10, 1, 11, 10, 22))
+
+
+def test_safe_url():
+    urls = [
+        "https://example.com/pull/1",
+        "HTTP://example.com/",
+        "https://[broken/x",
+        "javascript:alert(1)",
+        " JavaScript:alert(1)",
+        "java\tscript:alert(1)",
+        "data:text/html,x",
+        "/relative",
+    ]
+    assert [safe_url(url) for url in urls] == [
+        "https://example.com/pull/1",
+        "HTTP://example.com/",
+        "https://[broken/x",
+        "#",
+        "#",
+        "#",
+        "#",
+        "#",
+    ]
 
 
 def _make_request(external_url=None, request_url="https://example.com/some/path"):
