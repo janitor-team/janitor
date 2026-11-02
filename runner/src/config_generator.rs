@@ -60,6 +60,16 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// Build configuration handed to the worker.
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum BuildConfig {
+    /// Configuration for generic builds.
+    Generic(janitor::api::worker::GenericBuildConfig),
+    /// Configuration for Debian builds.
+    Debian(janitor::api::worker::DebianBuildConfig),
+}
+
 #[async_trait]
 /// Interface for generating configurations for worker runs.
 pub trait ConfigGenerator {
@@ -69,7 +79,7 @@ pub trait ConfigGenerator {
         conn: &PgPool,
         campaign_config: &Campaign,
         queue_item: &QueueItem,
-    ) -> Result<serde_json::Value, Error>;
+    ) -> Result<BuildConfig, Error>;
 
     /// Generate environment variables for a worker run.
     async fn build_env(
@@ -124,14 +134,13 @@ impl ConfigGenerator for GenericConfigGenerator {
         _conn: &PgPool,
         campaign_config: &Campaign,
         _queue_item: &QueueItem,
-    ) -> Result<serde_json::Value, Error> {
+    ) -> Result<BuildConfig, Error> {
         let mut config = janitor::api::worker::GenericBuildConfig::default();
         if let Some(chroot) = &campaign_config.generic_build().chroot {
             config.chroot = Some(chroot.to_string());
         }
         config.dep_server_url = Some(self.dep_server_url.clone());
-        serde_json::to_value(config)
-            .map_err(|e| Error::Other(format!("Failed to serialize config: {}", e)))
+        Ok(BuildConfig::Generic(config))
     }
 
     async fn build_env(
@@ -258,7 +267,7 @@ impl ConfigGenerator for DebianConfigGenerator {
         conn: &PgPool,
         campaign_config: &Campaign,
         queue_item: &QueueItem,
-    ) -> Result<serde_json::Value, Error> {
+    ) -> Result<BuildConfig, Error> {
         let mut config = janitor::api::worker::DebianBuildConfig {
             lintian: LintianConfig {
                 profile: self.distro_config.lintian_profile.clone(),
@@ -362,8 +371,7 @@ impl ConfigGenerator for DebianConfigGenerator {
 
         config.dep_server_url = self.dep_server_url.as_ref().map(|u| u.to_string());
 
-        serde_json::to_value(config)
-            .map_err(|e| Error::Other(format!("Failed to serialize config: {}", e)))
+        Ok(BuildConfig::Debian(config))
     }
 
     async fn build_env(

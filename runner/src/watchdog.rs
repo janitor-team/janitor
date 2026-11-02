@@ -3,7 +3,8 @@
 use crate::database::RunnerDatabase;
 use crate::ActiveRun;
 use chrono::{DateTime, Duration, Utc};
-use janitor::RunId;
+use janitor::{Campaign, CodebaseName, RunId};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::time::{interval, sleep};
@@ -58,54 +59,89 @@ impl TerminationReason {
     }
 
     /// Create structured failure details for database storage.
-    pub fn create_failure_details(&self, run: &crate::ActiveRun) -> serde_json::Value {
-        use chrono::Utc;
-        use serde_json::json;
-
-        let mut details = json!({
-            "termination_reason": self.result_code(),
-            "description": self.description(),
-            "is_transient": self.is_transient(),
-            "worker_name": run.worker_name,
-            "codebase": run.codebase,
-            "campaign": run.campaign,
-            "log_id": run.log_id,
-            "terminated_at": Utc::now().to_rfc3339(),
-        });
-
-        // Add run duration
-        let duration = Utc::now().signed_duration_since(run.start_time);
-        details["run_duration_seconds"] = json!(duration.num_seconds());
-
-        // Add estimated vs actual duration comparison if available
-        if let Some(estimated) = run.estimated_duration {
-            details["estimated_duration_seconds"] = json!(estimated.as_secs());
-        }
-
-        // Add backchannel information
-        details["backchannel"] = run.backchannel.to_json();
-
-        // Add specific details based on termination reason
+    pub fn create_failure_details(&self, run: &crate::ActiveRun) -> WatchdogFailureDetails {
+        let now = chrono::Utc::now();
+        let mut details = WatchdogFailureDetails {
+            termination_reason: self.result_code().to_string(),
+            description: self.description(),
+            is_transient: self.is_transient(),
+            worker_name: run.worker_name.clone(),
+            codebase: run.codebase.clone(),
+            campaign: run.campaign.clone(),
+            log_id: run.log_id.clone(),
+            terminated_at: now.to_rfc3339(),
+            run_duration_seconds: now.signed_duration_since(run.start_time).num_seconds(),
+            estimated_duration_seconds: run.estimated_duration.map(|d| d.as_secs()),
+            backchannel: run.backchannel.clone(),
+            timeout_type: None,
+            health_check_failed: None,
+            manual_termination: None,
+            worker_unreachable: None,
+            system_failure_message: None,
+        };
         match self {
             TerminationReason::Timeout => {
-                details["timeout_type"] = json!("watchdog_timeout");
+                details.timeout_type = Some("watchdog_timeout".to_string());
             }
             TerminationReason::HealthCheckFailed => {
-                details["health_check_failed"] = json!(true);
+                details.health_check_failed = Some(true);
             }
             TerminationReason::ManualKill => {
-                details["manual_termination"] = json!(true);
+                details.manual_termination = Some(true);
             }
             TerminationReason::WorkerDisappeared => {
-                details["worker_unreachable"] = json!(true);
+                details.worker_unreachable = Some(true);
             }
             TerminationReason::SystemFailure(msg) => {
-                details["system_failure_message"] = json!(msg);
+                details.system_failure_message = Some(msg.clone());
             }
         }
-
         details
     }
+}
+
+/// Failure details recorded for a run the watchdog terminated.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatchdogFailureDetails {
+    /// Result code for the termination.
+    pub termination_reason: String,
+    /// Human-readable description.
+    pub description: String,
+    /// Whether retrying may succeed.
+    pub is_transient: bool,
+    /// Worker the run was assigned to.
+    pub worker_name: String,
+    /// Codebase of the run.
+    pub codebase: CodebaseName,
+    /// Campaign of the run.
+    pub campaign: Campaign,
+    /// Run ID.
+    pub log_id: RunId,
+    /// Termination time (RFC 3339).
+    pub terminated_at: String,
+    /// How long the run had been going for, in seconds.
+    pub run_duration_seconds: i64,
+    /// Estimated duration of the run, in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_duration_seconds: Option<u64>,
+    /// Backchannel of the run, in its untagged form.
+    #[serde(serialize_with = "crate::Backchannel::serialize_untagged")]
+    pub backchannel: crate::Backchannel,
+    /// Set for timeouts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_type: Option<String>,
+    /// Set when the health check failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_check_failed: Option<bool>,
+    /// Set when the run was killed manually.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual_termination: Option<bool>,
+    /// Set when the worker stopped responding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_unreachable: Option<bool>,
+    /// Message for system failures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_failure_message: Option<String>,
 }
 
 /// Configuration for the watchdog system.
@@ -555,7 +591,10 @@ impl Watchdog {
         let mut janitor_result =
             run.create_result(result_code.to_string(), Some(description.to_string()));
         janitor_result.transient = Some(reason.is_transient());
-        janitor_result.failure_details = Some(reason.create_failure_details(run));
+        janitor_result.failure_details = Some(
+            serde_json::to_value(reason.create_failure_details(run))
+                .expect("WatchdogFailureDetails is plain data"),
+        );
 
         if let Err(e) = self
             .database

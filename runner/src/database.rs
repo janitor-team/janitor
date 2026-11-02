@@ -722,10 +722,10 @@ INSERT INTO run (
     /// Publish a JSON payload to a Redis pub/sub channel. A runner
     /// without Redis configured is a no-op rather than an error,
     /// matching the existing pattern in [`Self::unassign_queue_item`].
-    pub async fn publish(
+    pub async fn publish<T: serde::Serialize + ?Sized>(
         &self,
         channel: &str,
-        payload: &serde_json::Value,
+        payload: &T,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if let Some(redis_client) = self.redis() {
             let mut conn = redis_client.get_multiplexed_async_connection().await?;
@@ -1065,7 +1065,7 @@ INSERT INTO run (
 }
 
 /// Row of the codebase table as served by `GET /codebases`.
-#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow)]
 pub struct CodebaseRow {
     /// Name of the codebase.
     pub name: Option<CodebaseName>,
@@ -1088,7 +1088,7 @@ pub struct CodebaseRow {
 }
 
 /// Entry in a `POST /codebases` request body.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodebaseUpload {
     /// Name of the codebase.
     pub name: Option<CodebaseName>,
@@ -1111,7 +1111,7 @@ pub struct CodebaseUpload {
 }
 
 /// Row of the candidate table as served by `GET /candidates`.
-#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow)]
 pub struct CandidateRow {
     /// Candidate id.
     pub id: i32,

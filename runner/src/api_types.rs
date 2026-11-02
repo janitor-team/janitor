@@ -1,3 +1,5 @@
+use crate::{ActiveRunJson, JanitorResultJson, QueueItem, VcsInfo};
+use chrono::{DateTime, Utc};
 use janitor::{Campaign, ChangeSetId, CodebaseName, RunId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -78,8 +80,8 @@ pub struct WorkerAssignment {
     pub codebase: CodebaseName,
     /// Command to execute for the codemod
     pub command: String,
-    /// Version control system information (format depends on VCS type)
-    pub vcs_info: serde_json::Value,
+    /// Version control system information
+    pub vcs_info: crate::VcsInfo,
     /// Previous codemod result if resuming a run
     pub codemod_result: Option<serde_json::Value>,
 }
@@ -246,4 +248,709 @@ pub struct QueueStatusResponse {
     /// Error message if queue is in error state
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Number of runs that succeeded
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub succeeded: Option<i64>,
+    /// Number of runs that failed
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed: Option<i64>,
+}
+
+/// Error response: `{"error": ...}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ErrorResponse {
+    /// Error message.
+    pub error: String,
+}
+
+/// Error response: `{"reason": ...}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReasonResponse {
+    /// Reason for the failure.
+    pub reason: String,
+}
+
+/// Error response with additional detail: `{"reason": ..., "detail": ...}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReasonDetailResponse {
+    /// Reason for the failure.
+    pub reason: String,
+    /// Further detail.
+    pub detail: String,
+}
+
+/// Empty object response: `{}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmptyResponse {}
+
+/// Response for `GET /queue/position`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QueuePositionEta {
+    /// Position in the queue, if queued.
+    pub position: Option<i64>,
+    /// Estimated wait per active run, in seconds.
+    pub wait_time: Option<f64>,
+    /// Cumulative wait time of the items ahead, in seconds.
+    pub cumulative_wait_time: Option<f64>,
+}
+
+/// Response for `POST /schedule-control`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScheduledRun {
+    /// Campaign the run was scheduled for.
+    pub campaign: Campaign,
+    /// Priority offset.
+    pub offset: f64,
+    /// Queue bucket.
+    pub bucket: String,
+    /// Codebase the run was scheduled for.
+    pub codebase: CodebaseName,
+    /// ID of the queue item.
+    pub queue_id: i32,
+    /// Estimated duration in seconds.
+    pub estimated_duration_seconds: f64,
+}
+
+/// Response for `POST /schedule`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScheduleResponse {
+    /// The scheduled run.
+    #[serde(flatten)]
+    pub scheduled: ScheduledRun,
+    /// Position in the queue.
+    pub queue_position: Option<i32>,
+    /// Estimated wait time in seconds.
+    pub queue_wait_time: Option<f64>,
+}
+
+/// Response for `GET /status`, also published on the `queue` channel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunnerStatus {
+    /// Currently active runs.
+    pub processing: Vec<ActiveRunJson>,
+    /// Hosts that are avoided.
+    pub avoid_hosts: Vec<String>,
+    /// Rate-limited hosts, mapped to the time (RFC 3339) until which
+    /// they are rate-limited.
+    pub rate_limit_hosts: HashMap<String, String>,
+}
+
+/// Response for `GET /active-runs/{id}/current-stage`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CurrentStageResponse {
+    /// Stage the worker is in, if known.
+    pub current_stage: Option<String>,
+    /// Error fetching the stage from the worker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// A candidate in a `POST /candidates` request.
+///
+/// Names are kept as plain strings so that invalid ones are reported
+/// per candidate rather than rejecting the whole request body.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CandidateUpload {
+    /// Codebase name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codebase: Option<String>,
+    /// Campaign name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign: Option<String>,
+    /// Change set ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_set: Option<String>,
+    /// Command to run; falls back to the campaign's command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Value of the candidate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<i64>,
+    /// Name of the publish policy.
+    #[serde(
+        default,
+        rename = "publish-policy",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub publish_policy: Option<String>,
+    /// Free-form context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    /// Estimated chance of success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub success_chance: Option<f64>,
+    /// Queue bucket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bucket: Option<String>,
+    /// Extra requester information.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<String>,
+    /// IDs of the candidates this is a followup for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub followup_for: Option<Vec<i64>>,
+}
+
+/// A candidate that was scheduled by `POST /candidates`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScheduledCandidate {
+    /// Campaign name.
+    pub campaign: Campaign,
+    /// Codebase name.
+    pub codebase: CodebaseName,
+    /// Queue bucket.
+    pub bucket: String,
+    /// Change set ID.
+    pub change_set: Option<ChangeSetId>,
+    /// Priority offset.
+    pub offset: f64,
+    /// Estimated duration in seconds.
+    pub estimated_duration: i64,
+    /// ID of the queue item.
+    #[serde(rename = "queue-id")]
+    pub queue_id: i32,
+    /// Whether the run was scheduled as a refresh.
+    pub refresh: bool,
+}
+
+/// Response for `POST /candidates`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UploadCandidatesResponse {
+    /// Candidates that were scheduled.
+    pub success: Vec<ScheduledCandidate>,
+    /// Commands that were invalid.
+    pub invalid_command: Vec<String>,
+    /// Values that were invalid.
+    pub invalid_value: Vec<i64>,
+    /// Campaigns that are not known.
+    pub unknown_campaigns: Vec<Campaign>,
+    /// Codebases that are not known.
+    pub unknown_codebases: Vec<CodebaseName>,
+    /// Publish policies that are not known.
+    pub unknown_publish_policies: Vec<String>,
+}
+
+/// Response for `GET /runs/{id}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunSummary {
+    /// Codebase name.
+    pub codebase: CodebaseName,
+    /// Campaign name.
+    pub campaign: Campaign,
+    /// Publish status of the run.
+    pub publish_status: String,
+}
+
+/// Response for `POST /runs/{id}`, also published on the
+/// `publish-status` channel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublishStatusUpdate {
+    /// Run ID.
+    pub run_id: RunId,
+    /// New publish status.
+    pub publish_status: String,
+    /// Codebase name.
+    pub codebase: CodebaseName,
+    /// Campaign name.
+    pub campaign: Campaign,
+}
+
+/// Response for `GET /active-runs/+peek`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeekResponse {
+    /// The next queue item.
+    pub queue_item: QueueItem,
+    /// VCS information for the codebase.
+    pub vcs_info: VcsInfo,
+    /// Build configuration.
+    pub build_config: HashMap<String, String>,
+    /// Estimated duration in seconds.
+    pub estimated_duration: Option<u64>,
+}
+
+/// An entry in the `GET /queue` response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueEntry {
+    /// ID of the queue item.
+    pub queue_id: i32,
+    /// Codebase name.
+    pub codebase: CodebaseName,
+    /// Campaign name.
+    pub campaign: Campaign,
+    /// Free-form context.
+    pub context: Option<String>,
+    /// Command to run.
+    pub command: Option<String>,
+}
+
+/// A worker in the `GET /workers` response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicWorkerInfo {
+    /// Worker name.
+    pub name: String,
+    /// "active" or "idle".
+    pub status: String,
+    /// When the worker was last seen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen: Option<DateTime<Utc>>,
+}
+
+/// A worker in the `GET /admin/workers` response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdminWorkerInfo {
+    /// Worker name.
+    pub name: String,
+    /// Link to the worker.
+    pub link: Option<String>,
+    /// "failed", "active" or "idle".
+    pub status: String,
+    /// When the worker was last seen.
+    pub last_seen: DateTime<Utc>,
+}
+
+/// Worker counts in a worker list response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerCounts {
+    /// Total number of workers.
+    pub total: usize,
+    /// Number of active workers.
+    pub active: usize,
+    /// Number of idle workers.
+    pub idle: usize,
+    /// Number of failed workers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed: Option<usize>,
+}
+
+/// Response for `GET /workers` and `GET /admin/workers`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerListResponse<W> {
+    /// Error listing the workers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The workers.
+    pub workers: Vec<W>,
+    /// Total number of workers.
+    pub total_workers: usize,
+    /// Number of active workers.
+    pub active_workers: usize,
+    /// Number of idle workers.
+    pub idle_workers: usize,
+    /// Worker counts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<WorkerCounts>,
+    /// Time of the response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<DateTime<Utc>>,
+}
+
+impl<W> WorkerListResponse<W> {
+    /// Response for when listing the workers failed.
+    pub fn failed(error: impl Into<String>) -> Self {
+        Self {
+            error: Some(error.into()),
+            workers: Vec::new(),
+            total_workers: 0,
+            active_workers: 0,
+            idle_workers: 0,
+            summary: None,
+            timestamp: None,
+        }
+    }
+}
+
+/// Response for `POST /admin/runs/cleanup`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CleanupRunsResponse {
+    /// Number of matched runs.
+    pub matched: usize,
+    /// Number of rescheduled runs.
+    pub rescheduled: i64,
+    /// Number of deleted runs.
+    pub deleted: i64,
+    /// Whether this was a dry run.
+    pub dry_run: bool,
+    /// Result code that was matched.
+    pub result_code: String,
+    /// IDs of the matched runs; only set for dry runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_ids: Option<Vec<RunId>>,
+}
+
+/// Response for `POST /resume/check`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResumeCheckResponse {
+    /// Whether resume information is available.
+    pub resume_available: bool,
+    /// The resume information.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_info: Option<crate::resume::ResumeInfo>,
+    /// Message when no resume information is available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// Response for `GET /resume/chain/{run_id}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResumeChainResponse {
+    /// Run ID.
+    pub run_id: RunId,
+    /// Chain of runs this run resumes from.
+    pub resume_chain: Vec<RunId>,
+}
+
+/// Response for `GET /resume/descendants/{run_id}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResumeDescendantsResponse {
+    /// Run ID.
+    pub run_id: RunId,
+    /// Runs that resume from this run.
+    pub descendants: Vec<RunId>,
+}
+
+/// Response for `GET /resume/validate`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResumeConsistencyResponse {
+    /// "consistent" or "inconsistent".
+    pub status: String,
+    /// Message when consistent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Inconsistencies found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub errors: Option<Vec<String>>,
+}
+
+/// Response for a successful `POST /active-runs/{id}/finish`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FinishResponse {
+    /// Run ID.
+    pub id: RunId,
+    /// Uploaded filenames.
+    pub filenames: Vec<String>,
+    /// Log filenames.
+    pub logs: Vec<String>,
+    /// Artifact names; null when storing the artifacts failed.
+    pub artifacts: Option<Vec<String>>,
+    /// Result information.
+    pub result: JanitorResultJson,
+}
+
+/// 409 response for a `POST /active-runs/{id}/finish` of a run that was
+/// already stored.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FinishConflictResponse {
+    /// Run ID.
+    pub id: RunId,
+    /// The stored result; omitted on the public API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<JanitorResultJson>,
+    /// Reason for the conflict.
+    pub reason: String,
+}
+
+/// 400 response for an assignment request with a missing or unknown
+/// worker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssignWorkerError {
+    /// Error code.
+    pub error: String,
+    /// The unknown worker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<String>,
+    /// Explanation.
+    pub reason: String,
+}
+
+/// Response for an assignment request while the forge is rate-limiting
+/// us.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RateLimitedResponse {
+    /// Reason ("rate limited").
+    pub reason: String,
+    /// Rate-limited host.
+    pub host: String,
+    /// Seconds after which to retry, if known.
+    pub retry_after: Option<f64>,
+}
+
+/// Branch to work on, in a work assignment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssignmentBranch {
+    /// URL of the cached copy of the branch.
+    pub cached_url: Option<String>,
+    /// VCS type.
+    pub vcs_type: Option<String>,
+    /// URL of the branch.
+    pub url: Option<String>,
+    /// Path inside the branch.
+    pub subpath: String,
+    /// Colocated branches to fetch along with the main branch.
+    pub additional_colocated_branches: Option<Vec<String>>,
+    /// Whether to start from an empty branch if there is none.
+    #[serde(rename = "default-empty")]
+    pub default_empty: bool,
+}
+
+/// Repository to push results to, in a work assignment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssignmentTargetRepository {
+    /// URL of the repository.
+    pub url: Option<String>,
+    /// VCS type.
+    pub vcs_type: Option<String>,
+}
+
+/// Resume information in a work assignment: `{run_id, result,
+/// branch_url, branches}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResumeAssignment {
+    /// Run to resume from.
+    pub run_id: RunId,
+    /// Previous run's `result` JSON blob.
+    pub result: Option<serde_json::Value>,
+    /// URL of the resume branch as opened via the forge or the VCS
+    /// manager fallback.
+    pub branch_url: String,
+    /// Per-role result branches:
+    /// `[(role, remote_name, base_revision, revision), ...]`.
+    pub branches: Vec<(String, Option<String>, Option<String>, Option<String>)>,
+}
+
+/// Debian build configuration in a work assignment. Field names match
+/// those of `janitor::api::worker::DebianBuildConfig`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DebianBuildAssignment {
+    /// Distribution to build for.
+    #[serde(rename = "build-distribution")]
+    pub build_distribution: String,
+    /// Suffix for the version.
+    #[serde(rename = "build-suffix")]
+    pub build_suffix: String,
+    /// Build command; the worker does not build without one.
+    #[serde(
+        default,
+        rename = "build-command",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub build_command: Option<String>,
+    /// Chroot to build in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chroot: Option<String>,
+    /// Extra apt repositories, as sources.list lines.
+    #[serde(rename = "build-extra-repositories")]
+    pub extra_repositories: Vec<String>,
+    /// URL of the dependency server.
+    pub dep_server_url: Option<String>,
+}
+
+/// Generic build configuration in a work assignment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenericBuildAssignment {
+    /// URL of the dependency server.
+    pub dep_server_url: Option<String>,
+}
+
+/// Build configuration in a work assignment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum BuildAssignmentConfig {
+    /// Debian build configuration.
+    Debian(DebianBuildAssignment),
+    /// Generic build configuration.
+    Generic(GenericBuildAssignment),
+}
+
+/// Build to run, in a work assignment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildAssignment {
+    /// Build target ("debian" or "generic").
+    pub target: String,
+    /// Build configuration.
+    pub config: BuildAssignmentConfig,
+    /// Build environment.
+    pub environment: HashMap<String, String>,
+}
+
+/// Work assignment handed to a worker by `POST /active-runs`. See
+/// `janitor::api::worker::Assignment` for the worker side.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssignmentBody {
+    /// Run ID.
+    pub id: RunId,
+    /// Human-readable description.
+    pub description: String,
+    /// ID of the queue item.
+    pub queue_id: i64,
+    /// Campaign name.
+    pub campaign: Campaign,
+    /// Codebase name.
+    pub codebase: CodebaseName,
+    /// Whether to build even if the codemod made no changes.
+    #[serde(rename = "force-build")]
+    pub force_build: bool,
+    /// Branch to work on.
+    pub branch: AssignmentBranch,
+    /// Run to resume from.
+    pub resume: Option<ResumeAssignment>,
+    /// Repository to push results to.
+    pub target_repository: AssignmentTargetRepository,
+    /// Whether to skip validating the setup.
+    #[serde(rename = "skip-setup-validation")]
+    pub skip_setup_validation: bool,
+    /// Codemod command.
+    pub command: String,
+    /// Codemod to run.
+    pub codemod: janitor::api::worker::Codemod,
+    /// Environment for both the codemod and the build.
+    pub env: HashMap<String, String>,
+    /// Build to run.
+    pub build: BuildAssignment,
+}
+
+/// Public view of a run's health in `GET /watchdog/health`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicRunHealth {
+    /// Run ID.
+    pub log_id: RunId,
+    /// Worker processing the run.
+    pub worker_name: String,
+    /// When the run started.
+    pub start_time: DateTime<Utc>,
+    /// Estimated duration in seconds.
+    pub estimated_duration: Option<u64>,
+    /// Number of consecutive health check failures.
+    pub failure_count: u32,
+    /// Maximum allowed failures before termination.
+    pub max_failures: u32,
+    /// Whether the worker is alive.
+    pub alive: bool,
+    /// Worker status.
+    pub status: String,
+    /// Last successful ping.
+    pub last_ping: Option<DateTime<Utc>>,
+}
+
+/// Response for `GET /watchdog/health`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchdogHealthResponse {
+    /// "ok" or "error".
+    pub status: String,
+    /// Number of active runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_runs: Option<usize>,
+    /// Health of each active run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_statuses: Option<Vec<PublicRunHealth>>,
+    /// Error message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Request for work assignment.
+///
+/// `worker` is only honoured by the unauthenticated `/active-runs`
+/// route on the private (intra-cluster) app. The authenticated
+/// public app's `/active-runs` route (workers reach it via the ingress
+/// `/runner/(.*)` -> `/$2`) ignores this field entirely and reads
+/// the worker name from the credentials extension instead.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AssignRequest {
+    /// Worker name (private/admin path only). The Rust worker sends
+    /// this as `node`; older Python workers sent `worker`.
+    #[serde(alias = "node")]
+    pub worker: Option<String>,
+    /// Worker link.
+    pub worker_link: Option<String>,
+    /// Backchannel configuration.
+    pub backchannel: Option<BackchannelRequest>,
+    /// Specific codebase to work on.
+    pub codebase: Option<CodebaseName>,
+    /// Specific campaign to work on.
+    pub campaign: Option<Campaign>,
+    /// Hosts the worker is temporarily rate-limited on; the queue
+    /// filter unions these with the runner-wide `avoid_hosts` and the
+    /// Redis `rate-limit-hosts` set so the worker doesn't get handed
+    /// an item it would just bounce back on.
+    #[serde(default)]
+    pub exclude_hosts: Option<Vec<String>>,
+}
+
+/// Backchannel as sent by the worker in an assignment request:
+/// `{"kind": "http"|"jenkins", "url": "..."}`. `my_url` is accepted as
+/// an alias for `url`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BackchannelRequest {
+    /// "http" or "jenkins".
+    pub kind: Option<String>,
+    /// URL of the worker or Jenkins build.
+    #[serde(alias = "my_url")]
+    pub url: Option<String>,
+    /// Jenkins metadata.
+    pub jenkins: Option<serde_json::Value>,
+}
+
+/// Request for updating run publish status.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateRunRequest {
+    /// New publish status.
+    pub publish_status: String,
+}
+
+/// Request for resume information.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResumeInfoRequest {
+    /// Campaign name (stored as `run.suite` in the schema).
+    pub campaign: Campaign,
+    /// Revision id of the resume branch's tip. Used together with
+    /// `campaign` to form the `(suite, revision)` resume lookup key.
+    pub resume_revision: String,
+}
+
+/// JSON body for `POST /schedule`. Callers may send either a `run_id`
+/// (in which case campaign+codebase are derived from the run row) or
+/// an explicit (campaign, codebase) pair, plus optional scheduling
+/// knobs.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ScheduleRequest {
+    /// Run to derive the campaign and codebase from.
+    pub run_id: Option<RunId>,
+    /// Campaign name.
+    pub campaign: Option<Campaign>,
+    /// Codebase name.
+    pub codebase: Option<CodebaseName>,
+    /// Whether to refresh.
+    pub refresh: Option<bool>,
+    /// Change set ID.
+    pub change_set: Option<ChangeSetId>,
+    /// Who requested the run.
+    pub requester: Option<String>,
+    /// Queue bucket.
+    pub bucket: Option<String>,
+    /// Priority offset.
+    pub offset: Option<f64>,
+    /// Estimated duration in seconds.
+    pub estimated_duration: Option<f64>,
+}
+
+/// JSON body for `POST /schedule-control`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ScheduleControlRequest {
+    /// Run to derive the codebase and main branch revision from.
+    pub run_id: Option<RunId>,
+    /// Codebase name.
+    pub codebase: Option<CodebaseName>,
+    /// Revision of the main branch to build.
+    pub main_branch_revision: Option<String>,
+    /// Change set ID.
+    pub change_set: Option<ChangeSetId>,
+    /// Priority offset.
+    pub offset: Option<f64>,
+    /// Who requested the run.
+    pub requester: Option<String>,
+    /// Whether to refresh.
+    pub refresh: Option<bool>,
+    /// Queue bucket.
+    pub bucket: Option<String>,
+    /// Estimated duration in seconds.
+    pub estimated_duration: Option<f64>,
 }

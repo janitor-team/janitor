@@ -98,7 +98,7 @@ fn is_log_filename_matches_python() {
 /// round-trips back to the same shape.
 #[test]
 fn queue_item_round_trips_python_json() {
-    let python_json = json!({
+    let python_json = r#"{
         "id": 12345,
         "context": {"branch": "main", "commit": "abc123"},
         "command": "lintian-fixes",
@@ -108,9 +108,9 @@ fn queue_item_round_trips_python_json() {
         "requester": "automated",
         "change_set": "cs-123",
         "codebase": "example-package"
-    });
+    }"#;
 
-    let queue_item: QueueItem = serde_json::from_value(python_json).unwrap();
+    let queue_item: QueueItem = serde_json::from_str(python_json).unwrap();
 
     assert_eq!(queue_item.id, 12345);
     assert_eq!(queue_item.command, "lintian-fixes");
@@ -124,17 +124,20 @@ fn queue_item_round_trips_python_json() {
         Some(Duration::from_secs(300))
     );
 
-    let serialized = serde_json::to_value(&queue_item).unwrap();
-    assert_eq!(serialized["id"], 12345);
-    assert_eq!(serialized["command"], "lintian-fixes");
-    assert_eq!(serialized["campaign"], "lintian-fixes");
-    assert_eq!(serialized["refresh"], true);
+    let back: QueueItem =
+        serde_json::from_str(&serde_json::to_string(&queue_item).unwrap()).unwrap();
+    assert_eq!(back.id, 12345);
+    assert_eq!(back.command, "lintian-fixes");
+    assert_eq!(back.campaign, "lintian-fixes");
+    assert!(back.refresh);
+    assert_eq!(back.context, queue_item.context);
+    assert_eq!(back.estimated_duration, Some(Duration::from_secs(300)));
 }
 
 /// Sparse `QueueItem` payloads (null optional fields) also deserialise.
 #[test]
 fn queue_item_accepts_null_optional_fields() {
-    let minimal = json!({
+    let minimal = r#"{
         "id": 1,
         "context": null,
         "command": "test",
@@ -144,9 +147,9 @@ fn queue_item_accepts_null_optional_fields() {
         "requester": null,
         "change_set": null,
         "codebase": "test-codebase"
-    });
+    }"#;
 
-    let item: QueueItem = serde_json::from_value(minimal).unwrap();
+    let item: QueueItem = serde_json::from_str(minimal).unwrap();
     assert_eq!(item.id, 1);
     assert_eq!(item.context, None);
     assert_eq!(item.estimated_duration, None);
@@ -195,14 +198,24 @@ fn janitor_result_serialises_expected_field_names() {
         builder_result: None,
     };
 
-    let json_value = serde_json::to_value(&result).unwrap();
-    assert_eq!(json_value["code"], "success");
+    /// The fields a downstream consumer reads.
+    #[derive(serde::Deserialize)]
+    struct Consumer {
+        code: String,
+        description: Option<String>,
+        value: Option<u64>,
+        logfilenames: Vec<String>,
+    }
+
+    let consumer: Consumer =
+        serde_json::from_str(&serde_json::to_string(&result).unwrap()).unwrap();
+    assert_eq!(consumer.code, "success");
     assert_eq!(
-        json_value["description"],
-        "Successfully applied lintian fixes"
+        consumer.description.as_deref(),
+        Some("Successfully applied lintian fixes")
     );
-    assert_eq!(json_value["value"], 100);
-    assert_eq!(json_value["logfilenames"], json!(["build.log"]));
+    assert_eq!(consumer.value, Some(100));
+    assert_eq!(consumer.logfilenames, vec!["build.log"]);
 }
 
 /// The wire format for timestamps must round-trip through

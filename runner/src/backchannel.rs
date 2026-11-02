@@ -108,6 +108,42 @@ pub trait Backchannel {
     }
 }
 
+/// The fields of a Jenkins `api/json` response that the runner looks at.
+#[derive(Debug, Deserialize)]
+pub(crate) struct JenkinsJob {
+    #[serde(default)]
+    pub(crate) id: Option<String>,
+    #[serde(default)]
+    pub(crate) result: Option<String>,
+    #[serde(default, rename = "lastBuild")]
+    pub(crate) last_build: Option<JenkinsBuildRef>,
+}
+
+/// Reference to a build in a Jenkins job response.
+#[derive(Debug, Deserialize)]
+pub(crate) struct JenkinsBuildRef {
+    #[serde(default)]
+    pub(crate) building: Option<bool>,
+    #[serde(default)]
+    pub(crate) number: Option<u64>,
+}
+
+/// Body of a polling worker's `POST /terminate` request.
+#[derive(Debug, Serialize)]
+struct TerminateRequest<'a> {
+    log_id: &'a RunId,
+}
+
+/// Body of a polling worker's `GET /status` response.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct WorkerStatusInfo {
+    current_run_id: Option<String>,
+    alive: Option<bool>,
+    status: Option<String>,
+    uptime_seconds: Option<u64>,
+}
+
 /// Backchannel implementation for Jenkins workers.
 pub struct JenkinsBackchannel {
     /// URL of the Jenkins instance.
@@ -120,7 +156,7 @@ impl JenkinsBackchannel {
         Self { my_url }
     }
 
-    async fn get_job(&self, session: reqwest::Client) -> Result<serde_json::Value, reqwest::Error> {
+    async fn get_job(&self, session: reqwest::Client) -> Result<JenkinsJob, reqwest::Error> {
         let url = self
             .my_url
             .join("api/json")
@@ -197,10 +233,11 @@ impl Backchannel for JenkinsBackchannel {
         };
         // If Jenkins has listed the job as having failed, then we can't expect anything to be
         // uploaded
-        if job["result"] == "FAILURE" {
+        if job.result.as_deref() == Some("FAILURE") {
             return Err(Error::FatalFailure(format!(
                 "Jenkins lists job {} for run {} as failed",
-                job["id"], expected_log_id
+                job.id.as_deref().unwrap_or("(unknown)"),
+                expected_log_id
             )));
         }
         Ok(())
@@ -223,21 +260,21 @@ impl Backchannel for JenkinsBackchannel {
         };
 
         let building = job
-            .get("lastBuild")
-            .and_then(|b| b.get("building"))
-            .and_then(|b| b.as_bool())
+            .last_build
+            .as_ref()
+            .and_then(|b| b.building)
             .unwrap_or(false);
 
         let current_run_id = if building {
-            job.get("lastBuild")
-                .and_then(|b| b.get("number"))
-                .and_then(|n| n.as_u64())
+            job.last_build
+                .as_ref()
+                .and_then(|b| b.number)
                 .map(|n| n.to_string())
         } else {
             None
         };
 
-        let status = if let Some(result) = job.get("result").and_then(|r| r.as_str()) {
+        let status = if let Some(result) = job.result.as_deref() {
             match result {
                 "SUCCESS" => "completed".to_string(),
                 "FAILURE" => "failed".to_string(),
@@ -284,7 +321,7 @@ impl PollingBackchannel {
     async fn get_status_info(
         &self,
         session: reqwest::Client,
-    ) -> Result<serde_json::Value, reqwest::Error> {
+    ) -> Result<WorkerStatusInfo, reqwest::Error> {
         let url = self
             .my_url
             .join("status")
@@ -325,7 +362,7 @@ impl Backchannel for PollingBackchannel {
 
         let response = session
             .post(url)
-            .json(&serde_json::json!({ "log_id": log_id }))
+            .json(&TerminateRequest { log_id })
             .send()
             .await
             .map_err(Error::IntermediaryFailure)?;
@@ -421,25 +458,10 @@ impl Backchannel for PollingBackchannel {
 
         // Try to get detailed status first
         if let Ok(status_info) = self.get_status_info(session.clone()).await {
-            let current_log_id = status_info
-                .get("current_run_id")
-                .and_then(|id| id.as_str())
-                .map(|s| s.to_string());
-
-            let alive = status_info
-                .get("alive")
-                .and_then(|a| a.as_bool())
-                .unwrap_or(false);
-
-            let status = status_info
-                .get("status")
-                .and_then(|s| s.as_str())
-                .map(|s| s.to_string());
-
-            let uptime = status_info
-                .get("uptime_seconds")
-                .and_then(|u| u.as_u64())
-                .map(Duration::from_secs);
+            let current_log_id = status_info.current_run_id;
+            let alive = status_info.alive.unwrap_or(false);
+            let status = status_info.status;
+            let uptime = status_info.uptime_seconds.map(Duration::from_secs);
 
             let final_status = match status.as_deref() {
                 Some("processing") | Some("building") | Some("running") => {

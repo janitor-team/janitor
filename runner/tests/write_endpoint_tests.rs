@@ -10,8 +10,18 @@ use axum::http::{Method, Request, StatusCode};
 use chrono::Utc;
 use futures::TryStreamExt;
 use janitor::queue::VcsInfo;
-use janitor_runner::{test_utils, ActiveRun, AppState, Backchannel};
-use serde_json::{json, Value};
+use janitor_runner::api_types::{
+    AssignRequest, AssignmentBody, BuildAssignmentConfig, CandidateUpload, CleanupRunsResponse,
+    CurrentStageResponse, ErrorResponse, FinishResponse, GenericBuildAssignment, PeekResponse,
+    PublicWorkerInfo, PublishStatusUpdate, QueueEntry, QueueStatusResponse, ReasonResponse,
+    ResumeChainResponse, ResumeCheckResponse, ResumeConsistencyResponse, ResumeInfoRequest,
+    RunSummary, RunnerStatus, ScheduleRequest, ScheduleResponse, UpdateRunRequest,
+    UploadCandidatesResponse, WatchdogHealthResponse, WorkerCounts, WorkerListResponse,
+};
+use janitor_runner::database::CodebaseUpload;
+use janitor_runner::{test_utils, ActiveRun, ActiveRunJson, AppState, Backchannel, HealthReport};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -35,15 +45,43 @@ async fn setup_with_campaign() -> Option<(axum::Router, Arc<AppState>)> {
         .expect("test app setup should either succeed or return None cleanly")
 }
 
-async fn get_body(response: axum::response::Response) -> Value {
+async fn get_body<T: DeserializeOwned>(response: axum::response::Response) -> T {
     let bytes = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("response body should be readable");
-    if bytes.is_empty() {
-        Value::Null
-    } else {
-        serde_json::from_slice(&bytes).expect("response body should be JSON")
+    serde_json::from_slice(&bytes).expect("response body should be JSON")
+}
+
+/// A candidate for `codebase` in `campaign`, with no other fields set.
+fn candidate(codebase: &str, campaign: &str) -> CandidateUpload {
+    CandidateUpload {
+        codebase: Some(codebase.to_string()),
+        campaign: Some(campaign.to_string()),
+        ..Default::default()
     }
+}
+
+/// Assignment request for `worker` on the private route.
+fn assign_request(worker: &str) -> AssignRequest {
+    AssignRequest {
+        worker: Some(worker.to_string()),
+        ..Default::default()
+    }
+}
+
+/// Serialize `value` as a JSON request body.
+fn json_body<T: Serialize>(value: &T) -> Body {
+    Body::from(serde_json::to_string(value).expect("request body should serialize"))
+}
+
+/// The `reason` of a `{"reason": ...}` response.
+async fn get_reason(response: axum::response::Response) -> String {
+    get_body::<ReasonResponse>(response).await.reason
+}
+
+/// The `error` of an `{"error": ...}` response.
+async fn get_error(response: axum::response::Response) -> String {
+    get_body::<ErrorResponse>(response).await.error
 }
 
 /// Insert a codebase row directly against the test pool. Callers use
@@ -82,8 +120,7 @@ async fn delete_candidate_rejects_non_numeric_id() {
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let body = get_body(response).await;
-    assert_eq!(body["reason"], "Invalid candidate ID");
+    assert_eq!(get_reason(response).await, "Invalid candidate ID");
 }
 
 /// `DELETE /candidates/{id}` on a missing id returns 404 with the
@@ -103,8 +140,7 @@ async fn delete_candidate_missing_returns_404() {
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    let body = get_body(response).await;
-    assert_eq!(body["reason"], "No such candidate");
+    assert_eq!(get_reason(response).await, "No such candidate");
 }
 
 /// `POST /codebases` upserts the given codebases and a subsequent
@@ -117,24 +153,27 @@ async fn post_codebases_upserts_and_is_visible_via_get() {
         return;
     };
 
-    let body = json!([
-        {
-            "name": "test-codebase-a",
-            "branch_url": "https://example.invalid/a",
-            "vcs_type": "git"
-        },
-        {
-            "name": "test-codebase-b",
-            "branch_url": "https://example.invalid/b",
-            "vcs_type": "git"
-        }
-    ]);
+    let codebase = |name: &str, branch_url: &str| CodebaseUpload {
+        name: Some(janitor::CodebaseName::new(name).unwrap()),
+        branch_url: Some(branch_url.to_string()),
+        url: None,
+        branch: None,
+        subpath: None,
+        vcs_type: Some("git".to_string()),
+        web_url: None,
+        vcs_last_revision: None,
+        value: None,
+    };
+    let body = vec![
+        codebase("test-codebase-a", "https://example.invalid/a"),
+        codebase("test-codebase-b", "https://example.invalid/b"),
+    ];
 
     let req = Request::builder()
         .method(Method::POST)
         .uri("/codebases")
         .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
+        .body(json_body(&body))
         .unwrap();
     let response = app.clone().oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -164,18 +203,20 @@ async fn post_schedule_with_missing_run_returns_404() {
         return;
     };
 
-    let body = json!({"run_id": "no-such-run"});
+    let body = ScheduleRequest {
+        run_id: Some(janitor::RunId::new("no-such-run").unwrap()),
+        ..Default::default()
+    };
     let req = Request::builder()
         .method(Method::POST)
         .uri("/schedule")
         .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
+        .body(json_body(&body))
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    let body = get_body(response).await;
-    assert_eq!(body["reason"], "Run not found");
+    assert_eq!(get_reason(response).await, "Run not found");
 }
 
 /// `POST /schedule` without any of `run_id`, `campaign`, `codebase`
@@ -192,13 +233,12 @@ async fn post_schedule_missing_campaign_returns_400() {
         .method(Method::POST)
         .uri("/schedule")
         .header("content-type", "application/json")
-        .body(Body::from(json!({}).to_string()))
+        .body(json_body(&ScheduleRequest::default()))
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let body = get_body(response).await;
-    assert_eq!(body["reason"], "missing campaign");
+    assert_eq!(get_reason(response).await, "missing campaign");
 }
 
 /// `POST /runs/{id}` on an unknown run returns 404 with a
@@ -210,24 +250,19 @@ async fn post_update_run_missing_returns_404() {
         return;
     };
 
-    let body = json!({"publish_status": "approved"});
+    let body = UpdateRunRequest {
+        publish_status: "approved".to_string(),
+    };
     let req = Request::builder()
         .method(Method::POST)
         .uri("/runs/no-such-run")
         .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
+        .body(json_body(&body))
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    let body = get_body(response).await;
-    assert!(
-        body["reason"]
-            .as_str()
-            .is_some_and(|s| s.contains("no such run")),
-        "expected `no such run` in reason, got {}",
-        body
-    );
+    assert_eq!(get_reason(response).await, "no such run: no-such-run");
 }
 
 /// `POST /runs/{id}` on an existing run updates `publish_status` and
@@ -270,21 +305,27 @@ async fn post_update_run_persists_publish_status() {
     .await
     .expect("insert run");
 
-    let body = json!({"publish_status": "approved"});
+    let body = UpdateRunRequest {
+        publish_status: "approved".to_string(),
+    };
     let req = Request::builder()
         .method(Method::POST)
         .uri("/runs/run-upd-1")
         .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
+        .body(json_body(&body))
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    assert_eq!(body["run_id"], "run-upd-1");
-    assert_eq!(body["publish_status"], "approved");
-    assert_eq!(body["campaign"], "test-campaign");
-    assert_eq!(body["codebase"], "update-run-codebase");
+    assert_eq!(
+        get_body::<PublishStatusUpdate>(response).await,
+        PublishStatusUpdate {
+            run_id: janitor::RunId::new("run-upd-1").unwrap(),
+            publish_status: "approved".to_string(),
+            codebase: janitor::CodebaseName::new("update-run-codebase").unwrap(),
+            campaign: janitor::Campaign::new("test-campaign").unwrap(),
+        }
+    );
 
     // publish_status is a Postgres ENUM; cast to text so
     // query_scalar<String> can decode it.
@@ -313,13 +354,9 @@ async fn post_kill_missing_returns_404() {
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    let body = get_body(response).await;
-    assert!(
-        body["reason"]
-            .as_str()
-            .is_some_and(|s| s.contains("No such current run")),
-        "expected `No such current run` in reason, got {}",
-        body
+    assert_eq!(
+        get_reason(response).await,
+        "No such current run: no-such-run"
     );
 }
 
@@ -344,14 +381,7 @@ async fn post_finish_missing_returns_404() {
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    let body = get_body(response).await;
-    assert!(
-        body["reason"]
-            .as_str()
-            .is_some_and(|s| s.contains("no such run")),
-        "expected `no such run` in reason, got {}",
-        body
-    );
+    assert_eq!(get_reason(response).await, "no such run no-such-run");
 }
 
 /// `POST /candidates` accepts an empty list and returns a success
@@ -368,21 +398,18 @@ async fn post_candidates_empty_list_returns_success_envelope() {
         .method(Method::POST)
         .uri("/candidates")
         .header("content-type", "application/json")
-        .body(Body::from(json!([]).to_string()))
+        .body(json_body(&Vec::<CandidateUpload>::new()))
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
     // Empty list -> nothing succeeded, nothing rejected. All buckets
     // are present in the envelope even when empty so callers can
     // parse a fixed shape.
-    assert_eq!(body["success"], json!([]));
-    assert_eq!(body["unknown_campaigns"], json!([]));
-    assert_eq!(body["unknown_codebases"], json!([]));
-    assert_eq!(body["invalid_command"], json!([]));
-    assert_eq!(body["invalid_value"], json!([]));
-    assert_eq!(body["unknown_publish_policies"], json!([]));
+    assert_eq!(
+        get_body::<UploadCandidatesResponse>(response).await,
+        UploadCandidatesResponse::default()
+    );
 }
 
 /// `POST /candidates` with a candidate for an unknown campaign
@@ -397,28 +424,29 @@ async fn post_candidates_records_unknown_campaign() {
     let pool = state.database.pool().clone();
     insert_codebase(&pool, "cand-unk-campaign-cb").await;
 
-    let body = json!([{
-        "codebase": "cand-unk-campaign-cb",
-        "campaign": "not-a-real-campaign",
-        "command": "true",
-    }]);
+    let body = vec![CandidateUpload {
+        codebase: Some("cand-unk-campaign-cb".to_string()),
+        campaign: Some("not-a-real-campaign".to_string()),
+        command: Some("true".to_string()),
+        ..Default::default()
+    }];
     let req = Request::builder()
         .method(Method::POST)
         .uri("/candidates")
         .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
+        .body(json_body(&body))
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    assert_eq!(body["success"], json!([]));
     assert_eq!(
-        body["unknown_campaigns"],
-        json!(["not-a-real-campaign"]),
+        get_body::<UploadCandidatesResponse>(response).await,
+        UploadCandidatesResponse {
+            unknown_campaigns: vec![janitor::Campaign::new("not-a-real-campaign").unwrap()],
+            ..Default::default()
+        },
         "candidate for unknown campaign should be listed in unknown_campaigns"
     );
-    assert_eq!(body["unknown_codebases"], json!([]));
 }
 
 /// `POST /candidates` on a candidate whose codebase does not exist
@@ -432,15 +460,16 @@ async fn post_candidates_missing_codebase_field_is_bad_request() {
         return;
     };
 
-    let body = json!([{
-        "campaign": "any-campaign",
-        "command": "true",
-    }]);
+    let body = vec![CandidateUpload {
+        campaign: Some("any-campaign".to_string()),
+        command: Some("true".to_string()),
+        ..Default::default()
+    }];
     let req = Request::builder()
         .method(Method::POST)
         .uri("/candidates")
         .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
+        .body(json_body(&body))
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
 
@@ -489,16 +518,9 @@ async fn get_run_returns_codebase_campaign_publish_status() {
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    assert_eq!(body["codebase"], "get-run-cb");
-    assert_eq!(body["campaign"], "test-campaign");
-    // publish_status is nullable until set; either JSON null or a
-    // string is acceptable, but the key must be present so clients
-    // can rely on the shape.
-    assert!(
-        body.get("publish_status").is_some(),
-        "publish_status key must be present, got {body}"
-    );
+    let body: RunSummary = get_body(response).await;
+    assert_eq!(body.codebase, "get-run-cb");
+    assert_eq!(body.campaign, "test-campaign");
 }
 
 /// `GET /runs/{id}` on an unknown run returns 404 with the
@@ -518,13 +540,7 @@ async fn get_run_missing_returns_404() {
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    let body = get_body(response).await;
-    assert!(
-        body["reason"]
-            .as_str()
-            .is_some_and(|s| s.contains("no such run")),
-        "expected `no such run` in reason, got {body}"
-    );
+    assert_eq!(get_reason(response).await, "no such run: no-such-run");
 }
 
 /// `GET /status` returns the three fields the Python handler emits:
@@ -545,16 +561,7 @@ async fn get_status_returns_python_shape() {
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    assert!(body["processing"].is_array(), "processing must be an array");
-    assert!(
-        body["avoid_hosts"].is_array(),
-        "avoid_hosts must be an array"
-    );
-    assert!(
-        body["rate_limit_hosts"].is_object(),
-        "rate_limit_hosts must be an object"
-    );
+    let _body: RunnerStatus = get_body(response).await;
 }
 
 /// `GET /queue` returns the entries currently in the queue table.
@@ -587,15 +594,13 @@ async fn get_queue_returns_scheduled_entries() {
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    let entries = body.as_array().expect("body should be an array");
+    let entries: Vec<QueueEntry> = get_body(response).await;
     let found = entries
         .iter()
-        .find(|e| e["codebase"] == "queue-listing-cb" && e["campaign"] == "test-campaign");
+        .find(|e| e.codebase == "queue-listing-cb" && e.campaign == "test-campaign");
     let entry = found.expect("expected our seeded row to appear in /queue");
-    assert_eq!(entry["command"], "true");
-    assert_eq!(entry["context"], "some-context");
-    assert!(entry["queue_id"].is_i64(), "queue_id must be a number");
+    assert_eq!(entry.command.as_deref(), Some("true"));
+    assert_eq!(entry.context.as_deref(), Some("some-context"));
 }
 
 /// `POST /kill/{id}` on a run whose backchannel does not support
@@ -622,7 +627,7 @@ async fn post_kill_jenkins_run_returns_501() {
         codebase: janitor::CodebaseName::new("kill-cb").unwrap(),
         backchannel: Backchannel::Jenkins {
             my_url: "http://jenkins.example.invalid/".to_string(),
-            jenkins: Some(json!({})),
+            jenkins: None,
         },
         vcs_info: VcsInfo::default(),
         instigated_context: None,
@@ -638,12 +643,10 @@ async fn post_kill_jenkins_run_returns_501() {
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
-    let body = get_body(response).await;
+    let error = get_error(response).await;
     assert!(
-        body["error"]
-            .as_str()
-            .is_some_and(|s| s.contains("Jenkins")),
-        "expected error to mention Jenkins, got {body}"
+        error.contains("Jenkins"),
+        "expected error to mention Jenkins, got {error}"
     );
 
     // Cleanup so the row does not leak across serial tests.
@@ -669,10 +672,10 @@ async fn get_active_runs_returns_empty_array_when_idle() {
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
+    let body: Vec<ActiveRunJson> = get_body(response).await;
     // Each test uses a UUID-namespaced ActiveRunStore key, so no
     // other test's runs are visible here.
-    assert_eq!(body, json!([]));
+    assert!(body.is_empty());
 }
 
 /// `POST /schedule` for an existing candidate returns the four
@@ -698,35 +701,25 @@ async fn post_schedule_returns_queue_position() {
     .await
     .expect("insert candidate");
 
-    let body = json!({
-        "codebase": "sched-pos-cb",
-        "campaign": "test-campaign",
-    });
+    let body = ScheduleRequest {
+        codebase: Some(janitor::CodebaseName::new("sched-pos-cb").unwrap()),
+        campaign: Some(janitor::Campaign::new("test-campaign").unwrap()),
+        ..Default::default()
+    };
     let req = Request::builder()
         .method(Method::POST)
         .uri("/schedule")
         .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
+        .body(json_body(&body))
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    assert_eq!(body["campaign"], "test-campaign");
-    assert_eq!(body["codebase"], "sched-pos-cb");
-    for key in [
-        "offset",
-        "bucket",
-        "queue_id",
-        "estimated_duration_seconds",
-        "queue_position",
-        "queue_wait_time",
-    ] {
-        assert!(
-            body.get(key).is_some(),
-            "response must include `{key}`, got {body}"
-        );
-    }
+    let body: ScheduleResponse = get_body(response).await;
+    assert_eq!(body.scheduled.campaign, "test-campaign");
+    assert_eq!(body.scheduled.codebase, "sched-pos-cb");
+    assert_eq!(body.queue_position, Some(1));
+    assert!(body.queue_wait_time.is_some());
 }
 
 /// `POST /candidates` for a known campaign with a known codebase
@@ -741,36 +734,30 @@ async fn post_candidates_success_path_writes_queue_row() {
     let pool = state.database.pool().clone();
     insert_codebase(&pool, "cand-ok-cb").await;
 
-    let body = json!([{
-        "codebase": "cand-ok-cb",
-        "campaign": "test-campaign",
-    }]);
+    let body = vec![candidate("cand-ok-cb", "test-campaign")];
     let req = Request::builder()
         .method(Method::POST)
         .uri("/candidates")
         .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
+        .body(json_body(&body))
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    let success = body["success"]
-        .as_array()
-        .expect("success must be an array");
-    assert_eq!(success.len(), 1, "expected one success entry: {body}");
-    let entry = &success[0];
-    assert_eq!(entry["codebase"], "cand-ok-cb");
-    assert_eq!(entry["campaign"], "test-campaign");
-    for key in ["bucket", "change_set", "offset", "queue-id", "refresh"] {
-        assert!(
-            entry.get(key).is_some(),
-            "success entry must include `{key}`, got {entry}"
-        );
-    }
-    assert_eq!(body["unknown_campaigns"], json!([]));
-    assert_eq!(body["unknown_codebases"], json!([]));
-    assert_eq!(body["invalid_value"], json!([]));
+    let body: UploadCandidatesResponse = get_body(response).await;
+    assert_eq!(
+        body.success.len(),
+        1,
+        "expected one success entry: {body:?}"
+    );
+    let entry = &body.success[0];
+    assert_eq!(entry.codebase, "cand-ok-cb");
+    assert_eq!(entry.campaign, "test-campaign");
+    assert_eq!(entry.change_set, None);
+    assert!(!entry.refresh);
+    assert!(body.unknown_campaigns.is_empty());
+    assert!(body.unknown_codebases.is_empty());
+    assert!(body.invalid_value.is_empty());
 
     // The candidate row must be in the queue table now.
     let queue_row: Option<(String, String)> =
@@ -795,26 +782,26 @@ async fn post_candidates_records_invalid_value() {
     let pool = state.database.pool().clone();
     insert_codebase(&pool, "cand-invalid-cb").await;
 
-    let body = json!([{
-        "codebase": "cand-invalid-cb",
-        "campaign": "test-campaign",
-        "value": 0,
-    }]);
+    let body = vec![CandidateUpload {
+        value: Some(0),
+        ..candidate("cand-invalid-cb", "test-campaign")
+    }];
     let req = Request::builder()
         .method(Method::POST)
         .uri("/candidates")
         .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
+        .body(json_body(&body))
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    assert_eq!(body["success"], json!([]));
     assert_eq!(
-        body["invalid_value"],
-        json!([0]),
-        "value=0 must land in invalid_value, got {body}"
+        get_body::<UploadCandidatesResponse>(response).await,
+        UploadCandidatesResponse {
+            invalid_value: vec![0],
+            ..Default::default()
+        },
+        "value=0 must land in invalid_value"
     );
 
     // Nothing should have been queued.
@@ -839,26 +826,26 @@ async fn post_candidates_records_unknown_publish_policy() {
     let pool = state.database.pool().clone();
     insert_codebase(&pool, "cand-unk-pp-cb").await;
 
-    let body = json!([{
-        "codebase": "cand-unk-pp-cb",
-        "campaign": "test-campaign",
-        "publish-policy": "no-such-policy",
-    }]);
+    let body = vec![CandidateUpload {
+        publish_policy: Some("no-such-policy".to_string()),
+        ..candidate("cand-unk-pp-cb", "test-campaign")
+    }];
     let req = Request::builder()
         .method(Method::POST)
         .uri("/candidates")
         .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
+        .body(json_body(&body))
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    assert_eq!(body["success"], json!([]));
     assert_eq!(
-        body["unknown_publish_policies"],
-        json!(["no-such-policy"]),
-        "unknown publish policy must land in unknown_publish_policies, got {body}"
+        get_body::<UploadCandidatesResponse>(response).await,
+        UploadCandidatesResponse {
+            unknown_publish_policies: vec!["no-such-policy".to_string()],
+            ..Default::default()
+        },
+        "unknown publish policy must land in unknown_publish_policies"
     );
 }
 
@@ -873,25 +860,25 @@ async fn post_candidates_records_unknown_codebase_via_fk_violation() {
     };
 
     // Note: no insert_codebase() -- we WANT the FK to fail.
-    let body = json!([{
-        "codebase": "codebase-that-does-not-exist",
-        "campaign": "test-campaign",
-    }]);
+    let body = vec![candidate("codebase-that-does-not-exist", "test-campaign")];
     let req = Request::builder()
         .method(Method::POST)
         .uri("/candidates")
         .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
+        .body(json_body(&body))
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    assert_eq!(body["success"], json!([]));
     assert_eq!(
-        body["unknown_codebases"],
-        json!(["codebase-that-does-not-exist"]),
-        "candidate for missing codebase FK must land in unknown_codebases, got {body}"
+        get_body::<UploadCandidatesResponse>(response).await,
+        UploadCandidatesResponse {
+            unknown_codebases: vec![
+                janitor::CodebaseName::new("codebase-that-does-not-exist").unwrap()
+            ],
+            ..Default::default()
+        },
+        "candidate for missing codebase FK must land in unknown_codebases"
     );
 }
 
@@ -913,19 +900,18 @@ async fn get_health_returns_component_report() {
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    assert_eq!(body["service"], "janitor-runner");
-    let checks = body["checks"].as_array().expect("checks must be an array");
-    let names: Vec<&str> = checks.iter().filter_map(|c| c["name"].as_str()).collect();
+    let body: HealthReport = get_body(response).await;
+    assert_eq!(body.service, "janitor-runner");
+    let names: Vec<&str> = body.checks.iter().map(|c| c.name.as_str()).collect();
     assert!(
         names.contains(&"database"),
-        "expected database check, got {body}"
+        "expected database check, got {body:?}"
     );
-    assert!(names.contains(&"logs"), "expected logs check, got {body}");
-    assert!(names.contains(&"vcs"), "expected vcs check, got {body}");
+    assert!(names.contains(&"logs"), "expected logs check, got {body:?}");
+    assert!(names.contains(&"vcs"), "expected vcs check, got {body:?}");
     assert!(
         names.contains(&"artifacts"),
-        "expected artifacts check, got {body}"
+        "expected artifacts check, got {body:?}"
     );
 }
 
@@ -1019,19 +1005,12 @@ async fn get_public_queue_stats_returns_expected_fields() {
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    for key in [
-        "queue_length",
-        "active_runs",
-        "succeeded",
-        "failed",
-        "status",
-    ] {
-        assert!(
-            body.get(key).is_some(),
-            "expected `{key}` in /queue/stats response, got {body}"
-        );
-    }
+    let body: QueueStatusResponse = get_body(response).await;
+    assert_eq!(body.status, "operational");
+    assert!(body.queue_length.is_some(), "got {body:?}");
+    assert!(body.active_runs.is_some(), "got {body:?}");
+    assert!(body.succeeded.is_some(), "got {body:?}");
+    assert!(body.failed.is_some(), "got {body:?}");
 }
 
 /// `GET /watchdog/health` (public router) returns 200 + a
@@ -1054,10 +1033,15 @@ async fn get_public_watchdog_health_returns_empty_when_idle() {
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    assert_eq!(body["status"], "ok");
-    assert_eq!(body["active_runs"], 0);
-    assert_eq!(body["health_statuses"], json!([]));
+    assert_eq!(
+        get_body::<WatchdogHealthResponse>(response).await,
+        WatchdogHealthResponse {
+            status: "ok".to_string(),
+            active_runs: Some(0),
+            health_statuses: Some(vec![]),
+            error: None,
+        }
+    );
 }
 
 /// A worker-authenticated route on the public router returns 401
@@ -1172,12 +1156,9 @@ async fn public_finish_returns_403_when_worker_does_not_own_run() {
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    let body = get_body(response).await;
-    assert!(
-        body["error"]
-            .as_str()
-            .is_some_and(|s| s.contains("Not authorized")),
-        "expected `Not authorized` in error, got {body}"
+    assert_eq!(
+        get_error(response).await,
+        "Not authorized to finish this run"
     );
 
     let _ = state
@@ -1209,33 +1190,29 @@ async fn end_to_end_assignment_lifecycle() {
         .expect("create worker");
 
     // Step 1: POST /candidates enqueues the candidate.
-    let candidate_body = json!([{
-        "codebase": "e2e-cb",
-        "campaign": "test-campaign",
-    }]);
+    let candidate_body = vec![candidate("e2e-cb", "test-campaign")];
     let req = Request::builder()
         .method(Method::POST)
         .uri("/candidates")
         .header("content-type", "application/json")
-        .body(Body::from(candidate_body.to_string()))
+        .body(json_body(&candidate_body))
         .unwrap();
     let response = app.clone().oneshot(req).await.unwrap();
     let status = response.status();
-    let body = get_body(response).await;
+    let body: UploadCandidatesResponse = get_body(response).await;
     assert_eq!(
         status,
         StatusCode::OK,
-        "candidate upload should succeed, body: {body}"
+        "candidate upload should succeed, body: {body:?}"
     );
 
     // Step 2: POST /active-runs (private route) pulls the queue item
     // and hands the worker an assignment envelope.
-    let assign_body = json!({"worker": "e2e-worker"});
     let req = Request::builder()
         .method(Method::POST)
         .uri("/active-runs")
         .header("content-type", "application/json")
-        .body(Body::from(assign_body.to_string()))
+        .body(json_body(&assign_request("e2e-worker")))
         .unwrap();
     let response = app.clone().oneshot(req).await.unwrap();
     assert_eq!(
@@ -1244,41 +1221,23 @@ async fn end_to_end_assignment_lifecycle() {
         "assignment should succeed after candidate upload; got {:?}",
         response.status()
     );
-    let assignment = get_body(response).await;
-    // Every field Python's assign response contract promises must
-    // be present, so worker code that reads any of them will work
-    // against this runner.
-    for key in [
-        "id",
-        "queue_id",
-        "campaign",
-        "codebase",
-        "branch",
-        "resume",
-        "target_repository",
-        "codemod",
-        "env",
-        "build",
-    ] {
-        assert!(
-            assignment.get(key).is_some(),
-            "assignment must include `{key}`, got {assignment}"
-        );
-    }
-    assert_eq!(assignment["campaign"], "test-campaign");
-    assert_eq!(assignment["codebase"], "e2e-cb");
-    let branch = &assignment["branch"];
-    assert!(
-        branch.get("default-empty").is_some(),
-        "assignment.branch must include `default-empty`, got {branch}"
-    );
-    let run_id = assignment["id"].as_str().expect("id must be a string");
+    // Every field of the assign response contract must be present, so
+    // worker code that reads any of them works against this runner.
+    let assignment: AssignmentBody = get_body(response).await;
+    assert_eq!(assignment.campaign, "test-campaign");
+    assert_eq!(assignment.codebase, "e2e-cb");
+    let run_id = assignment.id.as_str();
 
     // Step 3: POST /active-runs/{id}/finish with a minimal multipart
     // body containing just the JSON metadata. The upload processor
     // accepts a bare `metadata` field with the worker result JSON.
     let boundary = "e2e-boundary";
-    let worker_result = r#"{"code":"success","description":"e2e"}"#;
+    let worker_result = serde_json::to_string(&janitor::api::worker::Metadata {
+        code: Some("success".to_string()),
+        description: Some("e2e".to_string()),
+        ..Default::default()
+    })
+    .unwrap();
     let multipart_body = format!(
         "--{boundary}\r\n\
          Content-Disposition: form-data; name=\"metadata\"; filename=\"result.json\"\r\n\
@@ -1297,10 +1256,10 @@ async fn end_to_end_assignment_lifecycle() {
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
     let status = response.status();
-    let body = get_body(response).await;
+    let body: FinishResponse = get_body(response).await;
     assert!(
         status == StatusCode::CREATED || status == StatusCode::OK,
-        "finish should succeed, got {status} with body {body}"
+        "finish should succeed, got {status} with body {body:?}"
     );
 
     // The run row is now in the database; verify the code we sent
@@ -1318,11 +1277,7 @@ async fn end_to_end_assignment_lifecycle() {
     // ActiveRun should be gone from Redis after finish -- the run is
     // no longer in-flight, so /kill and /active-runs/{id} must 404.
     assert!(
-        state
-            .active_runs
-            .get(&janitor::RunId::new(run_id).unwrap())
-            .await
-            .is_none(),
+        state.active_runs.get(&assignment.id).await.is_none(),
         "active run should be dropped from Redis after finish"
     );
 }
@@ -1331,7 +1286,7 @@ async fn end_to_end_assignment_lifecycle() {
 /// `end_to_end_assignment_lifecycle` uses, and return the parsed
 /// assignment body. Used by the tests below that assert on the wire
 /// shape of the assign response without caring about the finish half.
-async fn assign_one(app: axum::Router, state: &Arc<AppState>, codebase: &str) -> Value {
+async fn assign_one(app: axum::Router, state: &Arc<AppState>, codebase: &str) -> AssignmentBody {
     let pool = state.database.pool().clone();
     insert_codebase(&pool, codebase).await;
     state
@@ -1340,22 +1295,21 @@ async fn assign_one(app: axum::Router, state: &Arc<AppState>, codebase: &str) ->
         .await
         .expect("create worker");
 
-    let candidate_body = json!([{ "codebase": codebase, "campaign": "test-campaign" }]);
+    let candidate_body = vec![candidate(codebase, "test-campaign")];
     let req = Request::builder()
         .method(Method::POST)
         .uri("/candidates")
         .header("content-type", "application/json")
-        .body(Body::from(candidate_body.to_string()))
+        .body(json_body(&candidate_body))
         .unwrap();
     let response = app.clone().oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    let assign_body = json!({"worker": "envelope-worker"});
     let req = Request::builder()
         .method(Method::POST)
         .uri("/active-runs")
         .header("content-type", "application/json")
-        .body(Body::from(assign_body.to_string()))
+        .body(json_body(&assign_request("envelope-worker")))
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -1366,11 +1320,8 @@ async fn assign_one(app: axum::Router, state: &Arc<AppState>, codebase: &str) ->
         .to_str()
         .unwrap()
         .to_string();
-    let body = get_body(response).await;
-    assert_eq!(
-        location,
-        format!("/active-runs/{}", body["id"].as_str().unwrap())
-    );
+    let body: AssignmentBody = get_body(response).await;
+    assert_eq!(location, format!("/active-runs/{}", body.id));
     body
 }
 
@@ -1388,95 +1339,32 @@ async fn assign_response_envelope_has_all_documented_fields() {
 
     let assignment = assign_one(app, &state, "assign-envelope-cb").await;
 
-    // Top-level fields.
-    assert!(assignment["id"].is_string(), "id: {assignment}");
-    assert!(assignment["queue_id"].is_number(), "queue_id: {assignment}");
-    assert!(assignment["campaign"].is_string(), "campaign: {assignment}");
-    assert!(assignment["codebase"].is_string(), "codebase: {assignment}");
-    assert!(
-        assignment["force-build"].is_boolean(),
-        "force-build: {assignment}"
+    assert_eq!(assignment.campaign, "test-campaign");
+    assert_eq!(assignment.codebase, "assign-envelope-cb");
+    assert_eq!(
+        assignment.description,
+        "test-campaign on assign-envelope-cb"
     );
-    assert!(assignment["branch"].is_object(), "branch: {assignment}");
-    assert!(
-        assignment["resume"].is_object() || assignment["resume"].is_null(),
-        "resume: {assignment}"
-    );
-    assert!(
-        assignment["target_repository"].is_object(),
-        "target_repository: {assignment}"
-    );
-    assert!(
-        assignment["skip-setup-validation"].is_boolean(),
-        "skip-setup-validation: {assignment}"
-    );
-    assert!(assignment["codemod"].is_object(), "codemod: {assignment}");
-    assert!(assignment["env"].is_object(), "env: {assignment}");
-    assert!(assignment["build"].is_object(), "build: {assignment}");
+    assert_eq!(assignment.command, "true");
+    assert!(!assignment.skip_setup_validation);
+    assert!(assignment.resume.is_none());
     // Python always sent dep_server_url, null when unset.
     assert_eq!(
-        assignment["build"]["config"].get("dep_server_url"),
-        Some(&serde_json::Value::Null),
-        "build.config: {assignment}"
+        assignment.build.config,
+        BuildAssignmentConfig::Generic(GenericBuildAssignment {
+            dep_server_url: None
+        })
     );
-
-    assert_eq!(
-        assignment["description"],
-        json!("test-campaign on assign-envelope-cb")
-    );
-    assert_eq!(assignment["command"], json!("true"));
-    assert_eq!(assignment["skip-setup-validation"], json!(false));
-
-    // Python never sent these.
-    for key in ["queue_item", "vcs_info", "active_run", "build_config"] {
-        assert!(
-            assignment.get(key).is_none(),
-            "unexpected `{key}` in assign envelope, got {assignment}"
-        );
-    }
-
-    // Branch subfields the worker's `DebianBuildConfig` reads. Types
-    // may be null (branch_url can be absent for default_empty
-    // campaigns) but the keys must be present.
-    let branch = &assignment["branch"];
-    for key in [
-        "cached_url",
-        "vcs_type",
-        "url",
-        "subpath",
-        "additional_colocated_branches",
-        "default-empty",
-    ] {
-        assert!(
-            branch.get(key).is_some(),
-            "branch.{key} must be present, got {branch}"
-        );
-    }
-    assert!(
-        branch["default-empty"].is_boolean(),
-        "branch.default-empty must be a bool"
-    );
-
-    // Build subfields: target string, config object, environment map.
-    let build = &assignment["build"];
-    assert!(
-        build["target"].as_str().is_some(),
-        "build.target must be a string, got {build}"
-    );
-    assert!(
-        build["config"].is_object(),
-        "build.config must be an object, got {build}"
-    );
-    assert!(
-        build["environment"].is_object(),
-        "build.environment must be an object, got {build}"
-    );
+    assert_eq!(assignment.build.target, "generic");
 
     // Python sent the codemod an empty environment; the command
     // environment goes in the top-level `env`.
     assert_eq!(
-        assignment["codemod"],
-        json!({"command": "true", "environment": {}})
+        assignment.codemod,
+        janitor::api::worker::Codemod {
+            command: "true".to_string(),
+            environment: std::collections::HashMap::new(),
+        }
     );
 }
 
@@ -1500,7 +1388,7 @@ async fn assign_sends_campaign_skip_setup_validation() {
     };
 
     let assignment = assign_one(app, &state, "assign-skip-validation-cb").await;
-    assert_eq!(assignment["skip-setup-validation"], json!(true));
+    assert!(assignment.skip_setup_validation);
 }
 
 /// Like Python, `branch.url` is the URL of the main branch as opened,
@@ -1536,8 +1424,8 @@ async fn assign_sends_opened_branch_url() {
 
     let assignment = assign_one(app, &state, "assign-branch-url-cb").await;
     assert_eq!(
-        assignment["branch"]["url"],
-        json!(url.as_str().trim_end_matches('/'))
+        assignment.branch.url.as_deref(),
+        Some(url.as_str().trim_end_matches('/'))
     );
 }
 
@@ -1558,12 +1446,12 @@ async fn peek_returns_queue_item_shape_when_available() {
     insert_codebase(&pool, "peek-cb").await;
     // Enqueue via POST /candidates so the queue row + campaign
     // config are wired the same way an assign would see them.
-    let body = json!([{ "codebase": "peek-cb", "campaign": "test-campaign" }]);
+    let body = vec![candidate("peek-cb", "test-campaign")];
     let req = Request::builder()
         .method(Method::POST)
         .uri("/candidates")
         .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
+        .body(json_body(&body))
         .unwrap();
     assert_eq!(
         app.clone().oneshot(req).await.unwrap().status(),
@@ -1578,22 +1466,9 @@ async fn peek_returns_queue_item_shape_when_available() {
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::CREATED);
-    let body = get_body(response).await;
-    for key in ["queue_item", "vcs_info", "build_config"] {
-        assert!(
-            body.get(key).is_some(),
-            "peek envelope missing `{key}`, got {body}"
-        );
-    }
-    // estimated_duration is optional (null when the queue row hasn't
-    // been through a run yet), but the key must be present.
-    assert!(
-        body.get("estimated_duration").is_some(),
-        "peek envelope missing `estimated_duration`, got {body}"
-    );
-    let queue_item = &body["queue_item"];
-    assert_eq!(queue_item["codebase"], "peek-cb");
-    assert_eq!(queue_item["campaign"], "test-campaign");
+    let body: PeekResponse = get_body(response).await;
+    assert_eq!(body.queue_item.codebase, "peek-cb");
+    assert_eq!(body.queue_item.campaign, "test-campaign");
 }
 
 #[tokio::test]
@@ -1611,8 +1486,7 @@ async fn peek_returns_503_when_queue_empty() {
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let body = get_body(response).await;
-    assert_eq!(body["reason"], "queue empty");
+    assert_eq!(get_reason(response).await, "queue empty");
 }
 
 /// Helper: seed an ActiveRun so a `POST /finish` gets past the
@@ -1674,12 +1548,10 @@ async fn finish_multipart_without_metadata_returns_400() {
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let body = get_body(response).await;
+    let error = get_error(response).await;
     assert!(
-        body["error"]
-            .as_str()
-            .is_some_and(|s| s.contains("worker_result") || s.contains("Missing")),
-        "expected `worker_result`/`Missing` in error, got {body}"
+        error.contains("worker_result") || error.contains("Missing"),
+        "expected `worker_result`/`Missing` in error, got {error}"
     );
 
     let _ = state
@@ -1798,19 +1670,18 @@ async fn assign_picks_lowest_priority_first() {
         .expect("insert queue row");
     }
 
-    let assign_body = json!({"worker": "prio-worker"});
     let req = Request::builder()
         .method(Method::POST)
         .uri("/active-runs")
         .header("content-type", "application/json")
-        .body(Body::from(assign_body.to_string()))
+        .body(json_body(&assign_request("prio-worker")))
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
-    let assignment = get_body(response).await;
+    let assignment: AssignmentBody = get_body(response).await;
     assert_eq!(
-        assignment["codebase"], "prio-b",
-        "lowest-priority row (`prio-b`) should be picked first, got {assignment}"
+        assignment.codebase, "prio-b",
+        "lowest-priority row (`prio-b`) should be picked first, got {assignment:?}"
     );
 }
 
@@ -1857,19 +1728,18 @@ async fn assign_prefers_higher_success_chance_within_same_priority() {
         .expect("insert queue row");
     }
 
-    let assign_body = json!({"worker": "score-worker"});
     let req = Request::builder()
         .method(Method::POST)
         .uri("/active-runs")
         .header("content-type", "application/json")
-        .body(Body::from(assign_body.to_string()))
+        .body(json_body(&assign_request("score-worker")))
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
-    let assignment = get_body(response).await;
+    let assignment: AssignmentBody = get_body(response).await;
     assert_eq!(
-        assignment["codebase"], "score-b",
-        "highest-success_chance row (`score-b`) should be picked first, got {assignment}"
+        assignment.codebase, "score-b",
+        "highest-success_chance row (`score-b`) should be picked first, got {assignment:?}"
     );
 }
 
@@ -2020,12 +1890,14 @@ async fn post_update_run_publishes_publish_status_event() {
     // land after PUBLISH and the message is dropped.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let body = json!({"publish_status": "rejected"});
+    let body = UpdateRunRequest {
+        publish_status: "rejected".to_string(),
+    };
     let req = Request::builder()
         .method(Method::POST)
         .uri("/runs/run-pubsub-1")
         .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
+        .body(json_body(&body))
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -2034,11 +1906,16 @@ async fn post_update_run_publishes_publish_status_event() {
         .await
         .expect("subscriber task should send a result")
         .expect("expected a publish-status message within 3s");
-    let parsed: Value = serde_json::from_str(&payload).expect("payload is JSON");
-    assert_eq!(parsed["run_id"], "run-pubsub-1");
-    assert_eq!(parsed["publish_status"], "rejected");
-    assert_eq!(parsed["codebase"], "pubsub-cb");
-    assert_eq!(parsed["campaign"], "test-campaign");
+    let parsed: PublishStatusUpdate = serde_json::from_str(&payload).expect("payload is JSON");
+    assert_eq!(
+        parsed,
+        PublishStatusUpdate {
+            run_id: janitor::RunId::new("run-pubsub-1").unwrap(),
+            publish_status: "rejected".to_string(),
+            codebase: janitor::CodebaseName::new("pubsub-cb").unwrap(),
+            campaign: janitor::Campaign::new("test-campaign").unwrap(),
+        }
+    );
 }
 
 /// `GET /active-runs/{id}` on an unknown id returns 404 with
@@ -2057,11 +1934,7 @@ async fn get_active_run_returns_404_for_unknown_id() {
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    let body = get_body(response).await;
-    assert!(body["reason"]
-        .as_str()
-        .map(|s| s.contains("does-not-exist"))
-        .unwrap_or(false));
+    assert_eq!(get_reason(response).await, "no such run does-not-exist");
 }
 
 /// `GET /active-runs/{id}/current-stage` on an unknown id returns 404
@@ -2080,11 +1953,10 @@ async fn current_stage_returns_404_for_unknown_id() {
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    let body = get_body(response).await;
-    assert!(body["reason"]
-        .as_str()
-        .map(|s| s.contains("does-not-exist"))
-        .unwrap_or(false));
+    assert_eq!(
+        get_reason(response).await,
+        "No such current run: does-not-exist"
+    );
 }
 
 /// When the active run exists but its backchannel is `None`, the
@@ -2109,11 +1981,13 @@ async fn current_stage_returns_null_for_none_backchannel() {
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    assert!(body["current_stage"].is_null());
-    assert!(
-        body.get("error").is_none(),
-        "None backchannel is a soft success, not an error"
+    // None backchannel is a soft success, not an error.
+    assert_eq!(
+        get_body::<CurrentStageResponse>(response).await,
+        CurrentStageResponse {
+            current_stage: None,
+            error: None,
+        }
     );
 }
 
@@ -2133,18 +2007,22 @@ async fn get_workers_returns_summary_envelope_when_empty() {
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    assert!(body["workers"].is_array());
-    assert_eq!(body["total_workers"], 0);
-    assert_eq!(body["active_workers"], 0);
-    assert_eq!(body["idle_workers"], 0);
-    assert_eq!(body["summary"]["total"], 0);
-    assert_eq!(body["summary"]["active"], 0);
-    assert_eq!(body["summary"]["idle"], 0);
-    assert!(
-        body["timestamp"].as_str().is_some(),
-        "expected timestamp string"
+    let body: WorkerListResponse<PublicWorkerInfo> = get_body(response).await;
+    assert!(body.workers.is_empty());
+    assert_eq!(body.error, None);
+    assert_eq!(body.total_workers, 0);
+    assert_eq!(body.active_workers, 0);
+    assert_eq!(body.idle_workers, 0);
+    assert_eq!(
+        body.summary,
+        Some(WorkerCounts {
+            total: 0,
+            active: 0,
+            idle: 0,
+            failed: None,
+        })
     );
+    assert!(body.timestamp.is_some(), "expected timestamp");
 }
 
 /// `POST /resume/check` for a nonexistent (campaign, revision) returns
@@ -2155,22 +2033,22 @@ async fn resume_check_returns_not_available_for_unknown_revision() {
         eprintln!("skipping: no test resources");
         return;
     };
-    let body = json!({
-        "campaign": "nonexistent-campaign",
-        "resume_revision": "rev-does-not-exist",
-        "codebase": "any",
-    });
+    let body = ResumeInfoRequest {
+        campaign: janitor::Campaign::new("nonexistent-campaign").unwrap(),
+        resume_revision: "rev-does-not-exist".to_string(),
+    };
     let req = Request::builder()
         .method(Method::POST)
         .uri("/resume/check")
         .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
+        .body(json_body(&body))
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    assert_eq!(body["resume_available"], false);
-    assert!(body["message"].as_str().is_some());
+    let body: ResumeCheckResponse = get_body(response).await;
+    assert!(!body.resume_available);
+    assert!(body.resume_info.is_none());
+    assert_eq!(body.message.as_deref(), Some("No resume information found"));
 }
 
 /// `GET /resume/validate` on a fresh empty DB reports `consistent`.
@@ -2187,14 +2065,13 @@ async fn resume_validate_returns_consistent_on_empty_db() {
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    assert_eq!(body["status"], "consistent");
+    let body: ResumeConsistencyResponse = get_body(response).await;
+    assert_eq!(body.status, "consistent");
 }
 
-/// `GET /resume/chain/{run_id}` on an unknown run should return a
-/// well-formed JSON object with `run_id` echoed back and either an
-/// empty chain or an error field. This is a Rust-only endpoint so
-/// there's no Python behavior to match -- pin the shape.
+/// `GET /resume/chain/{run_id}` on an unknown run echoes `run_id` back
+/// with an empty chain. This is a Rust-only endpoint so there's no
+/// Python behavior to match -- pin the shape.
 #[tokio::test]
 async fn resume_chain_returns_shape_for_unknown_run() {
     let Some((app, _state)) = setup().await else {
@@ -2208,13 +2085,13 @@ async fn resume_chain_returns_shape_for_unknown_run() {
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    assert!(body.is_object());
-    // Either the run_id echoes back with an (empty) chain, or the
-    // handler reports an error field. Both are valid outputs.
-    let has_run_id = body["run_id"].as_str() == Some("unknown-run");
-    let has_error = body["error"].is_string();
-    assert!(has_run_id || has_error, "unexpected body shape: {body}");
+    assert_eq!(
+        get_body::<ResumeChainResponse>(response).await,
+        ResumeChainResponse {
+            run_id: janitor::RunId::new("unknown-run").unwrap(),
+            resume_chain: vec![],
+        }
+    );
 }
 
 /// `POST /admin/runs/cleanup?result_code=X&dry_run=1` on an empty DB
@@ -2233,15 +2110,18 @@ async fn admin_cleanup_runs_dry_run_returns_empty_matches() {
         .body(Body::empty())
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
-    // Handler should succeed (2xx). Exact shape is up to the impl,
-    // but the response must be JSON.
-    assert!(
-        response.status().is_success(),
-        "expected 2xx, got {}",
-        response.status()
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        get_body::<CleanupRunsResponse>(response).await,
+        CleanupRunsResponse {
+            matched: 0,
+            rescheduled: 0,
+            deleted: 0,
+            dry_run: true,
+            result_code: "lintian".to_string(),
+            run_ids: None,
+        }
     );
-    let body = get_body(response).await;
-    assert!(body.is_object(), "expected JSON object, got {body}");
 }
 
 /// `POST /admin/runs/cleanup` without the required `result_code`
@@ -2284,30 +2164,27 @@ async fn post_active_runs_honours_client_exclude_hosts() {
         .await
         .expect("create worker");
 
-    let candidate_body = json!([{
-        "codebase": "excl-host-cb",
-        "campaign": "test-campaign",
-    }]);
+    let candidate_body = vec![candidate("excl-host-cb", "test-campaign")];
     let req = Request::builder()
         .method(Method::POST)
         .uri("/candidates")
         .header("content-type", "application/json")
-        .body(Body::from(candidate_body.to_string()))
+        .body(json_body(&candidate_body))
         .unwrap();
     assert_eq!(
         app.clone().oneshot(req).await.unwrap().status(),
         StatusCode::OK,
     );
 
-    let assign_body = json!({
-        "worker": "excl-worker",
-        "exclude_hosts": ["example.invalid"],
-    });
+    let assign_body = AssignRequest {
+        exclude_hosts: Some(vec!["example.invalid".to_string()]),
+        ..assign_request("excl-worker")
+    };
     let req = Request::builder()
         .method(Method::POST)
         .uri("/active-runs")
         .header("content-type", "application/json")
-        .body(Body::from(assign_body.to_string()))
+        .body(json_body(&assign_body))
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(
@@ -2325,7 +2202,7 @@ async fn finish_with_artifact(
     run_id: &str,
     codebase: &str,
     worker: &str,
-) -> (StatusCode, Value) {
+) -> (StatusCode, FinishResponse) {
     let pool = state.database.pool().clone();
     insert_codebase(&pool, codebase).await;
     state
@@ -2355,11 +2232,17 @@ async fn finish_with_artifact(
         .await;
 
     let boundary = "artifact-boundary";
+    let worker_result = serde_json::to_string(&janitor::api::worker::Metadata {
+        code: Some("success".to_string()),
+        description: Some("done".to_string()),
+        ..Default::default()
+    })
+    .unwrap();
     let multipart_body = format!(
         "--{boundary}\r\n\
          Content-Disposition: form-data; name=\"metadata\"; filename=\"result.json\"\r\n\
          Content-Type: application/json\r\n\r\n\
-         {{\"code\":\"success\",\"description\":\"done\"}}\r\n\
+         {worker_result}\r\n\
          --{boundary}\r\n\
          Content-Disposition: form-data; name=\"file\"; filename=\"foo.deb\"\r\n\
          Content-Type: application/octet-stream\r\n\r\n\
@@ -2417,9 +2300,9 @@ async fn finish_marks_artifact_upload_failed() {
         "uf-worker",
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "body: {body}");
-    assert_eq!(body["artifacts"], Value::Null);
-    assert_eq!(body["result"]["code"], "artifact-upload-failed");
+    assert_eq!(status, StatusCode::CREATED, "body: {body:?}");
+    assert_eq!(body.artifacts, None);
+    assert_eq!(body.result.code, "artifact-upload-failed");
 
     let result_code: String = sqlx::query_scalar("SELECT result_code FROM run WHERE id = $1")
         .bind("run-upload-fails")
@@ -2451,9 +2334,9 @@ async fn finish_stores_artifacts_in_backup() {
 
     let (status, body) =
         finish_with_artifact(app, &state, "run-backup", "backup-cb", "backup-worker").await;
-    assert_eq!(status, StatusCode::CREATED, "body: {body}");
-    assert_eq!(body["artifacts"], json!(["foo.deb"]));
-    assert_eq!(body["result"]["code"], "success");
+    assert_eq!(status, StatusCode::CREATED, "body: {body:?}");
+    assert_eq!(body.artifacts, Some(vec!["foo.deb".to_string()]));
+    assert_eq!(body.result.code, "success");
 
     let contents: Vec<u8> = backup
         .get_artifact(&janitor::RunId::new("run-backup").unwrap(), "foo.deb")

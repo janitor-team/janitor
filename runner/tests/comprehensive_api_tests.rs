@@ -4,11 +4,14 @@ use axum::{
     body::{to_bytes, Body},
     http::{Method, Request, StatusCode},
 };
-use serde_json::{json, Value};
+use serde::de::DeserializeOwned;
 use std::sync::Arc;
 use tower::ServiceExt;
 
-use janitor_runner::{test_utils, AppState};
+use janitor_runner::api_types::{
+    AssignRequest, QueuePositionEta, ReasonResponse, ScheduleControlRequest, ScheduledRun,
+};
+use janitor_runner::{test_utils, ActiveRunJson, AppState};
 
 async fn setup() -> Option<(axum::Router, Arc<AppState>)> {
     test_utils::create_test_app_with_state_if_available()
@@ -29,7 +32,7 @@ macro_rules! require_test_app {
     };
 }
 
-async fn get_json(response: axum::response::Response) -> Value {
+async fn get_json<T: DeserializeOwned>(response: axum::response::Response) -> T {
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     serde_json::from_slice(&body).unwrap()
 }
@@ -52,7 +55,13 @@ async fn assign(app: &axum::Router, worker: &str) -> axum::response::Response {
         .method(Method::POST)
         .uri("/active-runs")
         .header("Content-Type", "application/json")
-        .body(Body::from(json!({"worker": worker}).to_string()))
+        .body(Body::from(
+            serde_json::to_string(&AssignRequest {
+                worker: Some(worker.to_string()),
+                ..Default::default()
+            })
+            .unwrap(),
+        ))
         .unwrap();
     app.clone().oneshot(request).await.unwrap()
 }
@@ -70,7 +79,12 @@ async fn test_assign_queue_empty_compatibility() {
 
     let response = assign(&app, "empty-queue-worker").await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(get_json(response).await, json!({"reason": "queue empty"}));
+    assert_eq!(
+        get_json::<ReasonResponse>(response).await,
+        ReasonResponse {
+            reason: "queue empty".to_string()
+        }
+    );
 }
 
 /// Test active runs endpoint API compatibility.
@@ -87,22 +101,8 @@ async fn test_active_runs_compatibility() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let runs: Value = serde_json::from_slice(&body).unwrap();
-
-    // Should return array of active runs
-    assert!(runs.is_array());
-
-    // Each run should have Python-compatible structure
-    if let Some(runs_array) = runs.as_array() {
-        for run in runs_array {
-            assert!(run.get("worker_name").is_some());
-            assert!(run.get("log_id").is_some());
-            assert!(run.get("start_time").is_some());
-            assert!(run.get("campaign").is_some());
-            assert!(run.get("codebase").is_some());
-        }
-    }
+    // Should return an array of active runs.
+    let _runs: Vec<ActiveRunJson> = get_json(response).await;
 }
 
 /// `GET /queue/position` for a codebase that isn't queued.
@@ -119,8 +119,12 @@ async fn test_queue_position_not_queued() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
-        get_json(response).await,
-        json!({"position": null, "wait_time": null, "cumulative_wait_time": null})
+        get_json::<QueuePositionEta>(response).await,
+        QueuePositionEta {
+            position: None,
+            wait_time: None,
+            cumulative_wait_time: None,
+        }
     );
 }
 
@@ -148,8 +152,12 @@ async fn test_queue_position_without_active_runs() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
-        get_json(response).await,
-        json!({"position": 1, "wait_time": null, "cumulative_wait_time": 0.0})
+        get_json::<QueuePositionEta>(response).await,
+        QueuePositionEta {
+            position: Some(1),
+            wait_time: None,
+            cumulative_wait_time: Some(0.0),
+        }
     );
 }
 
@@ -165,34 +173,44 @@ async fn test_schedule_control_compatibility() {
         .uri("/schedule-control")
         .header("Content-Type", "application/json")
         .body(Body::from(
-            json!({
-                "codebase": "control-cb",
-                "main_branch_revision": "some-revid",
-                "requester": "test",
+            serde_json::to_string(&ScheduleControlRequest {
+                codebase: Some(janitor::CodebaseName::new("control-cb").unwrap()),
+                main_branch_revision: Some("some-revid".to_string()),
+                requester: Some("test".to_string()),
+                ..Default::default()
             })
-            .to_string(),
+            .unwrap(),
         ))
         .unwrap();
 
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let result = get_json(response).await;
-    assert_eq!(result["campaign"], "control");
-    assert_eq!(result["codebase"], "control-cb");
-    assert!(result["queue_id"].is_i64(), "got {result}");
+    let result: ScheduledRun = get_json(response).await;
+    assert_eq!(result.campaign, "control");
+    assert_eq!(result.codebase, "control-cb");
 
     let request = Request::builder()
         .method(Method::POST)
         .uri("/schedule-control")
         .header("Content-Type", "application/json")
         .body(Body::from(
-            json!({"run_id": "no-such-run", "requester": "test"}).to_string(),
+            serde_json::to_string(&ScheduleControlRequest {
+                run_id: Some(janitor::RunId::new("no-such-run").unwrap()),
+                requester: Some("test".to_string()),
+                ..Default::default()
+            })
+            .unwrap(),
         ))
         .unwrap();
 
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    assert_eq!(get_json(response).await, json!({"reason": "Run not found"}));
+    assert_eq!(
+        get_json::<ReasonResponse>(response).await,
+        ReasonResponse {
+            reason: "Run not found".to_string()
+        }
+    );
 }
 
 /// `POST /schedule-control` with the `run_id` of a run that has no
@@ -222,14 +240,22 @@ async fn test_schedule_control_run_without_main_branch_revision() {
         .method(Method::POST)
         .uri("/schedule-control")
         .header("Content-Type", "application/json")
-        .body(Body::from(json!({"run_id": "run-norev"}).to_string()))
+        .body(Body::from(
+            serde_json::to_string(&ScheduleControlRequest {
+                run_id: Some(janitor::RunId::new("run-norev").unwrap()),
+                ..Default::default()
+            })
+            .unwrap(),
+        ))
         .unwrap();
 
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(
-        get_json(response).await,
-        json!({"reason": "Run has no main branch revision"})
+        get_json::<ReasonResponse>(response).await,
+        ReasonResponse {
+            reason: "Run has no main branch revision".to_string()
+        }
     );
 
     let queued: i64 =
