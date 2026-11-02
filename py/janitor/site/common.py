@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 
+import asyncio
 from typing import Any, Optional
 
 import aiohttp_jinja2
@@ -206,7 +207,6 @@ async def generate_codebase_context(
     publisher_url: Optional[str] = None,
 ):
     async with db.acquire() as conn:
-        # TODO(jelmer): Run these in parallel with gather()
         with span.new_child("sql:codebase"):
             codebase = await conn.fetchrow(
                 """\
@@ -249,21 +249,6 @@ WHERE codebase.name = $1""",
             else:
                 unchanged_run = None
 
-        with span.new_child("sql:candidate"):
-            candidate = await get_candidate(conn, codebase["name"], suite)
-        if candidate is not None:
-            (candidate_context, candidate_value, candidate_success_chance) = candidate
-        else:
-            candidate_context = None
-            candidate_value = None
-            candidate_success_chance = None
-        with span.new_child("sql:previous-runs"):
-            previous_runs = await get_previous_runs(conn, codebase["name"], suite)
-        with span.new_child("sql:queue-position"):
-            queue = Queue(conn)
-            (queue_position, queue_wait_time) = await queue.get_position(
-                suite, codebase["name"]
-            )
         if run_id:
             with span.new_child("sql:reviews"):
                 reviews = await conn.fetch(
@@ -272,6 +257,26 @@ WHERE codebase.name = $1""",
                 )
         else:
             reviews = None
+
+    async def fetch(name, query, *args):
+        async with db.acquire() as conn:
+            with span.new_child(name):
+                return await query(conn, *args)
+
+    candidate, previous_runs, (queue_position, queue_wait_time) = await asyncio.gather(
+        fetch("sql:candidate", get_candidate, codebase["name"], suite),
+        fetch("sql:previous-runs", get_previous_runs, codebase["name"], suite),
+        fetch(
+            "sql:queue-position",
+            lambda conn: Queue(conn).get_position(suite, codebase["name"]),
+        ),
+    )
+    if candidate is not None:
+        (candidate_context, candidate_value, candidate_success_chance) = candidate
+    else:
+        candidate_context = None
+        candidate_value = None
+        candidate_success_chance = None
 
     async def show_diff(role):
         try:
