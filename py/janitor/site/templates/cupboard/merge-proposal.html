@@ -14,7 +14,7 @@
     <script>
 $(document).ready(function() {
     $("#refresh").click(function() {
-       $.post("/api/refresh-proposal-status", { url: "{{ proposal.url }}" } );
+       $.post("/api/refresh-proposal-status", { url: {{ proposal.url | tojson }} } );
     });
 });
     </script>
@@ -54,7 +54,7 @@ $(document).ready(function() {
                     </select>
                     <script>
                         function submit_status(status) {
-                            console.log("Changing of merge proposal {{ proposal.url }} to " + status);
+                            console.log("Changing of merge proposal " + {{ proposal.url | tojson }} + " to " + status);
                             $.post('/api/merge-proposal', {
                                 'status': status,
                                 'url': {{ proposal.url | tojson }}
