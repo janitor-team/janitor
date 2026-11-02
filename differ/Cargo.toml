@@ -34,6 +34,7 @@ utoipa-axum.workspace = true
 
 [dev-dependencies]
 janitor = { path = "..", features = ["testing"] }
+serial_test = "3"
 tower = { workspace = true, features = ["util"] }
 
 [features]
