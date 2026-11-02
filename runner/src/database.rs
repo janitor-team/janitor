@@ -534,13 +534,9 @@ impl RunnerDatabase {
         // unnest, which avoids having to encode composite arrays from Rust.
         let (tag_names, tag_revisions): (Vec<String>, Vec<String>) =
             if let Some(tags) = &result.tags {
+                // A tag the codemod removed has no revision; leave it out.
                 tags.iter()
-                    .map(|(n, r)| {
-                        (
-                            n.clone(),
-                            r.as_ref().map(|r| r.to_string()).unwrap_or_default(),
-                        )
-                    })
+                    .filter_map(|(n, r)| r.as_ref().map(|r| (n.clone(), r.to_string())))
                     .unzip()
             } else {
                 (Vec::new(), Vec::new())

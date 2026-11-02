@@ -249,6 +249,7 @@ mod tests {
                 change_set: None,
                 tags: Some(vec![
                     ("v1.0".to_string(), Some(RevisionId::from(b"tag-rev".to_vec()))),
+                    ("removed".to_string(), None),
                 ]),
                 remotes: None,
                 branches: Some(vec![(
