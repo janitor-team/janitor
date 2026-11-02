@@ -237,7 +237,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 my_url.as_ref(),
                 &node_name,
                 jenkins_build_url.as_ref(),
-                args.prometheus.as_ref(),
                 args.codebase.as_ref(),
                 args.campaign.as_ref(),
                 args.tee,
@@ -268,7 +267,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                     0
                 }
-                Ok(_) => 0,
+                Ok((run_id, campaign)) => match args.prometheus.as_ref() {
+                    Some(prometheus) => match janitor_worker::push_metrics(
+                        prometheus,
+                        prometheus::default_registry(),
+                        &run_id,
+                        &campaign,
+                    )
+                    .await
+                    {
+                        Ok(()) => 0,
+                        Err(e) => {
+                            log::error!("failed to push metrics: {}", e);
+                            1
+                        }
+                    },
+                    None => 0,
+                },
             };
 
             if !args.r#loop {
