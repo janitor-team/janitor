@@ -317,14 +317,15 @@ mod tests {
     use breezyshim::tree::WorkingTree;
 
     #[test]
+    #[serial_test::serial]
     fn test_push_branch() {
-        let td = tempfile::tempdir().unwrap();
+        let env = breezyshim::testing::TestEnv::new();
         let source_tree = breezyshim::controldir::create_standalone_workingtree(
-            &td.path().join("source"),
+            &env.working_dir.join("source"),
             &breezyshim::controldir::ControlDirFormat::default(),
         )
         .unwrap();
-        let target_url = Url::from_directory_path(td.path().join("target")).unwrap();
+        let target_url = Url::from_directory_path(env.working_dir.join("target")).unwrap();
         let revid1 = source_tree
             .build_commit()
             .message("Initial commit")
@@ -353,17 +354,19 @@ mod tests {
             target.open_branch(Some("foo")).unwrap().last_revision(),
             revid1
         );
+        std::mem::drop(env);
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_import_branches_bzr() {
-        let td = tempfile::tempdir().unwrap();
+        let env = breezyshim::testing::TestEnv::new();
         let source_tree = breezyshim::controldir::create_standalone_workingtree(
-            &td.path().join("source"),
+            &env.working_dir.join("source"),
             &breezyshim::controldir::ControlDirFormat::default(),
         )
         .unwrap();
-        let target_path = td.path().join("target");
+        let target_path = env.working_dir.join("target");
         let target_url = Url::from_directory_path(&target_path).unwrap();
         let revid1 = source_tree
             .build_commit()
@@ -409,19 +412,21 @@ mod tests {
                 "log_id".to_string() => revid1.clone(),
             }
         );
+        std::mem::drop(env);
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_import_branches_git() {
-        let td = tempfile::tempdir().unwrap();
+        let env = breezyshim::testing::TestEnv::new();
         let source_tree = breezyshim::controldir::create_standalone_workingtree(
-            &td.path().join("source"),
+            &env.working_dir.join("source"),
             &breezyshim::controldir::FORMAT_REGISTRY
                 .make_controldir("git")
                 .unwrap(),
         )
         .unwrap();
-        let target_path = td.path().join("target");
+        let target_path = env.working_dir.join("target");
         let target_url = Url::from_directory_path(&target_path).unwrap();
         let revid1 = source_tree
             .build_commit()
@@ -462,6 +467,6 @@ mod tests {
                 "tag".to_string() => revid1.clone(),
             }
         );
-        std::mem::drop(td);
+        std::mem::drop(env);
     }
 }
