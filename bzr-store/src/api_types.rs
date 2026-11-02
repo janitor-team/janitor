@@ -42,3 +42,12 @@ pub struct RemotesListResponse {
     /// List of configured remotes.
     pub remotes: Vec<RemoteInfo>,
 }
+
+/// JSON body returned for error responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorResponse {
+    /// Short, client-safe summary of the error.
+    pub error: String,
+    /// Full error message.
+    pub details: String,
+}

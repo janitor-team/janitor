@@ -29,7 +29,9 @@ use crate::bzr_browse::BrowseRouters;
 use crate::config::Config;
 use crate::database::DatabaseManager;
 use crate::error::{BzrError, Result};
-use crate::repository::{PyO3RepositoryManager, RepositoryManager, RepositoryPath, RevisionInfo};
+use crate::repository::{
+    PyO3RepositoryManager, RepositoryInfo, RepositoryManager, RepositoryPath, RevisionInfo,
+};
 use crate::smart_protocol::{
     smart_protocol_campaign_handler, smart_protocol_codebase_handler, smart_protocol_dispatch,
     smart_protocol_role_handler,
@@ -560,14 +562,14 @@ async fn create_repository_handler(
 async fn repository_info_handler(
     State(state): State<AppState>,
     Path(codebase): Path<CodebaseName>,
-) -> Result<Json<serde_json::Value>> {
+) -> Result<Json<RepositoryInfo>> {
     let repo_path = RepositoryPath::codebase_only(codebase);
     let info = state
         .repository_manager
         .get_repository_info(&repo_path)
         .await?;
 
-    Ok(Json(serde_json::to_value(info)?))
+    Ok(Json(info))
 }
 
 /// `GET /{codebase}/diff?old=...&new=...` — admin diff endpoint.
@@ -633,6 +635,13 @@ async fn configure_remote_handler(
     Ok(Json(response))
 }
 
+/// JSON body accepted by the set-remote endpoint.
+#[derive(Deserialize)]
+struct RemoteUrlBody {
+    url: Option<String>,
+    remote_url: Option<String>,
+}
+
 /// Pull the `url` parameter out of either a urlencoded form body
 /// (Python's `aiohttp request.post()` default) or a JSON body with a
 /// `remote_url`/`url` field. Returns a BadRequest error when neither
@@ -652,13 +661,9 @@ fn extract_remote_url(headers: &HeaderMap, body: &Bytes) -> Result<String> {
         }
     }
     if content_type.starts_with("application/json") {
-        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(body) {
-            if let Some(u) = v
-                .get("url")
-                .or_else(|| v.get("remote_url"))
-                .and_then(|x| x.as_str())
-            {
-                return Ok(u.to_string());
+        if let Ok(RemoteUrlBody { url, remote_url }) = serde_json::from_slice(body) {
+            if let Some(u) = url.or(remote_url) {
+                return Ok(u);
             }
         }
     }

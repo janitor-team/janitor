@@ -16,7 +16,9 @@ use std::time::Duration;
 use axum::Router;
 use janitor::{test_utils::TestDatabase, test_with_database};
 use janitor_bzr_store::{
+    api_types::RemoteConfiguredResponse,
     config::{BzrConfig, BzrStoreConfig, Config},
+    repository::{RepositoryInfo, RevisionInfo},
     web::create_applications,
 };
 use sqlx::PgPool;
@@ -232,13 +234,12 @@ test_with_database! {
             .await
             .unwrap();
         assert_eq!(resp.status(), 200);
-        let body: serde_json::Value = resp.json().await.unwrap();
+        let revs: Vec<RevisionInfo> = resp.json().await.unwrap();
         // The ancestry walk between rev1 and rev2 includes exactly
         // one revision (rev2 itself; rev1 is the stop node).
-        let revs = body.as_array().expect("body must be a list");
         assert_eq!(revs.len(), 1, "expected one revision between r1 and r2, got {:?}", revs);
-        assert_eq!(revs[0]["revision-id"], rev2);
-        assert_eq!(revs[0]["message"], "second");
+        assert_eq!(revs[0].revision_id, rev2);
+        assert_eq!(revs[0].message, "second");
 
         handle.abort();
     }
@@ -280,9 +281,9 @@ test_with_database! {
             .await
             .unwrap();
         assert_eq!(resp.status(), 200);
-        let body: serde_json::Value = resp.json().await.unwrap();
-        assert_eq!(body["status"], "configured");
-        assert_eq!(body["remote_url"], "bzr+ssh://upstream.invalid/foo");
+        let body: RemoteConfiguredResponse = resp.json().await.unwrap();
+        assert_eq!(body.status, "configured");
+        assert_eq!(body.remote_url, "bzr+ssh://upstream.invalid/foo");
 
         // Verify brz now reports the parent_location.
         let out = Command::new("brz")
@@ -353,10 +354,10 @@ test_with_database! {
             .await
             .unwrap();
         assert_eq!(resp.status(), 200);
-        let body: serde_json::Value = resp.json().await.unwrap();
-        assert_eq!(body["path"]["codebase"], "foo");
-        assert_eq!(body["exists"], true);
-        assert_eq!(body["branch_count"], 1);
+        let body: RepositoryInfo = resp.json().await.unwrap();
+        assert_eq!(body.path.codebase, "foo");
+        assert!(body.exists);
+        assert_eq!(body.branch_count, 1);
         // last_revision is best-effort: present on hosts where
         // breezyshim can open the branch, absent otherwise.
 
