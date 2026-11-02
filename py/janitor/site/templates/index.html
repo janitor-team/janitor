@@ -12,9 +12,9 @@
         </p>
         <h2>Campaigns</h2>
         <ul>
-            {% for campaign in campaigns %}
+            {% for campaign in all_campaigns %}
                 <li>
-                    <a href="{{ campaign.name }}">{{ campaign.name }}</a>
+                    <a href="{{ campaign }}">{{ campaign }}</a>
                 </li>
             {% endfor %}
         </ul>
