@@ -830,12 +830,7 @@ impl ActiveRun {
 /// through `JenkinsBackchannel::get_health_status`, which then timed
 /// out hitting `/api/json` on the worker port and converted live runs
 /// to `worker-failure`. Tag explicitly so the variant is unambiguous.
-///
-/// `Deserialize` is implemented manually to also accept the legacy
-/// untagged shape -- old Redis entries written before this change look
-/// like `{"my_url": "..."}` (Polling) or `{"my_url": "...", "jenkins":
-/// ...}` (Jenkins) and would otherwise fail to deserialize.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Backchannel {
     /// Jenkins backchannel.
@@ -848,75 +843,10 @@ pub enum Backchannel {
     /// Polling backchannel.
     Polling {
         /// Worker URL.
-        my_url: String,
+        my_url: url::Url,
     },
     /// No backchannel (default).
     None {},
-}
-
-impl<'de> Deserialize<'de> for Backchannel {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        // Accept two shapes:
-        //   - new tagged: {"type":"jenkins"|"polling"|"none", ...}
-        //   - legacy untagged: {"my_url":"...","jenkins":...} | {"my_url":"..."} | {}
-        // Legacy entries already in Redis use the untagged form. The
-        // `jenkins` field's presence (not its value -- it can be null)
-        // is the discriminator there: Jenkins always serialised it,
-        // Polling never had it.
-        let v = serde_json::Value::deserialize(deserializer)?;
-        let obj = v
-            .as_object()
-            .ok_or_else(|| serde::de::Error::custom("Backchannel: expected a JSON object"))?;
-
-        if let Some(tag) = obj.get("type").and_then(|t| t.as_str()) {
-            return match tag {
-                "jenkins" => {
-                    let my_url = obj
-                        .get("my_url")
-                        .and_then(|u| u.as_str())
-                        .ok_or_else(|| serde::de::Error::missing_field("my_url"))?
-                        .to_string();
-                    let jenkins = obj.get("jenkins").cloned();
-                    Ok(Backchannel::Jenkins { my_url, jenkins })
-                }
-                "polling" => {
-                    let my_url = obj
-                        .get("my_url")
-                        .and_then(|u| u.as_str())
-                        .ok_or_else(|| serde::de::Error::missing_field("my_url"))?
-                        .to_string();
-                    Ok(Backchannel::Polling { my_url })
-                }
-                "none" => Ok(Backchannel::None {}),
-                other => Err(serde::de::Error::custom(format!(
-                    "Backchannel: unknown type {:?}",
-                    other
-                ))),
-            };
-        }
-
-        // Legacy untagged form. Presence of a `jenkins` key (even
-        // null) means Jenkins; lone `my_url` means Polling; empty
-        // object means None.
-        if obj.contains_key("jenkins") {
-            let my_url = obj
-                .get("my_url")
-                .and_then(|u| u.as_str())
-                .ok_or_else(|| serde::de::Error::missing_field("my_url"))?
-                .to_string();
-            let jenkins = obj.get("jenkins").cloned();
-            return Ok(Backchannel::Jenkins { my_url, jenkins });
-        }
-        if let Some(my_url) = obj.get("my_url").and_then(|u| u.as_str()) {
-            return Ok(Backchannel::Polling {
-                my_url: my_url.to_string(),
-            });
-        }
-        Ok(Backchannel::None {})
-    }
 }
 
 impl Default for Backchannel {
@@ -1011,10 +941,12 @@ impl Backchannel {
                         PingError::Retriable(format!("Failed to create HTTP client: {}", e))
                     })?;
 
-                let health_url = format!("{}/log-id", my_url);
+                let health_url = my_url.join("log-id").map_err(|e| {
+                    PingError::Fatal(format!("Invalid worker URL {}: {}", my_url, e))
+                })?;
                 log::info!("Pinging URL {} for run {}", health_url, expected_log_id);
 
-                match client.get(&health_url).send().await {
+                match client.get(health_url).send().await {
                     Ok(response) => {
                         if !response.status().is_success() {
                             Err(PingError::Retriable(format!(
@@ -1077,10 +1009,7 @@ impl Backchannel {
                 jenkins_bc.get_health_status(expected_log_id).await
             }
             Backchannel::Polling { my_url } => {
-                let url = url::Url::parse(my_url).map_err(|_| {
-                    crate::BackchannelError::FatalFailure("Invalid URL".to_string())
-                })?;
-                let polling_bc = crate::PollingBackchannel::new(url);
+                let polling_bc = crate::PollingBackchannel::new(my_url.clone());
                 polling_bc.get_health_status(expected_log_id).await
             }
         }
@@ -1100,10 +1029,7 @@ impl Backchannel {
                 jenkins_bc.terminate(log_id).await
             }
             Backchannel::Polling { my_url } => {
-                let url = url::Url::parse(my_url).map_err(|_| {
-                    crate::BackchannelError::FatalFailure("Invalid URL".to_string())
-                })?;
-                let polling_bc = crate::PollingBackchannel::new(url);
+                let polling_bc = crate::PollingBackchannel::new(my_url.clone());
                 polling_bc.terminate(log_id).await
             }
         }
@@ -1130,10 +1056,12 @@ impl Backchannel {
                         PingError::Retriable(format!("Failed to create HTTP client: {}", e))
                     })?;
 
-                let kill_url = format!("{}/kill", my_url);
+                let kill_url = my_url.join("kill").map_err(|e| {
+                    PingError::Fatal(format!("Invalid worker URL {}: {}", my_url, e))
+                })?;
 
                 match client
-                    .post(&kill_url)
+                    .post(kill_url)
                     .header("Accept", "application/json")
                     .send()
                     .await
@@ -1198,19 +1126,15 @@ impl Backchannel {
                         PingError::Retriable(format!("Failed to create HTTP client: {}", e))
                     })?;
 
-                // `my_url` typically ends with `/` (the worker's
-                // backchannel URL stores it that way), so a naive
-                // `format!("{}/logs", my_url)` builds a double-slash
-                // path the worker's router doesn't match (404). Trim
-                // any trailing slash before appending so we hit the
-                // exact `/logs` route. Also set
-                // `Accept: application/json` -- the worker's `/logs`
+                // Set `Accept: application/json` -- the worker's `/logs`
                 // handler does content negotiation and returns HTML
                 // by default, which `resp.json()` can't parse.
-                let logs_url = format!("{}/logs", my_url.trim_end_matches('/'));
+                let logs_url = my_url.join("logs").map_err(|e| {
+                    PingError::Fatal(format!("Invalid worker URL {}: {}", my_url, e))
+                })?;
 
                 match client
-                    .get(&logs_url)
+                    .get(logs_url)
                     .header(reqwest::header::ACCEPT, "application/json")
                     .send()
                     .await
@@ -1324,14 +1248,16 @@ impl Backchannel {
                         PingError::Retriable(format!("Failed to create HTTP client: {}", e))
                     })?;
 
-                // `my_url` is the worker's `--my-url`, which the
-                // systemd unit configures with a trailing slash
-                // (`http://192.168.49.1:9821/`). Naïve `format!`
-                // produces `…//logs/<file>`, and the worker's
-                // NormalizePathLayer 404s the double-slash form.
-                let log_url = format!("{}/logs/{}", my_url.trim_end_matches('/'), name);
+                let mut log_url = my_url.join("logs").map_err(|e| {
+                    PingError::Fatal(format!("Invalid worker URL {}: {}", my_url, e))
+                })?;
+                // `push` percent-encodes `name` as a single path segment.
+                log_url
+                    .path_segments_mut()
+                    .map_err(|_| PingError::Fatal(format!("Invalid worker URL {}", my_url)))?
+                    .push(name);
 
-                match client.get(&log_url).send().await {
+                match client.get(log_url).send().await {
                     Ok(response) => {
                         if response.status().is_success() {
                             match response.bytes().await {
@@ -1407,9 +1333,11 @@ impl Backchannel {
                     .map_err(|e| {
                         PingError::Retriable(format!("Failed to create HTTP client: {}", e))
                     })?;
-                let status_url = format!("{}/status", my_url.trim_end_matches('/'));
+                let status_url = my_url.join("status").map_err(|e| {
+                    PingError::Fatal(format!("Invalid worker URL {}: {}", my_url, e))
+                })?;
                 let resp = client
-                    .get(&status_url)
+                    .get(status_url)
                     .header(reqwest::header::ACCEPT, "application/json")
                     .send()
                     .await
@@ -1909,7 +1837,7 @@ mod tests {
     #[test]
     fn test_backchannel_tagged_roundtrip_polling() {
         let bc = Backchannel::Polling {
-            my_url: "http://192.168.1.196:9821".to_string(),
+            my_url: "http://192.168.1.196:9821".parse().unwrap(),
         };
         let s = serde_json::to_string(&bc).unwrap();
         assert!(
@@ -1920,7 +1848,7 @@ mod tests {
         let back: Backchannel = serde_json::from_str(&s).unwrap();
         match back {
             Backchannel::Polling { my_url } => {
-                assert_eq!(my_url, "http://192.168.1.196:9821");
+                assert_eq!(my_url.as_str(), "http://192.168.1.196:9821/");
             }
             other => panic!("expected Polling, got {:?}", other),
         }
@@ -1962,90 +1890,6 @@ mod tests {
             "expected None variant, got {:?}",
             back
         );
-    }
-
-    /// Legacy untagged Polling shape (`{"my_url":"..."}`) must
-    /// deserialize as Polling, NOT Jenkins. This is the bug that took
-    /// out tyr/idun: Redis entries written by an older runner came
-    /// back as Jenkins because both variants accepted just `my_url`,
-    /// and Jenkins was tried first under `#[serde(untagged)]`.
-    #[test]
-    fn test_backchannel_legacy_polling_no_jenkins_field() {
-        let json = r#"{"my_url":"http://192.168.1.196:9821"}"#;
-        let bc: Backchannel = serde_json::from_str(json).unwrap();
-        match bc {
-            Backchannel::Polling { my_url } => {
-                assert_eq!(my_url, "http://192.168.1.196:9821");
-            }
-            other => panic!(
-                "legacy {{my_url:...}} must decode as Polling, got {:?}",
-                other
-            ),
-        }
-    }
-
-    /// Legacy untagged Jenkins shape (with `jenkins` key, even null)
-    /// must deserialize as Jenkins.
-    #[test]
-    fn test_backchannel_legacy_jenkins_with_null_jenkins_field() {
-        let json = r#"{"my_url":"https://jenkins.debian.net/job/x/1/","jenkins":null}"#;
-        let bc: Backchannel = serde_json::from_str(json).unwrap();
-        match bc {
-            Backchannel::Jenkins { my_url, jenkins } => {
-                assert_eq!(my_url, "https://jenkins.debian.net/job/x/1/");
-                assert!(jenkins.is_none() || jenkins == Some(serde_json::Value::Null));
-            }
-            other => panic!(
-                "legacy {{my_url, jenkins:null}} must decode as Jenkins, got {:?}",
-                other
-            ),
-        }
-    }
-
-    #[test]
-    fn test_backchannel_legacy_jenkins_with_object_jenkins_field() {
-        let json = r#"{"my_url":"https://jenkins.debian.net/job/x/1/","jenkins":{"crumb":"c"}}"#;
-        let bc: Backchannel = serde_json::from_str(json).unwrap();
-        match bc {
-            Backchannel::Jenkins { jenkins, .. } => {
-                assert_eq!(jenkins, Some(serde_json::json!({"crumb": "c"})));
-            }
-            other => panic!("expected Jenkins, got {:?}", other),
-        }
-    }
-
-    /// Empty object (legacy `Backchannel::None`) decodes as None.
-    #[test]
-    fn test_backchannel_legacy_none_empty_object() {
-        let bc: Backchannel = serde_json::from_str("{}").unwrap();
-        assert!(
-            matches!(bc, Backchannel::None {}),
-            "empty object must decode as None, got {:?}",
-            bc
-        );
-    }
-
-    /// End-to-end Redis round-trip simulation for the bug report:
-    /// a Polling backchannel, when serialized via the OLD untagged
-    /// derive (just `{"my_url":"..."}`) and re-read by the NEW
-    /// deserializer, must come back as Polling. The data shape is
-    /// what's already sitting in production Redis right now.
-    #[test]
-    fn test_backchannel_legacy_polling_redis_data_decodes_as_polling() {
-        // Exact shape produced by the old `#[serde(untagged)]` derive
-        // serializing `Backchannel::Polling { my_url: ... }`.
-        let legacy_redis_payload = r#"{"my_url":"http://idun.local:8080"}"#;
-        let bc: Backchannel = serde_json::from_str(legacy_redis_payload).unwrap();
-        match bc {
-            Backchannel::Polling { my_url } => {
-                assert_eq!(my_url, "http://idun.local:8080");
-            }
-            other => panic!(
-                "legacy Polling redis payload must decode as Polling \
-                 (not Jenkins as before the fix); got {:?}",
-                other
-            ),
-        }
     }
 
     #[test]
