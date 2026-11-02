@@ -23,6 +23,7 @@ import aiohttp_jinja2
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from bs4 import BeautifulSoup
 from jinja2 import Environment
 from yarl import URL
 
@@ -131,8 +132,47 @@ async def test_history(aiohttp_client, db):
 
 async def test_queue(aiohttp_client, db):
     client = await create_client(aiohttp_client, db)
-    resp = await client.get("/cupboard/queue")
-    assert resp.status == 200
+
+    async def get_soup():
+        resp = await client.get("/cupboard/queue")
+        assert resp.status == 200
+        return BeautifulSoup(await resp.text(), "html.parser")
+
+    async def current_rows():
+        soup = await get_soup()
+        return [
+            [td.get_text(strip=True) for td in tr.find_all("td")]
+            for tr in soup.select("#queue-table tr")
+        ]
+
+    assert await current_rows() == [["Nothing is currently being processed."]]
+
+    client.app["runner_status"] = {
+        "processing": [
+            {
+                "queue_id": 1,
+                "id": "run-id",
+                "codebase": "sl",
+                "campaign": "lintian-fixes",
+                "estimated_duration": 120.0,
+                "current_duration": 75.5,
+                "start_time": "2026-11-02T18:00:00+00:00",
+                "worker": "worker1",
+                "worker_link": None,
+                "backchannel": {},
+            }
+        ],
+        "avoid_hosts": [],
+        "rate_limit_hosts": {"salsa.debian.org": "2099-01-01T00:00:00+00:00"},
+    }
+    # The current duration (4th column) depends on the clock.
+    assert [row[:3] + row[4:] for row in await current_rows()] == [
+        ["sl", "lintian-fixes", "2m0s", "worker1", "", "N/A"]
+    ]
+    soup = await get_soup()
+    assert [
+        li.get_text().split()[:3] for li in soup.select("div[name=restrictions] li")
+    ] == [["salsa.debian.org", "until", "2099-01-01T00:00:00"]]
 
 
 async def test_publish_history(aiohttp_client, db):
