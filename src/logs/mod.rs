@@ -60,8 +60,8 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-const PRIMARY_LOGFILE_UPLOAD_FAILED_COUNT: &str = "primary_logfile_upload_failed";
-const LOGFILE_UPLOADED_COUNT: &str = "logfile_uploads";
+const PRIMARY_LOGFILE_UPLOAD_FAILED_COUNT: &str = "primary_logfile_upload_failures_total";
+const LOGFILE_UPLOADED_COUNT: &str = "logfile_uploads_total";
 
 /// Describe the log upload metrics to the installed metrics recorder.
 pub fn describe_metrics() {
