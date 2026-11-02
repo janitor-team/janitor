@@ -5,10 +5,12 @@ from typing import Optional
 import asyncpg
 from yarl import URL
 
+from .. import backend_url
+
 
 async def write_merge_proposals(client, publisher_url: str, suite: Optional[str]):
     if suite:
-        url = URL(publisher_url) / suite / "merge-proposals"
+        url = backend_url(publisher_url, suite, "merge-proposals")
     else:
         url = URL(publisher_url) / "merge-proposals"
     async with client.get(url, raise_for_status=True) as resp:

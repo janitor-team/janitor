@@ -17,9 +17,8 @@
 
 from typing import Optional
 
-from yarl import URL
-
 from .schedule import do_schedule
+from .site import backend_url
 
 
 async def store_review(
@@ -50,7 +49,7 @@ async def store_review(
 
         if verdict != "abstained" and is_qa_reviewer:
             async with session.post(
-                URL(runner_url) / "runs" / run_id,
+                backend_url(runner_url, "runs", run_id),
                 json={"publish_status": verdict},
                 raise_for_status=True,
             ):
