@@ -3435,6 +3435,7 @@ dependencies = [
  "janitor-service",
  "janitor-types",
  "libc",
+ "lru",
  "nix",
  "prometheus 0.14.0",
  "pyo3",
