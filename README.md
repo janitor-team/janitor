@@ -48,6 +48,7 @@ Several permanently running jobs:
 
 Each instance of the janitor should somehow upload "codebase" entries and
 "candidates", which describe where to find code and what to do with it.
+See [docs/quickstart.md](docs/quickstart.md) for an example.
 
 There are no requirements that these jobs run on the same machine, but they are
 expected to have secure network access to each other.
