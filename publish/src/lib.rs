@@ -679,6 +679,8 @@ pub struct PublishOneError {
 pub struct PublishWorker {
     /// Optional path to the template environment.
     pub template_env_path: Option<PathBuf>,
+    /// Command run for each publish. Defaults to `janitor-publish-one` from `PATH`.
+    pub publish_one_command: Vec<String>,
     /// Optional external URL for the publish operation.
     pub external_url: Option<url::Url>,
     /// URL of the differ service.
@@ -689,6 +691,8 @@ pub struct PublishWorker {
     pub redis_manager: Option<Arc<janitor::redis::RedisManager>>,
     /// Optional lock manager for coordinating publish operations.
     pub lock_manager: Option<rslock::LockManager>,
+    /// Time after which a publish child is killed and the publish fails.
+    pub publish_one_timeout: std::time::Duration,
 }
 
 /// Errors that can occur when interacting with a worker process.
@@ -749,6 +753,7 @@ async fn run_worker_process(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
         .spawn()?;
 
     use tokio::io::AsyncWriteExt;
@@ -825,11 +830,13 @@ impl PublishWorker {
     ) -> Self {
         Self {
             template_env_path,
+            publish_one_command: vec!["janitor-publish-one".to_string()],
             external_url,
             differ_url,
             redis,
             redis_manager,
             lock_manager,
+            publish_one_timeout: std::time::Duration::from_secs(3600),
         }
     }
 
@@ -902,7 +909,7 @@ impl PublishWorker {
             auto_merge,
         };
 
-        let mut args = vec!["janitor-publish-one".to_string()];
+        let mut args = self.publish_one_command.clone();
 
         if let Some(template_env_path) = self.template_env_path.as_ref() {
             args.push(format!(
@@ -910,6 +917,26 @@ impl PublishWorker {
                 template_env_path.display()
             ));
         }
+
+        // On timeout the child is dropped, which kills it.
+        let child = async {
+            match tokio::time::timeout(self.publish_one_timeout, run_worker_process(args, request))
+                .await
+            {
+                Ok(Ok((returncode, response))) => Ok((returncode, response)),
+                Ok(Err(e)) => Err(PublishError::Failure {
+                    code: "publisher-invalid-response".to_string(),
+                    description: e.to_string(),
+                }),
+                Err(_) => Err(PublishError::Failure {
+                    code: "worker-timeout".to_string(),
+                    description: format!(
+                        "janitor-publish-one did not finish within {:?}",
+                        self.publish_one_timeout
+                    ),
+                }),
+            }
+        };
 
         let (returncode, response) = if let Some(lock_manager) = &self.lock_manager {
             match lock_manager
@@ -920,15 +947,7 @@ impl PublishWorker {
                 .await
             {
                 Ok(rl) => {
-                    let (returncode, response) = match run_worker_process(args, request).await {
-                        Ok((returncode, response)) => (returncode, response),
-                        Err(e) => {
-                            return Err(PublishError::Failure {
-                                code: "publisher-invalid-response".to_string(),
-                                description: e.to_string(),
-                            });
-                        }
-                    };
+                    let (returncode, response) = child.await?;
                     lock_manager.unlock(&rl).await;
                     (returncode, response)
                 }
@@ -937,15 +956,7 @@ impl PublishWorker {
                 }
             }
         } else {
-            match run_worker_process(args, request).await {
-                Ok((returncode, response)) => (returncode, response),
-                Err(e) => {
-                    return Err(PublishError::Failure {
-                        code: "publisher-invalid-response".to_string(),
-                        description: e.to_string(),
-                    });
-                }
-            }
+            child.await?
         };
 
         if returncode == 1 {

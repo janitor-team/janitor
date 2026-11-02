@@ -355,3 +355,86 @@ test_with_database! {
         );
     }
 }
+
+/// Propose a change to `target` through `PublishWorker::publish_one`.
+async fn propose(
+    worker: &PublishWorker,
+    target: &url::Url,
+) -> Result<janitor_publish::PublishOneResult, janitor_publish::PublishError> {
+    worker
+        .publish_one(
+            &janitor_types::Campaign::new("campaign").unwrap(),
+            &janitor_types::CodebaseName::new("codebase").unwrap(),
+            "true",
+            target,
+            janitor::publish::Mode::Propose,
+            "main",
+            &breezyshim::RevisionId::from(b"rev".to_vec()),
+            &janitor_types::RunId::new("log-id").unwrap(),
+            Some(&janitor_types::RunId::new("unchanged-id").unwrap()),
+            "campaign",
+            None,
+            &janitor::vcs::RemoteBzrVcsManager::new("https://example.com/bzr/".parse().unwrap()),
+            None,
+            false,
+            true,
+            None,
+            None,
+            None,
+            None,
+            &serde_json::Value::Null,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+}
+
+/// Wait up to 2 s for the child whose pid is in `pid_file` to be killed.
+async fn wait_until_child_is_gone(pid_file: &std::path::Path) {
+    let pid = std::fs::read_to_string(pid_file).unwrap();
+    let stat = format!("/proc/{}/stat", pid.trim());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    // A killed child is gone, or a zombie until it is reaped.
+    while std::fs::read_to_string(&stat).is_ok_and(|s| !s.contains(") Z ")) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the child is still running"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+async fn publish_child_past_its_timeout_is_killed() {
+    let dir = tempfile::tempdir().unwrap();
+    let pid_file = dir.path().join("child.pid");
+    let script = format!("echo $$ > '{}'; exec sleep 30", pid_file.display());
+    let mut worker = PublishWorker::new(
+        None,
+        None,
+        url::Url::parse("http://differ.invalid").unwrap(),
+        None,
+        None,
+        None,
+    )
+    .await;
+    worker.publish_one_command = vec!["sh".to_string(), "-c".to_string(), script];
+    worker.publish_one_timeout = std::time::Duration::from_secs(1);
+    let target = url::Url::parse("https://example.com/timeout-test").unwrap();
+
+    let Err(janitor_publish::PublishError::Failure { code, description }) =
+        propose(&worker, &target).await
+    else {
+        panic!("the publish did not fail with a failure code");
+    };
+    assert_eq!(
+        (code.as_str(), description.as_str()),
+        (
+            "worker-timeout",
+            "janitor-publish-one did not finish within 1s"
+        )
+    );
+    wait_until_child_is_gone(&pid_file).await;
+}
