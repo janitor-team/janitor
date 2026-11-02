@@ -377,9 +377,9 @@ cd {{ codebase }}
                     {%- endif -%}
                 {%- elif k == 'change_set' -%}
                     {%- if r -%}
-                        change set <a href="/cupboard/cs/{{ d.change_set_id }}/">{{ d.change_set_id }}</a> is {{ d.change_set_state }}
+                        changeset <a href="/cupboard/cs/{{ d.change_set_id }}/">{{ d.change_set_id }}</a> is {{ d.change_set_state }}
                     {%- else -%}
-                        change set <a href="/cupboard/cs/{{ d.change_set_id }}/">{{ d.change_set_id }}</a> is {{ d.change_set_state }}
+                        changeset <a href="/cupboard/cs/{{ d.change_set_id }}/">{{ d.change_set_id }}</a> is {{ d.change_set_state }}
                     {%- endif -%}
                 {%- elif k == 'previous_mp' -%}
                     {%- if r -%}

@@ -7,12 +7,12 @@
     {% endif %}
 {% endblock sidebar %}
 {% block page_title %}
-    Changes that have been merged or pushed
+    Merged or pushed changes
     {% if campaign %}- {{ campaign }}{% endif %}
 {% endblock page_title %}
 {% block body %}
     <div class="section" id="history">
-        <h1>Changes that have been merged or pushed</h1>
+        <h1>Merged or pushed changes</h1>
         <p><em>Runs whose changes have already been merged or pushed to the target branch.</em></p>
         <form method="get">
             <label for="start">Start date:</label>
