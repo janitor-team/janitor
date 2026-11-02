@@ -45,7 +45,9 @@
             <colgroup>
                 <col width="21%" />
                 <col width="6%" />
-                <col width="10%" />
+                {% if code != "success" %}
+                    <col width="10%" />
+                {% endif %}
                 <col width="10%" />
                 <col width="6%" />
                 <col width="53%" />
@@ -54,7 +56,7 @@
                 <tr>
                     <th class="head">Codebase</th>
                     <th class="head">Campaign</th>
-                    <th class="head">Stage</th>
+                    {% if code != "success" %}<th class="head">Stage</th>{% endif %}
                     <th class="head">Start time</th>
                     <th class="head">Duration</th>
                     <th class="head">Description</th>
@@ -67,12 +69,12 @@
                             <a class="reference external" href="../c/{{ run.codebase }}/">{{ run.codebase }}</a>
                         </td>
                         <td>{{ run.campaign }}</td>
-                        <td>{{ run.failure_stage }}</td>
+                        {% if code != "success" %}<td>{{ run.failure_stage or "unknown" }}</td>{% endif %}
                         <td>{{ format_timestamp(run.start_time) }}</td>
                         <td>{{ format_duration(run.finish_time - run.start_time) }}</td>
                         <td>
                             <a class="reference external"
-                               href="../c/{{ run.codebase }}/{{ run.id }}">{{ run.description }}</a>
+                               href="../c/{{ run.codebase }}/{{ run.id }}">{% if run.description %}{{ run.description }}{% else %}<span class="missing-description">no description</span>{% endif %}</a>
                         </td>
                     </tr>
                 {% endfor %}
