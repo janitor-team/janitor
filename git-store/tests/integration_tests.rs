@@ -17,6 +17,7 @@ use axum::response::Response;
 use axum::Router;
 use base64::Engine;
 use janitor_git_store::{
+    api_types::{LogResponse, RevisionInfoEntry},
     config::Config,
     database::DatabaseManager,
     repository::RepositoryManager,
@@ -890,14 +891,14 @@ db_test! {
         let resp = get(&app, &format!("/codebase/revision-info?old={}&new={}", c1, c2
         )).await;
         assert_eq!(resp.status(), 200);
-        let body: Vec<serde_json::Value> = body_json(resp).await;
+        let body: Vec<RevisionInfoEntry> = body_json(resp).await;
         // One commit in the exclusive `c1..c2` range.
         assert_eq!(body.len(), 1, "expected one commit, got {:?}", body);
         let entry = &body[0];
-        assert_eq!(entry["commit-id"], c2.to_string());
-        assert_eq!(entry["revision-id"], format!("git-v1:{}", c2));
-        assert_eq!(entry["link"], format!("/git/codebase/commit/{}/", c2));
-        assert!(entry["message"].as_str().unwrap().contains("second"));
+        assert_eq!(entry.commit_id, c2.to_string());
+        assert_eq!(entry.revision_id, format!("git-v1:{}", c2));
+        assert_eq!(entry.link, format!("/git/codebase/commit/{}/", c2));
+        assert!(entry.message.contains("second"));
     }
 }
 
@@ -928,12 +929,12 @@ db_test! {
         let resp = get(&app, &format!("/codebase/log?old={}&new={}", c1, c2
         )).await;
         assert_eq!(resp.status(), 200);
-        let body: serde_json::Value = body_json(resp).await;
-        let commits = body["commits"].as_array().unwrap();
+        let body: LogResponse = body_json(resp).await;
+        let commits = body.commits;
         assert_eq!(commits.len(), 1);
-        assert_eq!(commits[0]["sha"], c2.to_string());
-        assert_eq!(commits[0]["author"]["name"], "Alice");
-        assert_eq!(commits[0]["author"]["email"], "alice@example.com");
+        assert_eq!(commits[0].sha, c2.to_string());
+        assert_eq!(commits[0].author.name, "Alice");
+        assert_eq!(commits[0].author.email, "alice@example.com");
     }
 }
 
