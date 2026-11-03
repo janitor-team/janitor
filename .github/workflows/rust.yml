@@ -57,9 +57,6 @@ jobs:
       - name: Install breezy, diffoscope, klaus
         run: python -m pip install --upgrade "breezy<4" diffoscope jsondiff \
             klaus "brz-debian@git+https://github.com/breezy-team/breezy-debian"
-      # TODO(jelmer): Add proper test isolation so this isn't necessary
-      - name: Setup bzr identity
-        run: brz whoami "CI <ci@noreply.github.com>"
       - name: Verify docker daemon is reachable
         run: docker info
       - name: Install debversion extension in postgres

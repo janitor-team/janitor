@@ -1172,16 +1172,18 @@ mod tests {
     #[serial]
     #[test]
     fn test_run_worker_existing_git() {
-        test_run_worker_existing(tempfile::tempdir().unwrap().path(), VcsType::Git);
+        test_run_worker_existing(VcsType::Git);
     }
 
     #[serial]
     #[test]
     fn test_run_worker_existing_bzr() {
-        test_run_worker_existing(tempfile::tempdir().unwrap().path(), VcsType::Bzr);
+        test_run_worker_existing(VcsType::Bzr);
     }
 
-    fn test_run_worker_existing(tmp_path: &std::path::Path, vcs_type: VcsType) {
+    fn test_run_worker_existing(vcs_type: VcsType) {
+        let env = breezyshim::testing::TestEnv::new();
+        let tmp_path = env.working_dir.as_path();
         let wt = breezyshim::controldir::create_standalone_workingtree(
             &tmp_path.join("main"),
             &breezyshim::controldir::FORMAT_REGISTRY
@@ -1316,21 +1318,24 @@ check:
                 vcs_type: Some(vcs_type),
             }
         );
+        std::mem::drop(env);
     }
 
     #[serial]
     #[test]
     fn test_run_worker_push_failure_git() {
-        test_run_worker_push_failure(tempfile::tempdir().unwrap().path(), VcsType::Git);
+        test_run_worker_push_failure(VcsType::Git);
     }
 
     #[serial]
     #[test]
     fn test_run_worker_push_failure_bzr() {
-        test_run_worker_push_failure(tempfile::tempdir().unwrap().path(), VcsType::Bzr);
+        test_run_worker_push_failure(VcsType::Bzr);
     }
 
-    fn test_run_worker_push_failure(tmp_path: &std::path::Path, vcs_type: VcsType) {
+    fn test_run_worker_push_failure(vcs_type: VcsType) {
+        let env = breezyshim::testing::TestEnv::new();
+        let tmp_path = env.working_dir.as_path();
         let wt = breezyshim::controldir::create_standalone_workingtree(
             &tmp_path.join("main"),
             vcs_type.to_string().as_str(),
@@ -1380,6 +1385,7 @@ check:
         assert_eq!(failure.stage, vec!["result-push".to_string()]);
         assert_eq!(metadata.branches, vec![]);
         assert_eq!(metadata.tags, vec![]);
+        std::mem::drop(env);
     }
 
     /*
