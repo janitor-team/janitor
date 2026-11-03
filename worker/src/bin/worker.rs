@@ -70,6 +70,10 @@ struct Args {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
+    // Builds inherit this process's environment, so keep the password out of it.
+    let worker_password = std::env::var("WORKER_PASSWORD").ok();
+    std::env::remove_var("WORKER_PASSWORD");
+
     args.logging.init();
 
     // Load breezy plugins so VCS URL handlers (notably
@@ -128,7 +132,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else if let Ok(worker_name) = std::env::var("WORKER_NAME") {
         janitor_worker::client::Credentials::Basic {
             username: worker_name,
-            password: std::env::var("WORKER_PASSWORD").ok(),
+            password: worker_password,
         }
     } else {
         janitor_worker::client::Credentials::from_url(&base_url)
