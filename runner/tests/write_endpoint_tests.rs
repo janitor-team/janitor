@@ -9,6 +9,7 @@ use axum::body::{to_bytes, Body};
 use axum::http::{Method, Request, StatusCode};
 use chrono::Utc;
 use futures::TryStreamExt;
+use janitor::api::worker::{Build, Codemod};
 use janitor::queue::VcsInfo;
 use janitor_runner::api_types::{
     CandidateUpload, ReasonResponse, ScheduledCandidate, UploadCandidatesResponse,
@@ -17,6 +18,7 @@ use janitor_runner::database::{CodebaseRow, CodebaseUpload};
 use janitor_runner::{test_utils, ActiveRun, AppState, Backchannel};
 use janitor_types::{Campaign, ChangeSetId, CodebaseName};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -2107,26 +2109,28 @@ async fn assign_response_envelope_has_all_documented_fields() {
         "branch.default-empty must be a bool"
     );
 
-    // Build subfields: target string, config object, environment map.
-    let build = &assignment["build"];
+    let build: Build =
+        serde_json::from_value(assignment["build"].clone()).expect("build must parse as Build");
     assert!(
-        build["target"].as_str().is_some(),
-        "build.target must be a string, got {build}"
+        build.config.is_object(),
+        "build.config must be an object, got {:?}",
+        build.config
     );
     assert!(
-        build["config"].is_object(),
-        "build.config must be an object, got {build}"
-    );
-    assert!(
-        build["environment"].is_object(),
-        "build.environment must be an object, got {build}"
+        build.environment.is_some(),
+        "build.environment must be an object"
     );
 
     // Python sent the codemod an empty environment; the command
     // environment goes in the top-level `env`.
+    let codemod: Codemod = serde_json::from_value(assignment["codemod"].clone())
+        .expect("codemod must parse as Codemod");
     assert_eq!(
-        assignment["codemod"],
-        json!({"command": "true", "environment": {}})
+        codemod,
+        Codemod {
+            command: "true".to_string(),
+            environment: HashMap::new(),
+        }
     );
 }
 

@@ -532,16 +532,13 @@ impl JanitorResult {
             "finish_time": self.finish_time.to_rfc3339(),
             "start_time": self.start_time.to_rfc3339(),
             "transient": self.transient,
-            "target": self.target.as_ref().map(|t| serde_json::json!({
-                "name": t.name,
-                "details": t.details
-            })).unwrap_or_else(|| serde_json::json!({})),
+            "target": self.target.as_ref().map_or_else(|| serde_json::json!({}), |t| serde_json::json!(t)),
             "logfilenames": self.logfilenames,
             "codemod": self.codemod,
             "value": self.value,
             "remotes": self.remotes,
             "branch_url": self.branch_url,
-            "resume": self.resume.as_ref().map(|r| serde_json::json!({"run_id": r.run_id})),
+            "resume": self.resume,
             "branches": self.branches.as_ref().map(|branches| {
                 branches.iter().map(|(fn_name, name, br, r)| {
                     serde_json::json!([
