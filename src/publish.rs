@@ -3,8 +3,11 @@ use chrono::Duration;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use url::Url;
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy, std::hash::Hash)]
+#[derive(
+    Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy, std::hash::Hash, sqlx::Type,
+)]
 #[serde(rename_all = "lowercase")]
+#[sqlx(type_name = "merge_proposal_status", rename_all = "lowercase")]
 pub enum MergeProposalStatus {
     Open,
     Merged,

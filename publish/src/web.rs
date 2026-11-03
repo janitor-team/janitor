@@ -1973,7 +1973,7 @@ pub struct BlockerPreviousMpDetails {
     /// URL of the merge proposal.
     pub url: String,
     /// Status of the merge proposal.
-    pub status: String,
+    pub status: janitor::publish::MergeProposalStatus,
 }
 
 /// Response of `GET /blockers/{run_id}`.
