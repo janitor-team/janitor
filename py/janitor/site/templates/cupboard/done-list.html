@@ -42,10 +42,9 @@
                         <em>(<a href="{{ run.merge_proposal_url }}">merged</a> by
                             {% if run.merged_by_url %}
                                 <a href="{{ run.merged_by_url }}">{{ run.merged_by }}</a>
-                            {% else %}
+                            {%- else %}
                                 {{ run.merged_by }}
-                            {% endif %}
-                        )</em>
+                            {%- endif %})</em>
                     {% else %}
                         <em>(pushed)</em>
                     {% endif %}
