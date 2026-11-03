@@ -573,23 +573,6 @@ pub struct ResumeValidationResponse {
     pub errors: Option<Vec<String>>,
 }
 
-/// Response for finishing a run.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct FinishResponse {
-    /// Run ID.
-    pub id: RunId,
-    /// Uploaded filenames.
-    pub filenames: Vec<String>,
-    /// Log filenames.
-    pub logs: Vec<String>,
-    /// Artifact names; null when storing the artifacts failed.
-    pub artifacts: Option<Vec<String>>,
-    /// Result information.
-    // TODO: describe the result with a schema rather than as an opaque object.
-    #[schema(value_type = Object)]
-    pub result: serde_json::Value,
-}
-
 /// Response for a `/finish` of a run that was already stored.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct FinishConflictResponse {

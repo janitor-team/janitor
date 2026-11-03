@@ -1,5 +1,6 @@
 //! Core types shared between the janitor crates.
 
+pub mod api;
 pub mod identifiers;
 
 pub use identifiers::{
