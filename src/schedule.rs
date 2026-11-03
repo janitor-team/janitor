@@ -15,6 +15,11 @@ pub const FIRST_RUN_BONUS: f64 = 100.0;
 pub const DEFAULT_ESTIMATED_DURATION: i64 = 15;
 pub const DEFAULT_SCHEDULE_OFFSET: f64 = -1.0;
 
+// A run's weight halves every this many runs back in the recent-runs estimate.
+pub const SUCCESS_WEIGHT_HALVING_RUNS: usize = 5;
+// Latest runs that must all succeed before recent runs can raise the estimate.
+pub const SUCCESS_STREAK_RUNS: usize = 3;
+
 fn publish_mode_value(mode: &Mode) -> usize {
     match mode {
         Mode::Skip => 0,
@@ -186,9 +191,11 @@ async fn estimate_success_probability_and_duration(
     campaign: &Campaign,
     context: Option<&str>,
 ) -> Result<(f64, chrono::Duration, usize), sqlx::Error> {
-    // TODO(jelmer): Bias this towards recent runs?
     let mut total = 0;
     let mut success = 0;
+    let mut streak = 0;
+    let mut weighted_total = 0.0;
+    let mut weighted_success = 0.0;
     let mut same_context_multiplier = if context.is_none() { 0.5 } else { 1.0 };
     let mut durations = vec![];
     #[derive(sqlx::FromRow)]
@@ -234,10 +241,8 @@ ORDER BY start_time DESC
         }
 
         durations.push(total_seconds(interval_to_duration(&run.duration)));
-        total += 1;
-        if run.result_code == "success" {
-            success += 1;
-        }
+        let weight = 0.5_f64.powi((total / SUCCESS_WEIGHT_HALVING_RUNS) as i32);
+        let mut ok = run.result_code == "success";
         let mut same_context = context != Some("")
             && context.is_some()
             && [run.instigated_context.as_deref(), run.context.as_deref()].contains(&context);
@@ -270,10 +275,19 @@ ORDER BY start_time DESC
                     .collect()
             };
             if deps_satisfied(conn, campaign, groups).await? {
-                success += 1;
+                ok = true;
                 same_context = false;
             }
         }
+        if ok {
+            success += 1;
+            weighted_success += weight;
+            if streak == total {
+                streak += 1;
+            }
+        }
+        total += 1;
+        weighted_total += weight;
         if same_context {
             same_context_multiplier = 0.1;
         }
@@ -300,8 +314,13 @@ ORDER BY start_time DESC
         duration_from_seconds(durations.iter().sum::<f64>() / durations.len() as f64)
     };
 
+    let mut probability = (success * 10 + 1) as f64 / (total * 10 + 1) as f64;
+    if streak >= SUCCESS_STREAK_RUNS {
+        probability =
+            probability.max((weighted_success * 10.0 + 1.0) / (weighted_total * 10.0 + 1.0));
+    }
     Ok((
-        ((success * 10 + 1) as f64 / (total * 10 + 1) as f64 * same_context_multiplier),
+        probability * same_context_multiplier,
         estimated_duration,
         total,
     ))
@@ -1013,6 +1032,56 @@ mod tests {
         assert_eq!(total, 1);
         assert_eq!(duration, Duration::seconds(60));
         assert_eq!(probability, 0.5);
+    }
+
+    #[cfg(feature = "testing")]
+    #[tokio::test]
+    async fn test_estimate_success_probability_recent_runs() {
+        let Some(db) = setup_run_database(&CodebaseName::new("cb").unwrap()).await else {
+            return;
+        };
+        let pool = db.pool();
+        let mut probabilities = vec![];
+        // Histories oldest first: a bad week, flaky after failures, a dip, then a streak.
+        for history in [
+            "SSSSSSSSSSSSSSSSSSSSFFFF",
+            "FFFFFFFFFFSFSFSFS",
+            "SSSSSSSSSSFFSSS",
+            "FFFFFFFFFFFFFFFSSS",
+        ] {
+            sqlx::query("DELETE FROM run").execute(pool).await.unwrap();
+            sqlx::query(
+                "INSERT INTO run (id, codebase, suite, change_set, logfilenames, result_code,
+                                  start_time, finish_time)
+                 SELECT 'r' || i, 'cb', 'lintian-fixes', 'cs', '{}',
+                        CASE r WHEN 'S' THEN 'success' ELSE 'some-failure' END,
+                        '2024-01-01'::timestamp + i * interval '1 day',
+                        '2024-01-01'::timestamp + i * interval '1 day' + interval '1 minute'
+                 FROM unnest(string_to_array($1, NULL)) WITH ORDINALITY AS h(r, i)",
+            )
+            .bind(history)
+            .execute(pool)
+            .await
+            .unwrap();
+            let (probability, _, _) = estimate_success_probability_and_duration(
+                pool,
+                &CodebaseName::new("cb").unwrap(),
+                &Campaign::new("lintian-fixes").unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+            probabilities.push(probability);
+        }
+        assert_eq!(
+            probabilities,
+            vec![
+                201.0 / 241.0 * 0.5,
+                41.0 / 171.0 * 0.5,
+                131.0 / 151.0 * 0.5,
+                31.0 / 92.25 * 0.5,
+            ]
+        );
     }
 }
 

@@ -42,7 +42,8 @@ away. Their place in the queue depends on:
 
 - the value of the candidate
 - the value of the codebase
-- previous success rate
+- previous success rate; after 3 successes in a row, recent runs count more if
+  that raises it
 - previous run duration
 - whether the context has changed since the last run
 

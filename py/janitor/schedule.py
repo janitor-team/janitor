@@ -38,6 +38,11 @@ FIRST_RUN_BONUS = 100.0
 DEFAULT_ESTIMATED_DURATION = 15
 DEFAULT_SCHEDULE_OFFSET = -1.0
 
+# A run's weight halves every this many runs back in the recent-runs estimate.
+SUCCESS_WEIGHT_HALVING_RUNS = 5
+# Latest runs that must all succeed before recent runs can raise the estimate.
+SUCCESS_STREAK_RUNS = 3
+
 
 # In some cases, we want to ignore certain results when guessing
 # whether a future run is going to be successful.
@@ -153,9 +158,11 @@ async def estimate_success_probability_and_duration(
     campaign: str,
     context: Optional[str] = None,
 ) -> tuple[float, timedelta, int]:
-    # TODO(jelmer): Bias this towards recent runs?
     total = 0
     success = 0
+    streak = 0
+    weighted_total = 0.0
+    weighted_success = 0.0
     if context is None:
         same_context_multiplier = 0.5
     else:
@@ -185,9 +192,8 @@ ORDER BY start_time DESC
             continue
 
         durations.append(run["duration"])
-        total += 1
-        if run["result_code"] == "success":
-            success += 1
+        weight = 0.5 ** (total // SUCCESS_WEIGHT_HALVING_RUNS)
+        ok = run["result_code"] == "success"
         same_context = False
         if context and context in (run["instigated_context"], run["context"]):
             same_context = True
@@ -199,8 +205,15 @@ ORDER BY start_time DESC
             if await deps_satisfied(
                 conn, campaign, run["failure_details"]["relations"]
             ):
-                success += 1
+                ok = True
                 same_context = False
+        if ok:
+            success += 1
+            weighted_success += weight
+            if streak == total:
+                streak += 1
+        total += 1
+        weighted_total += weight
         if same_context:
             same_context_multiplier = 0.1
 
@@ -221,11 +234,12 @@ ORDER BY start_time DESC
             seconds=(sum([d.total_seconds() for d in durations]) / len(durations))
         )
 
-    return (
-        ((success * 10 + 1) / (total * 10 + 1) * same_context_multiplier),
-        estimated_duration,
-        total,
-    )
+    probability = (success * 10 + 1) / (total * 10 + 1)
+    if streak >= SUCCESS_STREAK_RUNS:
+        probability = max(
+            probability, (weighted_success * 10 + 1) / (weighted_total * 10 + 1)
+        )
+    return (probability * same_context_multiplier, estimated_duration, total)
 
 
 # Overhead of doing a run; estimated to be roughly 20s
