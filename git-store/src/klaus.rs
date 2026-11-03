@@ -16,7 +16,7 @@ use tracing::{debug, warn};
 
 use crate::error::{GitStoreError, Result};
 use crate::web::AppState;
-use janitor::CodebaseName;
+use janitor_types::CodebaseName;
 
 /// Cap on request body we buffer for the WSGI call.
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;

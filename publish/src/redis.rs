@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use janitor::redis::{PubSubMessage, RedisManager};
-use janitor::{Campaign, CodebaseName, RunId};
+use janitor_types::{Campaign, CodebaseName, RunId};
 use log::{debug, error, info};
 use redis::aio::ConnectionManager;
 use tokio::sync::mpsc;

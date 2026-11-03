@@ -3,7 +3,7 @@
 //! One `SELECT DISTINCT ON` over `debian_build`, optionally filtered by
 //! distribution.
 
-use janitor::RunId;
+use janitor_types::RunId;
 use sqlx::PgPool;
 use tracing::{debug, info};
 

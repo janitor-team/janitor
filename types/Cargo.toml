@@ -1,0 +1,24 @@
+[package]
+name = "janitor-types"
+version = { workspace = true }
+authors = ["Jelmer Vernooĳ <jelmer@jelmer.uk>"]
+edition.workspace = true
+description = "Core types shared between the janitor crates"
+license = "GPL-3.0+"
+repository = "https://github.com/jelmer/janitor.git"
+homepage = "https://github.com/jelmer/janitor"
+
+[dependencies]
+breezyshim = { workspace = true, optional = true }
+pyo3 = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"] }
+sqlx = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[features]
+default = []
+breezyshim = ["dep:breezyshim"]
+pyo3 = ["dep:pyo3"]
+sqlx = ["dep:sqlx"]

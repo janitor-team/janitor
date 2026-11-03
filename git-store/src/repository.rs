@@ -2,7 +2,7 @@
 
 use crate::error::{GitStoreError, Result};
 use git2::{Repository, RepositoryInitOptions};
-use janitor::CodebaseName;
+use janitor_types::CodebaseName;
 use std::path::{Path, PathBuf};
 use tracing::info;
 

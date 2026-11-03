@@ -1,5 +1,5 @@
-use crate::identifiers::LogFilename;
-use crate::{CodebaseName, RunId};
+use janitor_types::LogFilename;
+use janitor_types::{CodebaseName, RunId};
 use object_store::ObjectStoreScheme;
 use std::io;
 

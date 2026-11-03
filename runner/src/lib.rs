@@ -6,7 +6,7 @@
 
 use breezyshim::RevisionId;
 use chrono::{DateTime, Utc};
-use janitor::{Campaign, ChangeSetId, CodebaseName, RunId};
+use janitor_types::{Campaign, ChangeSetId, CodebaseName, RunId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

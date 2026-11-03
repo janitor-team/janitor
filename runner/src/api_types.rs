@@ -1,4 +1,4 @@
-use janitor::{Campaign, ChangeSetId, CodebaseName, RunId};
+use janitor_types::{Campaign, ChangeSetId, CodebaseName, RunId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

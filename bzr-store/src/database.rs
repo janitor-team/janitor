@@ -7,7 +7,7 @@
 //! `py/janitor/worker_creds.py::is_worker`.
 
 use janitor::database::{Database as SharedDatabase, DatabaseConfig};
-use janitor::CodebaseName;
+use janitor_types::CodebaseName;
 use sqlx::PgPool;
 use tracing::{debug, info};
 

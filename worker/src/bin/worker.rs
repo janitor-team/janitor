@@ -33,11 +33,11 @@ struct Args {
 
     /// Request run for specified codebase
     #[clap(long)]
-    codebase: Option<janitor::CodebaseName>,
+    codebase: Option<janitor_types::CodebaseName>,
 
     /// Request run for specified campaign
     #[clap(long)]
-    campaign: Option<janitor::Campaign>,
+    campaign: Option<janitor_types::Campaign>,
 
     /// Address to listen on
     #[clap(long, default_value = "0.0.0.0")]

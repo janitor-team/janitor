@@ -21,7 +21,7 @@ use tower::ServiceExt;
 
 use crate::error::Result;
 use crate::web::AppState;
-use janitor::CodebaseName;
+use janitor_types::CodebaseName;
 
 /// Insert-once cache of `(codebase) -> loggerhead Router`. Routers are
 /// cheap to build but they pay a Python-GIL hop to open the branch on

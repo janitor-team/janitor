@@ -129,7 +129,7 @@ mod tests {
             // The resume lookup is keyed on (suite, revision), not on
             // any per-run branch name.
             let result = resume_service
-                .check_resume_result(&janitor::Campaign::new("lintian-fixes").unwrap(), "rev-tip-1")
+                .check_resume_result(&janitor_types::Campaign::new("lintian-fixes").unwrap(), "rev-tip-1")
                 .await
                 .unwrap();
             assert_eq!(result.as_ref().map(|r| r.run_id.as_str()), Some("run-1"));
@@ -142,14 +142,14 @@ mod tests {
 
             // Same campaign but unknown revision -> no resume.
             let no_result = resume_service
-                .check_resume_result(&janitor::Campaign::new("lintian-fixes").unwrap(), "nonexistent-rev")
+                .check_resume_result(&janitor_types::Campaign::new("lintian-fixes").unwrap(), "nonexistent-rev")
                 .await
                 .unwrap();
             assert!(no_result.is_none());
 
             // Known revision but wrong campaign -> no resume.
             let wrong_campaign = resume_service
-                .check_resume_result(&janitor::Campaign::new("other-campaign").unwrap(), "rev-tip-1")
+                .check_resume_result(&janitor_types::Campaign::new("other-campaign").unwrap(), "rev-tip-1")
                 .await
                 .unwrap();
             assert!(wrong_campaign.is_none());
@@ -231,13 +231,13 @@ mod tests {
             let finish_time = Utc::now();
 
             let mut result = JanitorResult {
-                log_id: janitor::RunId::new(log_id).unwrap(),
+                log_id: janitor_types::RunId::new(log_id).unwrap(),
                 branch_url: "https://example.invalid/finish-run-codebase".to_string(),
                 subpath: Some("".to_string()),
                 code: "success".to_string(),
                 transient: None,
-                codebase: janitor::CodebaseName::new("finish-run-codebase").unwrap(),
-                campaign: janitor::Campaign::new("lintian-fixes").unwrap(),
+                codebase: janitor_types::CodebaseName::new("finish-run-codebase").unwrap(),
+                campaign: janitor_types::Campaign::new("lintian-fixes").unwrap(),
                 description: Some("ok".to_string()),
                 codemod: Some(serde_json::json!({"changes": 2})),
                 value: Some(10),
@@ -260,7 +260,7 @@ mod tests {
                 failure_details: None,
                 failure_stage: None,
                 resume: Some(ResultResume {
-                    run_id: janitor::RunId::new("earlier-run").unwrap(),
+                    run_id: janitor_types::RunId::new("earlier-run").unwrap(),
                 }),
                 target: None,
                 worker_name: Some("worker-42".to_string()),
@@ -375,7 +375,7 @@ mod tests {
                 .unwrap();
 
             let result = resume_service
-                .check_resume_result(&janitor::Campaign::new("lintian-fixes").unwrap(), "rev-rejected")
+                .check_resume_result(&janitor_types::Campaign::new("lintian-fixes").unwrap(), "rev-rejected")
                 .await
                 .unwrap();
             assert!(result.is_none());

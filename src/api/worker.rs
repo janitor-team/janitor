@@ -1,8 +1,8 @@
 //! API for the worker to communicate with the runner.
 
 use crate::vcs::VcsType;
-use crate::{Campaign, CodebaseName, RunId};
 use breezyshim::RevisionId;
+use janitor_types::{Campaign, CodebaseName, RunId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use url::Url;

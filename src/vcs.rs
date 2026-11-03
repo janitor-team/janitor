@@ -1,9 +1,9 @@
-use crate::CodebaseName;
 use async_trait::async_trait;
 use breezyshim::branch::Branch;
 use breezyshim::error::Error as BrzError;
 use breezyshim::repository::{GenericRepository, Repository};
 use breezyshim::RevisionId;
+use janitor_types::CodebaseName;
 use serde::{Deserialize, Serialize};
 use silver_platter::vcs::BranchOpenError;
 use std::collections::HashMap;

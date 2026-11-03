@@ -22,7 +22,7 @@ pub enum ArchiveError {
 
     #[error("Missing artifacts for build {build_id}: {message}")]
     ArtifactsMissing {
-        build_id: janitor::RunId,
+        build_id: janitor_types::RunId,
         message: String,
     },
 

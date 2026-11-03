@@ -5,7 +5,7 @@ use tracing::{debug, info, warn};
 
 use crate::error::{Result, UploadError};
 use janitor::artifacts::{get_artifact_manager, ArtifactManager};
-use janitor::RunId;
+use janitor_types::RunId;
 
 /// Wraps the shared [`ArtifactManager`] and downloads runs into a fresh temp dir.
 pub struct ArtifactProcessor {

@@ -19,6 +19,7 @@ futures-util = "0.3"
 git2 = "0.18"
 http = "1.1"
 janitor = { path = "..", features = ["otlp"] }
+janitor-types = { workspace = true, features = ["pyo3", "sqlx"] }
 nix = { workspace = true, features = ["signal"] }
 prometheus = { version = "0.14.0", features = ["process"] }
 pyo3 = { workspace = true }

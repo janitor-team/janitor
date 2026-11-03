@@ -460,7 +460,7 @@ where
 pub async fn trace_vcs_operation<F, T>(
     operation: &str,
     vcs_type: &str,
-    codebase: &janitor::CodebaseName,
+    codebase: &janitor_types::CodebaseName,
     future: F,
 ) -> T
 where

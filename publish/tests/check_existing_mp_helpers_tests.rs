@@ -22,12 +22,12 @@
 use chrono::{Duration, Utc};
 use janitor::state::ResultTag;
 use janitor::test_with_database;
-use janitor::{Campaign, CodebaseName, RunId};
 use janitor_publish::state::{
     get_last_effective_run, get_merge_proposal_run, get_run, guess_proposal_info_from_revision,
     iter_publish_ready,
 };
 use janitor_publish::{derived_branch_name, get_publish_policy};
+use janitor_types::{Campaign, CodebaseName, RunId};
 use sqlx::PgPool;
 
 /// Insert the upstream FK rows (`codebase` + `change_set`) needed by

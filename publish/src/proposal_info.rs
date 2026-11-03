@@ -2,7 +2,7 @@ use breezyshim::forge::MergeProposal;
 use breezyshim::RevisionId;
 use chrono::{DateTime, Utc};
 use janitor::publish::MergeProposalStatus;
-use janitor::{Campaign, CodebaseName};
+use janitor_types::{Campaign, CodebaseName};
 use redis::AsyncCommands;
 use sqlx::PgPool;
 

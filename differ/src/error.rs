@@ -4,7 +4,7 @@ use axum::http::header::{HeaderName, HeaderValue};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use janitor::RunId;
+use janitor_types::RunId;
 use serde::Serialize;
 use thiserror::Error;
 

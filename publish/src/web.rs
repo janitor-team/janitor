@@ -7,7 +7,7 @@ use axum::response::{IntoResponse, Json};
 use axum::routing::{delete, get, post, put};
 use axum::Router;
 use breezyshim::error::Error as BrzError;
-use janitor::{Campaign, ChangeSetId, CodebaseName, PublishId, RunId};
+use janitor_types::{Campaign, ChangeSetId, CodebaseName, PublishId, RunId};
 use log::error;
 use sequoia_openpgp::armor;
 use sqlx::PgPool;

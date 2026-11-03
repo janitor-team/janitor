@@ -1,5 +1,5 @@
 use clap::Parser;
-use janitor::{Campaign, CodebaseName};
+use janitor_types::{Campaign, CodebaseName};
 
 #[derive(Parser)]
 struct Args {

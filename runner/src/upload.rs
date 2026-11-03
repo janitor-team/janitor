@@ -70,8 +70,8 @@ impl UploadProcessor {
     pub async fn process_upload(
         &self,
         mut multipart: Multipart,
-        run_id: &janitor::RunId,
-        codebase: &janitor::CodebaseName,
+        run_id: &janitor_types::RunId,
+        codebase: &janitor_types::CodebaseName,
     ) -> Result<UploadedWorkerResult, UploadError> {
         let mut worker_result: Option<WorkerResult> = None;
         let mut log_files = Vec::new();

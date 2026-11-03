@@ -1,5 +1,5 @@
-use crate::{Campaign, ChangeSetId, CodebaseName};
 use chrono::TimeDelta;
+use janitor_types::{Campaign, ChangeSetId, CodebaseName};
 use sqlx::postgres::types::PgInterval;
 use sqlx::{Error, FromRow, PgPool};
 use std::collections::HashSet;

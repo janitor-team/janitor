@@ -27,7 +27,7 @@ use apt_repository::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::stream::StreamExt;
-use janitor::{Campaign, ChangeSetId, CodebaseName, InvalidIdentifier, RunId};
+use janitor_types::{Campaign, ChangeSetId, CodebaseName, InvalidIdentifier, RunId};
 use tracing::{debug, info, warn};
 
 use crate::database::{BuildManager, BuildRecord};

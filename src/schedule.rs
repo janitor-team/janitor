@@ -1,10 +1,10 @@
 use crate::publish::Mode;
 use crate::queue::Queue;
-use crate::{Campaign, ChangeSetId, CodebaseName};
 use breezyshim::RevisionId;
 use chrono::Duration;
 use debian_control::lossless::relations::{Relation, Relations};
 use debian_control::relations::VersionConstraint;
+use janitor_types::{Campaign, ChangeSetId, CodebaseName};
 use sqlx::postgres::types::PgInterval;
 use sqlx::PgPool;
 use std::collections::HashMap;

@@ -34,7 +34,7 @@ use axum::{
 use breezyshim::bazaar::smart;
 use breezyshim::repository::Repository;
 use breezyshim::transport::Transport;
-use janitor::{Campaign, CodebaseName, Role};
+use janitor_types::{Campaign, CodebaseName, Role};
 use tracing::{debug, info, warn};
 
 use crate::error::{BzrError, Result};

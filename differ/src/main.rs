@@ -8,9 +8,9 @@ use axum::Json;
 use breezyshim::RevisionId;
 use clap::Parser;
 use janitor::artifacts::{ArtifactManager, Error as ArtifactError};
-use janitor::{Campaign, CodebaseName, RunId};
 use janitor_differ::diffoscope::{self, DiffoscopeOutput};
 use janitor_differ::{find_binaries, is_binary, Error, Result};
+use janitor_types::{Campaign, CodebaseName, RunId};
 use prometheus::{
     register_int_counter_vec_with_registry, Encoder, IntCounterVec, Registry, TextEncoder,
 };

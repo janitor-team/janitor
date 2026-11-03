@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use janitor::RunId;
+use janitor_types::RunId;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 

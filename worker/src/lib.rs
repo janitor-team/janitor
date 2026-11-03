@@ -14,7 +14,7 @@ use tokio::net::lookup_host;
 use janitor::api::worker::{Metadata, TargetDetails, WorkerFailure};
 use janitor::prometheus::push_to_gateway;
 use janitor::vcs::VcsType;
-use janitor::{Campaign, CodebaseName, RunId};
+use janitor_types::{Campaign, CodebaseName, RunId};
 
 use url::Url;
 

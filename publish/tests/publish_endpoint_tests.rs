@@ -3,12 +3,13 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use janitor::{test_utils::TestDatabase, test_with_database, ChangeSetId};
+use janitor::{test_utils::TestDatabase, test_with_database};
 use janitor_publish::web::{
     Blocker, BlockerBackoffDetails, BlockerChangeSetDetails, BlockerCommandDetails,
     BlockerInactiveDetails, BlockerInfo, BlockerPublishStatusDetails, BlockerSuccessDetails,
 };
 use janitor_publish::{AppState, PublishWorker};
+use janitor_types::ChangeSetId;
 use sqlx::PgPool;
 use tower::ServiceExt;
 

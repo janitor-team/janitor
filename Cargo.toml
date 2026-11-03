@@ -12,6 +12,7 @@ include = ["src/**/*", "schema/state.sql", "schema/debian/debian.sql", "README.m
 
 [dependencies]
 breezyshim = { workspace = true, features = ["sqlx"] }
+janitor-types = { workspace = true, features = ["breezyshim", "pyo3", "sqlx"] }
 chrono = { workspace = true, features = ["serde"] }
 env_logger = { workspace = true }
 log = { workspace = true }
@@ -107,13 +108,14 @@ base64 = "0.22"
 sequoia-openpgp = { version = "2.4", default-features = false, features = ["crypto-nettle"] }
 nix = ">=0.30,<0.32"
 askama = ">=0.15,<0.17"
+janitor-types = { path = "types" }
 
 [build-dependencies]
 protobuf-codegen = "3"
 protoc-rust = "^2.0"
 
 [workspace]
-members = [ "common-py", "differ", "mail-filter", "publish", "runner", "worker" , "bzr-store", "git-store", "site", "site-py" , "archive", "auto-upload", "apt-repository" ]
+members = [ "common-py", "differ", "mail-filter", "publish", "runner", "worker" , "bzr-store", "git-store", "site", "site-py" , "archive", "auto-upload", "apt-repository", "types" ]
 
 [workspace.package]
 edition = "2021"

@@ -18,7 +18,7 @@
 //! converge to the same end state.
 
 use crate::ActiveRun;
-use janitor::RunId;
+use janitor_types::RunId;
 use redis::AsyncCommands;
 use std::collections::HashMap;
 
@@ -232,12 +232,12 @@ mod tests {
             start_time: Utc::now(),
             finish_time: None,
             estimated_duration: None,
-            campaign: janitor::Campaign::new("test").unwrap(),
+            campaign: janitor_types::Campaign::new("test").unwrap(),
             change_set: None,
             command: "echo test".to_string(),
             backchannel: Backchannel::default(),
             vcs_info: VcsInfo::default(),
-            codebase: janitor::CodebaseName::new("test-codebase").unwrap(),
+            codebase: janitor_types::CodebaseName::new("test-codebase").unwrap(),
             instigated_context: None,
             resume_from: None,
         }

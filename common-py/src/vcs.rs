@@ -1,6 +1,6 @@
 use breezyshim::RevisionId;
 
-use janitor::CodebaseName;
+use janitor_types::CodebaseName;
 use pyo3::basic::CompareOp;
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};

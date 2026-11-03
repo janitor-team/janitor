@@ -1,7 +1,7 @@
 use crate::io::AsyncReader;
 use futures::{StreamExt, TryStreamExt};
-use janitor::identifiers::LogFilename;
-use janitor::{CodebaseName, RunId};
+use janitor_types::LogFilename;
+use janitor_types::{CodebaseName, RunId};
 use pyo3::create_exception;
 use pyo3::exceptions::{
     PyFileNotFoundError, PyOSError, PyPermissionError, PyRuntimeError, PyTimeoutError, PyValueError,
