@@ -30,6 +30,7 @@ from typing import Any, Optional
 
 import aiohttp_jinja2
 import aiozipkin
+import mimeparse
 from aiohttp import ClientConnectorError, ClientSession, web
 from aiohttp.web_middlewares import normalize_path_middleware
 from aiohttp.web_urldispatcher import URL
@@ -310,13 +311,28 @@ async def handle_generic_codebase_query_redirect(request):
     )
 
 
-@html_template("generic/codebase.html", headers={"Vary": "Cookie"})
+@html_template("generic/codebase.html", headers={"Vary": "Accept, Cookie"})
 async def handle_generic_codebase(request):
-    from .common import generate_codebase_context
+    from .api import serve_run_diff
+    from .common import generate_codebase_context, get_last_unabsorbed_run
 
-    # TODO(jelmer): Handle Accept: text/diff
     codebase = request.match_info["codebase"]
     run_id = request.match_info.get("run_id")
+    if (
+        mimeparse.best_match(
+            ["text/x-diff", "text/html"], request.headers.get("Accept", "*/*")
+        )
+        == "text/x-diff"
+    ):
+        if run_id is None:
+            async with request.app.database.acquire() as conn:
+                run = await get_last_unabsorbed_run(
+                    conn, codebase, request.match_info["campaign"]
+                )
+            if run is None:
+                raise web.HTTPNotFound(text=f"no runs for {codebase}")
+            run_id = run["id"]
+        return await serve_run_diff(request, run_id)
     return await generate_codebase_context(
         request.app.database,
         request.app["config"],
