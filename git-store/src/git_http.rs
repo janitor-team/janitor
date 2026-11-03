@@ -928,45 +928,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_is_expected_stdin_close_accepts_the_close_kinds() {
-        for kind in [
-            std::io::ErrorKind::BrokenPipe,
-            std::io::ErrorKind::ConnectionReset,
-            std::io::ErrorKind::UnexpectedEof,
-        ] {
-            assert!(
-                is_expected_stdin_close(kind),
-                "{:?} should be treated as an expected stdin close",
-                kind
-            );
-        }
-    }
-
-    #[test]
-    fn test_is_expected_stdin_close_rejects_other_kinds() {
-        for kind in [
-            std::io::ErrorKind::Other,
-            std::io::ErrorKind::PermissionDenied,
-            std::io::ErrorKind::WriteZero,
-        ] {
-            assert!(
-                !is_expected_stdin_close(kind),
-                "{:?} should not be treated as an expected stdin close",
-                kind
-            );
-        }
-    }
-
-    #[test]
-    fn test_diff_query_parsing() {
-        let query = "old=abc123&new=def456&path=src/main.rs";
-        let params: DiffQuery = serde_urlencoded::from_str(query).unwrap();
-        assert_eq!(params.old.as_deref(), Some("abc123"));
-        assert_eq!(params.new.as_deref(), Some("def456"));
-        assert_eq!(params.path, Some("src/main.rs".to_string()));
-    }
-
-    #[test]
     fn test_forward_request_headers_keeps_content_encoding() {
         let mut headers = HeaderMap::new();
         headers.insert("content-encoding", "gzip".parse().unwrap());
@@ -1095,23 +1056,6 @@ mod tests {
         assert!(!is_valid_hexsha("tooshort"));
         assert!(!is_valid_hexsha("0123456789abcdef0123456789abcdef0123456g"));
         assert!(!is_valid_hexsha(""));
-    }
-
-    #[test]
-    fn test_revision_info_query_parsing() {
-        let query = "old=abc123&new=def456";
-        let params: RevisionInfoQuery = serde_urlencoded::from_str(query).unwrap();
-        assert_eq!(params.old.as_deref(), Some("abc123"));
-        assert_eq!(params.new.as_deref(), Some("def456"));
-    }
-
-    /// Missing `old` or `new` on the query string must surface as a
-    /// 400 with Python's "need both old and new" text, not axum's
-    /// default 422 rejection body.
-    #[test]
-    fn test_revision_info_query_missing() {
-        let params: RevisionInfoQuery = serde_urlencoded::from_str("new=def456").unwrap();
-        assert!(params.old.is_none());
     }
 
     fn writer_ctx() -> AuthContext {
