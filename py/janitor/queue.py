@@ -159,9 +159,8 @@ LEFT JOIN codebase ON codebase.name = queue.codebase
             conditions.append(f"queue.suite = ${len(args)}")
         if exclude_hosts:
             args.append(exclude_hosts)
-            # TODO(jelmer): Use codebase.hostname when kali upgrades to postgres 12+
             conditions.append(
-                f"NOT (codebase.branch_url IS NOT NULL AND SUBSTRING(codebase.branch_url from '.*://(?:[^/@]*@)?([^/]*)') = ANY(${len(args)}::text[]))"
+                f"NOT (codebase.branch_url IS NOT NULL AND codebase.hostname = ANY(${len(args)}::text[]))"
             )
 
         if conditions:
