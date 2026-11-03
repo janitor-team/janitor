@@ -283,14 +283,7 @@ async fn absorbed(
             log::error!("Failed to fetch absorbed runs: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(
-                    serde_json::to_value(crate::api_types::ErrorResponse::new(
-                        "Failed to fetch absorbed runs",
-                    ))
-                    .unwrap_or_else(
-                        |_| serde_json::json!({"error": "Failed to fetch absorbed runs"}),
-                    ),
-                ),
+                error_response("Failed to fetch absorbed runs"),
             );
         }
     }
@@ -666,13 +659,7 @@ async fn put_policies(
             let _ = tx.rollback().await;
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(
-                    serde_json::to_value(crate::api_types::ErrorResponse::new(format!(
-                        "Failed to update policy {}",
-                        name
-                    )))
-                    .unwrap(),
-                ),
+                error_response(&format!("Failed to update policy {}", name)),
             );
         }
         keep_names.push(name.clone());
@@ -696,7 +683,7 @@ async fn put_policies(
         log::error!("Failed to commit transaction: {}", e);
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "Database error"})),
+            error_response("Database error"),
         );
     }
 
@@ -1102,14 +1089,7 @@ WHERE id = $1
             log::error!("Failed to fetch publish details for id {}: {}", id, e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(
-                    serde_json::to_value(crate::api_types::ErrorResponse::new(
-                        "Failed to fetch publish details",
-                    ))
-                    .unwrap_or_else(
-                        |_| serde_json::json!({"error": "Failed to fetch publish details"}),
-                    ),
-                ),
+                error_response("Failed to fetch publish details"),
             );
         }
     };
@@ -1223,9 +1203,19 @@ async fn publish(
     if policy_lookup.is_none() && form.mode.is_none() {
         return (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "reason": format!("no publish policy for {}/{}", codebase, campaign),
-            })),
+            Json(
+                serde_json::to_value(NotFoundResponse {
+                    reason: format!("no publish policy for {}/{}", codebase, campaign),
+                    name: None,
+                    url: None,
+                    id: None,
+                    bucket: None,
+                    run_id: None,
+                    campaign: None,
+                    codebase: None,
+                })
+                .unwrap(),
+            ),
         );
     }
     let (publish_policy, _cmd, rate_limit_bucket) =
