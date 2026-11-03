@@ -12,30 +12,16 @@ use crate::{
     vcs::RunnerVcsManager,
     AppState,
 };
-use janitor::database::{Database, DatabaseConfig};
+use janitor::database::Database;
 pub use janitor::test_utils::{TestDatabase, TestDatabaseConfig, TestSchema};
 use sqlx::PgPool;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// Turn `test_db` into a janitor [`Database`]. The underlying
 /// per-test database is leaked so the pool stays usable for the rest
 /// of the test (the `AppState` typically owns it until the test ends).
 fn into_janitor_database(test_db: TestDatabase) -> Database {
-    let database_name = test_db.database_name.clone();
-    let pool = test_db.leak_pool();
-    // TODO: the pool was built against TEST_DATABASE_URL (which may be
-    // a remote host); this `url` field assumes localhost. The pool
-    // itself works, but anything that re-parses `DatabaseConfig.url`
-    // to open a second connection will target the wrong host.
-    let config = DatabaseConfig {
-        url: format!("postgresql://localhost/{}", database_name),
-        max_connections: 5,
-        connect_timeout: Duration::from_secs(10),
-        idle_timeout: Some(Duration::from_secs(600)),
-        max_lifetime: Some(Duration::from_secs(3600)),
-    };
-    Database::from_pool_and_config(pool, config)
+    Database::from_pool(test_db.leak_pool())
 }
 
 /// Build a test-flavoured `janitor::config::Config` with sensible

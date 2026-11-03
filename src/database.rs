@@ -128,15 +128,6 @@ impl Database {
         }
     }
 
-    /// Create a database instance from an existing pool and configuration
-    ///
-    /// This is useful for test scenarios where you have an existing pool
-    /// but want to preserve configuration information.
-    pub fn from_pool_and_config(pool: PgPool, _config: DatabaseConfig) -> Self {
-        // For now, we don't need to store the config, just use the pool
-        Self { pool, redis: None }
-    }
-
     /// Create a new database connection from URL
     pub async fn connect(url: &str) -> Result<Self, DatabaseError> {
         let config = DatabaseConfig::new(url);
