@@ -484,21 +484,11 @@ div.sphinxsidebar {
         float: initial;
         width: auto;
         margin-left: 0;
-        color: #FFF;
         font-size: medium;
         line-height: normal;
     }
 
     li.toctree-l1 { display: inline; font-size: small;  }
-
-    div.sphinxsidebar h3, div.sphinxsidebar h4, div.sphinxsidebar p,
-    div.sphinxsidebar h3 a {
-        color: white;
-    }
-
-    div.sphinxsidebar a {
-        color: #AAA;
-    }
 
     div.sphinxsidebar p.logo {
         display: none;
@@ -517,8 +507,14 @@ div.sphinxsidebar {
         margin: 0;
     }
 
+    div.documentwrapper {
+        float: none;
+        width: auto;
+    }
+
     div.body {
         min-height: 0;
+        min-width: 0;
         padding: 0;
     }
 
