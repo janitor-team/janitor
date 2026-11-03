@@ -3306,9 +3306,6 @@ dependencies = [
  "hyper",
  "janitor",
  "num_cpus",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
  "redis 1.7.0",
  "serde",
  "serde_json",
@@ -3322,9 +3319,6 @@ dependencies = [
  "tower 0.4.13",
  "tower-http 0.6.11",
  "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "uuid",
  "xz2",
  "zstd",
 ]
@@ -3442,7 +3436,6 @@ dependencies = [
  "tower 0.5.3",
  "tower-http 0.5.2",
  "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
@@ -8049,7 +8042,6 @@ checksum = "2ef6dac1e96601b4fb3acccccff2139741fcb757cb9a36089bf5be91cfb285ce"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
- "serde_core",
  "wasm-bindgen",
 ]
 
