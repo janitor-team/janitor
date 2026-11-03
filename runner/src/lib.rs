@@ -123,6 +123,8 @@ pub enum FindChangesError {
     ParseError(PathBuf, Box<dyn std::error::Error + Send + Sync>),
     /// Filename cannot be converted to UTF-8.
     InvalidFilename(PathBuf),
+    /// A file differs from the size or SHA-256 listed in a changes file.
+    ChecksumMismatch(PathBuf, PathBuf),
 }
 
 #[cfg(feature = "debian")]
@@ -163,6 +165,12 @@ impl std::fmt::Display for FindChangesError {
                     path.display()
                 )
             }
+            FindChangesError::ChecksumMismatch(path, changes) => write!(
+                f,
+                "{} does not match its size or SHA-256 in {}",
+                path.display(),
+                changes.display()
+            ),
         }
     }
 }
@@ -221,13 +229,15 @@ pub fn deb_package_name_from_filename(filename: &str) -> Option<String> {
 /// * `path` - Directory to search for changes files
 ///
 /// # Returns
-/// A summary of the changes files, or an error if not found or inconsistent
+/// A summary of the changes files, or an error if not found, inconsistent or not matching the files
 pub fn find_changes(path: &Path) -> Result<ChangesSummary, FindChangesError> {
+    use sha2::Digest;
     let mut names: Vec<String> = Vec::new();
     let mut source: Option<String> = None;
     let mut version: Option<debversion::Version> = None;
     let mut distribution: Option<String> = None;
     let mut binary_packages: Vec<String> = Vec::new();
+    let mut checksums = Vec::new();
 
     let read_dir =
         std::fs::read_dir(path).map_err(|e| FindChangesError::IoError(path.to_path_buf(), e))?;
@@ -299,6 +309,7 @@ pub fn find_changes(path: &Path) -> Result<ChangesSummary, FindChangesError> {
                 .iter()
                 .filter_map(|file| deb_package_name_from_filename(&file.filename)),
         );
+        checksums.push((entry.path(), changes.checksums_sha256()));
     }
     if names.is_empty() {
         return Err(FindChangesError::NoChangesFile(path.to_path_buf()));
@@ -308,6 +319,24 @@ pub fn find_changes(path: &Path) -> Result<ChangesSummary, FindChangesError> {
     let version = version.ok_or(FindChangesError::MissingChangesFileFields("Version"))?;
     let distribution =
         distribution.ok_or(FindChangesError::MissingChangesFileFields("Distribution"))?;
+
+    for (changes_path, listed) in checksums {
+        let listed = listed.ok_or(FindChangesError::MissingChangesFileFields(
+            "Checksums-Sha256",
+        ))?;
+        for checksum in listed {
+            let file_path = path.join(&checksum.filename);
+            let mut f = std::fs::File::open(&file_path)
+                .map_err(|e| FindChangesError::IoError(file_path.clone(), e))?;
+            let mut hasher = sha2::Sha256::new();
+            let size = std::io::copy(&mut f, &mut hasher)
+                .map_err(|e| FindChangesError::IoError(file_path.clone(), e))?;
+            if size != checksum.size as u64 || format!("{:x}", hasher.finalize()) != checksum.sha256
+            {
+                return Err(FindChangesError::ChecksumMismatch(file_path, changes_path));
+            }
+        }
+    }
 
     Ok(ChangesSummary {
         names,

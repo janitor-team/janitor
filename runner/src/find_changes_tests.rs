@@ -154,10 +154,14 @@ Changes:
    * Initial release
 Checksums-Sha1:
  da39a3ee5e6b4b0d3255bfef95601890afd80709 1234 test-package_1.0-1_amd64.deb
+Checksums-Sha256:
+ 9cfa1468c93fc18652e34a000f0c6614b0fa18f6f4887477ad9b0d36ca6a7eaa 3 test-package_1.0-1_amd64.deb
 Files:
  d41d8cd98f00b204e9800998ecf8427e 1234 deb optional test-package_1.0-1_amd64.deb
 "#;
         fs::write(&changes_file, valid_changes).unwrap();
+        let deb = temp_dir.path().join("test-package_1.0-1_amd64.deb");
+        fs::write(&deb, "deb").unwrap();
 
         let result = find_changes(temp_dir.path());
 
@@ -167,6 +171,16 @@ Files:
         assert_eq!(summary.source, "test-package");
         assert_eq!(summary.distribution, "unstable");
         assert_eq!(summary.binary_packages, vec!["test-package"]);
+
+        for content in ["de", "bad"] {
+            fs::write(&deb, content).unwrap();
+            match find_changes(temp_dir.path()).unwrap_err() {
+                FindChangesError::ChecksumMismatch(path, changes) => {
+                    assert_eq!((path, changes), (deb.clone(), changes_file.clone()));
+                }
+                other => panic!("Expected ChecksumMismatch, got {:?}", other),
+            }
+        }
     }
 
     #[test]
@@ -243,12 +257,23 @@ Checksums-Sha1:
  da39a3ee5e6b4b0d3255bfef95601890afd80709 1234 test-package_1.0-1_amd64.deb
  da39a3ee5e6b4b0d3255bfef95601890afd80709 5678 test-package-dev_1.0-1_amd64.deb
  da39a3ee5e6b4b0d3255bfef95601890afd80709 9012 test-package.tar.gz
+Checksums-Sha256:
+ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 0 test-package_1.0-1_amd64.deb
+ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 0 test-package-dev_1.0-1_amd64.deb
+ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 0 test-package.tar.gz
 Files:
  d41d8cd98f00b204e9800998ecf8427e 1234 deb optional test-package_1.0-1_amd64.deb
  d41d8cd98f00b204e9800998ecf8427e 5678 deb optional test-package-dev_1.0-1_amd64.deb
  d41d8cd98f00b204e9800998ecf8427e 9012 tar optional test-package.tar.gz
 "#;
         fs::write(&changes_file, valid_changes).unwrap();
+        for name in [
+            "test-package_1.0-1_amd64.deb",
+            "test-package-dev_1.0-1_amd64.deb",
+            "test-package.tar.gz",
+        ] {
+            fs::write(temp_dir.path().join(name), "").unwrap();
+        }
 
         let result = find_changes(temp_dir.path());
 
