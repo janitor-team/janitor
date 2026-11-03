@@ -198,7 +198,6 @@ impl RunnerDatabase {
                     .map(|tag| (tag.actual_name, Some(tag.revision)))
                     .collect()
             }),
-            // TODO: remote URLs reported by the worker are not stored.
             remotes: None,
             branches: run.result_branches.map(|branches| {
                 branches
