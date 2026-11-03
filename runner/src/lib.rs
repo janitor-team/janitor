@@ -729,6 +729,10 @@ pub struct ActiveRun {
     pub instigated_context: Option<serde_json::Value>,
     /// Optional resume from run ID.
     pub resume_from: Option<RunId>,
+    /// Build architectures the worker sent with its request.
+    #[cfg(feature = "debian")]
+    #[serde(default)]
+    pub archs: Vec<String>,
 }
 
 impl ActiveRun {
@@ -793,7 +797,8 @@ impl ActiveRun {
 
     /// Convert to JSON representation.
     pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
+        #[allow(unused_mut)]
+        let mut ret = serde_json::json!({
             "queue_id": self.queue_id,
             "id": self.log_id,
             "codebase": self.codebase,
@@ -808,8 +813,13 @@ impl ActiveRun {
             "vcs": self.vcs_info,
             "backchannel": self.backchannel.to_json(),
             "instigated_context": self.instigated_context,
-            "resume_from": self.resume_from
-        })
+            "resume_from": self.resume_from,
+        });
+        #[cfg(feature = "debian")]
+        {
+            ret["archs"] = serde_json::json!(self.archs);
+        }
+        ret
     }
 
     /// Ping the worker to check if it's still alive.
@@ -1935,6 +1945,8 @@ mod tests {
             codebase: CodebaseName::new("test-codebase").unwrap(),
             instigated_context: None,
             resume_from: None,
+            #[cfg(feature = "debian")]
+            archs: vec![],
         };
 
         assert_eq!(active_run.vcs_type(), Some("git"));

@@ -46,6 +46,10 @@ struct AssignRequest {
     /// an item it would just bounce back on.
     #[serde(default)]
     exclude_hosts: Option<Vec<String>>,
+    /// Build architectures of the worker.
+    #[cfg(feature = "debian")]
+    #[serde(default)]
+    archs: Vec<String>,
 }
 
 /// Request for updating run publish status.
@@ -3338,6 +3342,8 @@ async fn assign_work_internal(
         codebase: assignment.queue_item.codebase.clone(),
         instigated_context: assignment.queue_item.context.clone(),
         resume_from,
+        #[cfg(feature = "debian")]
+        archs: request.archs,
     };
 
     // Store active run in the in-memory store

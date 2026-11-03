@@ -627,6 +627,8 @@ async fn post_kill_jenkins_run_returns_501() {
         vcs_info: VcsInfo::default(),
         instigated_context: None,
         resume_from: None,
+        #[cfg(feature = "debian")]
+        archs: vec![],
     };
     state.active_runs.store(active_run).await;
 
@@ -1153,6 +1155,8 @@ async fn public_finish_returns_403_when_worker_does_not_own_run() {
         vcs_info: VcsInfo::default(),
         instigated_context: None,
         resume_from: None,
+        #[cfg(feature = "debian")]
+        archs: vec![],
     };
     state.active_runs.store(active_run).await;
 
@@ -1230,7 +1234,7 @@ async fn end_to_end_assignment_lifecycle() {
 
     // Step 2: POST /active-runs (private route) pulls the queue item
     // and hands the worker an assignment envelope.
-    let assign_body = json!({"worker": "e2e-worker"});
+    let assign_body = json!({"worker": "e2e-worker", "archs": ["amd64"]});
     let req = Request::builder()
         .method(Method::POST)
         .uri("/active-runs")
@@ -1273,6 +1277,13 @@ async fn end_to_end_assignment_lifecycle() {
         "assignment.branch must include `default-empty`, got {branch}"
     );
     let run_id = assignment["id"].as_str().expect("id must be a string");
+    let active_run = state
+        .active_runs
+        .get(&run_id.parse().unwrap())
+        .await
+        .expect("assigned run must be active");
+    #[cfg(feature = "debian")]
+    assert_eq!(active_run.archs, vec!["amd64".to_string()]);
 
     // Step 3: POST /active-runs/{id}/finish with a minimal multipart
     // body containing just the JSON metadata. The upload processor
@@ -1635,6 +1646,8 @@ async fn seed_active_run_for_finish(state: &Arc<AppState>, log_id: &str) {
         vcs_info: VcsInfo::default(),
         instigated_context: None,
         resume_from: None,
+        #[cfg(feature = "debian")]
+        archs: vec![],
     };
     state.active_runs.store(run).await;
 }
@@ -2351,6 +2364,8 @@ async fn finish_with_artifact(
             vcs_info: VcsInfo::default(),
             instigated_context: None,
             resume_from: None,
+            #[cfg(feature = "debian")]
+            archs: vec![],
         })
         .await;
 

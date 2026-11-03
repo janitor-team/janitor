@@ -240,6 +240,8 @@ mod tests {
             codebase: janitor::CodebaseName::new("test-codebase").unwrap(),
             instigated_context: None,
             resume_from: None,
+            #[cfg(feature = "debian")]
+            archs: vec![],
         }
     }
 

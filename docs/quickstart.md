@@ -118,11 +118,8 @@ runs in progress.
 $ curl http://localhost:8090/api/active-runs
 ```
 
-Each entry has the run's `id`, its `queue_id` (the `queue-id` from the
-candidate upload), `codebase`, `campaign`, `command`, `worker`,
-`start_time`, `estimated_duration` and `current_duration`. Copy the run's
-`id` from that list into `RUN_ID`; the commands below use it. While the
-run is in progress, the second command shows just that run:
+Copy the run's `id` from that list into `RUN_ID` for the commands below.
+While the run is in progress, the second command shows just that run:
 
 ```console
 $ RUN_ID=571371fa-3b7b-45e3-84d2-8201b3bfe8ff
