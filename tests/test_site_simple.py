@@ -150,8 +150,9 @@ async def test_codebase_query_redirect_empty_param_returns_404(
     assert resp.status == 404
 
 
+@pytest.mark.parametrize("encoding", ["json", "form"])
 async def test_webhook_github_push_reschedules_without_crashing(
-    aiohttp_client, database_location
+    aiohttp_client, database_location, encoding
 ):
     # A GitHub push webhook for a known codebase reschedules it successfully.
     conn = await asyncpg.connect(database_location)
@@ -170,24 +171,26 @@ async def test_webhook_github_push_reschedules_without_crashing(
         config=create_config(database_location), redis=FakeRedis()
     )
     client = await aiohttp_client(app)
-    resp = await client.post(
-        "/webhook",
-        headers={"X-GitHub-Event": "push"},
-        json={
-            "ref": "refs/heads/main",
-            "after": "0" * 40,
-            "repository": {
-                "clone_url": "https://github.com/jelmer/example",
-                "html_url": "https://github.com/jelmer/example",
-                "git_url": "git://github.com/jelmer/example.git",
-                "ssh_url": "git@github.com:jelmer/example.git",
-                "default_branch": "main",
-            },
+    payload = {
+        "ref": "refs/heads/main",
+        "after": "0" * 40,
+        "repository": {
+            "clone_url": "https://github.com/jelmer/example",
+            "html_url": "https://github.com/jelmer/example",
+            "git_url": "git://github.com/jelmer/example.git",
+            "ssh_url": "git@github.com:jelmer/example.git",
+            "default_branch": "main",
         },
+    }
+    if encoding == "json":
+        body = {"json": payload}
+    else:
+        body = {"data": {"payload": json.dumps(payload)}}
+    resp = await client.post("/webhook", headers={"X-GitHub-Event": "push"}, **body)
+    assert (resp.status, await resp.json()) == (
+        200,
+        {"rescheduled": {}, "urls": ["https://github.com/jelmer/example"]},
     )
-    assert resp.status == 200, await resp.text()
-    body = await resp.json()
-    assert "https://github.com/jelmer/example" in body["urls"]
 
 
 async def test_webhook_gitlab_push_matches_codebase(aiohttp_client, database_location):

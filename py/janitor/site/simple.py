@@ -379,7 +379,10 @@ async def process_webhook(request, db):
 @routes.post("/webhook", name="webhook")
 @routes.get("/webhook", name="webhook-help")
 async def handle_webhook(request):
-    if request.headers.get("Content-Type") != "application/json":
+    if request.content_type not in (
+        "application/json",
+        "application/x-www-form-urlencoded",
+    ):
         text = await render_template_for_request("webhook.html", request, {})
         return web.Response(
             content_type="text/html",
