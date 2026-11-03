@@ -193,7 +193,7 @@ pub struct Build {
     pub environment: Option<HashMap<String, String>>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct Branch {
     pub cached_url: Option<Url>,
     pub vcs_type: VcsType,
@@ -211,21 +211,29 @@ pub struct Branch {
     pub default_empty: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct TargetRepository {
     pub url: Url,
+    pub vcs_type: VcsType,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct ResumeBranch {
+    /// Run to resume from.
+    pub run_id: RunId,
+    /// Result of that run; null if it has none.
     pub result: serde_json::Value,
     pub branch_url: Url,
     pub branches: Vec<(String, String, Option<RevisionId>, Option<RevisionId>)>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+/// Work assignment handed to a worker by the runner's
+/// `POST /active-runs`.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Assignment {
     pub id: RunId,
+    /// Human-readable description.
+    pub description: String,
     pub queue_id: u64,
     pub campaign: Campaign,
     pub codebase: CodebaseName,
@@ -236,20 +244,22 @@ pub struct Assignment {
     pub target_repository: TargetRepository,
     #[serde(rename = "skip-setup-validation")]
     pub skip_setup_validation: bool,
+    /// Codemod command, as also sent in `codemod`.
+    pub command: String,
     pub codemod: Codemod,
     /// Environment used for both the build and the codemod.
     pub env: HashMap<String, String>,
     pub build: Build,
 }
 
-#[derive(serde::Deserialize, serde::Serialize, Default)]
+#[derive(serde::Deserialize, serde::Serialize, Debug, Default, Clone, PartialEq, Eq)]
 pub struct GenericBuildConfig {
     pub chroot: Option<String>,
     pub dep_server_url: Option<url::Url>,
 }
 
 #[cfg(feature = "debian")]
-#[derive(serde::Deserialize, serde::Serialize, Debug, Default)]
+#[derive(serde::Deserialize, serde::Serialize, Debug, Default, Clone, PartialEq, Eq)]
 pub struct LintianConfig {
     pub profile: Option<String>,
     #[serde(rename = "suppress-tags")]
@@ -257,7 +267,7 @@ pub struct LintianConfig {
 }
 
 #[cfg(feature = "debian")]
-#[derive(serde::Deserialize, serde::Serialize, Debug, Default)]
+#[derive(serde::Deserialize, serde::Serialize, Debug, Default, Clone, PartialEq, Eq)]
 pub struct DebianBuildConfig {
     #[serde(rename = "build-distribution")]
     pub build_distribution: Option<String>,
@@ -420,6 +430,7 @@ mod tests {
     fn test_assignment_serde() {
         let json = r#"{
             "id": "assign-1",
+            "description": "lintian-fixes on mycodebase",
             "queue_id": 42,
             "campaign": "lintian-fixes",
             "codebase": "mycodebase",
@@ -434,9 +445,11 @@ mod tests {
             },
             "resume": null,
             "target_repository": {
-                "url": "https://vcs.example.com/git/mycodebase"
+                "url": "https://vcs.example.com/git/mycodebase",
+                "vcs_type": "git"
             },
             "skip-setup-validation": false,
+            "command": "lintian-brush",
             "codemod": {
                 "command": "lintian-brush",
                 "environment": {}

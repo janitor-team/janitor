@@ -31,7 +31,7 @@ struct Args {
 
     #[clap(long)]
     /// URL of the dependency server handed to workers.
-    public_dep_server_url: Option<String>,
+    public_dep_server_url: Option<url::Url>,
 
     #[clap(flatten)]
     logging: janitor::logging::LoggingArgs,

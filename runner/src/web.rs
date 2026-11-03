@@ -1,14 +1,12 @@
 use crate::api_types::{
-    AdminWorkerInfo, AssignWorkerError, AssignmentBody, AssignmentBranch,
-    AssignmentTargetRepository, BuildAssignment, BuildAssignmentConfig, CandidateUpload,
-    CleanupRunsResponse, CurrentStageResponse, DebianBuildAssignment, ErrorResponse,
-    FinishConflictResponse, FinishResponse, GenericBuildAssignment, MessageResponse, PeekResponse,
+    AdminWorkerInfo, AssignWorkerError, CandidateUpload, CleanupRunsResponse, CurrentStageResponse,
+    ErrorResponse, FinishConflictResponse, FinishResponse, MessageResponse, PeekResponse,
     PublicRunHealth, PublicWorkerInfo, QueueEntry, QueuePositionEta, QueueStatusResponse,
-    RateLimitedResponse, ReasonDetailResponse, ResumeAssignment, ResumeChainResponse,
-    ResumeCheckResponse, ResumeConsistencyResponse, ResumeDescendantsResponse, ResumeInfoRequest,
-    RunSummary, RunnerStatus, ScheduleControlRequest, ScheduleRequest, ScheduleResponse,
-    ScheduledCandidate, ScheduledRun, UploadCandidatesResponse, WatchdogHealthResponse,
-    WorkerCounts, WorkerListResponse,
+    RateLimitedResponse, ReasonDetailResponse, ResumeChainResponse, ResumeCheckResponse,
+    ResumeConsistencyResponse, ResumeDescendantsResponse, ResumeInfoRequest, RunSummary,
+    RunnerStatus, ScheduleControlRequest, ScheduleRequest, ScheduleResponse, ScheduledCandidate,
+    ScheduledRun, UploadCandidatesResponse, WatchdogHealthResponse, WorkerCounts,
+    WorkerListResponse,
 };
 use crate::{
     get_builder, metrics::MetricsCollector, ActiveRun, AppState, Backchannel, BuilderResult,
@@ -22,10 +20,16 @@ use axum::{
     routing::{delete, get, post},
     Extension, Json, Router,
 };
+use breezyshim::RevisionId;
 use chrono::Utc;
 use janitor::api::runner::{AssignRequest, ReasonResponse};
 use janitor::api::runner::{PublishStatusUpdate, UpdateRunRequest};
+use janitor::api::worker::{
+    Assignment, Branch, Build, DebianBuildConfig, GenericBuildConfig, LintianConfig, ResumeBranch,
+    TargetRepository,
+};
 use janitor::api::EmptyResponse;
+use janitor::queue::VcsInfo;
 use janitor::{Campaign, ChangeSetId, CodebaseName, RunId};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -778,21 +782,82 @@ fn cache_branch_name(
 /// worker, from the public VCS store for the codebase's VCS type.
 /// Both are None when the store doesn't serve that VCS.
 fn worker_vcs_urls(
-    managers: &HashMap<janitor::vcs::VcsType, Box<dyn janitor::vcs::VcsManager>>,
-    vcs_type: Option<&str>,
+    manager: &dyn janitor::vcs::VcsManager,
     codebase: &CodebaseName,
     cache_branch_name: Option<&str>,
-) -> (Option<String>, Option<String>) {
-    let Some(manager) = vcs_type
-        .and_then(|t| t.parse::<janitor::vcs::VcsType>().ok())
-        .and_then(|t| managers.get(&t))
-    else {
-        return (None, None);
-    };
+) -> (Option<url::Url>, url::Url) {
     (
-        cache_branch_name.map(|name| manager.get_branch_url(codebase, name).to_string()),
-        Some(manager.get_repository_url(codebase).to_string()),
+        cache_branch_name.map(|name| manager.get_branch_url(codebase, name)),
+        manager.get_repository_url(codebase),
     )
+}
+
+/// VCS type and branch URL of a queue item, as handed to the worker.
+struct AssignmentVcs {
+    vcs_type: janitor::vcs::VcsType,
+    branch_url: Option<url::Url>,
+}
+
+/// Resolve the VCS type and branch URL of a queue item. Codebases
+/// without a branch default to git. Errors are `(result_code,
+/// description)` for aborting the queue item.
+fn resolve_assignment_vcs(vcs_info: &VcsInfo) -> Result<AssignmentVcs, (&'static str, String)> {
+    let branch_url = vcs_info
+        .branch_url
+        .as_deref()
+        .map(|u| {
+            url::Url::parse(u).map_err(|e| {
+                (
+                    "invalid-branch-url",
+                    format!("Invalid branch URL {}: {}", u, e),
+                )
+            })
+        })
+        .transpose()?;
+    let vcs_type = match (vcs_info.vcs_type.as_deref(), &branch_url) {
+        (Some(t), _) => t.parse().map_err(|e: String| ("unsupported-vcs", e))?,
+        (None, None) => janitor::vcs::VcsType::Git,
+        (None, Some(_)) => {
+            return Err((
+                "unsupported-vcs",
+                "No VCS type known for codebase.".to_string(),
+            ))
+        }
+    };
+    Ok(AssignmentVcs {
+        vcs_type,
+        branch_url,
+    })
+}
+
+/// Convert resume information into what the worker needs, or explain
+/// why it can't be.
+fn resume_branch(
+    info: crate::resume::ResumeInfo,
+    branch_url: &str,
+) -> Result<ResumeBranch, String> {
+    let branch_url = url::Url::parse(branch_url)
+        .map_err(|e| format!("invalid resume branch URL {}: {}", branch_url, e))?;
+    let branches = info
+        .result_branches
+        .into_iter()
+        .map(|(role, remote_name, base_revision, revision)| {
+            let remote_name =
+                remote_name.ok_or_else(|| format!("no remote name for {} branch", role))?;
+            Ok((
+                role,
+                remote_name,
+                base_revision.map(|r| RevisionId::from(r.into_bytes())),
+                revision.map(|r| RevisionId::from(r.into_bytes())),
+            ))
+        })
+        .collect::<Result<_, String>>()?;
+    Ok(ResumeBranch {
+        run_id: info.run_id,
+        result: info.result.unwrap_or(serde_json::Value::Null),
+        branch_url,
+        branches,
+    })
 }
 
 /// Pure decision matrix for assignment validation. Inputs:
@@ -2670,10 +2735,10 @@ struct ResumeOutcome {
     /// Full resume metadata for the worker (run_id, previous result,
     /// per-role branches, resume-branch URL). Populated only when a
     /// resume candidate was found.
-    resume: Option<ResumeAssignment>,
+    resume: Option<ResumeBranch>,
     rate_limit: Option<(String, Option<f64>)>,
     /// `full_branch_url` of the main branch, if it could be opened.
-    main_branch_url: Option<String>,
+    main_branch_url: Option<url::Url>,
 }
 
 /// Resume-branch lookup. Opens the main branch, asks the forge (via
@@ -2765,10 +2830,9 @@ async fn compute_resume_from(
             }
         };
         // Python: full_branch_url(main_branch).rstrip("/")
-        let main_branch_url = silver_platter::vcs::full_branch_url(&main_branch)
-            .to_string()
-            .trim_end_matches('/')
-            .to_string();
+        let main_branch_url = silver_platter::vcs::full_branch_url(&main_branch);
+        let main_branch_url = url::Url::parse(main_branch_url.as_str().trim_end_matches('/'))
+            .expect("trimming the trailing slash of a URL leaves a valid URL");
         let result = match crate::resume::open_resume_branch(
             &main_branch,
             &forge_campaign_branch_name,
@@ -2909,12 +2973,18 @@ async fn compute_resume_from(
                 assignment.queue_item.campaign,
                 info.run_id,
             );
-            Some(ResumeAssignment {
-                run_id: info.run_id,
-                result: info.result,
-                branch_url: resume_branch_url,
-                branches: info.result_branches,
-            })
+            match resume_branch(info, &resume_branch_url) {
+                Ok(resume) => Some(resume),
+                Err(e) => {
+                    log::warn!(
+                        "Not resuming {}/{}: {}",
+                        assignment.queue_item.codebase,
+                        assignment.queue_item.campaign,
+                        e
+                    );
+                    None
+                }
+            }
         }
         Ok(None) => None,
         Err(e) => {
@@ -2960,7 +3030,7 @@ async fn assign_work_internal(
     // row, give up and tell the caller the queue is effectively empty.
     const MAX_VALIDATION_RETRIES: usize = 20;
     let mut validation_retries = 0usize;
-    let (assignment, log_id) = loop {
+    let (assignment, assignment_vcs, log_id) = loop {
         if validation_retries >= MAX_VALIDATION_RETRIES {
             log::warn!(
                 "assign: gave up after {} consecutive validation failures",
@@ -3039,6 +3109,38 @@ async fn assign_work_internal(
             }
         }
 
+        let assignment_vcs = match resolve_assignment_vcs(&assignment.vcs_info) {
+            Ok(vcs) => vcs,
+            Err((code, description)) => {
+                log::warn!(
+                    "Queue item {} for {}/{}: {}; aborting and retrying",
+                    assignment.queue_item.id,
+                    assignment.queue_item.codebase,
+                    assignment.queue_item.campaign,
+                    description
+                );
+                abort_assignment(&state, &assignment, code, &description).await;
+                validation_retries += 1;
+                continue;
+            }
+        };
+        if !state
+            .public_vcs_managers
+            .contains_key(&assignment_vcs.vcs_type)
+        {
+            log::error!(
+                "No public VCS manager configured for {}",
+                assignment_vcs.vcs_type
+            );
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "No public VCS manager configured for {}",
+                    assignment_vcs.vcs_type
+                ),
+            );
+        }
+
         // Reserve the queue item in Redis before handing the assignment
         // to a worker. If another worker claimed it first (race between
         // `next_queue_item_with_rate_limiting` and this HSET NX),
@@ -3049,7 +3151,7 @@ async fn assign_work_internal(
             .assign_queue_item(assignment.queue_item.id, &worker_name, &candidate_log_id)
             .await
         {
-            Ok(()) => break (assignment, candidate_log_id),
+            Ok(()) => break (assignment, assignment_vcs, candidate_log_id),
             Err(e) => {
                 if e.to_string().contains("already assigned") {
                     log::info!(
@@ -3067,7 +3169,7 @@ async fn assign_work_internal(
                     assignment.queue_item.id,
                     e
                 );
-                break (assignment, candidate_log_id);
+                break (assignment, assignment_vcs, candidate_log_id);
             }
         }
     };
@@ -3155,13 +3257,12 @@ async fn assign_work_internal(
             .into_response();
     }
 
-    let resume_assignment: Option<ResumeAssignment> = resume_outcome.resume;
+    let resume = resume_outcome.resume;
     // Like Python, hand out the URL of the branch as we opened it.
+    let branch_url = resume_outcome.main_branch_url.or(assignment_vcs.branch_url);
     let mut vcs_info = assignment.vcs_info.clone();
-    if let Some(main_branch_url) = resume_outcome.main_branch_url {
-        vcs_info.branch_url = Some(main_branch_url);
-    }
-    let resume_from: Option<RunId> = resume_assignment.as_ref().map(|r| r.run_id.clone());
+    vcs_info.branch_url = branch_url.as_ref().map(url::Url::to_string);
+    let resume_from: Option<RunId> = resume.as_ref().map(|r| r.run_id.clone());
 
     let active_run = ActiveRun {
         worker_name: worker_name.clone(),
@@ -3205,9 +3306,12 @@ async fn assign_work_internal(
             assignment.queue_item.codebase
         );
     }
+    let vcs_manager = state
+        .public_vcs_managers
+        .get(&assignment_vcs.vcs_type)
+        .expect("checked for a public VCS manager before claiming the queue item");
     let (cached_url, target_repo_url) = worker_vcs_urls(
-        &state.public_vcs_managers,
-        assignment.vcs_info.vcs_type.as_deref(),
+        vcs_manager.as_ref(),
         &assignment.queue_item.codebase,
         cache_branch.as_deref(),
     );
@@ -3241,18 +3345,23 @@ async fn assign_work_internal(
             }
         };
 
-    let branch = AssignmentBranch {
+    let branch = Branch {
         cached_url,
-        vcs_type: assignment.vcs_info.vcs_type.clone(),
-        url: vcs_info.branch_url.clone(),
-        subpath: assignment.vcs_info.subpath.clone().unwrap_or_default(),
+        vcs_type: assignment_vcs.vcs_type,
+        url: branch_url,
+        subpath: assignment
+            .vcs_info
+            .subpath
+            .clone()
+            .unwrap_or_default()
+            .into(),
         additional_colocated_branches,
         default_empty: campaign_config.default_empty,
     };
 
-    let target_repository = AssignmentTargetRepository {
+    let target_repository = TargetRepository {
         url: target_repo_url,
-        vcs_type: assignment.vcs_info.vcs_type.clone(),
+        vcs_type: assignment_vcs.vcs_type,
     };
 
     // Environment merged from config committer + command prefix
@@ -3264,21 +3373,25 @@ async fn assign_work_internal(
         env.insert(k, v);
     }
 
-    let (build_target, build_cfg) = if let Some(dcfg) = campaign_config.debian_build.as_ref() {
+    let (build_target, build_config) = if let Some(dcfg) = campaign_config.debian_build.as_ref() {
         let dist = state
             .config
             .distribution
             .iter()
             .find(|d| d.name.as_deref() == Some(dcfg.base_distribution.as_str()));
 
-        let build_assignment = DebianBuildAssignment {
+        // TODO: fill in last-build-version and base-apt-repository, and
+        // send the build environment, like Python's builder.config()
+        // did; see DebianConfigGenerator in config_generator.rs.
+        let config = DebianBuildConfig {
             // Python: `campaign_config.debian_build.build_distribution
             //          or campaign_config.name`.
-            build_distribution: dcfg
-                .build_distribution
-                .clone()
-                .unwrap_or_else(|| assignment.queue_item.campaign.to_string()),
-            build_suffix: dcfg.build_suffix.clone().unwrap_or_default(),
+            build_distribution: Some(
+                dcfg.build_distribution
+                    .clone()
+                    .unwrap_or_else(|| assignment.queue_item.campaign.to_string()),
+            ),
+            build_suffix: Some(dcfg.build_suffix.clone().unwrap_or_default()),
             build_command: dcfg
                 .build_command
                 .clone()
@@ -3287,6 +3400,10 @@ async fn assign_work_internal(
                 .chroot
                 .clone()
                 .or_else(|| dist.and_then(|d| d.chroot.clone())),
+            lintian: LintianConfig {
+                profile: dist.and_then(|d| d.lintian_profile.clone()),
+                suppress_tags: dist.map(|d| d.lintian_suppress_tag.clone()),
+            },
             // When the runner has a `--public-apt-archive-location`,
             // expand each campaign's `extra_build_distribution` (plus
             // a `cs/{change_set}` entry, if any) into a fully formed
@@ -3296,43 +3413,51 @@ async fn assign_work_internal(
             // passing bare campaign names instead produces
             // `Malformed line 1 in source list ... (type)` and aborts
             // the build. Empty list when the URL isn't set.
-            extra_repositories: state
-                .public_apt_archive_location
-                .as_deref()
-                .map(|base| {
-                    let trimmed = base.trim_end_matches('/');
-                    let mut suites: Vec<String> = dcfg.extra_build_distribution.clone();
-                    if let Some(cs) = assignment.queue_item.change_set.as_deref() {
-                        suites.push(format!("cs/{}", cs));
-                    }
-                    suites
-                        .into_iter()
-                        .map(|suite| format!("deb [trusted=yes] {} {} main", trimmed, suite))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            dep_server_url: state.public_dep_server_url.clone(),
+            extra_repositories: Some(
+                state
+                    .public_apt_archive_location
+                    .as_deref()
+                    .map(|base| {
+                        let trimmed = base.trim_end_matches('/');
+                        let mut suites: Vec<String> = dcfg.extra_build_distribution.clone();
+                        if let Some(cs) = assignment.queue_item.change_set.as_deref() {
+                            suites.push(format!("cs/{}", cs));
+                        }
+                        suites
+                            .into_iter()
+                            .map(|suite| format!("deb [trusted=yes] {} {} main", trimmed, suite))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            ),
+            dep_server_url: state
+                .public_dep_server_url
+                .as_ref()
+                .map(url::Url::to_string),
+            ..Default::default()
         };
-
-        ("debian", BuildAssignmentConfig::Debian(build_assignment))
+        ("debian", serde_json::to_value(config))
     } else {
         (
             "generic",
-            BuildAssignmentConfig::Generic(GenericBuildAssignment {
+            serde_json::to_value(GenericBuildConfig {
+                chroot: None,
                 dep_server_url: state.public_dep_server_url.clone(),
             }),
         )
     };
+    let build_config =
+        build_config.expect("build configurations serialize to JSON without failing");
 
     let codemod = janitor::api::worker::Codemod {
         command: clean_command.clone(),
         environment: HashMap::new(),
     };
 
-    let build = BuildAssignment {
+    let build = Build {
         target: build_target.to_string(),
-        config: build_cfg,
-        environment: env.clone(),
+        config: build_config,
+        environment: Some(env.clone()),
     };
 
     let skip_setup_validation = state
@@ -3340,18 +3465,18 @@ async fn assign_work_internal(
         .get_campaign(&assignment.queue_item.campaign)
         .is_some_and(|c| c.skip_setup_validation());
 
-    let body = AssignmentBody {
+    let body = Assignment {
         id: active_run.log_id.clone(),
         description: format!(
             "{} on {}",
             assignment.queue_item.campaign, assignment.queue_item.codebase
         ),
-        queue_id: assignment.queue_item.id,
+        queue_id: u64::try_from(assignment.queue_item.id).expect("queue ids are positive"),
         campaign: assignment.queue_item.campaign.clone(),
         codebase: assignment.queue_item.codebase.clone(),
         force_build: campaign_config.force_build,
         branch,
-        resume: resume_assignment,
+        resume,
         target_repository,
         skip_setup_validation,
         command: clean_command,
@@ -3690,7 +3815,10 @@ mod tests {
     };
     use crate::api_types::CandidateUpload;
     use crate::CampaignConfig;
-    use janitor::{Campaign, CodebaseName};
+    use breezyshim::RevisionId;
+    use janitor::api::worker::ResumeBranch;
+    use janitor::queue::VcsInfo;
+    use janitor::{Campaign, CodebaseName, RunId};
     use std::collections::HashSet;
 
     /// Exhaustive 2x2x2 matrix for assignment_validation_outcome:
@@ -3749,32 +3877,119 @@ mod tests {
         let managers = janitor::vcs::get_vcs_managers("https://janitor.example.com/").unwrap();
         let foo = CodebaseName::new("foo").unwrap();
         assert_eq!(
-            super::worker_vcs_urls(&managers, Some("git"), &foo, Some("debian/latest")),
+            super::worker_vcs_urls(
+                managers[&janitor::vcs::VcsType::Git].as_ref(),
+                &foo,
+                Some("debian/latest")
+            ),
             (
-                Some("https://janitor.example.com/git/foo,branch=debian%2Flatest".to_string()),
-                Some("https://janitor.example.com/git/foo".to_string()),
+                Some(
+                    "https://janitor.example.com/git/foo,branch=debian%2Flatest"
+                        .parse()
+                        .unwrap()
+                ),
+                "https://janitor.example.com/git/foo".parse().unwrap(),
             )
         );
         assert_eq!(
-            super::worker_vcs_urls(&managers, Some("bzr"), &foo, None),
-            (
-                None,
-                Some("https://janitor.example.com/bzr/foo".to_string())
-            )
+            super::worker_vcs_urls(managers[&janitor::vcs::VcsType::Bzr].as_ref(), &foo, None),
+            (None, "https://janitor.example.com/bzr/foo".parse().unwrap())
+        );
+    }
+
+    fn vcs_info(branch_url: Option<&str>, vcs_type: Option<&str>) -> VcsInfo {
+        VcsInfo {
+            branch_url: branch_url.map(str::to_string),
+            subpath: None,
+            vcs_type: vcs_type.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn test_resolve_assignment_vcs() {
+        let vcs =
+            super::resolve_assignment_vcs(&vcs_info(Some("https://example.com/foo"), Some("bzr")))
+                .unwrap();
+        assert_eq!(vcs.vcs_type, janitor::vcs::VcsType::Bzr);
+        assert_eq!(
+            vcs.branch_url,
+            Some("https://example.com/foo".parse().unwrap())
         );
     }
 
     #[test]
-    fn test_worker_vcs_urls_unsupported_vcs() {
-        let managers = janitor::vcs::get_vcs_managers("git=https://git.example.com/").unwrap();
-        let foo = CodebaseName::new("foo").unwrap();
+    fn test_resolve_assignment_vcs_defaults_to_git_without_branch() {
+        let vcs = super::resolve_assignment_vcs(&vcs_info(None, None)).unwrap();
+        assert_eq!(vcs.vcs_type, janitor::vcs::VcsType::Git);
+        assert_eq!(vcs.branch_url, None);
+    }
+
+    #[test]
+    fn test_resolve_assignment_vcs_errors() {
         assert_eq!(
-            super::worker_vcs_urls(&managers, Some("bzr"), &foo, Some("main")),
-            (None, None)
+            super::resolve_assignment_vcs(&vcs_info(Some("https://example.com/foo"), Some("svn")))
+                .err(),
+            Some(("unsupported-vcs", "Unknown VCS type: svn".to_string()))
         );
         assert_eq!(
-            super::worker_vcs_urls(&managers, None, &foo, Some("main")),
-            (None, None)
+            super::resolve_assignment_vcs(&vcs_info(Some("https://example.com/foo"), None)).err(),
+            Some((
+                "unsupported-vcs",
+                "No VCS type known for codebase.".to_string()
+            ))
+        );
+        assert_eq!(
+            super::resolve_assignment_vcs(&vcs_info(Some("not a url"), Some("git")))
+                .err()
+                .map(|(code, _)| code),
+            Some("invalid-branch-url")
+        );
+    }
+
+    fn resume_info(remote_name: Option<&str>) -> crate::resume::ResumeInfo {
+        crate::resume::ResumeInfo {
+            run_id: RunId::new("run-1").unwrap(),
+            campaign: Campaign::new("lintian-fixes").unwrap(),
+            codebase: CodebaseName::new("foo").unwrap(),
+            branch_name: "lintian-fixes".to_string(),
+            result_code: "success".to_string(),
+            revision: Some("rev-2".to_string()),
+            result: None,
+            result_branches: vec![(
+                "main".to_string(),
+                remote_name.map(str::to_string),
+                Some("rev-1".to_string()),
+                Some("rev-2".to_string()),
+            )],
+        }
+    }
+
+    #[test]
+    fn test_resume_branch() {
+        assert_eq!(
+            super::resume_branch(
+                resume_info(Some("lintian-fixes")),
+                "https://example.com/foo"
+            ),
+            Ok(ResumeBranch {
+                run_id: RunId::new("run-1").unwrap(),
+                result: serde_json::Value::Null,
+                branch_url: "https://example.com/foo".parse().unwrap(),
+                branches: vec![(
+                    "main".to_string(),
+                    "lintian-fixes".to_string(),
+                    Some(RevisionId::from(b"rev-1".to_vec())),
+                    Some(RevisionId::from(b"rev-2".to_vec())),
+                )],
+            })
+        );
+    }
+
+    #[test]
+    fn test_resume_branch_without_remote_name() {
+        assert_eq!(
+            super::resume_branch(resume_info(None), "https://example.com/foo"),
+            Err("no remote name for main branch".to_string())
         );
     }
 

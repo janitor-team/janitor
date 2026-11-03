@@ -333,6 +333,7 @@ mod tests {
         if let Ok(mut state) = state.write() {
             state.assignment = Some(Assignment {
                 id: janitor::RunId::new("test").unwrap(),
+                description: "lintian-fixes on foo".to_string(),
                 queue_id: 1,
                 campaign: janitor::Campaign::new("lintian-fixes").unwrap(),
                 codebase: janitor::CodebaseName::new("foo").unwrap(),
@@ -348,8 +349,10 @@ mod tests {
                 resume: None,
                 target_repository: janitor::api::worker::TargetRepository {
                     url: "https://example.com/".parse().unwrap(),
+                    vcs_type: janitor::vcs::VcsType::Git,
                 },
                 skip_setup_validation: false,
+                command: "echo".to_string(),
                 codemod: janitor::api::worker::Codemod {
                     command: "echo".to_string(),
                     environment: std::collections::HashMap::new(),
@@ -398,6 +401,7 @@ mod tests {
         if let Ok(mut state) = state.write() {
             state.assignment = Some(Assignment {
                 id: janitor::RunId::new("test").unwrap(),
+                description: "lintian-fixes on foo".to_string(),
                 queue_id: 1,
                 campaign: janitor::Campaign::new("lintian-fixes").unwrap(),
                 codebase: janitor::CodebaseName::new("foo").unwrap(),
@@ -413,8 +417,10 @@ mod tests {
                 resume: None,
                 target_repository: janitor::api::worker::TargetRepository {
                     url: "https://example.com/".parse().unwrap(),
+                    vcs_type: janitor::vcs::VcsType::Git,
                 },
                 skip_setup_validation: false,
+                command: "echo".to_string(),
                 codemod: janitor::api::worker::Codemod {
                     command: "echo".to_string(),
                     environment: std::collections::HashMap::new(),
@@ -841,6 +847,7 @@ mod tests {
         if let Ok(mut state) = state.write() {
             state.assignment = Some(Assignment {
                 id: janitor::RunId::new("test").unwrap(),
+                description: "lintian-fixes on foo".to_string(),
                 queue_id: 1,
                 campaign: janitor::Campaign::new("lintian-fixes").unwrap(),
                 codebase: janitor::CodebaseName::new("foo").unwrap(),
@@ -856,8 +863,10 @@ mod tests {
                 resume: None,
                 target_repository: janitor::api::worker::TargetRepository {
                     url: "https://example.com/".parse().unwrap(),
+                    vcs_type: janitor::vcs::VcsType::Git,
                 },
                 skip_setup_validation: false,
+                command: "echo".to_string(),
                 codemod: janitor::api::worker::Codemod {
                     command: "echo".to_string(),
                     environment: std::collections::HashMap::new(),

@@ -11,15 +11,15 @@ use chrono::Utc;
 use futures::TryStreamExt;
 use janitor::api::runner::{AssignRequest, ReasonResponse};
 use janitor::api::runner::{PublishStatusUpdate, UpdateRunRequest};
+use janitor::api::worker::{Assignment, DebianBuildConfig, GenericBuildConfig};
 use janitor::api::PublishStatus;
 use janitor::queue::VcsInfo;
 use janitor_runner::api_types::{
-    AssignmentBody, BuildAssignmentConfig, CandidateUpload, CleanupRunsResponse,
-    CurrentStageResponse, ErrorResponse, FinishResponse, GenericBuildAssignment, PeekResponse,
-    PublicWorkerInfo, QueueEntry, QueueStatusResponse, ResumeChainResponse, ResumeCheckResponse,
-    ResumeConsistencyResponse, ResumeInfoRequest, RunSummary, RunnerStatus, ScheduleRequest,
-    ScheduleResponse, UploadCandidatesResponse, WatchdogHealthResponse, WorkerCounts,
-    WorkerListResponse,
+    CandidateUpload, CleanupRunsResponse, CurrentStageResponse, ErrorResponse, FinishResponse,
+    PeekResponse, PublicWorkerInfo, QueueEntry, QueueStatusResponse, ResumeChainResponse,
+    ResumeCheckResponse, ResumeConsistencyResponse, ResumeInfoRequest, RunSummary, RunnerStatus,
+    ScheduleRequest, ScheduleResponse, UploadCandidatesResponse, WatchdogHealthResponse,
+    WorkerCounts, WorkerListResponse,
 };
 use janitor_runner::database::CodebaseUpload;
 use janitor_runner::{test_utils, ActiveRun, ActiveRunJson, AppState, Backchannel, HealthReport};
@@ -1232,7 +1232,7 @@ async fn end_to_end_assignment_lifecycle() {
     );
     // Every field of the assign response contract must be present, so
     // worker code that reads any of them works against this runner.
-    let assignment: AssignmentBody = get_body(response).await;
+    let assignment: Assignment = get_body(response).await;
     assert_eq!(assignment.campaign, "test-campaign");
     assert_eq!(assignment.codebase, "e2e-cb");
     let run_id = assignment.id.as_str();
@@ -1295,7 +1295,7 @@ async fn end_to_end_assignment_lifecycle() {
 /// `end_to_end_assignment_lifecycle` uses, and return the parsed
 /// assignment body. Used by the tests below that assert on the wire
 /// shape of the assign response without caring about the finish half.
-async fn assign_one(app: axum::Router, state: &Arc<AppState>, codebase: &str) -> AssignmentBody {
+async fn assign_one(app: axum::Router, state: &Arc<AppState>, codebase: &str) -> Assignment {
     let pool = state.database.pool().clone();
     insert_codebase(&pool, codebase).await;
     state
@@ -1329,7 +1329,7 @@ async fn assign_one(app: axum::Router, state: &Arc<AppState>, codebase: &str) ->
         .to_str()
         .unwrap()
         .to_string();
-    let body: AssignmentBody = get_body(response).await;
+    let body: Assignment = get_body(response).await;
     assert_eq!(location, format!("/active-runs/{}", body.id));
     body
 }
@@ -1359,10 +1359,12 @@ async fn assign_response_envelope_has_all_documented_fields() {
     assert!(assignment.resume.is_none());
     // Python always sent dep_server_url, null when unset.
     assert_eq!(
-        assignment.build.config,
-        BuildAssignmentConfig::Generic(GenericBuildAssignment {
-            dep_server_url: None
-        })
+        serde_json::from_value::<GenericBuildConfig>(assignment.build.config.clone())
+            .expect("generic build config"),
+        GenericBuildConfig {
+            chroot: None,
+            dep_server_url: None,
+        }
     );
     assert_eq!(assignment.build.target, "generic");
 
@@ -1433,8 +1435,51 @@ async fn assign_sends_opened_branch_url() {
 
     let assignment = assign_one(app, &state, "assign-branch-url-cb").await;
     assert_eq!(
-        assignment.branch.url.as_deref(),
+        assignment.branch.url.as_ref().map(url::Url::as_str),
         Some(url.as_str().trim_end_matches('/'))
+    );
+}
+
+/// The Debian build configuration in an assignment is in the shape
+/// the worker parses, including the `lintian` section it requires.
+#[tokio::test]
+async fn assign_debian_build_config_parses_as_worker_config() {
+    let config = janitor::config::read_string(
+        r#"
+campaign {
+  name: "test-campaign"
+  command: "true"
+  debian_build {
+    base_distribution: "unstable"
+    build_suffix: "jan+test"
+  }
+}
+"#,
+    )
+    .expect("valid config");
+    let builder =
+        test_utils::TestConfigBuilder::new().with_campaign_config(config.campaign[0].clone());
+    let Some((app, state)) =
+        test_utils::create_test_app_with_state_with_config_if_available(builder)
+            .await
+            .expect("test app setup should either succeed or return None cleanly")
+    else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let assignment = assign_one(app, &state, "assign-debian-cb").await;
+
+    assert_eq!(assignment.build.target, "debian");
+    assert_eq!(
+        serde_json::from_value::<DebianBuildConfig>(assignment.build.config.clone())
+            .expect("worker should parse the Debian build config"),
+        DebianBuildConfig {
+            build_distribution: Some("test-campaign".to_string()),
+            build_suffix: Some("jan+test".to_string()),
+            extra_repositories: Some(vec![]),
+            ..Default::default()
+        }
     );
 }
 
@@ -1687,7 +1732,7 @@ async fn assign_picks_lowest_priority_first() {
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
-    let assignment: AssignmentBody = get_body(response).await;
+    let assignment: Assignment = get_body(response).await;
     assert_eq!(
         assignment.codebase, "prio-b",
         "lowest-priority row (`prio-b`) should be picked first, got {assignment:?}"
@@ -1745,7 +1790,7 @@ async fn assign_prefers_higher_success_chance_within_same_priority() {
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
-    let assignment: AssignmentBody = get_body(response).await;
+    let assignment: Assignment = get_body(response).await;
     assert_eq!(
         assignment.codebase, "score-b",
         "highest-success_chance row (`score-b`) should be picked first, got {assignment:?}"

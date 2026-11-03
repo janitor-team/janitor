@@ -24,7 +24,7 @@ pub struct ApplicationBuilder {
     public_vcs_location: Option<String>,
     backup_directory: Option<PathBuf>,
     public_apt_archive_location: Option<String>,
-    public_dep_server_url: Option<String>,
+    public_dep_server_url: Option<url::Url>,
 }
 
 impl ApplicationBuilder {
@@ -74,7 +74,7 @@ impl ApplicationBuilder {
 
     /// Set the dependency server URL handed to workers. Corresponds to
     /// the `--public-dep-server-url` CLI flag.
-    pub fn with_public_dep_server_url(mut self, url: Option<String>) -> Self {
+    pub fn with_public_dep_server_url(mut self, url: Option<url::Url>) -> Self {
         self.public_dep_server_url = url;
         self
     }

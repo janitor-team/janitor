@@ -1817,7 +1817,7 @@ pub struct AppState {
     pub public_vcs_managers: Arc<HashMap<janitor::vcs::VcsType, Box<dyn janitor::vcs::VcsManager>>>,
     /// URL of the dependency server handed to workers -- supplied
     /// via `--public-dep-server-url`.
-    pub public_dep_server_url: Option<String>,
+    pub public_dep_server_url: Option<url::Url>,
     /// Hosts to avoid when assigning work -- supplied via
     /// `--avoid-host`.
     pub avoid_hosts: Vec<String>,
