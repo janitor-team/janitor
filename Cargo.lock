@@ -3252,6 +3252,7 @@ dependencies = [
  "flate2",
  "futures",
  "janitor",
+ "janitor-types",
  "lazy-regex",
  "log",
  "object_store",
@@ -3552,6 +3553,20 @@ name = "janitor-site"
 version = "0.0.0"
 dependencies = [
  "buildlog-consultant",
+]
+
+[[package]]
+name = "janitor-types"
+version = "0.1.0"
+dependencies = [
+ "breezyshim",
+ "chrono",
+ "debversion",
+ "pyo3",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "url",
 ]
 
 [[package]]

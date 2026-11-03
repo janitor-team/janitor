@@ -65,11 +65,9 @@ fn is_valid_log_filename(s: &str) -> bool {
 macro_rules! identifier {
     ($(#[$meta:meta])* $name:ident, $kind:literal, $check:path) => {
         $(#[$meta])*
-        #[derive(
-            Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, sqlx::Type,
-        )]
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+        #[cfg_attr(feature = "sqlx", derive(sqlx::Type), sqlx(transparent))]
         #[serde(try_from = "String", into = "String")]
-        #[sqlx(transparent)]
         pub struct $name(String);
 
         impl $name {

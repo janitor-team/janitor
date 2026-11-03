@@ -9,9 +9,13 @@ use serde::{Deserialize, Serialize};
 pub struct EmptyResponse {}
 
 /// The publish status of a run.
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, sqlx::Type)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "sqlx",
+    derive(sqlx::Type),
+    sqlx(type_name = "publish_status", rename_all = "kebab-case")
+)]
 #[serde(rename_all = "kebab-case")]
-#[sqlx(type_name = "publish_status", rename_all = "kebab-case")]
 pub enum PublishStatus {
     Unknown,
     Blocked,

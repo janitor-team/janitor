@@ -1,0 +1,23 @@
+[package]
+name = "janitor-types"
+version = { workspace = true }
+authors = ["Jelmer Vernooĳ <jelmer@jelmer.uk>"]
+edition = { workspace = true }
+description = "Types shared between the janitor services"
+license = "GPL-3.0+"
+repository = "https://github.com/jelmer/janitor.git"
+homepage = "https://github.com/jelmer/janitor"
+
+[dependencies]
+breezyshim = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+debversion = { version = "0.5", features = ["serde"], optional = true }
+pyo3 = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sqlx = { workspace = true, optional = true }
+url = { workspace = true, features = ["serde"] }
+
+[features]
+debian = ["dep:debversion"]
+sqlx = ["dep:sqlx", "debversion?/sqlx"]
