@@ -1,5 +1,5 @@
-use crate::RunId;
 use futures::stream::{BoxStream, TryStreamExt};
+use janitor_types::RunId;
 use object_store::ObjectStoreScheme;
 use std::path::Path;
 

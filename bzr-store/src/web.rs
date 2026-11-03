@@ -16,7 +16,7 @@ use axum::{
 };
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use janitor::{Campaign, CodebaseName, Role};
+use janitor_types::{Campaign, CodebaseName, Role};
 use serde::{Deserialize, Serialize};
 use tera::{Context, Tera};
 use tokio::fs;

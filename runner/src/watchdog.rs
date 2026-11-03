@@ -3,7 +3,7 @@
 use crate::database::RunnerDatabase;
 use crate::ActiveRun;
 use chrono::{DateTime, Duration, Utc};
-use janitor::RunId;
+use janitor_types::RunId;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::time::{interval, sleep};

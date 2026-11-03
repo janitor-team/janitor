@@ -1,8 +1,8 @@
 use crate::analyze_log::AnalyzeLogFn;
-use crate::identifiers::LogFilename;
 use crate::logs::LogFileManager;
-use crate::{Campaign, ChangeSetId, CodebaseName, RunId};
 use futures::TryStreamExt;
+use janitor_types::LogFilename;
+use janitor_types::{Campaign, ChangeSetId, CodebaseName, RunId};
 use sqlx::Executor;
 use tokio::time::timeout;
 use tracing::{error, info};

@@ -240,7 +240,11 @@ impl MetricsCollector {
     }
 
     /// Record run completion
-    pub fn record_run_completion(campaign: &janitor::Campaign, result_code: &str, duration: f64) {
+    pub fn record_run_completion(
+        campaign: &janitor_types::Campaign,
+        result_code: &str,
+        duration: f64,
+    ) {
         RUN_RESULT_COUNT
             .with_label_values(&[campaign.as_str(), result_code])
             .inc();
@@ -266,7 +270,7 @@ impl MetricsCollector {
     }
 
     /// Update queue size
-    pub fn set_queue_size(campaign: &janitor::Campaign, bucket: &str, size: i64) {
+    pub fn set_queue_size(campaign: &janitor_types::Campaign, bucket: &str, size: i64) {
         QUEUE_SIZE
             .with_label_values(&[campaign.as_str(), bucket])
             .set(size);

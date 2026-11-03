@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::metrics::MetricsCollector;
-use janitor::CodebaseName;
+use janitor_types::CodebaseName;
 
 /// VCS integration for the runner module.
 /// This provides a higher-level interface that coordinates with queue management,

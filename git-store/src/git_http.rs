@@ -9,7 +9,7 @@ use axum::{
     response::Response,
 };
 use futures_util::StreamExt;
-use janitor::CodebaseName;
+use janitor_types::CodebaseName;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::process::Stdio;

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use janitor::redis::{PubSubMessage, RedisConfig, RedisManager};
-use janitor::RunId;
+use janitor_types::RunId;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 use tracing::{error, info};

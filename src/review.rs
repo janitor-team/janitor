@@ -2,8 +2,8 @@
 
 use crate::error::JanitorError;
 use crate::schedule::do_schedule;
-use crate::{Campaign, CodebaseName, RunId};
 use chrono::{DateTime, Utc};
+use janitor_types::{Campaign, CodebaseName, RunId};
 use log::{error, info};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};

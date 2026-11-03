@@ -27,6 +27,7 @@ impl fmt::Display for InvalidIdentifier {
 
 impl std::error::Error for InvalidIdentifier {}
 
+#[cfg(feature = "pyo3")]
 impl From<InvalidIdentifier> for pyo3::PyErr {
     fn from(e: InvalidIdentifier) -> Self {
         pyo3::exceptions::PyValueError::new_err(e.to_string())
@@ -72,11 +73,9 @@ fn is_valid_log_filename(s: &str) -> bool {
 macro_rules! identifier {
     ($(#[$meta:meta])* $name:ident, $kind:literal, $check:path) => {
         $(#[$meta])*
-        #[derive(
-            Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, sqlx::Type,
-        )]
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+        #[cfg_attr(feature = "sqlx", derive(sqlx::Type), sqlx(transparent))]
         #[serde(try_from = "String", into = "String")]
-        #[sqlx(transparent)]
         pub struct $name(String);
 
         impl $name {
@@ -155,6 +154,7 @@ macro_rules! identifier {
             }
         }
 
+        #[cfg(feature = "pyo3")]
         impl pyo3::FromPyObject<'_, '_> for $name {
             type Error = pyo3::PyErr;
 
@@ -163,6 +163,7 @@ macro_rules! identifier {
             }
         }
 
+        #[cfg(feature = "pyo3")]
         impl<'py> pyo3::IntoPyObject<'py> for $name {
             type Target = pyo3::types::PyString;
             type Output = pyo3::Bound<'py, Self::Target>;
@@ -173,6 +174,7 @@ macro_rules! identifier {
             }
         }
 
+        #[cfg(feature = "pyo3")]
         impl<'py> pyo3::IntoPyObject<'py> for &$name {
             type Target = pyo3::types::PyString;
             type Output = pyo3::Bound<'py, Self::Target>;

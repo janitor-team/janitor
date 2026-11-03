@@ -2,7 +2,7 @@ use crate::database::RunnerDatabase;
 use breezyshim::branch::{Branch, GenericBranch};
 use breezyshim::error::Error as BrzError;
 use breezyshim::forge::get_forge;
-use janitor::{Campaign, CodebaseName, RunId};
+use janitor_types::{Campaign, CodebaseName, RunId};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt;

@@ -1,8 +1,8 @@
-use crate::identifiers::LogFilename;
-use crate::{CodebaseName, RunId};
 use async_compression::tokio::bufread::{GzipDecoder, GzipEncoder};
 use chrono::{DateTime, Utc};
 use futures::stream::{BoxStream, StreamExt, TryStreamExt};
+use janitor_types::LogFilename;
+use janitor_types::{CodebaseName, RunId};
 use object_store::buffered::BufWriter;
 use object_store::local::LocalFileSystem;
 use object_store::path::{Path as ObjectPath, PathPart};

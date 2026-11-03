@@ -107,7 +107,7 @@ mod tests {
         distribution: Option<&str>,
     ) -> BuildResultMessage {
         BuildResultMessage {
-            log_id: janitor::RunId::new("test-123").unwrap(),
+            log_id: janitor_types::RunId::new("test-123").unwrap(),
             code: code.map(str::to_string),
             target: BuildTarget {
                 name: target.map(str::to_string),

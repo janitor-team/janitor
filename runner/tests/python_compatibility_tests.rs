@@ -165,13 +165,13 @@ fn janitor_result_serialises_expected_field_names() {
     };
 
     let result = JanitorResult {
-        log_id: janitor::RunId::new("test-log-123").unwrap(),
+        log_id: janitor_types::RunId::new("test-log-123").unwrap(),
         branch_url: "https://github.com/example/repo.git".to_string(),
         subpath: None,
         code: "success".to_string(),
         transient: Some(false),
-        codebase: janitor::CodebaseName::new("example-repo").unwrap(),
-        campaign: janitor::Campaign::new("lintian-fixes").unwrap(),
+        codebase: janitor_types::CodebaseName::new("example-repo").unwrap(),
+        campaign: janitor_types::Campaign::new("lintian-fixes").unwrap(),
         description: Some("Successfully applied lintian fixes".to_string()),
         codemod: Some(json!({"fixes_applied": 5})),
         value: Some(100),

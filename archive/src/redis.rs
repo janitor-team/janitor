@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use janitor::redis::{PubSubMessage, RedisConfig, RedisManager};
-use janitor::{Campaign, CodebaseName, RunId};
+use janitor_types::{Campaign, CodebaseName, RunId};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;

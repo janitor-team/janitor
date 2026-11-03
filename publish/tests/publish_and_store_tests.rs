@@ -5,9 +5,9 @@ use breezyshim::RevisionId;
 use janitor::publish::Mode;
 use janitor::test_with_database;
 use janitor::vcs::{VcsManager, VcsType};
-use janitor::{Campaign, CodebaseName, RunId};
 use janitor_publish::rate_limiter::{NonRateLimiter, RateLimiter};
 use janitor_publish::{publish_and_store, PublishWorker};
+use janitor_types::{Campaign, CodebaseName, RunId};
 use sqlx::PgPool;
 
 /// A run with a single result branch for `role`.
@@ -35,7 +35,7 @@ fn make_run(role: &str, revision: Option<&str>) -> janitor::state::Run {
         )]),
         result_tags: None,
         target_branch_url: None,
-        change_set: janitor::ChangeSetId::new("cs-1").unwrap(),
+        change_set: janitor_types::ChangeSetId::new("cs-1").unwrap(),
         failure_details: None,
         failure_transient: None,
         failure_stage: None,
@@ -68,7 +68,7 @@ async fn publish_main_role(
         None,
         &campaign,
         &publish_worker,
-        &janitor::PublishId::new("publish-1").unwrap(),
+        &janitor_types::PublishId::new("publish-1").unwrap(),
         run,
         Mode::Propose,
         "main",

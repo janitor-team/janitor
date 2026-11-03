@@ -16,7 +16,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::error::{ArchiveError, ArchiveResult};
 use janitor::artifacts::{get_artifact_manager, ArtifactManager};
-use janitor::{CodebaseName, RunId};
+use janitor_types::{CodebaseName, RunId};
 
 /// Build information retrieved from database.
 ///
@@ -541,7 +541,7 @@ fn handle_log_line(line: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use janitor::{CodebaseName, RunId};
+    use janitor_types::{CodebaseName, RunId};
 
     #[tokio::test]
     async fn test_scan_packages() {

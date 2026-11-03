@@ -1,6 +1,6 @@
 //! Error type and axum response mapping.
 
-use janitor::CodebaseName;
+use janitor_types::CodebaseName;
 use thiserror::Error;
 
 #[derive(Debug, Error)]

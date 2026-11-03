@@ -13,7 +13,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use janitor::{Campaign, InvalidIdentifier};
+use janitor_types::{Campaign, InvalidIdentifier};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tower::ServiceExt;

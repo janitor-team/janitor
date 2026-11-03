@@ -1,4 +1,4 @@
-use crate::{CodebaseName, RunId};
+use janitor_types::{CodebaseName, RunId};
 
 /// Sent when the publish-status for a run changes.
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]

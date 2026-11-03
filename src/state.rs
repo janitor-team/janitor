@@ -1,6 +1,6 @@
 use crate::config::Config;
-use crate::{Campaign, ChangeSetId, CodebaseName, RunId};
 use breezyshim::RevisionId;
+use janitor_types::{Campaign, ChangeSetId, CodebaseName, RunId};
 use log::warn;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, Postgres};
 use sqlx::PgPool;

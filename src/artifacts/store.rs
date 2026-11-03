@@ -1,5 +1,5 @@
-use crate::RunId;
 use futures::stream::{BoxStream, StreamExt, TryStreamExt};
+use janitor_types::RunId;
 use object_store::buffered::BufWriter;
 use object_store::local::LocalFileSystem;
 use object_store::path::{Path as ObjectPath, PathPart};

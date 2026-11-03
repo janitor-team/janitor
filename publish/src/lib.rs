@@ -14,7 +14,7 @@ use janitor::config::Campaign;
 use janitor::publish::{MergeProposalStatus, Mode};
 use janitor::state::Run;
 use janitor::vcs::{VcsManager, VcsType};
-use janitor::{CodebaseName, PublishId, RunId};
+use janitor_types::{CodebaseName, PublishId, RunId};
 use serde::ser::SerializeStruct;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -417,7 +417,7 @@ pub fn get_debdiff(
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
 pub struct PublishOneRequest {
     /// The campaign name.
-    pub campaign: janitor::Campaign,
+    pub campaign: janitor_types::Campaign,
     /// The URL of the target branch.
     pub target_branch_url: url::Url,
     /// The role of the publisher.
@@ -848,7 +848,7 @@ impl PublishWorker {
     #[allow(clippy::too_many_arguments)]
     pub async fn publish_one(
         &self,
-        campaign: &janitor::Campaign,
+        campaign: &janitor_types::Campaign,
         codebase: &CodebaseName,
         command: &str,
         target_branch_url: &url::Url,
@@ -1392,7 +1392,7 @@ pub async fn abandon_mp(
     revision: &RevisionId,
     codebase: Option<&CodebaseName>,
     target_branch_url: &str,
-    campaign: Option<&janitor::Campaign>,
+    campaign: Option<&janitor_types::Campaign>,
     can_be_merged: Option<bool>,
     rate_limit_bucket: Option<&str>,
     comment: Option<&str>,
@@ -1493,7 +1493,7 @@ pub async fn close_applied_mp(
     revision: &RevisionId,
     codebase: Option<&CodebaseName>,
     target_branch_url: &str,
-    campaign: Option<&janitor::Campaign>,
+    campaign: Option<&janitor_types::Campaign>,
     can_be_merged: Option<bool>,
     rate_limit_bucket: Option<&str>,
     comment: Option<&str>,
@@ -1707,7 +1707,7 @@ mod tests {
     #[test]
     fn test_publish_one_request_serde() {
         let request = PublishOneRequest {
-            campaign: janitor::Campaign::new("lintian-fixes").unwrap(),
+            campaign: janitor_types::Campaign::new("lintian-fixes").unwrap(),
             target_branch_url: url::Url::parse("https://salsa.debian.org/foo/bar").unwrap(),
             role: "main".to_string(),
             log_id: RunId::new("log-123").unwrap(),
@@ -2461,7 +2461,7 @@ pub enum CheckMpError {
     /// A breezyshim/forge call failed in a way we couldn't classify.
     Brz(String),
     /// A campaign or codebase name from the configuration is invalid.
-    InvalidIdentifier(janitor::InvalidIdentifier),
+    InvalidIdentifier(janitor_types::InvalidIdentifier),
 }
 
 impl From<BrzError> for CheckMpError {
@@ -2474,8 +2474,8 @@ impl From<BrzError> for CheckMpError {
     }
 }
 
-impl From<janitor::InvalidIdentifier> for CheckMpError {
-    fn from(e: janitor::InvalidIdentifier) -> Self {
+impl From<janitor_types::InvalidIdentifier> for CheckMpError {
+    fn from(e: janitor_types::InvalidIdentifier) -> Self {
         CheckMpError::InvalidIdentifier(e)
     }
 }
@@ -3559,7 +3559,7 @@ async fn check_existing_mp(
                 if let Some((campaign_name, role)) =
                     config.find_campaign_by_branch_name(branch_name)
                 {
-                    let campaign_name = janitor::Campaign::new(campaign_name)?;
+                    let campaign_name = janitor_types::Campaign::new(campaign_name)?;
                     log::warn!(
                         "Recovered orphaned merge proposal {} (codebase={}, campaign={})",
                         mp_url,
@@ -4317,7 +4317,7 @@ async fn abandon_or_close_mp_async(
     revision: &RevisionId,
     codebase: Option<&CodebaseName>,
     target_branch_url: &str,
-    campaign: Option<&janitor::Campaign>,
+    campaign: Option<&janitor_types::Campaign>,
     can_be_merged: Option<bool>,
     rate_limit_bucket: Option<&str>,
     comment: Option<&str>,
@@ -5195,7 +5195,7 @@ async fn get_publish_attempt_count(
 pub async fn get_publish_policy(
     conn: &sqlx::PgPool,
     codebase: &CodebaseName,
-    campaign: &janitor::Campaign,
+    campaign: &janitor_types::Campaign,
 ) -> Result<
     Option<(
         HashMap<String, (String, Option<i32>)>,

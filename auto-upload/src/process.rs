@@ -1,6 +1,6 @@
 //! Main upload processing logic
 
-use janitor::RunId;
+use janitor_types::RunId;
 use tracing::{error, info, warn};
 
 use crate::artifacts::ArtifactProcessor;

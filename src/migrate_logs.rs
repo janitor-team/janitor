@@ -1,9 +1,9 @@
 //! Move run logs from one log store to another.
 
-use crate::identifiers::LogFilename;
 use crate::logs::LogFileManager;
-use crate::{CodebaseName, RunId};
 use futures::{StreamExt, TryStreamExt};
+use janitor_types::LogFilename;
+use janitor_types::{CodebaseName, RunId};
 use tokio::io::AsyncWriteExt;
 
 #[derive(Debug)]

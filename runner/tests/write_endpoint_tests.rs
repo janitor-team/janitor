@@ -612,14 +612,14 @@ async fn post_kill_jenkins_run_returns_501() {
         worker_name: "jenkins-worker".to_string(),
         worker_link: None,
         queue_id: 1,
-        log_id: janitor::RunId::new("run-kill-not-supported").unwrap(),
+        log_id: janitor_types::RunId::new("run-kill-not-supported").unwrap(),
         start_time: Utc::now(),
         finish_time: None,
         estimated_duration: None,
-        campaign: janitor::Campaign::new("test-campaign").unwrap(),
+        campaign: janitor_types::Campaign::new("test-campaign").unwrap(),
         change_set: None,
         command: "true".to_string(),
-        codebase: janitor::CodebaseName::new("kill-cb").unwrap(),
+        codebase: janitor_types::CodebaseName::new("kill-cb").unwrap(),
         backchannel: Backchannel::Jenkins {
             my_url: "http://jenkins.example.invalid/".to_string(),
             jenkins: Some(json!({})),
@@ -649,7 +649,7 @@ async fn post_kill_jenkins_run_returns_501() {
     // Cleanup so the row does not leak across serial tests.
     let _ = state
         .active_runs
-        .remove(&janitor::RunId::new("run-kill-not-supported").unwrap())
+        .remove(&janitor_types::RunId::new("run-kill-not-supported").unwrap())
         .await;
 }
 
@@ -1141,14 +1141,14 @@ async fn public_finish_returns_403_when_worker_does_not_own_run() {
         worker_name: "alice".to_string(),
         worker_link: None,
         queue_id: 1,
-        log_id: janitor::RunId::new("run-owned-by-alice").unwrap(),
+        log_id: janitor_types::RunId::new("run-owned-by-alice").unwrap(),
         start_time: Utc::now(),
         finish_time: None,
         estimated_duration: None,
-        campaign: janitor::Campaign::new("test-campaign").unwrap(),
+        campaign: janitor_types::Campaign::new("test-campaign").unwrap(),
         change_set: None,
         command: "true".to_string(),
-        codebase: janitor::CodebaseName::new("auth-test-cb").unwrap(),
+        codebase: janitor_types::CodebaseName::new("auth-test-cb").unwrap(),
         backchannel: Backchannel::None {},
         vcs_info: VcsInfo::default(),
         instigated_context: None,
@@ -1182,7 +1182,7 @@ async fn public_finish_returns_403_when_worker_does_not_own_run() {
 
     let _ = state
         .active_runs
-        .remove(&janitor::RunId::new("run-owned-by-alice").unwrap())
+        .remove(&janitor_types::RunId::new("run-owned-by-alice").unwrap())
         .await;
 }
 
@@ -1320,7 +1320,7 @@ async fn end_to_end_assignment_lifecycle() {
     assert!(
         state
             .active_runs
-            .get(&janitor::RunId::new(run_id).unwrap())
+            .get(&janitor_types::RunId::new(run_id).unwrap())
             .await
             .is_none(),
         "active run should be dropped from Redis after finish"
@@ -1623,14 +1623,14 @@ async fn seed_active_run_for_finish(state: &Arc<AppState>, log_id: &str) {
         worker_name: "finish-worker".to_string(),
         worker_link: None,
         queue_id: 1,
-        log_id: janitor::RunId::new(log_id).unwrap(),
+        log_id: janitor_types::RunId::new(log_id).unwrap(),
         start_time: Utc::now(),
         finish_time: None,
         estimated_duration: None,
-        campaign: janitor::Campaign::new("test-campaign").unwrap(),
+        campaign: janitor_types::Campaign::new("test-campaign").unwrap(),
         change_set: None,
         command: "true".to_string(),
-        codebase: janitor::CodebaseName::new("finish-neg-cb").unwrap(),
+        codebase: janitor_types::CodebaseName::new("finish-neg-cb").unwrap(),
         backchannel: Backchannel::None {},
         vcs_info: VcsInfo::default(),
         instigated_context: None,
@@ -1684,7 +1684,7 @@ async fn finish_multipart_without_metadata_returns_400() {
 
     let _ = state
         .active_runs
-        .remove(&janitor::RunId::new("run-no-metadata").unwrap())
+        .remove(&janitor_types::RunId::new("run-no-metadata").unwrap())
         .await;
 }
 
@@ -1718,7 +1718,7 @@ async fn finish_malformed_multipart_returns_400() {
 
     let _ = state
         .active_runs
-        .remove(&janitor::RunId::new("run-malformed").unwrap())
+        .remove(&janitor_types::RunId::new("run-malformed").unwrap())
         .await;
 }
 
@@ -1759,7 +1759,7 @@ async fn finish_multipart_field_without_name_returns_400() {
 
     let _ = state
         .active_runs
-        .remove(&janitor::RunId::new("run-no-field-name").unwrap())
+        .remove(&janitor_types::RunId::new("run-no-field-name").unwrap())
         .await;
 }
 
@@ -1931,8 +1931,8 @@ async fn concurrent_assign_queue_item_never_double_claims() {
     );
     let db2 = janitor_runner::database::RunnerDatabase::new_with_redis(pool, redis_client);
 
-    let log1 = janitor::RunId::new("log1").unwrap();
-    let log2 = janitor::RunId::new("log2").unwrap();
+    let log1 = janitor_types::RunId::new("log1").unwrap();
+    let log2 = janitor_types::RunId::new("log2").unwrap();
     let (r1, r2) = tokio::join!(
         db1.assign_queue_item(queue_id, "race-w1", &log1),
         db2.assign_queue_item(queue_id, "race-w2", &log2),
@@ -2339,14 +2339,14 @@ async fn finish_with_artifact(
             worker_name: worker.to_string(),
             worker_link: None,
             queue_id: 1,
-            log_id: janitor::RunId::new(run_id).unwrap(),
+            log_id: janitor_types::RunId::new(run_id).unwrap(),
             start_time: Utc::now(),
             finish_time: None,
             estimated_duration: None,
-            campaign: janitor::Campaign::new("test-campaign").unwrap(),
+            campaign: janitor_types::Campaign::new("test-campaign").unwrap(),
             change_set: None,
             command: "true".to_string(),
-            codebase: janitor::CodebaseName::new(codebase).unwrap(),
+            codebase: janitor_types::CodebaseName::new(codebase).unwrap(),
             backchannel: Backchannel::None {},
             vcs_info: VcsInfo::default(),
             instigated_context: None,
@@ -2456,7 +2456,7 @@ async fn finish_stores_artifacts_in_backup() {
     assert_eq!(body["result"]["code"], "success");
 
     let contents: Vec<u8> = backup
-        .get_artifact(&janitor::RunId::new("run-backup").unwrap(), "foo.deb")
+        .get_artifact(&janitor_types::RunId::new("run-backup").unwrap(), "foo.deb")
         .await
         .expect("artifact in backup")
         .map_ok(|chunk| chunk.to_vec())

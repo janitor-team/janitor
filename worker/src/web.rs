@@ -332,10 +332,10 @@ mod tests {
 
         if let Ok(mut state) = state.write() {
             state.assignment = Some(Assignment {
-                id: janitor::RunId::new("test").unwrap(),
+                id: janitor_types::RunId::new("test").unwrap(),
                 queue_id: 1,
-                campaign: janitor::Campaign::new("lintian-fixes").unwrap(),
-                codebase: janitor::CodebaseName::new("foo").unwrap(),
+                campaign: janitor_types::Campaign::new("lintian-fixes").unwrap(),
+                codebase: janitor_types::CodebaseName::new("foo").unwrap(),
                 force_build: true,
                 branch: janitor::api::worker::Branch {
                     cached_url: None,
@@ -397,10 +397,10 @@ mod tests {
         let state = Arc::new(RwLock::new(AppState::default()));
         if let Ok(mut state) = state.write() {
             state.assignment = Some(Assignment {
-                id: janitor::RunId::new("test").unwrap(),
+                id: janitor_types::RunId::new("test").unwrap(),
                 queue_id: 1,
-                campaign: janitor::Campaign::new("lintian-fixes").unwrap(),
-                codebase: janitor::CodebaseName::new("foo").unwrap(),
+                campaign: janitor_types::Campaign::new("lintian-fixes").unwrap(),
+                codebase: janitor_types::CodebaseName::new("foo").unwrap(),
                 force_build: true,
                 branch: janitor::api::worker::Branch {
                     cached_url: None,
@@ -840,10 +840,10 @@ mod tests {
 
         if let Ok(mut state) = state.write() {
             state.assignment = Some(Assignment {
-                id: janitor::RunId::new("test").unwrap(),
+                id: janitor_types::RunId::new("test").unwrap(),
                 queue_id: 1,
-                campaign: janitor::Campaign::new("lintian-fixes").unwrap(),
-                codebase: janitor::CodebaseName::new("foo").unwrap(),
+                campaign: janitor_types::Campaign::new("lintian-fixes").unwrap(),
+                codebase: janitor_types::CodebaseName::new("foo").unwrap(),
                 force_build: true,
                 branch: janitor::api::worker::Branch {
                     cached_url: None,

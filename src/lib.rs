@@ -6,7 +6,6 @@ pub mod config;
 pub mod database;
 pub mod debdiff;
 pub mod error;
-pub mod identifiers;
 pub mod logging;
 pub mod logs;
 pub mod migrate_logs;
@@ -30,10 +29,6 @@ pub mod tracing;
 pub mod utils;
 pub mod vcs;
 pub mod worker_auth;
-
-pub use identifiers::{
-    Campaign, ChangeSetId, CodebaseName, InvalidIdentifier, PublishId, Role, RunId,
-};
 
 /// Open the object store at `url`, rooted at `prefix`, with `scheme` and
 /// `prefix` as returned by `ObjectStoreScheme::parse`.

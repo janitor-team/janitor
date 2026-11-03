@@ -2,7 +2,7 @@
 
 use crate::{BuilderResult, JanitorResult};
 use chrono::{DateTime, Duration, Utc};
-use janitor::{Campaign, ChangeSetId, CodebaseName, RunId};
+use janitor_types::{Campaign, ChangeSetId, CodebaseName, RunId};
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::types::PgInterval;

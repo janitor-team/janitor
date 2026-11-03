@@ -1,6 +1,6 @@
 use crate::io::AsyncReader;
 use futures::{StreamExt, TryStreamExt};
-use janitor::RunId;
+use janitor_types::RunId;
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;

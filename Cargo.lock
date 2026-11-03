@@ -1266,6 +1266,7 @@ dependencies = [
  "chrono",
  "futures",
  "janitor",
+ "janitor-types",
  "log",
  "maplit",
  "pyo3",
@@ -3252,6 +3253,7 @@ dependencies = [
  "flate2",
  "futures",
  "janitor",
+ "janitor-types",
  "lazy-regex",
  "log",
  "object_store",
@@ -3305,6 +3307,7 @@ dependencies = [
  "futures",
  "hyper",
  "janitor",
+ "janitor-types",
  "num_cpus",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -3337,6 +3340,7 @@ dependencies = [
  "clap",
  "http-body-util",
  "janitor",
+ "janitor-types",
  "nix",
  "prometheus 0.13.4",
  "redis 1.7.0",
@@ -3364,6 +3368,7 @@ dependencies = [
  "bytes",
  "clap",
  "janitor",
+ "janitor-types",
  "loggerhead",
  "prometheus 0.14.0",
  "reqwest 0.13.5",
@@ -3393,6 +3398,7 @@ dependencies = [
  "clap",
  "debversion",
  "janitor",
+ "janitor-types",
  "nix",
  "patchkit",
  "prometheus 0.14.0",
@@ -3422,6 +3428,7 @@ dependencies = [
  "git2",
  "http 1.5.0",
  "janitor",
+ "janitor-types",
  "libc",
  "nix",
  "prometheus 0.14.0",
@@ -3475,6 +3482,7 @@ dependencies = [
  "futures",
  "janitor",
  "janitor-runner",
+ "janitor-types",
  "lazy_static",
  "log",
  "maplit",
@@ -3515,6 +3523,7 @@ dependencies = [
  "hyper",
  "janitor",
  "janitor-runner",
+ "janitor-types",
  "lazy_static",
  "log",
  "maplit",
@@ -3554,6 +3563,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "janitor-types"
+version = "0.1.0"
+dependencies = [
+ "breezyshim",
+ "pyo3",
+ "serde",
+ "serde_json",
+ "sqlx",
+]
+
+[[package]]
 name = "janitor-worker"
 version = "0.0.0"
 dependencies = [
@@ -3571,6 +3591,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "janitor",
+ "janitor-types",
  "log",
  "maplit",
  "nix",

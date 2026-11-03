@@ -1,5 +1,5 @@
-use crate::{Campaign, CodebaseName, PublishId, RunId};
 use chrono::Duration;
+use janitor_types::{Campaign, CodebaseName, PublishId, RunId};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use url::Url;
 

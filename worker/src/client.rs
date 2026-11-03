@@ -1,7 +1,7 @@
 use crate::get_build_arch;
 use backoff::ExponentialBackoff;
 use janitor::api::worker::{Assignment, Metadata};
-use janitor::{Campaign, CodebaseName, RunId};
+use janitor_types::{Campaign, CodebaseName, RunId};
 use reqwest::multipart::{Form, Part};
 use reqwest::{Error as ReqwestError, Response, StatusCode, Url};
 use std::error::Error;

@@ -51,7 +51,7 @@ async fn polling_backchannel_ping_times_out_promptly() {
 
     let start = std::time::Instant::now();
     let result = backchannel
-        .ping(&janitor::RunId::new("run-1").unwrap())
+        .ping(&janitor_types::RunId::new("run-1").unwrap())
         .await;
     let elapsed = start.elapsed();
 

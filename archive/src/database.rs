@@ -7,7 +7,7 @@ use tracing::debug;
 
 // Import shared database utilities
 use janitor::database::{Database as SharedDatabase, DatabaseError};
-use janitor::{ChangeSetId, CodebaseName, RunId};
+use janitor_types::{ChangeSetId, CodebaseName, RunId};
 
 use crate::error::{ArchiveError, ArchiveResult};
 use crate::scanner::BuildInfo;

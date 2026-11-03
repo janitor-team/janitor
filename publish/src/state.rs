@@ -2,7 +2,7 @@ use crate::Mode;
 use breezyshim::branch::Branch;
 use breezyshim::transport::Transport;
 use breezyshim::RevisionId;
-use janitor::{Campaign, ChangeSetId, CodebaseName, PublishId, RunId};
+use janitor_types::{Campaign, ChangeSetId, CodebaseName, PublishId, RunId};
 use sqlx::PgPool;
 use url::Url;
 

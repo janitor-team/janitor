@@ -1,7 +1,7 @@
 //! Codebase and worker lookups against Postgres.
 
 use crate::error::Result;
-use janitor::CodebaseName;
+use janitor_types::CodebaseName;
 use sqlx::PgPool;
 use tracing::debug;
 

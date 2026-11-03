@@ -22,6 +22,7 @@ prometheus = { version = "0.13", features = ["process"] }
 tempfile = { workspace = true }
 silver-platter = { workspace = true, features = ["debian"] }
 janitor = { path = "..", features = ["debian"] }
+janitor-types = { workspace = true, features = ["sqlx"] }
 nix = { workspace = true, features = ["fs"] }  # for umask()
 
 [dev-dependencies]

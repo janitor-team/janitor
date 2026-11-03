@@ -22,7 +22,7 @@ pub trait ConfigGeneratorResult: Serialize + Deserialize<'static> {
     fn load_artifacts(&mut self, path: &Path) -> Result<(), Error>;
 
     /// Store the results in the database for the specified run.
-    async fn store(&self, conn: &PgPool, run_id: &janitor::RunId) -> Result<(), sqlx::Error>;
+    async fn store(&self, conn: &PgPool, run_id: &janitor_types::RunId) -> Result<(), sqlx::Error>;
 
     /// Get the list of artifact filenames produced.
     fn artifact_filenames(&self) -> Vec<String>;
@@ -94,7 +94,11 @@ impl ConfigGeneratorResult for GenericResult {
         Ok(())
     }
 
-    async fn store(&self, _conn: &PgPool, _run_id: &janitor::RunId) -> Result<(), sqlx::Error> {
+    async fn store(
+        &self,
+        _conn: &PgPool,
+        _run_id: &janitor_types::RunId,
+    ) -> Result<(), sqlx::Error> {
         Ok(())
     }
 
@@ -194,7 +198,7 @@ impl ConfigGeneratorResult for DebianResult {
         Ok(())
     }
 
-    async fn store(&self, conn: &PgPool, run_id: &janitor::RunId) -> Result<(), sqlx::Error> {
+    async fn store(&self, conn: &PgPool, run_id: &janitor_types::RunId) -> Result<(), sqlx::Error> {
         sqlx::query("INSERT INTO debian_build (run_id, source, version, distribution, lintian_result, binary_packages) VALUES ($1, $2, $3, $4, $5, $6)")
             .bind(run_id)
             .bind(&self.source)

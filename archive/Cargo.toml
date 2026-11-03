@@ -24,6 +24,7 @@ async-trait = "0.1"
 num_cpus = "1.0"
 sqlx = { workspace = true, features = ["postgres", "chrono", "uuid", "migrate", "macros", "runtime-tokio", "tls-native-tls"] }
 janitor = { path = ".." }
+janitor-types = { workspace = true, features = ["sqlx"] }
 # Reading .deb file trees in-process (for Contents-<arch>): outer
 # ar archive, inner data.tar.{,gz,bz2,xz,zst}.
 ar = "0.9"

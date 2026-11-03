@@ -10,6 +10,7 @@ homepage = "https://github.com/jelmer/janitor"
 
 [dependencies]
 janitor = { path = ".." }
+janitor-types = { workspace = true, features = ["pyo3", "sqlx"] }
 clap = { optional = true, workspace = true }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["full"] }

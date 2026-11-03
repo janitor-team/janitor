@@ -3,7 +3,7 @@
 //! Talks to a running janitor site instance over its public HTTP API.
 
 use clap::{Args, Parser, Subcommand};
-use janitor::{Campaign, RunId};
+use janitor_types::{Campaign, RunId};
 use reqwest::{Client, RequestBuilder, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

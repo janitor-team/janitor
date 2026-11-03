@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use async_trait::async_trait;
-use janitor::CodebaseName;
+use janitor_types::CodebaseName;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tokio::process::Command;

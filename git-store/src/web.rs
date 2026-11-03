@@ -23,7 +23,7 @@ use axum::{
 };
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use janitor::CodebaseName;
+use janitor_types::CodebaseName;
 use std::sync::Arc;
 use tera::Tera;
 

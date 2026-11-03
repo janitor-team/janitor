@@ -12,7 +12,7 @@ use breezyshim::forge::{determine_title, Forge, MergeProposal};
 use breezyshim::repository::Repository;
 use breezyshim::transport::Transport;
 use breezyshim::RevisionId;
-use janitor::{Campaign, RunId};
+use janitor_types::{Campaign, RunId};
 use minijinja::Environment;
 use silver_platter::publish::{publish_changes, DescriptionFormat, Error as SvpPublishError};
 use silver_platter::utils::merge_conflicts;

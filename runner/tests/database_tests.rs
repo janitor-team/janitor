@@ -89,7 +89,7 @@ async fn test_get_run_debian_build() {
 
     assert_eq!(
         runner_db
-            .get_run_debian_build(&janitor::RunId::new("run-1").unwrap())
+            .get_run_debian_build(&janitor_types::RunId::new("run-1").unwrap())
             .await
             .unwrap(),
         Some(DebianBuildRow {
@@ -102,14 +102,14 @@ async fn test_get_run_debian_build() {
     );
     assert_eq!(
         runner_db
-            .get_run_debian_build(&janitor::RunId::new("run-2").unwrap())
+            .get_run_debian_build(&janitor_types::RunId::new("run-2").unwrap())
             .await
             .unwrap(),
         None
     );
 
     let run = runner_db
-        .get_run(&janitor::RunId::new("run-1").unwrap())
+        .get_run(&janitor_types::RunId::new("run-1").unwrap())
         .await
         .unwrap()
         .expect("run was just inserted");
