@@ -1,8 +1,9 @@
 //! File upload processing for worker results.
 
-use crate::{BuilderResult, WorkerResult};
+use crate::BuilderResult;
 use axum::extract::Multipart;
 use chrono::{DateTime, Utc};
+use janitor::api::worker::Metadata;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -27,7 +28,7 @@ pub struct UploadedFile {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UploadedWorkerResult {
     /// Worker result metadata.
-    pub worker_result: WorkerResult,
+    pub worker_result: Metadata,
     /// Log files uploaded.
     pub log_files: Vec<UploadedFile>,
     /// Artifact files uploaded.
@@ -73,7 +74,7 @@ impl UploadProcessor {
         run_id: &janitor::RunId,
         codebase: &janitor::CodebaseName,
     ) -> Result<UploadedWorkerResult, UploadError> {
-        let mut worker_result: Option<WorkerResult> = None;
+        let mut worker_result: Option<Metadata> = None;
         let mut log_files = Vec::new();
         let mut artifact_files = Vec::new();
         let mut build_files = Vec::new();
@@ -132,15 +133,14 @@ impl UploadProcessor {
                         preview_len,
                         String::from_utf8_lossy(&data[..preview_len])
                     );
-                    let parsed: crate::WorkerResult =
-                        serde_json::from_slice(&data).map_err(|e| {
-                            UploadError::Parse(format!("Invalid worker_result JSON: {}", e))
-                        })?;
+                    let parsed: Metadata = serde_json::from_slice(&data).map_err(|e| {
+                        UploadError::Parse(format!("Invalid worker_result JSON: {}", e))
+                    })?;
                     log::info!(
-                        "upload {} parsed: code={} branches={:?} revision={:?} main_branch_revision={:?}",
+                        "upload {} parsed: code={:?} branches={} revision={:?} main_branch_revision={:?}",
                         run_id,
                         parsed.code,
-                        parsed.branches.as_ref().map(|b| b.len()),
+                        parsed.branches.len(),
                         parsed.revision.as_ref().map(|r| r.to_string()),
                         parsed.main_branch_revision.as_ref().map(|r| r.to_string())
                     );
@@ -295,25 +295,11 @@ impl UploadProcessor {
 
     /// Process uploaded worker result and extract builder result if present.
     ///
-    /// The wire reality is that the worker emits `target: {name,
-    /// details}` and leaves `builder_result` unset, so checking
-    /// `worker_result.builder_result` alone misses every successful
-    /// run -- `find_changes` never fires and the `debian_build` row
-    /// lands with NULL `version`/`source`/`distribution` (Postgres
-    /// rejects it on the NOT NULL constraint, the whole /finish
-    /// transaction rolls back, and the run vanishes). Look at
-    /// `target.name` whenever `builder_result` is missing so the
-    /// per-run extraction still runs.
+    /// The kind of build comes from the worker's `target.name`.
     pub fn extract_builder_result(
         &self,
         uploaded: &UploadedWorkerResult,
     ) -> Result<Option<BuilderResult>, UploadError> {
-        if let Some(ref builder_result) = uploaded.worker_result.builder_result {
-            return match builder_result {
-                BuilderResult::Debian { .. } => self.extract_debian_builder_result(uploaded),
-                BuilderResult::Generic => Ok(Some(BuilderResult::Generic)),
-            };
-        }
         match uploaded
             .worker_result
             .target

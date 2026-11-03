@@ -2353,39 +2353,71 @@ async fn finish_run_multipart_internal(
             .and_then(BuilderResult::from_target_details),
         Err(e) => {
             log::warn!("Failed to extract builder result: {}", e);
-            worker_result.builder_result.clone().or_else(|| {
-                worker_result
-                    .target
-                    .as_ref()
-                    .and_then(BuilderResult::from_target_details)
-            })
+            worker_result
+                .target
+                .as_ref()
+                .and_then(BuilderResult::from_target_details)
         }
     };
 
+    // The worker leaves out `code` on success.
     let mut janitor_result = active_run.create_result(
-        worker_result.code.clone(),
+        worker_result
+            .code
+            .clone()
+            .unwrap_or_else(|| "success".to_string()),
         worker_result.description.clone(),
     );
 
     janitor_result.codemod = worker_result.codemod;
     janitor_result.main_branch_revision = worker_result.main_branch_revision;
     janitor_result.revision = worker_result.revision;
-    janitor_result.value = worker_result.value.map(|v| v as u64);
-    janitor_result.branches = worker_result.branches;
-    janitor_result.tags = worker_result.tags;
-    janitor_result.remotes = worker_result.remotes;
-    janitor_result.failure_details = worker_result.details;
+    janitor_result.value = worker_result.value;
+    janitor_result.branches = Some(
+        worker_result
+            .branches
+            .into_iter()
+            .map(|(function, name, base_revision, revision)| {
+                (Some(function), name, base_revision, revision)
+            })
+            .collect(),
+    );
+    janitor_result.tags = Some(
+        worker_result
+            .tags
+            .into_iter()
+            .map(|(name, revision)| (name, Some(revision)))
+            .collect(),
+    );
+    janitor_result.remotes = Some(
+        worker_result
+            .remotes
+            .into_iter()
+            .map(|(name, remote)| {
+                (
+                    name,
+                    crate::ResultRemote {
+                        url: remote.url.to_string(),
+                    },
+                )
+            })
+            .collect(),
+    );
+    janitor_result.failure_details = worker_result.failure_details;
     janitor_result.failure_stage = worker_result
         .stage
         .as_deref()
         .map(|s| s.split('/').map(|p| p.to_string()).collect());
     janitor_result.builder_result = builder_result;
     janitor_result.transient = worker_result.transient;
-    janitor_result.target_branch_url = worker_result.target_branch_url;
-    janitor_result.branch_url = worker_result
-        .branch_url
-        .unwrap_or(janitor_result.branch_url);
-    janitor_result.vcs_type = worker_result.vcs_type;
+    janitor_result.target_branch_url = worker_result
+        .target_branch_url
+        .as_ref()
+        .map(url::Url::to_string);
+    if let Some(branch_url) = worker_result.branch_url {
+        janitor_result.branch_url = branch_url.to_string();
+    }
+    janitor_result.vcs_type = worker_result.vcs_type.map(|t| t.to_string());
     janitor_result.subpath = worker_result.subpath;
 
     let log_filenames: Vec<String> = uploaded_result

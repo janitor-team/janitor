@@ -1241,8 +1241,9 @@ async fn end_to_end_assignment_lifecycle() {
     // body containing just the JSON metadata. The upload processor
     // accepts a bare `metadata` field with the worker result JSON.
     let boundary = "e2e-boundary";
+    // Like the worker, leave out `code` on success.
     let worker_result = serde_json::to_string(&janitor::api::worker::Metadata {
-        code: Some("success".to_string()),
+        code: None,
         description: Some("e2e".to_string()),
         ..Default::default()
     })
