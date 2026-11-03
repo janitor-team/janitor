@@ -211,7 +211,7 @@ pub fn build_from_config(
     output_directory: &std::path::Path,
     config: &serde_json::Value,
     env: &std::collections::HashMap<String, String>,
-) -> Result<serde_json::Value, WorkerFailure> {
+) -> Result<crate::debian::build::DebianBuildResult, WorkerFailure> {
     let config: DebianBuildConfig = serde_json::from_value(config.clone()).map_err(|e| {
         WorkerFailure::new(
             "build-config-parse-failure",
@@ -253,7 +253,6 @@ pub fn build_from_config(
             .collect(),
         transient: None,
     })
-    .map(|x| serde_json::to_value(x).unwrap())
 }
 
 pub struct DebianTarget {
@@ -300,6 +299,7 @@ impl crate::Target for DebianTarget {
         config: &crate::BuildConfig,
     ) -> Result<serde_json::Value, WorkerFailure> {
         build_from_config(local_tree, subpath, output_directory, config, &self.env)
+            .map(|r| serde_json::to_value(r).unwrap())
     }
 
     fn validate(

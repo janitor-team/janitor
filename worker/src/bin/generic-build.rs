@@ -22,7 +22,7 @@ fn main() {
         let config = std::fs::read_to_string(config).unwrap();
         serde_json::from_str(&config).unwrap()
     } else {
-        serde_json::from_value(serde_json::json!({})).unwrap()
+        janitor::api::worker::GenericBuildConfig::default()
     };
 
     match janitor_worker::generic::build_from_config(
@@ -34,7 +34,7 @@ fn main() {
     ) {
         Ok(result) => serde_json::to_writer(std::io::stdout(), &result).unwrap(),
         Err(e) => {
-            serde_json::to_writer(std::io::stdout(), &serde_json::to_value(e).unwrap()).unwrap();
+            serde_json::to_writer(std::io::stdout(), &e).unwrap();
             std::process::exit(1);
         }
     }
