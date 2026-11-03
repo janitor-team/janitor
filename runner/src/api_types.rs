@@ -263,13 +263,6 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
-/// Error response: `{"reason": ...}`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReasonResponse {
-    /// Reason for the failure.
-    pub reason: String,
-}
-
 /// Error response with additional detail: `{"reason": ..., "detail": ...}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReasonDetailResponse {
@@ -814,49 +807,6 @@ pub struct WatchdogHealthResponse {
     /// Error message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-}
-
-/// Request for work assignment.
-///
-/// `worker` is only honoured by the unauthenticated `/active-runs`
-/// route on the private (intra-cluster) app. The authenticated
-/// public app's `/active-runs` route (workers reach it via the ingress
-/// `/runner/(.*)` -> `/$2`) ignores this field entirely and reads
-/// the worker name from the credentials extension instead.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct AssignRequest {
-    /// Worker name (private/admin path only). The Rust worker sends
-    /// this as `node`; older Python workers sent `worker`.
-    #[serde(alias = "node")]
-    pub worker: Option<String>,
-    /// Worker link.
-    pub worker_link: Option<String>,
-    /// Backchannel configuration.
-    pub backchannel: Option<BackchannelRequest>,
-    /// Specific codebase to work on.
-    pub codebase: Option<CodebaseName>,
-    /// Specific campaign to work on.
-    pub campaign: Option<Campaign>,
-    /// Hosts the worker is temporarily rate-limited on; the queue
-    /// filter unions these with the runner-wide `avoid_hosts` and the
-    /// Redis `rate-limit-hosts` set so the worker doesn't get handed
-    /// an item it would just bounce back on.
-    #[serde(default)]
-    pub exclude_hosts: Option<Vec<String>>,
-}
-
-/// Backchannel as sent by the worker in an assignment request:
-/// `{"kind": "http"|"jenkins", "url": "..."}`. `my_url` is accepted as
-/// an alias for `url`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct BackchannelRequest {
-    /// "http" or "jenkins".
-    pub kind: Option<String>,
-    /// URL of the worker or Jenkins build.
-    #[serde(alias = "my_url")]
-    pub url: Option<String>,
-    /// Jenkins metadata.
-    pub jenkins: Option<serde_json::Value>,
 }
 
 /// Request for resume information.

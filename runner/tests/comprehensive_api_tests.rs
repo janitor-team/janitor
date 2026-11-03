@@ -8,9 +8,8 @@ use serde::de::DeserializeOwned;
 use std::sync::Arc;
 use tower::ServiceExt;
 
-use janitor_runner::api_types::{
-    AssignRequest, QueuePositionEta, ReasonResponse, ScheduleControlRequest, ScheduledRun,
-};
+use janitor::api::runner::{AssignRequest, ReasonResponse};
+use janitor_runner::api_types::{QueuePositionEta, ScheduleControlRequest, ScheduledRun};
 use janitor_runner::{test_utils, ActiveRunJson, AppState};
 
 async fn setup() -> Option<(axum::Router, Arc<AppState>)> {

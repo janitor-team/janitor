@@ -1,14 +1,14 @@
 use crate::api_types::{
-    AdminWorkerInfo, AssignRequest, AssignWorkerError, AssignmentBody, AssignmentBranch,
+    AdminWorkerInfo, AssignWorkerError, AssignmentBody, AssignmentBranch,
     AssignmentTargetRepository, BuildAssignment, BuildAssignmentConfig, CandidateUpload,
     CleanupRunsResponse, CurrentStageResponse, DebianBuildAssignment, ErrorResponse,
     FinishConflictResponse, FinishResponse, GenericBuildAssignment, MessageResponse, PeekResponse,
     PublicRunHealth, PublicWorkerInfo, QueueEntry, QueuePositionEta, QueueStatusResponse,
-    RateLimitedResponse, ReasonDetailResponse, ReasonResponse, ResumeAssignment,
-    ResumeChainResponse, ResumeCheckResponse, ResumeConsistencyResponse, ResumeDescendantsResponse,
-    ResumeInfoRequest, RunSummary, RunnerStatus, ScheduleControlRequest, ScheduleRequest,
-    ScheduleResponse, ScheduledCandidate, ScheduledRun, UploadCandidatesResponse,
-    WatchdogHealthResponse, WorkerCounts, WorkerListResponse,
+    RateLimitedResponse, ReasonDetailResponse, ResumeAssignment, ResumeChainResponse,
+    ResumeCheckResponse, ResumeConsistencyResponse, ResumeDescendantsResponse, ResumeInfoRequest,
+    RunSummary, RunnerStatus, ScheduleControlRequest, ScheduleRequest, ScheduleResponse,
+    ScheduledCandidate, ScheduledRun, UploadCandidatesResponse, WatchdogHealthResponse,
+    WorkerCounts, WorkerListResponse,
 };
 use crate::{
     get_builder, metrics::MetricsCollector, ActiveRun, AppState, Backchannel, BuilderResult,
@@ -23,6 +23,7 @@ use axum::{
     Extension, Json, Router,
 };
 use chrono::Utc;
+use janitor::api::runner::{AssignRequest, ReasonResponse};
 use janitor::api::runner::{PublishStatusUpdate, UpdateRunRequest};
 use janitor::api::EmptyResponse;
 use janitor::{Campaign, ChangeSetId, CodebaseName, RunId};

@@ -1,38 +1,12 @@
 use crate::get_build_arch;
 use backoff::ExponentialBackoff;
-use janitor::api::runner::FinishResponse;
+use janitor::api::runner::{AssignRequest, BackchannelRequest, FinishResponse, ReasonResponse};
 use janitor::api::worker::{Assignment, Metadata};
 use janitor::{Campaign, CodebaseName, RunId};
 use reqwest::multipart::{Form, Part};
 use reqwest::{Error as ReqwestError, Response, StatusCode, Url};
-use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::path::Path;
-
-/// How the runner can reach back to the worker.
-#[derive(Debug, Serialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
-enum Backchannel<'a> {
-    Http { url: &'a Url },
-    Jenkins { url: &'a Url },
-}
-
-/// Body of a request for a new assignment.
-#[derive(Debug, Serialize)]
-struct AssignRequest<'a> {
-    node: &'a str,
-    archs: Vec<String>,
-    worker_link: Option<&'a Url>,
-    backchannel: Option<Backchannel<'a>>,
-    codebase: Option<&'a CodebaseName>,
-    campaign: Option<&'a Campaign>,
-}
-
-/// Error body returned by the runner.
-#[derive(Debug, Serialize, Deserialize)]
-struct ReasonResponse {
-    reason: Option<String>,
-}
 
 #[derive(Debug)]
 pub enum AssignmentError {
@@ -75,21 +49,27 @@ pub async fn get_assignment_raw(
         }
     };
     let backchannel = my_url
-        .map(|url| Backchannel::Http { url })
-        .or_else(|| jenkins_build_url.map(|url| Backchannel::Jenkins { url }));
+        .map(|url| ("http", url))
+        .or_else(|| jenkins_build_url.map(|url| ("jenkins", url)))
+        .map(|(kind, url)| BackchannelRequest {
+            kind: Some(kind.to_string()),
+            url: Some(url.to_string()),
+            jenkins: None,
+        });
     let request = AssignRequest {
-        node: node_name,
+        worker: Some(node_name.to_string()),
         archs: vec![build_arch],
-        worker_link: jenkins_build_url.or(my_url),
+        worker_link: jenkins_build_url.or(my_url).map(Url::to_string),
         backchannel,
-        codebase,
-        campaign,
+        codebase: codebase.cloned(),
+        campaign: campaign.cloned(),
+        exclude_hosts: None,
     };
     async fn send_assignment_request(
         session: reqwest::Client,
         assign_url: Url,
         credentials: &Credentials,
-        request: &AssignRequest<'_>,
+        request: &AssignRequest,
     ) -> Result<Response, ReqwestError> {
         let mut builder = session.post(assign_url);
         builder = credentials.set_credentials(builder);
@@ -118,7 +98,7 @@ pub async fn get_assignment_raw(
                             e
                         )))
                     })?;
-                    if body.reason.as_deref() == Some("queue empty") {
+                    if body.reason == "queue empty" {
                         Err(backoff::Error::Permanent(AssignmentError::EmptyQueue))
                     } else {
                         Err(backoff::Error::transient(AssignmentError::Failure(
@@ -460,10 +440,7 @@ pub async fn upload_results(
                         e
                     )))
                 })?;
-                let reason = body
-                    .reason
-                    .unwrap_or_else(|| "Runner returned 404".to_string());
-                Err(backoff::Error::permanent(UploadFailure(reason)))
+                Err(backoff::Error::permanent(UploadFailure(body.reason)))
             }
             StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE => {
                 let status = response.status();
@@ -586,12 +563,17 @@ mod tests {
     fn assign_request_wire_format() {
         let url: Url = "http://worker.example.com:8080/".parse().unwrap();
         let request = AssignRequest {
-            node: "node1",
+            worker: Some("node1".to_string()),
             archs: vec!["amd64".to_string()],
-            worker_link: Some(&url),
-            backchannel: Some(Backchannel::Http { url: &url }),
+            worker_link: Some(url.to_string()),
+            backchannel: Some(BackchannelRequest {
+                kind: Some("http".to_string()),
+                url: Some(url.to_string()),
+                jenkins: None,
+            }),
             codebase: None,
             campaign: None,
+            exclude_hosts: None,
         };
         let expected: serde_json::Value = serde_json::from_str(
             r#"{
@@ -607,12 +589,8 @@ mod tests {
         assert_eq!(serde_json::to_value(&request).unwrap(), expected);
 
         let request = AssignRequest {
-            node: "node1",
-            archs: vec![],
-            worker_link: None,
-            backchannel: None,
-            codebase: None,
-            campaign: None,
+            worker: Some("node1".to_string()),
+            ..Default::default()
         };
         let expected: serde_json::Value = serde_json::from_str(
             r#"{
@@ -678,7 +656,7 @@ mod tests {
 
     fn reason_body(reason: &str) -> String {
         serde_json::to_string(&ReasonResponse {
-            reason: Some(reason.to_string()),
+            reason: reason.to_string(),
         })
         .unwrap()
     }
