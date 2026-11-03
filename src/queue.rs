@@ -52,7 +52,7 @@ pub struct Queue<'a> {
 #[derive(FromRow)]
 pub struct ETA {
     pub position: i64,
-    pub wait_time: PgInterval,
+    pub wait_time: Option<PgInterval>,
 }
 
 #[derive(Debug, Default, Clone, FromRow, serde::Serialize, serde::Deserialize)]

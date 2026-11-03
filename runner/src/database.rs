@@ -564,14 +564,14 @@ INSERT INTO run (
         &self,
         codebase: &CodebaseName,
         campaign: &Campaign,
-    ) -> Result<Option<(i32, std::time::Duration)>, sqlx::Error> {
+    ) -> Result<Option<(i32, Option<std::time::Duration>)>, sqlx::Error> {
         // `queue_positions.wait_time` is a Postgres INTERVAL (not
         // INT8) and `position` is BIGINT from `row_number()`. Decode
         // both via a typed row.
         #[derive(sqlx::FromRow)]
         struct PositionRow {
             position: i64,
-            wait_time: PgInterval,
+            wait_time: Option<PgInterval>,
         }
         let row: Option<PositionRow> = sqlx::query_as(
             "SELECT position, wait_time FROM queue_positions WHERE codebase = $1 AND suite = $2",
@@ -581,7 +581,12 @@ INSERT INTO run (
         .fetch_optional(self.pool())
         .await?;
 
-        Ok(row.map(|r| (r.position as i32, interval_to_duration(&r.wait_time))))
+        Ok(row.map(|r| {
+            (
+                r.position as i32,
+                r.wait_time.as_ref().map(interval_to_duration),
+            )
+        }))
     }
 
     /// Update run publish status.
