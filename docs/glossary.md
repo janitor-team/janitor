@@ -42,7 +42,7 @@ codebase through building the result.
 hands work to workers.
 
 - *site*: The job that serves the web site, including the cupboard, and the
-API.
+[API](api.md).
 
 - *target*: The kind of build a campaign has, `debian` or `generic`, set by
 whichever of `debian_build` or `generic_build` it has. It decides how the
