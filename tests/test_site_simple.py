@@ -367,6 +367,15 @@ async def _callback(client, **cookies):
     )
 
 
+async def _add_session(client, session_id, userinfo):
+    async with client.app.database.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO site_session (id, userinfo) VALUES ($1, $2)",
+            session_id,
+            userinfo,
+        )
+
+
 async def _get_session(client, session_id):
     async with client.app.database.acquire() as conn:
         return await conn.fetchval(
@@ -431,3 +440,40 @@ async def test_oauth_callback_clears_state_cookie_with_matching_path(
         "/oauth/callback",
         "0",
     )
+
+
+ALICE = {"name": "Alice", "email": "alice@example.com", "groups": []}
+
+
+async def test_logout_deletes_session_and_redirects_home(
+    aiohttp_client, database_location
+):
+    client = await _openid_site(aiohttp_client, database_location)
+    await _add_session(client, "mysession", ALICE)
+    resp = await client.post(
+        "/logout", cookies={"session_id": "mysession"}, allow_redirects=False
+    )
+    assert resp.status == 302
+    assert resp.headers["Location"] == "/"
+    assert resp.cookies["session_id"]["max-age"] == "0"
+    assert await _get_session(client, "mysession") is None
+
+
+async def test_logout_get_keeps_session(aiohttp_client, database_location):
+    # A plain GET, as from a link or image on another site, must not log out.
+    client = await _openid_site(aiohttp_client, database_location)
+    await _add_session(client, "mysession", ALICE)
+    resp = await client.get(
+        "/logout", cookies={"session_id": "mysession"}, allow_redirects=False
+    )
+    assert resp.status == 405
+    assert await _get_session(client, "mysession") == ALICE
+
+
+async def test_logout_without_session_cookie_still_redirects(
+    aiohttp_client, database_location
+):
+    client = await _openid_site(aiohttp_client, database_location)
+    resp = await client.post("/logout", allow_redirects=False)
+    assert resp.status == 302
+    assert resp.headers["Location"] == "/"
