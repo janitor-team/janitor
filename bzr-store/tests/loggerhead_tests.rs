@@ -3,7 +3,7 @@
 //! The public app exposes `/bzr/<codebase>` as a per-codebase HTML
 //! browser backed by the Rust `loggerhead` crate (which uses breezy
 //! via PyO3). These tests boot the real app against a throwaway
-//! Postgres and a real on-disk bzr branch created via the `brz` CLI,
+//! Postgres and a real on-disk bzr branch created via breezyshim,
 //! then check that the HTML browser answers.
 //!
 //! If `brz` isn't on PATH, the tests are skipped: the integration is
@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
+use breezyshim::tree::{MutableTree, WorkingTree};
 use janitor::{test_utils::TestDatabase, test_with_database};
 use janitor_bzr_store::{
     config::{BzrConfig, BzrStoreConfig, Config},
@@ -98,45 +99,15 @@ async fn seed_codebase(pool: &PgPool, name: &str) {
     .unwrap();
 }
 
-/// Create a bzr branch with one commit at `branch_path`. Returns true
-/// on success.
-fn make_bzr_branch(branch_path: &std::path::Path) -> bool {
-    std::fs::create_dir_all(branch_path).unwrap();
-    let whoami = Command::new("brz")
-        .args(["whoami", "test <test@example.com>"])
-        .current_dir(branch_path)
-        .status();
-    if whoami.map(|s| !s.success()).unwrap_or(true) {
-        // whoami can fail silently in CI; keep going.
-    }
-    let steps = [
-        vec!["init", "--format=2a"],
-        vec!["whoami", "test <test@example.com>"],
-    ];
-    for args in &steps {
-        let out = Command::new("brz")
-            .args(args)
-            .current_dir(branch_path)
-            .output();
-        if out.map(|o| !o.status.success()).unwrap_or(true) {
-            return false;
-        }
-    }
+/// Create a bzr branch with one commit at `branch_path`.
+fn make_bzr_branch(branch_path: &std::path::Path) {
+    let env = breezyshim::testing::TestEnv::new();
+    let wt = breezyshim::controldir::create_standalone_workingtree(branch_path, "2a").unwrap();
     // Make a commit so loggerhead has something to render.
-    let readme = branch_path.join("README");
-    std::fs::write(&readme, "hello loggerhead\n").unwrap();
-    let add = Command::new("brz")
-        .args(["add", "README"])
-        .current_dir(branch_path)
-        .output();
-    if add.map(|o| !o.status.success()).unwrap_or(true) {
-        return false;
-    }
-    let commit = Command::new("brz")
-        .args(["commit", "-m", "initial"])
-        .current_dir(branch_path)
-        .output();
-    commit.map(|o| o.status.success()).unwrap_or(false)
+    std::fs::write(branch_path.join("README"), "hello loggerhead\n").unwrap();
+    wt.add(&[std::path::Path::new("README")]).unwrap();
+    wt.build_commit().message("initial").commit().unwrap();
+    std::mem::drop(env);
 }
 
 test_with_database! {
@@ -198,10 +169,7 @@ fn test_loggerhead_browse_known_codebase_renders() {
 
         let tmp = TempDir::new().unwrap();
         let branch_path = tmp.path().join("foo");
-        if !make_bzr_branch(&branch_path) {
-            eprintln!("skipping: could not create a bzr branch (brz config?)");
-            return;
-        }
+        make_bzr_branch(&branch_path);
 
         let cfg = build_config(tmp.path(), test_db_url(&test_db));
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
@@ -282,10 +250,7 @@ fn test_loggerhead_changes_endpoint_reachable() {
 
         let tmp = TempDir::new().unwrap();
         let branch_path = tmp.path().join("foo");
-        if !make_bzr_branch(&branch_path) {
-            eprintln!("skipping: could not create a bzr branch");
-            return;
-        }
+        make_bzr_branch(&branch_path);
 
         let cfg = build_config(tmp.path(), test_db_url(&test_db));
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())

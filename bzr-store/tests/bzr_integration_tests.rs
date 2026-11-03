@@ -101,6 +101,7 @@ fn brz_working() -> bool {
 /// out of `brz log`.
 fn build_two_commit_branch(branch_path: &std::path::Path) -> Option<(String, String)> {
     std::fs::create_dir_all(branch_path).ok()?;
+    let env = breezyshim::testing::TestEnv::new();
     let run = |args: &[&str]| -> Option<()> {
         Command::new("brz")
             .args(args)
@@ -110,9 +111,7 @@ fn build_two_commit_branch(branch_path: &std::path::Path) -> Option<(String, Str
             .filter(|o| o.status.success())
             .map(|_| ())
     };
-    // Branch init + author (whoami).
     run(&["init", "--format=2a"])?;
-    run(&["whoami", "test <test@example.com>"])?;
 
     // First commit.
     std::fs::write(branch_path.join("README"), "r1\n").ok()?;
@@ -129,6 +128,7 @@ fn build_two_commit_branch(branch_path: &std::path::Path) -> Option<(String, Str
         .current_dir(branch_path)
         .output()
         .ok()?;
+    std::mem::drop(env);
     if !output.status.success() {
         return None;
     }
