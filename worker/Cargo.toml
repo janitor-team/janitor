@@ -21,6 +21,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { workspace = true, features = ["derive", "env"], optional = true }
 janitor = { path = ".." }
 janitor-types = { workspace = true, features = ["pyo3"] }
+janitor-service = { workspace = true }
 breezyshim.workspace = true
 silver-platter = { workspace = true, features = ["debian"] }
 debian-analyzer = { workspace = true, optional = true }

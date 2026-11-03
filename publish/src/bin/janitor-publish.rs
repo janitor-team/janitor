@@ -265,7 +265,7 @@ async fn main() -> Result<(), i32> {
             })?;
 
         if let Some(prometheus) = args.prometheus.as_ref() {
-            janitor::prometheus::push_to_gateway(
+            janitor_service::prometheus::push_to_gateway(
                 prometheus,
                 "janitor.publish",
                 maplit::hashmap! {},
