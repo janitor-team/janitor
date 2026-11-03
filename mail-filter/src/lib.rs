@@ -52,23 +52,20 @@ fn parse_json_ld(ld: &Value) -> Option<String> {
     match ld {
         Value::Array(ld_array) => ld_array.iter().find_map(parse_json_ld),
         Value::Object(ld_object) => {
-            let context = ld_object.get("@context")?;
-            if context == &Value::String("https://schema.org".to_string())
-                || context == &Value::String("http://schema.org".to_string())
+            let context = ld_object.get("@context")?.as_str()?;
+            if !matches!(context, "https://schema.org" | "http://schema.org")
+                || ld_object.get("@type")?.as_str()? != "EmailMessage"
             {
-                let type_ = ld_object.get("@type")?;
-                if type_ == &Value::String("EmailMessage".to_string()) {
-                    let action = ld_object
-                        .get("action")
-                        .or_else(|| ld_object.get("potentialAction"))?;
-                    let action_type = action.get("@type")?;
-                    if action_type == &Value::String("ViewAction".to_string()) {
-                        let url = action.get("url")?.as_str()?;
-                        return Some(url.split('#').next().unwrap().to_string());
-                    }
-                }
+                return None;
             }
-            None
+            let action = ld_object
+                .get("action")
+                .or_else(|| ld_object.get("potentialAction"))?;
+            if action.get("@type")?.as_str()? != "ViewAction" {
+                return None;
+            }
+            let url = action.get("url")?.as_str()?;
+            Some(url.split('#').next().unwrap().to_string())
         }
         _ => None,
     }
