@@ -54,4 +54,6 @@ COPY --from=build /code/target/release/janitor-archive /usr/local/bin/janitor-ar
 
 EXPOSE 9914
 
-ENTRYPOINT ["janitor-archive", "--port=9914", "--listen-address=0.0.0.0"]
+EXPOSE 9915
+
+ENTRYPOINT ["janitor-archive", "--port=9914", "--public-port=9915", "--listen-address=0.0.0.0"]

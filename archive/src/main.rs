@@ -27,6 +27,10 @@ struct Cli {
     #[arg(long, default_value_t = 9914)]
     port: u16,
 
+    /// Public listen port, serving only /dists.
+    #[arg(long, default_value_t = 9915)]
+    public_port: u16,
+
     /// Listen address.
     #[arg(long, default_value = "localhost")]
     listen_address: String,
@@ -244,6 +248,7 @@ async fn start_web_server(
         .bind
         .clone()
         .unwrap_or_else(|| format!("{}:{}", cli.listen_address, cli.port));
+    let public_bind_address = format!("{}:{}", cli.listen_address, cli.public_port);
     info!("Starting web server on: {}", bind_address);
 
     let db_pool = locations.connect_database().await?;
@@ -343,7 +348,7 @@ async fn start_web_server(
     )
     .await?;
 
-    web_service.serve(&bind_address).await
+    web_service.serve(&bind_address, &public_bind_address).await
 }
 
 /// Clean up old repository files.
