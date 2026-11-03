@@ -252,6 +252,7 @@ async fn main() -> Result<(), i32> {
         unexpected_mp_limit: args.unexpected_mp_limit,
         gpg,
         require_binary_diff: args.require_binary_diff,
+        auto_publish: !args.no_auto_publish,
         health_checker,
         last_full_scan_at: tokio::sync::watch::channel(None).0,
     });
