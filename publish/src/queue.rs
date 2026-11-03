@@ -238,6 +238,29 @@ async fn run_publish_loop(
     }
 }
 
+/// What is left of `--push-limit` in one publish round. It counts runs
+/// that pushed, not branches, so a run that pushes several branches uses one.
+struct PushBudget {
+    limit: Option<usize>,
+    used: usize,
+}
+
+impl PushBudget {
+    fn new(limit: Option<usize>) -> Self {
+        Self { limit, used: 0 }
+    }
+
+    fn remaining(&self) -> Option<usize> {
+        self.limit.map(|limit| limit - self.used)
+    }
+
+    fn record(&mut self, results: &HashMap<String, Option<String>>) {
+        if results.values().any(|m| m.as_deref() == Some("push")) {
+            self.used += 1;
+        }
+    }
+}
+
 /// Publish all pending ready changes.
 ///
 /// This function identifies runs that are ready to be published and initiates
@@ -258,6 +281,7 @@ pub async fn publish_pending_ready(
     let start_time = std::time::Instant::now();
     let mut actions: HashMap<Option<String>, usize> = HashMap::new();
     let mut published_count = 0;
+    let mut push_budget = PushBudget::new(push_limit);
     let mut error_count = 0;
 
     log::info!(
@@ -291,14 +315,6 @@ pub async fn publish_pending_ready(
             run.codebase
         );
 
-        // Check push limit
-        if let Some(limit) = push_limit {
-            if published_count >= limit {
-                log::info!("Reached push limit of {}, stopping", limit);
-                break;
-            }
-        }
-
         // Consider publishing this run. Pass `policy_command` (the
         // candidate's canonical command) rather than `run.command`; the
         // two can drift when a campaign's command changes after a run.
@@ -315,7 +331,7 @@ pub async fn publish_pending_ready(
                 &rate_limit_bucket,
                 &unpublished_branches,
                 &policy_command,
-                push_limit.map(|limit| limit - published_count),
+                push_budget.remaining(),
                 require_binary_diff,
             ),
         )
@@ -339,6 +355,7 @@ pub async fn publish_pending_ready(
                 if let Some(pre_flight) = results.get("__status").and_then(|v| v.as_ref()) {
                     *actions.entry(Some(pre_flight.clone())).or_insert(0) += 1;
                 } else {
+                    push_budget.record(&results);
                     for (role, mode) in &results {
                         match mode {
                             Some(m) => {
@@ -419,4 +436,28 @@ pub async fn check_stragglers(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PushBudget;
+    use crate::should_skip_for_push_limit;
+    use std::collections::HashMap;
+
+    fn results(modes: &[(&str, &str)]) -> HashMap<String, Option<String>> {
+        modes
+            .iter()
+            .map(|(role, mode)| (role.to_string(), Some(mode.to_string())))
+            .collect()
+    }
+
+    #[test]
+    fn test_push_budget_counts_runs_that_pushed() {
+        let mut budget = PushBudget::new(Some(1));
+        budget.record(&results(&[("main", "propose")]));
+        budget.record(&results(&[("main", "propose")]));
+        assert!(!should_skip_for_push_limit(true, budget.remaining()));
+        budget.record(&results(&[("main", "push"), ("upstream", "push")]));
+        assert!(should_skip_for_push_limit(true, budget.remaining()));
+    }
 }
