@@ -2211,6 +2211,8 @@ pub struct AppState {
     pub gpg: Arc<breezyshim::gpg::GPGContext>,
     /// Whether to require binary diffs.
     pub require_binary_diff: bool,
+    /// Whether the periodic loop publishes approved runs (off with --no-auto-publish).
+    pub auto_publish: bool,
     /// Health checker.
     pub health_checker: Arc<BasicHealthChecker>,
     /// Completion time of the most recent *full* `check_existing` pass
