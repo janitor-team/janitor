@@ -194,20 +194,14 @@ impl<'a> Queue<'a> {
         refresh: bool,
         requester: Option<&str>,
     ) -> Result<(i32, String), Error> {
-        let row: Option<(i32, String)> = sqlx::query_as(
+        sqlx::query_as(
             "INSERT INTO queue (command, priority, bucket, context, estimated_duration, suite, refresh, requester, change_set, codebase)
              VALUES ($1, (SELECT COALESCE(MIN(priority), 0) FROM queue) + $2::bigint, $3::queue_bucket, $4, $5, $6::suite_name, $7, $8, $9, $10)
              ON CONFLICT (codebase, suite, coalesce(change_set, ''::text))
-             DO UPDATE SET context = EXCLUDED.context,
-                           priority = EXCLUDED.priority,
-                           bucket = EXCLUDED.bucket,
-                           estimated_duration = EXCLUDED.estimated_duration,
-                           refresh = EXCLUDED.refresh,
-                           requester = EXCLUDED.requester,
-                           command = EXCLUDED.command,
+             DO UPDATE SET (context, priority, bucket, estimated_duration, refresh, requester, command) = (
+                               SELECT n.context, n.priority, n.bucket, n.estimated_duration, n.refresh, n.requester, n.command
+                               FROM (SELECT (CASE WHEN queue.bucket >= EXCLUDED.bucket THEN EXCLUDED ELSE queue END).*) AS n),
                            codebase = EXCLUDED.codebase
-             WHERE queue.bucket >= EXCLUDED.bucket OR
-                   (queue.bucket = EXCLUDED.bucket AND queue.priority >= EXCLUDED.priority)
              RETURNING id, bucket::text"
         )
         .bind(command)
@@ -220,21 +214,8 @@ impl<'a> Queue<'a> {
         .bind(requester)
         .bind(change_set)
         .bind(codebase)
-        .fetch_optional(self.pool)
-        .await?;
-
-        if let Some(row) = row {
-            Ok(row)
-        } else {
-            sqlx::query_as(
-                "SELECT id, bucket::text FROM queue WHERE codebase = $1 AND suite = $2 AND coalesce(change_set, ''::text) = $3"
-            )
-            .bind(codebase)
-            .bind(campaign)
-            .bind(change_set.map_or("", |c| c.as_str()))
-            .fetch_one(self.pool)
-            .await
-        }
+        .fetch_one(self.pool)
+        .await
     }
 
     /// Iterate items currently queued.
@@ -350,6 +331,29 @@ mod tests {
         assert_eq!(
             queue.get_buckets().await.unwrap(),
             vec![("missing-deps".to_string(), 1)]
+        );
+
+        // Re-adding with a stronger bucket replaces the entry.
+        let (id3, bucket3) = queue
+            .add(
+                &CodebaseName::new("cb").unwrap(),
+                "cmd",
+                &Campaign::new("lintian-fixes").unwrap(),
+                None,
+                0.0,
+                "manual",
+                None,
+                None,
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!((id3, bucket3.as_str()), (id, "manual"));
+
+        assert_eq!(
+            queue.get_buckets().await.unwrap(),
+            vec![("manual".to_string(), 1)]
         );
     }
 }

@@ -30,6 +30,12 @@ async def test_double_add(con):
         1,
         "default",
     )
+    queue_id, bucket = await queue.add(
+        codebase="foo", campaign="bar", command="true", bucket="manual"
+    )
+    assert (queue_id, bucket) == (1, "manual")
+    queue_id, bucket = await queue.add(codebase="foo", campaign="bar", command="true")
+    assert (queue_id, bucket) == (1, "manual")
 
 
 async def test_vcs_only(con):

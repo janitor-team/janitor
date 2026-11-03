@@ -237,7 +237,7 @@ queue.id ASC
         refresh: bool = False,
         requester: Optional[str] = None,
     ) -> tuple[int, str]:
-        row = await self.conn.fetchrow(
+        return await self.conn.fetchrow(
             "INSERT INTO queue "
             "(command, priority, bucket, context, "
             "estimated_duration, suite, refresh, requester, change_set, "
@@ -246,14 +246,12 @@ queue.id ASC
             + " + $2, $3, $4, $5, $6, $7, $8, $9, $10) "
             "ON CONFLICT (codebase, suite, coalesce(change_set, ''::text)) "
             "DO UPDATE SET "
-            "context = EXCLUDED.context, priority = EXCLUDED.priority, "
-            "bucket = EXCLUDED.bucket, "
-            "estimated_duration = EXCLUDED.estimated_duration, "
-            "refresh = EXCLUDED.refresh, requester = EXCLUDED.requester, "
-            "command = EXCLUDED.command, codebase = EXCLUDED.codebase "
-            "WHERE queue.bucket >= EXCLUDED.bucket OR "
-            "(queue.bucket = EXCLUDED.bucket AND "
-            "queue.priority >= EXCLUDED.priority) RETURNING id, bucket",
+            "(context, priority, bucket, estimated_duration, refresh, "
+            "requester, command) = (SELECT n.context, n.priority, n.bucket, "
+            "n.estimated_duration, n.refresh, n.requester, n.command FROM "
+            "(SELECT (CASE WHEN queue.bucket >= EXCLUDED.bucket "
+            "THEN EXCLUDED ELSE queue END).*) AS n), "
+            "codebase = EXCLUDED.codebase RETURNING id, bucket",
             command,
             offset,
             bucket,
@@ -265,22 +263,6 @@ queue.id ASC
             change_set,
             codebase,
         )
-        if row is None:
-            # Nothing has changed? TODO(jelmer): Avoid a second query in
-            # this case.
-            row = await self.conn.fetchrow(
-                "SELECT id, bucket FROM queue "
-                "WHERE codebase = $1 AND suite = $2 "
-                "AND coalesce(change_set, '') = $3",
-                codebase,
-                campaign,
-                change_set or "",
-            )
-            assert row, (
-                f"Unable to add or retrieve queue entry for {campaign}/{codebase}/{change_set}"
-            )
-            return row
-        return row
 
     async def get_buckets(self):
         return await self.conn.fetch(
