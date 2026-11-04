@@ -9,7 +9,7 @@ use janitor_publish::web::{
     BlockerInactiveDetails, BlockerInfo, BlockerPublishStatusDetails, BlockerSuccessDetails,
 };
 use janitor_publish::{AppState, PublishWorker};
-use janitor_types::ChangeSetId;
+use janitor_types::{Campaign, ChangeSetId, CodebaseName};
 use sqlx::PgPool;
 use tower::ServiceExt;
 
@@ -341,8 +341,8 @@ test_with_database! {
 
         let status = janitor_publish::state::get_previous_mp_status(
             test_db.pool(),
-            &janitor::CodebaseName::new("cb-1").unwrap(),
-            &janitor::Campaign::new("lintian-fixes").unwrap(),
+            &CodebaseName::new("cb-1").unwrap(),
+            &Campaign::new("lintian-fixes").unwrap(),
         )
         .await
         .unwrap();
