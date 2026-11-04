@@ -387,6 +387,38 @@ async def test_review_without_oauth2_provider_is_not_qa_review(aiohttp_client, d
     assert [tuple(row) for row in rows] == [("r1", "alice@example.com", "approved")]
 
 
+async def test_run(aiohttp_client, db):
+    async with db.acquire() as conn:
+        await _insert_codebase(conn, "foo")
+        now = utcnow()
+        await _insert_run(
+            conn,
+            run_id="r1",
+            codebase="foo",
+            start_time=now - timedelta(hours=1),
+            finish_time=now,
+            description="Fixed 2 issues",
+        )
+    client = await create_client(aiohttp_client, db)
+
+    resp = await client.get("/run/r1")
+    assert resp.status == 200
+    assert await resp.json() == {
+        "run_id": "r1",
+        "codebase": "foo",
+        "campaign": "mycampaign",
+        "start_time": (now - timedelta(hours=1)).isoformat(),
+        "finish_time": now.isoformat(),
+        "command": "true",
+        "description": "Fixed 2 issues",
+        "build_info": None,
+        "result_code": "success",
+        "publish_status": "unknown",
+    }
+    resp = await client.get("/run/r2")
+    assert resp.status == 404
+
+
 async def test_run_logs(aiohttp_client, db, tmp_path):
     async with db.acquire() as conn:
         await _insert_codebase(conn, "foo")
