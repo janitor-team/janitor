@@ -144,7 +144,7 @@
                             <td>
                                 <a class="reference external" href="/cupboard/c/{{ queue_item.codebase }}/">{{ queue_item.codebase }}</a>
                             </td>
-                            <td>{{ description|safe }}</td>
+                            <td>{{ description }}</td>
                             <td>{{ format_duration(queue_item.estimated_duration) if queue_item.estimated_duration else 'unknown' }}</td>
                             <td>{{ queue_item.requester }}</td>
                             <td>
