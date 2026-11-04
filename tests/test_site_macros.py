@@ -15,9 +15,11 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
+import pytest
 from bs4 import BeautifulSoup
 from jinja2 import Environment, select_autoescape
 
+from janitor.config import read_string
 from janitor.site import template_loader
 from janitor.vcs import RemoteBzrVcsManager, RemoteGitVcsManager
 
@@ -72,7 +74,7 @@ def test_display_reviews_table():
     ]
     soup = BeautifulSoup(
         str(
-            template.module.display_reviews_table(  # type: ignore
+            template.make_module({"config": read_string("")}).display_reviews_table(  # type: ignore
                 reviews, "me@example.com"
             )
         ),
@@ -324,3 +326,38 @@ def test_display_lintian_result_string_hints():
 </ul>
 <!-- lintian version 2.100.0 -->
 """)
+
+
+@pytest.mark.parametrize(
+    "config, user, expected",
+    [
+        ("", None, ("bob@example.com", [])),
+        (
+            "hide_reviewer_identities: true",
+            {"email": "alice@example.com"},
+            ("bob@example.com", []),
+        ),
+        (
+            "hide_reviewer_identities: true",
+            None,
+            (
+                "Login to see reviewer identities",
+                ["/login?url=https%3A//example.com/cupboard/rejected"],
+            ),
+        ),
+    ],
+)
+def test_display_reviewer(config, user, expected):
+    src = (
+        '{% from "review_util.html" import display_reviewer with context %}'
+        '{{ display_reviewer("bob@example.com") }}'
+    )
+    soup = BeautifulSoup(
+        env.from_string(src).render(
+            config=read_string(config),
+            user=user,
+            url="https://example.com/cupboard/rejected",
+        ),
+        "html.parser",
+    )
+    assert (soup.get_text(), [a["href"] for a in soup.find_all("a")]) == expected

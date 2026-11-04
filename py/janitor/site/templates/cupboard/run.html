@@ -154,7 +154,7 @@
         {% else %}
             <h2>Publish blockers</h2>
             {% set blockers = publish_blockers() %}
-            <!-- {{ blockers|tojson(indent=4) }}<-->
+            {% if user or not config.hide_reviewer_identities %}<!-- {{ blockers|tojson(indent=4) }}<-->{% endif %}
             {{ display_publish_blockers(blockers) }}
         {% endif %}
         {% if binary_packages %}

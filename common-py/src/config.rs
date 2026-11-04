@@ -131,6 +131,11 @@ impl Config {
             .map(|a| AptRepository(a.clone()))
             .collect()
     }
+
+    #[getter]
+    pub fn hide_reviewer_identities(&self) -> bool {
+        self.0.hide_reviewer_identities.unwrap_or(false)
+    }
 }
 
 #[pyclass]

@@ -97,6 +97,9 @@ unset:
   at a 0.1 sample rate. No tracing without it.
 - `user_agent` - the HTTP User-Agent sent on outbound requests. Falls back to
   `janitor/<version>` if unset.
+- `hide_reviewer_identities` - if `true`, visitors who are not logged in
+  see a login link instead of each reviewer's e-mail address. If unset,
+  everyone sees the addresses.
 
 For a Janitor instance, you probably want a custom website in combination with
 the Janitor API. See the existing instances for inspiration.
