@@ -121,13 +121,15 @@ async fn post_codebases_upserts_and_is_visible_via_get() {
         {
             "name": "test-codebase-a",
             "branch_url": "https://example.invalid/a",
-            "vcs_type": "git"
+            "vcs_type": "git",
+            "web_url": "https://example.invalid/a/browse"
         },
         {
             "name": "test-codebase-b",
             "branch_url": "https://example.invalid/b",
             "vcs_type": "git"
-        }
+        },
+        {"name": "test-codebase-c", "web_url": "ftp://example.invalid/c"}
     ]);
 
     let req = Request::builder()
@@ -142,17 +144,62 @@ async fn post_codebases_upserts_and_is_visible_via_get() {
     // Confirm the rows landed via a direct query, not via
     // `GET /codebases` -- the latter would just re-run the same code
     // path we already exercised in the POST.
-    let names: Vec<String> = sqlx::query_scalar(
-        "SELECT name FROM codebase WHERE name IN ('test-codebase-a', 'test-codebase-b')
-         ORDER BY name",
+    #[derive(Debug, PartialEq, sqlx::FromRow)]
+    struct CodebaseRow {
+        name: String,
+        web_url: Option<String>,
+    }
+    let rows: Vec<CodebaseRow> = sqlx::query_as(
+        "SELECT name, web_url FROM codebase WHERE name LIKE 'test-codebase-%' ORDER BY name",
     )
     .fetch_all(state.database.pool())
     .await
     .expect("query codebases");
-    assert_eq!(
-        names,
-        vec!["test-codebase-a".to_string(), "test-codebase-b".to_string()]
-    );
+    let expected = vec![
+        CodebaseRow {
+            name: "test-codebase-a".to_string(),
+            web_url: Some("https://example.invalid/a/browse".to_string()),
+        },
+        CodebaseRow {
+            name: "test-codebase-b".to_string(),
+            web_url: None,
+        },
+        CodebaseRow {
+            name: "test-codebase-c".to_string(),
+            web_url: Some("ftp://example.invalid/c".to_string()),
+        },
+    ];
+    assert_eq!(rows, expected);
+
+    for web_url in [
+        "javascript:alert(1)",
+        "JavaScript:alert(1)",
+        "data:text/html,hi",
+    ] {
+        let body = json!([
+            {"name": "test-codebase-d", "web_url": "https://example.invalid/d"},
+            {"name": "test-codebase-e", "web_url": web_url}
+        ]);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/codebases")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            get_body(response).await,
+            json!({"reason": format!("web_url {} cannot be linked to", web_url)})
+        );
+    }
+    let rows: Vec<CodebaseRow> = sqlx::query_as(
+        "SELECT name, web_url FROM codebase WHERE name LIKE 'test-codebase-%' ORDER BY name",
+    )
+    .fetch_all(state.database.pool())
+    .await
+    .expect("query codebases");
+    assert_eq!(rows, expected);
 }
 
 /// `POST /schedule` with a nonexistent `run_id` returns 404 with the

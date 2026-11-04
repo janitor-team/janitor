@@ -967,6 +967,17 @@ impl PublishWorker {
                     description: e.to_string(),
                 })?;
 
+            if let Some(url) = result
+                .proposal_url
+                .as_ref()
+                .filter(|u| !janitor::security::is_linkable_url(u))
+            {
+                return Err(PublishError::Failure {
+                    code: "publisher-invalid-response".to_string(),
+                    description: format!("Merge proposal URL {} cannot be linked to", url),
+                });
+            }
+
             if result.proposal_url.is_some() && result.is_new.unwrap_or(false) {
                 // Publish merge proposal event to Redis
                 if let Some(redis_manager) = self.redis_manager.as_ref() {
@@ -2384,6 +2395,23 @@ mod tests {
             chrono::Duration::hours(24),
         ));
     }
+
+    #[test]
+    fn test_linkable_mp_url() {
+        for url in [
+            "javascript:alert(1)",
+            "JavaScript:alert(1)",
+            "data:text/html,hi",
+        ] {
+            let url = url::Url::parse(url).unwrap();
+            assert!(matches!(
+                linkable_mp_url(url),
+                Err(CheckMpError::NotLinkableUrl(_))
+            ));
+        }
+        let url = url::Url::parse("https://example.invalid/pr/1").unwrap();
+        assert!(matches!(linkable_mp_url(url.clone()), Ok(u) if u == url));
+    }
 }
 
 /// Application state for the publish service.
@@ -2462,6 +2490,8 @@ pub enum CheckMpError {
     Brz(String),
     /// A campaign or codebase name from the configuration is invalid.
     InvalidIdentifier(janitor_types::InvalidIdentifier),
+    /// The forge returned a merge proposal URL the site cannot link to.
+    NotLinkableUrl(url::Url),
 }
 
 impl From<BrzError> for CheckMpError {
@@ -2500,6 +2530,9 @@ impl std::fmt::Display for CheckMpError {
             CheckMpError::Database(e) => write!(f, "Database error: {}", e),
             CheckMpError::Brz(msg) => write!(f, "Forge error: {}", msg),
             CheckMpError::InvalidIdentifier(e) => write!(f, "{}", e),
+            CheckMpError::NotLinkableUrl(url) => {
+                write!(f, "Merge proposal URL {} cannot be linked to", url)
+            }
         }
     }
 }
@@ -3186,6 +3219,14 @@ pub async fn publish_and_store(
     }
 }
 
+fn linkable_mp_url(url: url::Url) -> Result<url::Url, CheckMpError> {
+    if janitor::security::is_linkable_url(&url) {
+        Ok(url)
+    } else {
+        Err(CheckMpError::NotLinkableUrl(url))
+    }
+}
+
 /// Verify a previously-published merge proposal is still in good shape,
 /// updating our local state and republishing if a newer run has arrived.
 ///
@@ -3214,7 +3255,7 @@ async fn check_existing_mp(
     >,
     mut possible_transports: Option<&mut Vec<breezyshim::transport::Transport>>,
 ) -> Result<bool, CheckMpError> {
-    let mp_url = mp.url().map_err(CheckMpError::from)?;
+    let mp_url = linkable_mp_url(mp.url().map_err(CheckMpError::from)?)?;
     log::debug!("Checking existing merge proposal: {}", mp_url);
 
     // Load whatever we already know about this proposal.
@@ -4735,6 +4776,10 @@ async fn check_existing(
             Err(CheckMpError::InvalidIdentifier(e)) => {
                 log::error!("Invalid identifier checking merge proposal: {}", e);
                 unexpected += 1;
+                false
+            }
+            Err(e @ CheckMpError::NotLinkableUrl(_)) => {
+                log::error!("{}", e);
                 false
             }
         };
