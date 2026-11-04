@@ -10,7 +10,9 @@ use axum::http::{Method, Request, StatusCode};
 use chrono::Utc;
 use futures::TryStreamExt;
 use janitor::queue::VcsInfo;
-use janitor_runner::api_types::{CandidateUpload, ScheduledCandidate, UploadCandidatesResponse};
+use janitor_runner::api_types::{
+    CandidateUpload, ReasonResponse, ScheduledCandidate, UploadCandidatesResponse,
+};
 use janitor_runner::database::{CodebaseRow, CodebaseUpload};
 use janitor_runner::{test_utils, ActiveRun, AppState, Backchannel};
 use janitor_types::{Campaign, ChangeSetId, CodebaseName};
@@ -284,6 +286,29 @@ async fn post_codebases_with_a_bad_entry_stores_none() {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({"error": "Database error"})
+        )
+    );
+    assert_eq!(state.database.get_codebases().await.unwrap(), vec![]);
+}
+
+#[tokio::test]
+async fn post_codebases_rejects_javascript_web_url() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let upload = CodebaseUpload {
+        web_url: some("javascript:alert(1)"),
+        ..full_upload()
+    };
+    assert_eq!(
+        post_codebases(&app, &[upload]).await,
+        (
+            StatusCode::BAD_REQUEST,
+            serde_json::to_value(ReasonResponse::new(
+                "web_url javascript:alert(1) cannot be linked to"
+            ))
+            .unwrap()
         )
     );
     assert_eq!(state.database.get_codebases().await.unwrap(), vec![]);
