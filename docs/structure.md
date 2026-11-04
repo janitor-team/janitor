@@ -12,3 +12,4 @@
   - `run list` - list active runs
   - `run kill <run-id>` - kill an active run
   - `logs <run-id> <name>` - print a log file of a run, e.g. `worker.log`
+  - `review needs-review [--campaign <name>]` - list runs waiting for review

@@ -63,6 +63,11 @@ enum Command {
         /// Log file to print (e.g. worker.log).
         name: String,
     },
+    /// Review runs.
+    Review {
+        #[command(subcommand)]
+        cmd: ReviewCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -142,6 +147,16 @@ enum RunCmd {
     },
     /// List active runs.
     List,
+}
+
+#[derive(Subcommand)]
+enum ReviewCmd {
+    /// List runs waiting for review.
+    NeedsReview {
+        /// Restrict to this campaign.
+        #[arg(long)]
+        campaign: Option<Campaign>,
+    },
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -400,6 +415,26 @@ async fn cmd_logs(client: &ApiClient, run_id: &RunId, name: &str) -> Result<(), 
         .map_err(|e| e.to_string())
 }
 
+/// Send `req` and print the JSON body of a successful response.
+async fn print_json(req: RequestBuilder) -> Result<(), String> {
+    let resp = req.send().await.map_err(|e| e.to_string())?;
+    let resp = expect_success(resp).await?;
+    let body: Value = resp.json().await.map_err(|e| e.to_string())?;
+    println!("{}", serde_json::to_string_pretty(&body).unwrap());
+    Ok(())
+}
+
+async fn cmd_review_needs_review(
+    client: &ApiClient,
+    campaign: Option<&Campaign>,
+) -> Result<(), String> {
+    let path = match campaign {
+        Some(campaign) => format!("cupboard/api/{}/needs-review", campaign),
+        None => "cupboard/api/needs-review".to_string(),
+    };
+    print_json(client.request(reqwest::Method::GET, &path)?).await
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -428,6 +463,11 @@ async fn main() -> ExitCode {
             RunCmd::List => cmd_run_list(&client).await,
         },
         Command::Logs { run_id, name } => cmd_logs(&client, &run_id, &name).await,
+        Command::Review { cmd } => match cmd {
+            ReviewCmd::NeedsReview { campaign } => {
+                cmd_review_needs_review(&client, campaign.as_ref()).await
+            }
+        },
     };
 
     match result {
