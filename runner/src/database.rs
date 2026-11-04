@@ -856,7 +856,7 @@ INSERT INTO run (
         if !exclude_hosts.is_empty() {
             bind_count += 1;
             conditions.push(format!(
-                "NOT (codebase.branch_url IS NOT NULL AND SUBSTRING(codebase.branch_url from '.*://(?:[^/@]*@)?([^/]*)') = ANY(${}::text[]))",
+                "NOT (codebase.branch_url IS NOT NULL AND codebase.hostname = ANY(${}::text[]))",
                 bind_count
             ));
         }
