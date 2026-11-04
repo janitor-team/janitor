@@ -44,25 +44,14 @@ redis_location: "redis://localhost"
 ## Forge credentials
 
 Publishing merge proposals requires a forge API token (GitHub/GitLab/etc),
-but this is not part of janitor.conf - publish and runner delegate to
-breezy's own credential store instead, at
-`~/.config/breezy/authentication.conf`.
-
-For GitHub, run:
+which publish and runner read from breezy's own credential store. Log in to
+each forge the janitor publishes to:
 
 ```console
 $ brz github-login
-```
-
-which prompts for a username and token and writes the `[Github]` section
-itself. To do it by hand instead, the section breezy expects is:
-
-```
-[Github]
-scheme = https
-host = github.com
-url = https://api.github.com
-private_token = <your token>
+$ brz gitlab-login https://salsa.debian.org/
+$ brz gitea-login https://gitea.example.com/
+$ brz launchpad-login janitor-bot
 ```
 
 ## Web UI login
