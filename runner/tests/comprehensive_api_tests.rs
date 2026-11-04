@@ -251,6 +251,20 @@ async fn test_metrics_endpoint_compatibility() {
         .expect("create worker");
     let response = assign(&app, "metrics-worker").await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/active-runs/00000000-0000-0000-0000-000000000000/finish")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri("/no-such-route")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
     let request = Request::builder()
         .method(Method::GET)
@@ -277,5 +291,20 @@ async fn test_metrics_endpoint_compatibility() {
             .lines()
             .any(|l| l.starts_with("assignments_total{worker=\"metrics-worker\"} ")),
         "no assignments_total sample for metrics-worker in:\n{metrics}"
+    );
+
+    let requests: &prometheus::IntCounterVec = &janitor_runner::metrics::HTTP_REQUESTS_TOTAL;
+    assert!(requests.with_label_values(&["POST", "finish", "400"]).get() >= 1);
+    assert!(requests.with_label_values(&["GET", "unnamed", "404"]).get() >= 1);
+    let endpoints: Vec<String> = prometheus::core::Collector::collect(requests)
+        .iter()
+        .flat_map(|family| family.get_metric())
+        .flat_map(|metric| metric.get_label())
+        .filter(|label| label.name() == "endpoint")
+        .map(|label| label.value().to_string())
+        .collect();
+    assert!(
+        !endpoints.iter().any(|e| e.starts_with('/')),
+        "{endpoints:?}"
     );
 }
