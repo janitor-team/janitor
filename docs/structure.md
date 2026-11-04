@@ -12,4 +12,5 @@
   - `run list` - list active runs
   - `run kill <run-id>` - kill an active run
   - `run show <run-id>` - show a run
+  - `run diff <run-id> [--role <role>]` - print the diff of a run
   - `logs <run-id> <name>` - print a log file of a run, e.g. `worker.log`

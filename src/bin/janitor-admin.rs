@@ -143,6 +143,14 @@ enum RunCmd {
         /// Run ID.
         run_id: RunId,
     },
+    /// Print the diff of a run.
+    Diff {
+        /// Run ID.
+        run_id: RunId,
+        /// Role of the result branch.
+        #[arg(long, default_value = "main")]
+        role: String,
+    },
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -387,6 +395,33 @@ async fn cmd_run_show(client: &ApiClient, run_id: &RunId) -> Result<(), String> 
     Ok(())
 }
 
+fn run_diff_request(
+    client: &ApiClient,
+    run_id: &RunId,
+    role: &str,
+) -> Result<RequestBuilder, String> {
+    let path = format!("api/run/{}/diff", run_id);
+    Ok(client
+        .request(reqwest::Method::GET, &path)?
+        .header(reqwest::header::ACCEPT, "text/x-diff")
+        .query(&[("role", role)]))
+}
+
+async fn cmd_run_diff(client: &ApiClient, run_id: &RunId, role: &str) -> Result<(), String> {
+    let resp = run_diff_request(client, run_id, role)?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let body = expect_success(resp)
+        .await?
+        .bytes()
+        .await
+        .map_err(|e| e.to_string())?;
+    std::io::stdout()
+        .write_all(&body)
+        .map_err(|e| e.to_string())
+}
+
 async fn cmd_logs(client: &ApiClient, run_id: &RunId, name: &str) -> Result<(), String> {
     let path = format!("api/run/{}/logs/{}", run_id, name);
     let resp = client
@@ -431,6 +466,7 @@ async fn main() -> ExitCode {
             RunCmd::Kill { run_id } => cmd_run_kill(&client, &run_id).await,
             RunCmd::List => cmd_run_list(&client).await,
             RunCmd::Show { run_id } => cmd_run_show(&client, &run_id).await,
+            RunCmd::Diff { run_id, role } => cmd_run_diff(&client, &run_id, &role).await,
         },
         Command::Logs { run_id, name } => cmd_logs(&client, &run_id, &name).await,
     };
@@ -493,6 +529,19 @@ mod tests {
             }
             _ => panic!("wrong subcommand"),
         }
+    }
+
+    #[test]
+    fn run_diff_asks_for_the_plain_diff() {
+        let base = Url::parse("https://example.com").unwrap();
+        let client = ApiClient::new(base, None, None).unwrap();
+        let run_id = RunId::new("run-1").unwrap();
+        let req = run_diff_request(&client, &run_id, "upstream")
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(req.url().query(), Some("role=upstream"));
+        assert_eq!(req.headers()[reqwest::header::ACCEPT], "text/x-diff");
     }
 
     #[test]
