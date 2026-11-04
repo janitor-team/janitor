@@ -85,6 +85,10 @@ async fn assignment(State(state): State<Arc<RwLock<AppState>>>) -> Json<Option<A
     Json(state.read().unwrap().assignment.clone())
 }
 
+async fn intermediate_result(State(state): State<Arc<RwLock<AppState>>>) -> Json<Option<Metadata>> {
+    Json(state.read().unwrap().metadata.clone())
+}
+
 async fn get_logs(State(state): State<Arc<RwLock<AppState>>>, headers: HeaderMap) -> Response {
     let output_directory = &state.read().unwrap().output_directory;
     if output_directory.is_none() {
@@ -281,6 +285,7 @@ pub fn app(state: Arc<RwLock<AppState>>) -> Router {
         .route("/health", get(health))
         .route("/kill", post(kill))
         .route("/assignment", get(assignment))
+        .route("/intermediate-result", get(intermediate_result))
         .route("/logs", get(get_logs))
         .route("/logs/{filename}", get(get_log_file))
         .route("/log-id", get(get_log_id))
@@ -375,6 +380,34 @@ mod tests {
         let body: Assignment = serde_json::from_str(&get_body(response).await).unwrap();
         assert_eq!(body.id, "test");
         assert_eq!(body.queue_id, 1);
+    }
+
+    #[tokio::test]
+    async fn test_intermediate_result() {
+        let state = Arc::new(RwLock::new(AppState::default()));
+        let app = app(state.clone());
+        let request = Request::builder()
+            .uri("/intermediate-result")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(get_body(response).await, "null");
+
+        let metadata = Metadata {
+            description: Some("Add bar".to_string()),
+            ..Metadata::default()
+        };
+        state.write().unwrap().metadata = Some(metadata.clone());
+
+        let request = Request::builder()
+            .uri("/intermediate-result")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+        let body: Metadata = serde_json::from_str(&get_body(response).await).unwrap();
+        assert_eq!(body, metadata);
     }
 
     #[tokio::test]
