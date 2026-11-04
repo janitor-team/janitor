@@ -341,8 +341,8 @@ test_with_database! {
 
         let status = janitor_publish::state::get_previous_mp_status(
             test_db.pool(),
-            &janitor::CodebaseName::new("cb-1").unwrap(),
-            &janitor::Campaign::new("lintian-fixes").unwrap(),
+            &janitor_types::CodebaseName::new("cb-1").unwrap(),
+            &janitor_types::Campaign::new("lintian-fixes").unwrap(),
         )
         .await
         .unwrap();
