@@ -11,4 +11,5 @@
   - `queue list [--limit <n>]` - show queue items, default limit 100
   - `run list` - list active runs
   - `run kill <run-id>` - kill an active run
+  - `run show <run-id>` - show a run
   - `logs <run-id> <name>` - print a log file of a run, e.g. `worker.log`
