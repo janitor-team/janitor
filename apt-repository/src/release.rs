@@ -1,14 +1,19 @@
 //! Release file generation for APT repositories.
 
 use crate::{HashAlgorithm, HashedFile, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
+use deb822_fast::{FromDeb822Paragraph, ToDeb822Paragraph};
 use debian_control::fields::{Md5Checksum, Sha1Checksum, Sha256Checksum, Sha512Checksum};
 use std::fmt;
+
+/// The format of the Date and Valid-Until fields.
+const DATE_FORMAT: &str = "%a, %d %b %Y %H:%M:%S UTC";
 
 /// A Release file for an APT repository.
 #[derive(Clone)]
 pub struct Release {
     inner: debian_control::lossy::apt::Release,
+    valid_until: Option<DateTime<Utc>>,
     files: Vec<HashedFile>,
 }
 
@@ -34,6 +39,7 @@ impl Release {
                 checksums_sha256: None,
                 checksums_sha512: None,
             },
+            valid_until: None,
             files: Vec::new(),
         }
     }
@@ -106,6 +112,11 @@ impl Release {
         self.inner.but_automatic_upgrades
     }
 
+    /// Get the valid_until date.
+    pub fn valid_until(&self) -> Option<DateTime<Utc>> {
+        self.valid_until
+    }
+
     /// Get the acquire_by_hash flag.
     pub fn acquire_by_hash(&self) -> bool {
         self.inner.acquire_by_hash.unwrap_or(false)
@@ -113,9 +124,25 @@ impl Release {
 
     /// Parse a Release file from a string.
     pub fn from_str(content: &str) -> Result<Self> {
-        let inner = content
-            .parse::<debian_control::lossy::apt::Release>()
-            .map_err(|e| crate::AptRepositoryError::invalid_config(e))?;
+        let para = content
+            .parse::<deb822_fast::Paragraph>()
+            .map_err(|e| crate::AptRepositoryError::invalid_config(e.to_string()))?;
+        let inner = debian_control::lossy::apt::Release::from_paragraph(&para)
+            .map_err(crate::AptRepositoryError::invalid_config)?;
+        let valid_until = para
+            .get("Valid-Until")
+            .map(|v| {
+                NaiveDateTime::parse_from_str(v, DATE_FORMAT)
+                    .map(|d| d.and_utc())
+                    .or_else(|_| DateTime::parse_from_rfc2822(v).map(|d| d.with_timezone(&Utc)))
+                    .map_err(|e| {
+                        crate::AptRepositoryError::invalid_config(format!(
+                            "invalid Valid-Until {:?}: {}",
+                            v, e
+                        ))
+                    })
+            })
+            .transpose()?;
 
         let mut files: Vec<HashedFile> = Vec::new();
 
@@ -163,7 +190,11 @@ impl Release {
             );
         }
 
-        Ok(Self { inner, files })
+        Ok(Self {
+            inner,
+            valid_until,
+            files,
+        })
     }
 
     /// The underlying Release with the checksum lists filled in from
@@ -270,7 +301,15 @@ impl fmt::Debug for Release {
 
 impl fmt::Display for Release {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.with_checksums())
+        let mut para: deb822_fast::Paragraph = self.with_checksums().to_paragraph();
+        if let Some(valid_until) = self.valid_until {
+            para.set_with_field_order(
+                "Valid-Until",
+                &valid_until.format(DATE_FORMAT).to_string(),
+                &["Date", "Valid-Until"],
+            );
+        }
+        write!(f, "{}", para)
     }
 }
 
@@ -398,13 +437,10 @@ impl ReleaseBuilder {
     /// Build the Release.
     pub fn build(mut self) -> Result<Release> {
         let date = self.date.unwrap_or_else(Utc::now);
-        self.inner.date = Some(date.format("%a, %d %b %Y %H:%M:%S UTC").to_string());
-        if let Some(valid_until) = self.valid_until {
-            // TODO: store valid_until in lossy Release when that field is added
-            let _ = valid_until;
-        }
+        self.inner.date = Some(date.format(DATE_FORMAT).to_string());
         Ok(Release {
             inner: self.inner,
+            valid_until: self.valid_until,
             files: self.files,
         })
     }
@@ -423,7 +459,12 @@ mod tests {
 
     #[test]
     fn test_release_builder() {
+        let date = DateTime::parse_from_rfc3339("2024-03-05T07:08:09Z")
+            .unwrap()
+            .with_timezone(&Utc);
         let release = ReleaseBuilder::new()
+            .date(date)
+            .valid_until(date + chrono::Duration::days(7))
             .origin("Test Origin")
             .label("Test Repository")
             .suite("stable")
@@ -447,6 +488,13 @@ mod tests {
         assert_eq!(release.components(), Some(vec!["main".to_string()]));
         assert_eq!(release.not_automatic(), Some(true));
         assert_eq!(release.acquire_by_hash(), true);
+        assert_eq!(
+            release.valid_until(),
+            Some(date + chrono::Duration::days(7))
+        );
+        assert!(release.to_string().contains(
+            "Date: Tue, 05 Mar 2024 07:08:09 UTC\nValid-Until: Tue, 12 Mar 2024 07:08:09 UTC\n"
+        ));
     }
 
     #[test]
@@ -457,6 +505,11 @@ mod tests {
         release.inner.architectures = vec!["amd64".to_string()];
         release.inner.components = vec!["main".to_string()];
         release.inner.date = Some(Utc::now().format("%a, %d %b %Y %H:%M:%S UTC").to_string());
+        release.valid_until = Some(
+            DateTime::parse_from_rfc3339("2024-03-12T07:08:09Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        );
 
         let mut file = HashedFile::new("main/binary-amd64/Packages", 1024);
         file.add_hash(HashAlgorithm::Md5, "abc123".to_string());
@@ -470,6 +523,13 @@ mod tests {
         assert_eq!(release.suite(), parsed.suite());
         assert_eq!(release.architectures(), parsed.architectures());
         assert_eq!(release.components(), parsed.components());
+        assert_eq!(release.valid_until(), parsed.valid_until());
+        assert_eq!(
+            Release::from_str(&content.replace("07:08:09 UTC", "07:08:09 +0000"))
+                .unwrap()
+                .valid_until(),
+            release.valid_until()
+        );
         assert_eq!(release.files().len(), parsed.files().len());
 
         if !release.files().is_empty() {
