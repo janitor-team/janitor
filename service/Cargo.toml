@@ -1,0 +1,17 @@
+[package]
+name = "janitor-service"
+version = { workspace = true }
+authors = ["Jelmer Vernooĳ <jelmer@jelmer.uk>"]
+edition.workspace = true
+description = "Shared plumbing for the janitor services"
+license = "GPL-3.0+"
+repository = "https://github.com/jelmer/janitor.git"
+homepage = "https://github.com/jelmer/janitor"
+
+[dependencies]
+prometheus = { version = "0.14.0", features = ["reqwest"] }
+reqwest = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

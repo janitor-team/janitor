@@ -20,6 +20,7 @@ tower-http = { version = "0.5", features = ["fs", "compression-gzip", "trace", "
 sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "tls-rustls-aws-lc-rs", "uuid", "chrono"] }
 janitor = { path = ".." }
 janitor-types = { workspace = true, features = ["pyo3", "sqlx"] }
+janitor-service = { workspace = true }
 
 # Serialization
 serde = { workspace = true, features = ["derive"] }

@@ -109,13 +109,14 @@ sequoia-openpgp = { version = "2.4", default-features = false, features = ["cryp
 nix = ">=0.30,<0.32"
 askama = ">=0.15,<0.17"
 janitor-types = { path = "types" }
+janitor-service = { path = "service" }
 
 [build-dependencies]
 protobuf-codegen = "3"
 protoc-rust = "^2.0"
 
 [workspace]
-members = [ "common-py", "differ", "mail-filter", "publish", "runner", "worker" , "bzr-store", "git-store", "site", "site-py" , "archive", "auto-upload", "apt-repository", "types" ]
+members = [ "common-py", "differ", "mail-filter", "publish", "runner", "worker" , "bzr-store", "git-store", "site", "site-py" , "archive", "auto-upload", "apt-repository", "types", "service" ]
 
 [workspace.package]
 edition = "2021"

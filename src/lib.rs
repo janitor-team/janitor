@@ -12,7 +12,6 @@ pub mod migrate_logs;
 #[cfg(feature = "otlp")]
 pub mod otlp;
 pub mod pagination;
-pub mod prometheus;
 pub mod publish;
 pub mod queue;
 pub mod redis;

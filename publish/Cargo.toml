@@ -24,6 +24,7 @@ async-stream = "0.3"
 bytes.workspace = true
 janitor = { path = ".." }
 janitor-types = { workspace = true, features = ["pyo3", "sqlx"] }
+janitor-service = { workspace = true }
 log.workspace = true
 minijinja = { version = "2", features = ["loader"] }
 redis = { workspace = true, features = ["tokio-comp", "json", "connection-manager"] }
