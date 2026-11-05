@@ -53,9 +53,9 @@
                         </td>
                         <td data-order="{{ queue_position or 0 }}">
                             {% if queue_position %}
-                                <a href="/cupboard/queue">position {{ queue_position }}</a>
+                                <a class="state-waiting" href="/cupboard/queue">position {{ queue_position }}</a>
                             {% else %}
-                                not queued
+                                <span class="state-blocked">not queued</span>
                             {% endif %}
                         </td>
                     </tr>

@@ -208,9 +208,67 @@ def test_render_changeset():
     template.render(changeset="changeset", url=URL("https://example/com"), URL=URL)
 
 
+@pytest.mark.parametrize(
+    "state,result_codes,expected",
+    [
+        ("created", [], "state-waiting"),
+        ("working", ["build-failed"], "state-blocked"),
+        ("working", ["build-failed", "success"], "state-waiting"),
+        ("ready", ["success"], "state-ok"),
+    ],
+)
+def test_render_changeset_state(state, result_codes, expected):
+    env = Environment(loader=template_loader)
+    env.globals["classify_result_code"] = classify_result_code
+    template = env.get_template("cupboard/changeset.html")
+    html = template.render(
+        changeset={"id": "cs-1", "state": state},
+        runs=[
+            {
+                "id": f"run-{i}",
+                "codebase": "foo",
+                "suite": "lintian-fixes",
+                "result_code": code,
+                "finish_time": utcnow(),
+            }
+            for i, code in enumerate(result_codes)
+        ],
+        url=URL("https://example/com"),
+        URL=URL,
+        format_timestamp=format_timestamp,
+    )
+    assert BeautifulSoup(html, "html.parser").i["class"] == [expected]
+
+
 def test_render_broken_mps():
     env = Environment(loader=template_loader)
     env.get_template("cupboard/broken-merge-proposals.html")
+
+
+@pytest.mark.parametrize(
+    "name", ["cupboard/merge-proposal.html", "merge-proposal.html"]
+)
+@pytest.mark.parametrize(
+    "status,expected",
+    [("open", ["state-ok", "state-waiting"]), ("closed", [])],
+)
+def test_render_merge_proposal_can_be_merged(name, status, expected):
+    env = Environment(loader=template_loader)
+    template = env.get_template(name)
+    classes = []
+    for can_be_merged in (True, False):
+        html = template.render(
+            proposal={
+                "url": "https://example.com/mp/1",
+                "status": status,
+                "can_be_merged": can_be_merged,
+            }
+        )
+        li = BeautifulSoup(html, "html.parser").find(
+            "li", string=lambda s: s and s.startswith("Can ")
+        )
+        classes.extend(li.get("class", []))
+    assert classes == expected
 
 
 def test_render_changeset_list():

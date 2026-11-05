@@ -51,6 +51,17 @@ async fn seed_codebase_and_run(pool: &PgPool, codebase: &str, campaign: &str) {
 }
 
 async fn build_app(pool: PgPool) -> axum::Router {
+    build_app_with_rate_limiter(
+        pool,
+        Box::new(janitor_publish::rate_limiter::NonRateLimiter),
+    )
+    .await
+}
+
+async fn build_app_with_rate_limiter(
+    pool: PgPool,
+    bucket_rate_limiter: Box<dyn janitor_publish::rate_limiter::RateLimiter>,
+) -> axum::Router {
     let config: &'static janitor::config::Config = Box::leak(Box::new(
         janitor::config::read_string("").expect("empty config parses"),
     ));
@@ -69,9 +80,7 @@ async fn build_app(pool: PgPool) -> axum::Router {
     ));
     let state = Arc::new(AppState {
         conn: pool,
-        bucket_rate_limiter: Arc::new(Mutex::new(Box::new(
-            janitor_publish::rate_limiter::NonRateLimiter,
-        ))),
+        bucket_rate_limiter: Arc::new(Mutex::new(bucket_rate_limiter)),
         forge_rate_limiter: Arc::new(RwLock::new(HashMap::new())),
         push_limit: None,
         redis: None,
@@ -254,16 +263,19 @@ test_with_database! {
             BlockerInfo {
                 success: Blocker {
                     result: true,
+                    waiting: false,
                     details: BlockerSuccessDetails {
                         result_code: "success".to_string(),
                     },
                 },
                 inactive: Blocker {
                     result: true,
+                    waiting: false,
                     details: BlockerInactiveDetails { inactive: false },
                 },
                 command: Blocker {
                     result: true,
+                    waiting: false,
                     details: BlockerCommandDetails {
                         correct: "noop".to_string(),
                         actual: "noop".to_string(),
@@ -271,6 +283,7 @@ test_with_database! {
                 },
                 publish_status: Blocker {
                     result: false,
+                    waiting: true,
                     details: BlockerPublishStatusDetails {
                         status: "unknown".to_string(),
                         reviews: HashMap::new(),
@@ -278,6 +291,7 @@ test_with_database! {
                 },
                 backoff: Blocker {
                     result: true,
+                    waiting: false,
                     details: BlockerBackoffDetails {
                         attempt_count: 1,
                         next_try_time: "2026-01-02T05:04:05Z".parse().unwrap(),
@@ -285,10 +299,12 @@ test_with_database! {
                 },
                 propose_rate_limit: Blocker {
                     result: true,
+                    waiting: false,
                     details: serde_json::json!({"bucket": null}),
                 },
                 change_set: Blocker {
                     result: true,
+                    waiting: false,
                     details: BlockerChangeSetDetails {
                         change_set_id: ChangeSetId::new("cs-1").unwrap(),
                         change_set_state: "ready".to_string(),
@@ -296,9 +312,93 @@ test_with_database! {
                 },
                 previous_mp: Blocker {
                     result: true,
+                    waiting: false,
                     details: vec![],
                 },
             }
+        );
+    }
+}
+
+test_with_database! {
+    schema = Core;
+    async fn blockers_waiting_flags(test_db: TestDatabase) {
+        use janitor_publish::rate_limiter::{FixedRateLimiter, RateLimiter};
+        seed_codebase_and_run(test_db.pool(), "cb-1", "lintian-fixes").await;
+        sqlx::raw_sql(
+            "INSERT INTO named_publish_policy (name, per_branch_policy, rate_limit_bucket)
+                 VALUES ('policy', ARRAY[
+                 ROW('main', 'propose'::publish_mode, NULL::int)::branch_publish_policy],
+                 'bucket-1');
+             INSERT INTO candidate (suite, value, command, publish_policy, codebase)
+                 VALUES ('lintian-fixes', 100, 'noop', 'policy', 'cb-1');
+             INSERT INTO publish (id, change_set, target_branch_url, revision, mode, result_code)
+                 VALUES ('p1', 'cs-1', 'https://example.invalid/cb-1', 'rev-tip', 'propose',
+                         'publish-failed');
+             UPDATE change_set SET state = 'working'",
+        )
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+        let mut limiter = FixedRateLimiter::new(1);
+        limiter.set_mps_per_bucket(&HashMap::from([(
+            janitor::publish::MergeProposalStatus::Open,
+            HashMap::from([("bucket-1".to_string(), 1)]),
+        )]));
+
+        let app = build_app_with_rate_limiter(test_db.pool().clone(), Box::new(limiter)).await;
+        let req = Request::builder()
+            .uri("/blockers/run-1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let blockers: BlockerInfo = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            [
+                (blockers.success.result, blockers.success.waiting),
+                (blockers.publish_status.result, blockers.publish_status.waiting),
+                (blockers.backoff.result, blockers.backoff.waiting),
+                (
+                    blockers.propose_rate_limit.result,
+                    blockers.propose_rate_limit.waiting,
+                ),
+                (blockers.change_set.result, blockers.change_set.waiting),
+            ],
+            [
+                (true, false),
+                (false, true),
+                (false, true),
+                (false, true),
+                (false, true)
+            ]
+        );
+
+        // A failed run does not get reviewed, and its change set stays
+        // working until a later run succeeds.
+        sqlx::query("UPDATE run SET result_code = 'build-failed'")
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+        let req = Request::builder()
+            .uri("/blockers/run-1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let blockers: BlockerInfo = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            [
+                (blockers.success.result, blockers.success.waiting),
+                (blockers.publish_status.result, blockers.publish_status.waiting),
+                (blockers.change_set.result, blockers.change_set.waiting),
+            ],
+            [(false, false), (false, false), (false, false)]
         );
     }
 }

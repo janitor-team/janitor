@@ -3,7 +3,7 @@
     {% include "cupboard/sidebar.html" %}
 {% endblock sidebar %}
 {% from "codeblock.html" import include_console_log with context %}
-{% from "run_util.html" import local_command, merge_command, reschedule_button, schedule_control_button, publish_buttons, install_commands, display_result_code, result_code_explanation, display_branch_url, display_upstream_branch_url, display_vcs_diffs, display_publish_result, file_bug_buttons, display_publish_blockers with context %}
+{% from "run_util.html" import local_command, merge_command, reschedule_button, schedule_control_button, publish_buttons, install_commands, display_result_code, result_code_explanation, display_branch_url, display_upstream_branch_url, display_vcs_diffs, display_publish_result, file_bug_buttons, display_publish_blockers, display_publish_status with context %}
 {% from "cupboard/util.html" import reprocess_logs_button %}
 {% from "lintian_util.html" import display_lintian_result with context %}
 {% from "review_util.html" import display_reviews_table with context %}
@@ -46,10 +46,10 @@
                 {% if run.resume_from %}(<a href="/cupboard/c/{{ run.codebase }}/{{ run.resume_from }}/">base run</a>){% endif %}
             </li>
             <li>Description: {% if description %}{{ description }}{% else %}<span class="missing-description">no description</span>{% endif %}</li>
-            <li>Publish status: {{ run.publish_status }}</li>
+            <li>Publish status: {{ display_publish_status(run.publish_status, result_code == 'success') }}</li>
             {% if queue_position %}
                 <li class="queue-position.{{ run.codebase }}">
-                    <a href="/cupboard/queue">Queue</a> position: {{ queue_position }}
+                    <a href="/cupboard/queue">Queue</a> position: <span class="state-waiting">{{ queue_position }}</span>
                     {% if queue_wait_time %}(a {{ format_duration(queue_wait_time) }} wait){% endif %}
                 </li>
             {% else %}

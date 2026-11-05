@@ -2,33 +2,21 @@ table.docutils {
     margin-bottom: 1.5em;
 }
 
-/* -- result codes */
-span.result-code-bug, span.publish-bug {
-    color: darkred;
-}
-
-span.result-code-failure, span.publish-failure {
-    color: red;
-}
-
-span.result-code-transient-failure, span.publish-transient {
-    color: orange;
-}
-
-span.result-code-success, span.publish-success {
+/* -- states: ok, waiting (needs no fix), blocked (needs a fix) */
+.state-ok {
     color: green;
+}
+
+.state-waiting {
+    color: #9a6700;
+}
+
+.state-blocked {
+    color: red;
 }
 
 span.missing-description {
     color: red;
-}
-
-span.result-code-nothing-new-to-do, span.publish-nothing-to-do {
-    color: lightgreen;
-}
-
-span.result-code-nothing-to-do, span.publish-missing {
-    color: grey;
 }
 
 blockquote.result-code-explanation {

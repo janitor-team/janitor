@@ -1,5 +1,5 @@
 {% extends "layout.html" %}
-{% from "review_util.html" import display_reviewer with context %}
+{% from "review_util.html" import display_reviewer, display_review_verdict with context %}
 {% block sidebar %}
     {% include "cupboard/sidebar.html" %}
 {% endblock sidebar %}
@@ -18,7 +18,7 @@
                         <ul>
                             {% for review in reviews[run.id] %}
                                 <li>
-                                    {{ display_reviewer(review.reviewer) }}: <b>{{ review.verdict }}</b>{% if review.comment %}: {{ review.comment }}{% endif %}
+                                    {{ display_reviewer(review.reviewer) }}: <b>{{ display_review_verdict(review.verdict) }}</b>{% if review.comment %}: {{ review.comment }}{% endif %}
                                 </li>
                             {% endfor %}
                         </ul>

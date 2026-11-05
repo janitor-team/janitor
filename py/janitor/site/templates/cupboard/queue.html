@@ -21,14 +21,14 @@
                 {% if avoid_hosts %}
                     Manually avoiding hosts:
                     <ul>
-                        {% for host in avoid_hosts %}<li>{{ host }}</li>{% endfor %}
+                        {% for host in avoid_hosts %}<li class="state-blocked">{{ host }}</li>{% endfor %}
                     </ul>
                 {% endif %}
                 {% if rate_limit_hosts %}
                     Rate limiting hosts:
                     <ul>
                         {% for host, until in rate_limit_hosts.items() %}
-                            <li>{{ host }} until {{ until.isoformat() }} ({{ format_duration(until - utcnow() ) }} more)</li>
+                            <li class="state-waiting">{{ host }} until {{ until.isoformat() }} ({{ format_duration(until - utcnow() ) }} more)</li>
                         {% endfor %}
                     </ul>
                 {% endif %}
