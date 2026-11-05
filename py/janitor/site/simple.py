@@ -138,6 +138,34 @@ async def handle_merge_proposal(request):
     }
 
 
+def import_pgp_keys(gpg_context, pgp_keys):
+    """Import armored keys and return their fingerprints, or 502 if none import."""
+    fprs: list[str] = []
+    for keydata in pgp_keys:
+        result = gpg_context.key_import(keydata.encode("utf-8"))
+        # key_import returns a status string, not a result, when it saw no key.
+        if isinstance(result, str):
+            raise web.HTTPBadGateway(
+                text=f"A reported PGP key could not be read: {result}"
+            )
+        fprs.extend(i.fpr for i in result.imports)
+    if not fprs:
+        raise web.HTTPBadGateway(
+            text="None of the reported PGP keys could be imported."
+        )
+    return fprs
+
+
+def export_pgp_keys(gpg_context, pgp_keys):
+    """Import armored keys into gpg_context and export them again, minimised."""
+    fprs = import_pgp_keys(gpg_context, pgp_keys)
+    # gpgme cuts a pattern at its first NUL, so export one key at a time.
+    exported = [gpg_context.key_export_minimal(fpr) for fpr in fprs]
+    if not all(exported):
+        raise web.HTTPBadGateway(text="Some PGP keys could not be exported.")
+    return b"".join(exported)
+
+
 @html_template("credentials.html", headers={"Vary": "Cookie"})
 async def handle_credentials(request):
     import gpg
@@ -148,10 +176,11 @@ async def handle_credentials(request):
         )
     except ClientConnectorError:
         return web.Response(status=500, text="Unable to retrieve credentials")
-    pgp_fprs = []
-    for keydata in credentials["pgp_keys"]:
-        result = request.app["gpg"].key_import(keydata.encode("utf-8"))
-        pgp_fprs.extend([i.fpr for i in result.imports])
+    pgp_fprs = (
+        import_pgp_keys(request.app["gpg"], credentials["pgp_keys"])
+        if credentials["pgp_keys"]
+        else []
+    )
 
     pgp_validity = {
         gpg.constants.VALIDITY_FULL: "full",
@@ -167,7 +196,7 @@ async def handle_credentials(request):
         "pgp_validity": pgp_validity.get,
         "pgp_algo": gpg.core.pubkey_algo_name,
         "ssh_keys": credentials["ssh_keys"],
-        "pgp_keys": request.app["gpg"].keylist("\0".join(pgp_fprs)),
+        "pgp_keys": [k for fpr in pgp_fprs for k in request.app["gpg"].keylist(fpr)],
         "hosting": credentials["hosting"],
     }
 
@@ -185,21 +214,18 @@ async def handle_pgp_keys(request):
     credentials = await get_credentials(
         request.app["http_client_session"], request.app["publisher_url"]
     )
-    armored = request.match_info["extension"] == ".asc"
-    if armored:
+    pgp_keys = credentials["pgp_keys"]
+    if not pgp_keys:
+        raise web.HTTPNotFound(text="The publisher has no PGP keys.")
+    if request.match_info["extension"] == ".asc":
         return web.Response(
-            text="\n".join(credentials["pgp_keys"]),
+            text="\n".join(pgp_keys),
             content_type="application/pgp-keys",
         )
-    else:
-        fprs = []
-        for keydata in credentials["pgp_keys"]:
-            result = request.app["gpg"].key_import(keydata.encode("utf-8"))
-            fprs.extend([i.fpr for i in result.imports])
-        return web.Response(
-            body=request.app["gpg"].key_export_minimal("\0".join(fprs)),
-            content_type="application/pgp-keys",
-        )
+    return web.Response(
+        body=export_pgp_keys(request.app["gpg"], pgp_keys),
+        content_type="application/pgp-keys",
+    )
 
 
 async def handle_archive_keyring(request):
@@ -208,21 +234,17 @@ async def handle_archive_keyring(request):
         if resp.status != 200:
             raise Exception("unexpected response")
         pgp_keys = await resp.json()
-    armored = request.match_info["extension"] == ".asc"
-    if armored:
+    if not pgp_keys:
+        raise web.HTTPNotFound(text="The archiver has no PGP keys.")
+    if request.match_info["extension"] == ".asc":
         return web.Response(
             text="\n".join(pgp_keys),
             content_type="application/pgp-keys",
         )
-    else:
-        fprs = []
-        for keydata in pgp_keys:
-            result = request.app["gpg"].key_import(keydata.encode("utf-8"))
-            fprs.extend([i.fpr for i in result.imports])
-        return web.Response(
-            body=request.app["gpg"].key_export_minimal("\0".join(fprs)),
-            content_type="application/pgp-keys",
-        )
+    return web.Response(
+        body=export_pgp_keys(request.app["gpg"], pgp_keys),
+        content_type="application/pgp-keys",
+    )
 
 
 async def handle_static_file(path, request):
@@ -483,7 +505,7 @@ async def create_app(
 
     app.cleanup_ctx.append(persistent_session)
 
-    if publisher_url and archiver_url:
+    if publisher_url or archiver_url:
         setup_gpg(app)
 
     if redis is not None:

@@ -16,6 +16,7 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
 import asyncio
+import base64
 import json
 import tempfile
 
@@ -480,3 +481,177 @@ async def test_logout_without_session_cookie_still_redirects(
     resp = await client.post("/logout", allow_redirects=False)
     assert resp.status == 302
     assert resp.headers["Location"] == "/"
+
+
+def _fingerprints_of(exported):
+    """Fingerprints of the keys in an exported gpg keyring blob."""
+    import gpg
+
+    with tempfile.TemporaryDirectory() as home, gpg.Context(home_dir=home) as ctx:
+        return [i.fpr for i in ctx.key_import(exported).imports]
+
+
+def _listed_fingerprints(html):
+    """Fingerprints of the "pub" lines on the credentials page."""
+    soup = BeautifulSoup(html, "html.parser")
+    texts = [pre.get_text() for pre in soup.find_all("pre")]
+    return [t.split("]", 1)[1].split()[0] for t in texts if t.startswith("pub ")]
+
+
+async def _keys_client(
+    aiohttp_client,
+    aiohttp_server,
+    database_location,
+    publisher_keys=None,
+    archiver_keys=None,
+):
+    """A site client whose publisher and archiver report the given keys."""
+
+    async def handle_credentials(request):
+        return web.json_response(
+            {"ssh_keys": [], "pgp_keys": publisher_keys, "hosting": []}
+        )
+
+    async def handle_pgp_keys(request):
+        return web.json_response(archiver_keys)
+
+    keys_app = web.Application()
+    keys_app.router.add_get("/credentials", handle_credentials)
+    keys_app.router.add_get("/pgp_keys", handle_pgp_keys)
+    url = str((await aiohttp_server(keys_app)).make_url("/"))
+    _private_app, app = await create_app(
+        config=create_config(database_location),
+        redis=FakeRedis(),
+        publisher_url=None if publisher_keys is None else url,
+        archiver_url=None if archiver_keys is None else url,
+    )
+    return await aiohttp_client(app)
+
+
+# A real throwaway ed25519 public key, generated for these tests only.
+IMPORTABLE_KEY = """-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEar0oJhYJKwYBBAHaRw8BAQdAWau9EcHXu85QZP6cSXl9uDQKWcUj6Tgc5RmJ
+43UAUYu0Lkphbml0b3IgQXJjaGl2ZSBUZXN0IDxhcmNoaXZlQGV4YW1wbGUuaW52
+YWxpZD6IkAQTFgoAOBYhBN0jaZX8b8oPr+Lq8hAB/UU1IsftBQJqvSgmAhsBBQsJ
+CAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJEBAB/UU1Isft02IBAMrmlhteLroJuhsx
+4iq/LqRXcMt5een+7jJ4EJWQPOoGAP4qjF1yjfQ0uXEHv2FK3rzd19WzeyH2TJJM
+fQ0QDRZHAg==
+=6omt
+-----END PGP PUBLIC KEY BLOCK-----
+"""
+# The packets inside the armor, which a minimal export of the key gives back.
+IMPORTABLE_KEY_PACKETS = base64.b64decode("".join(IMPORTABLE_KEY.splitlines()[2:-2]))
+IMPORTABLE_KEY_FPR = "DD236995FC6FCA0FAFE2EAF21001FD453522C7ED"
+
+
+@pytest.mark.parametrize(
+    "publisher, archiver, path",
+    [(True, False, "/pgp_keys"), (False, True, "/archive-keyring.gpg")],
+)
+async def test_keyring_route_with_only_one_url(
+    aiohttp_client, aiohttp_server, database_location, publisher, archiver, path
+):
+    keys = [IMPORTABLE_KEY]
+    client = await _keys_client(
+        aiohttp_client,
+        aiohttp_server,
+        database_location,
+        keys if publisher else None,
+        keys if archiver else None,
+    )
+    resp = await client.get(path)
+    assert (resp.status, await resp.read()) == (200, IMPORTABLE_KEY_PACKETS)
+
+
+# A key with its user ID stripped, so gpg considers it and imports nothing.
+UNIMPORTABLE_KEY = """-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEar0oJxYJKwYBBAHaRw8BAQdA9qrKXk+/Z/Nhoh3VwHWzxvL7tuan/xkvJj/O
+TgsWBY8=
+=e2Qc
+-----END PGP PUBLIC KEY BLOCK-----
+"""
+
+# A second one, for a janitor part way through a key rotation.
+ROTATED_KEY = """-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEar0skRYJKwYBBAHaRw8BAQdAdjP/XCUejUxYvBfe37nEIrJAvTae82vu6fK6
+2VEPyk60MEphbml0b3IgUm90YXRpb24gVGVzdCA8cm90YXRpb25AZXhhbXBsZS5p
+bnZhbGlkPoiQBBMWCgA4FiEEPLD9OJtBhxgNbxuyYNypMR4xQyMFAmq9LJECGwEF
+CwkIBwIGFQoJCAsCBBYCAwECHgECF4AACgkQYNypMR4xQyOVMwEA/xWVBmH7Ik5Y
++fK14Gbeo/Jxl5LAr59BaRRRW+cJJacBAPK0h/Yr0xM13MbcmIQk16oqLiWl9rHq
+L8H3TRy4UukF
+=642X
+-----END PGP PUBLIC KEY BLOCK-----
+"""
+
+ROTATED_KEY_FPR = "3CB0FD389B4187180D6F1BB260DCA9311E314323"
+
+
+async def test_keyring_routes_without_keys_return_404(
+    aiohttp_client, aiohttp_server, database_location
+):
+    client = await _keys_client(
+        aiohttp_client, aiohttp_server, database_location, [], []
+    )
+    resp = await client.get("/pgp_keys")
+    assert (resp.status, await resp.text()) == (404, "The publisher has no PGP keys.")
+    resp = await client.get("/archive-keyring.gpg")
+    assert (resp.status, await resp.text()) == (404, "The archiver has no PGP keys.")
+
+
+async def test_pgp_keys_does_not_serve_other_keys_of_the_keyring(
+    aiohttp_client, aiohttp_server, database_location
+):
+    # The keyring routes share one gpg home, so the archive key stays in it.
+    client = await _keys_client(
+        aiohttp_client,
+        aiohttp_server,
+        database_location,
+        [UNIMPORTABLE_KEY],
+        [IMPORTABLE_KEY],
+    )
+    seeded = await client.get("/archive-keyring.gpg")
+    assert _fingerprints_of(await seeded.read()) == [IMPORTABLE_KEY_FPR]
+    resp = await client.get("/pgp_keys")
+    assert (resp.status, await resp.read()) == (
+        502,
+        b"None of the reported PGP keys could be imported.",
+    )
+
+
+@pytest.mark.parametrize(
+    "publisher_keys, listed",
+    [
+        ([], []),
+        ([IMPORTABLE_KEY, ROTATED_KEY], [IMPORTABLE_KEY_FPR, ROTATED_KEY_FPR]),
+    ],
+)
+async def test_credentials_lists_only_the_reported_keys(
+    aiohttp_client, aiohttp_server, database_location, publisher_keys, listed
+):
+    client = await _keys_client(
+        aiohttp_client,
+        aiohttp_server,
+        database_location,
+        publisher_keys,
+        [IMPORTABLE_KEY],
+    )
+    seeded = await client.get("/archive-keyring.gpg")
+    assert _fingerprints_of(await seeded.read()) == [IMPORTABLE_KEY_FPR]
+    resp = await client.get("/credentials")
+    assert (resp.status, _listed_fingerprints(await resp.text())) == (200, listed)
+
+
+async def test_pgp_keys_serves_every_reported_key(
+    aiohttp_client, aiohttp_server, database_location
+):
+    client = await _keys_client(
+        aiohttp_client, aiohttp_server, database_location, [IMPORTABLE_KEY, ROTATED_KEY]
+    )
+    resp = await client.get("/pgp_keys")
+    assert (resp.status, _fingerprints_of(await resp.read())) == (
+        200,
+        [IMPORTABLE_KEY_FPR, ROTATED_KEY_FPR],
+    )
