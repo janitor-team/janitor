@@ -23,6 +23,7 @@ import aiohttp_jinja2
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from bs4 import BeautifulSoup
 from jinja2 import Environment
 from yarl import URL
 
@@ -86,7 +87,7 @@ def test_render_merge_proposal():
     )
 
 
-def test_render_run():
+def _render_run(run=None, **kwargs):
     env = Environment(loader=template_loader)
     template = env.get_template("cupboard/run.html")
     config = read_config_string("""\
@@ -95,11 +96,12 @@ campaign {
 }
 """)
     campaign = config.campaign[0]
-    template.render(
+    return template.render(
         worker_link_is_global=worker_link_is_global,
         run={
             "start_time": utcnow(),
             "finish_time": utcnow(),
+            **(run or {}),
         },
         success_probability=0.2,
         classify_result_code=classify_result_code,
@@ -109,7 +111,43 @@ campaign {
         publish_blockers=dict,
         format_timestamp=format_timestamp,
         format_duration=format_duration,
+        **kwargs,
     )
+
+
+def test_render_run():
+    _render_run()
+
+
+def _render_run_with_buttons(**kwargs):
+    return _render_run(
+        run={"result_branches": [("main", "origin", "base", "rev")]},
+        suite="some-fixes",
+        revision="rev",
+        branch_url="https://x/",
+        **kwargs,
+    )
+
+
+def test_render_run_button_ids():
+    soup = BeautifulSoup(_render_run_with_buttons(), "html.parser")
+    assert [b["id"] for b in soup.find_all("button")] == [
+        "schedule-control",
+        "schedule-control-diff",
+        "reschedule",
+        "reschedule-refresh",
+        "publish",
+        "reprocess-logs",
+    ]
+
+
+@pytest.mark.parametrize(
+    "openid_configured,user,redirects",
+    [(True, None, 5), (True, {"email": "alice@example.com"}, 0), (False, None, 0)],
+)
+def test_render_run_buttons_login_on_401(openid_configured, user, redirects):
+    html = _render_run_with_buttons(openid_configured=openid_configured, user=user)
+    assert html.count('window.location.replace("/login?url="') == redirects
 
 
 def test_classify_result_code_debian_validate():
@@ -204,6 +242,41 @@ def test_reprocess_logs():
 def test_never_processed():
     env = Environment(loader=template_loader)
     env.get_template("cupboard/never-processed.html")
+
+
+async def test_never_processed_queue_position(aiohttp_client, db):
+    client = await create_client(aiohttp_client, db)
+    async with db.acquire() as conn:
+        for name in ("foo", "bar", "baz"):
+            await _insert_codebase(conn, name)
+        await conn.execute(
+            "INSERT INTO candidate (codebase, suite, command) VALUES "
+            "('foo', 'lintian-fixes', 'true'), ('bar', 'lintian-fixes', 'true'), "
+            "('bar', 'other-fixes', 'true')"
+        )
+        await conn.execute(
+            "INSERT INTO queue (codebase, suite, command, priority) VALUES "
+            "('baz', 'lintian-fixes', 'true', 0), ('foo', 'lintian-fixes', 'true', 1), "
+            "('bar', 'other-fixes', 'true', 2)"
+        )
+    lintian_fixes_rows = [
+        ("bar", "lintian-fixes", "not queued"),
+        ("foo", "lintian-fixes", "position 2"),
+    ]
+    for path, expected in [
+        (
+            "/cupboard/never-processed",
+            lintian_fixes_rows + [("bar", "other-fixes", "position 3")],
+        ),
+        ("/cupboard/never-processed?campaign=lintian-fixes", lintian_fixes_rows),
+    ]:
+        resp = await client.get(path)
+        assert resp.status == 200
+        rows = BeautifulSoup(await resp.text(), "html.parser").select("tbody tr")
+        assert sorted(
+            tuple(" ".join(td.get_text().split()) for td in row.find_all("td"))
+            for row in rows
+        ) == sorted(expected)
 
 
 def test_result_code_index():

@@ -31,23 +31,32 @@
         {% endif %}
         <table id="never-processed-table" class="display docutils" border="1">
             <colgroup>
-                <col width="95%" />
-                <col width="5%" />
+                <col width="80%" />
+                <col width="10%" />
+                <col width="10%" />
             </colgroup>
             <thead valign="bottom">
                 <tr>
                     <th class="head">Codebase</th>
                     <th class="head">Campaign</th>
+                    <th class="head">Queue</th>
                 </tr>
             </thead>
             <tbody valign="top">
-                {% for codebase, campaign in never_processed %}
+                {% for codebase, campaign, queue_position in never_processed %}
                     <tr>
                         <td>
                             <a class="reference external" href="/cupboard/c/{{ codebase }}/">{{ codebase }}</a>
                         </td>
                         <td>
                             <a href="/{{ campaign }}/c/{{ codebase }}/">{{ campaign }}</a>
+                        </td>
+                        <td data-order="{{ queue_position or 0 }}">
+                            {% if queue_position %}
+                                <a href="/cupboard/queue">position {{ queue_position }}</a>
+                            {% else %}
+                                not queued
+                            {% endif %}
                         </td>
                     </tr>
                 {% endfor %}

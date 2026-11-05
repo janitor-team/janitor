@@ -120,13 +120,17 @@ async def handle_never_processed(request):
     campaigns = [campaign] if campaign else None
     async with request.app["pool"].acquire() as conn:
         query = """\
-        select c.codebase, c.suite from candidate c
+        select c.codebase, c.suite, q.position from candidate c
+        left join (
+            select codebase, suite, min(position) as position
+            from queue_positions group by codebase, suite) q
+            on q.codebase = c.codebase and q.suite = c.suite
         where not exists (
             SELECT FROM run WHERE run.codebase = c.codebase AND c.suite = suite)
         """
         args = []
         if campaigns:
-            query += " AND suite = ANY($1::text[])"
+            query += " AND c.suite = ANY($1::text[])"
             args.append(campaigns)
         return {
             "never_processed": await conn.fetch(query, *args),
