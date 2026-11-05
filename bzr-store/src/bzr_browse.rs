@@ -12,14 +12,14 @@
 //! by `smart_protocol_dispatch` and don't come through this module.
 
 use axum::body::Body;
-use axum::extract::{Path, Request, State};
+use axum::extract::{Request, State};
 use axum::http::{StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tower::ServiceExt;
 
-use crate::error::Result;
+use crate::error::{BzrError, Result};
 use crate::web::AppState;
 use janitor_types::CodebaseName;
 
@@ -72,26 +72,21 @@ impl BrowseRouters {
     }
 }
 
-/// `GET /bzr/{codebase}/{*sub_path}` — dispatch to per-codebase
-/// loggerhead. The `_path` capture isn't used because we rebuild the
-/// rewritten URI from the original `req.uri().path()` minus the
-/// `/bzr/{codebase}` prefix.
-pub async fn bzr_browse_handler(
-    State(state): State<AppState>,
-    Path((codebase, _sub_path)): Path<(CodebaseName, String)>,
-    req: Request,
-) -> Result<Response> {
-    dispatch(&state, &codebase, req).await
+/// The codebase of a `/{codebase}/{rest}` path, or `None` for the bare `/` path.
+fn split_codebase(path: &str) -> Result<Option<CodebaseName>> {
+    let Some(path) = path.strip_prefix('/').filter(|p| !p.is_empty()) else {
+        return Ok(None);
+    };
+    let name = path.split_once('/').map_or(path, |(name, _)| name);
+    let codebase = CodebaseName::new(name).map_err(|e| BzrError::invalid_request(e.to_string()))?;
+    Ok(Some(codebase))
 }
 
-/// `GET /bzr/{codebase}` and `/bzr/{codebase}/` — same dispatch but
-/// with an empty sub-path. Kept as a separate handler because axum
-/// 0.8's `{*path}` wildcard requires at least one segment.
-pub async fn bzr_browse_root(
-    State(state): State<AppState>,
-    Path(codebase): Path<CodebaseName>,
-    req: Request,
-) -> Result<Response> {
+/// `GET /bzr/{codebase}/...`, the fallback of the router nested at `/bzr`.
+pub async fn bzr_browse_handler(State(state): State<AppState>, req: Request) -> Result<Response> {
+    let Some(codebase) = split_codebase(req.uri().path())? else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
     dispatch(&state, &codebase, req).await
 }
 
@@ -120,9 +115,9 @@ async fn dispatch(state: &AppState, codebase: &CodebaseName, mut req: Request) -
         .browse_routers
         .get_or_build(codebase, &repo_path, &static_dir);
 
-    // Strip `/bzr/<codebase>` from the request URI so loggerhead's
+    // Strip `/<codebase>` from the request URI so loggerhead's
     // routes (mounted at `/`, `/changes`, `/atom`, etc) match.
-    let prefix = format!("/bzr/{}", codebase);
+    let prefix = format!("/{}", codebase);
     let original = req.uri();
     let rest = original.path().strip_prefix(&prefix).unwrap_or("");
     let rest = if rest.is_empty() { "/" } else { rest };
