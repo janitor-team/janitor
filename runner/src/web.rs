@@ -544,6 +544,11 @@ async fn schedule(
 /// timestamps, so no keepalive_age / mia / last-keepalive fields are
 /// included.
 async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    Json(queue_status(&state).await)
+}
+
+/// The `/status` body, also sent as the pub/sub `queue` message.
+async fn queue_status(state: &AppState) -> serde_json::Value {
     let processing: Vec<serde_json::Value> = state
         .active_runs
         .list()
@@ -568,11 +573,24 @@ async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             }
         };
 
-    Json(json!({
+    json!({
         "processing": processing,
         "avoid_hosts": avoid_hosts,
         "rate_limit_hosts": rate_limit_hosts,
-    }))
+    })
+}
+
+async fn publish_queue_status(state: &AppState) {
+    if let Err(e) = state
+        .database
+        .publish("queue", &queue_status(state).await)
+        .await
+    {
+        log::error!("Failed to publish queue status event: {}", e);
+        crate::metrics::REDIS_OPERATIONS_TOTAL
+            .with_label_values(&["publish_queue_status", "error"])
+            .inc();
+    }
 }
 
 /// `GET /log/{run_id}` -- list the log files the live worker for
@@ -2203,24 +2221,7 @@ async fn publish_finish_events(
             .inc();
     }
 
-    let processing: Vec<serde_json::Value> = state
-        .active_runs
-        .list()
-        .await
-        .iter()
-        .map(|r| r.to_json())
-        .collect();
-    let status_payload = serde_json::json!({
-        "processing": processing,
-        "avoid_hosts": [],
-        "rate_limit_hosts": {},
-    });
-    if let Err(e) = state.database.publish("queue", &status_payload).await {
-        log::error!("Failed to publish queue status event: {}", e);
-        crate::metrics::REDIS_OPERATIONS_TOTAL
-            .with_label_values(&["publish_queue_status", "error"])
-            .inc();
-    }
+    publish_queue_status(state).await;
 
     crate::metrics::LAST_SUCCESS_GAUGE.set(chrono::Utc::now().timestamp() as f64);
 
@@ -3343,6 +3344,7 @@ async fn assign_work_internal(
 
     // Store active run in the in-memory store
     state.active_runs.store(active_run.clone()).await;
+    publish_queue_status(&state).await;
     crate::metrics::RUN_COUNT.inc();
     crate::metrics::MetricsCollector::set_active_runs(
         &active_run.worker_name,
