@@ -154,6 +154,7 @@ async fn run_scan_loop(
         let cycle_start = Utc::now();
         log::debug!("Checking existing merge proposals");
         let completed = crate::check_existing(
+            crate::iter_all_mps(None),
             state.conn.clone(),
             state.redis.clone(),
             state.config,
