@@ -86,6 +86,22 @@ variables instead, which are used as a fallback if the config fields are empty.
 The provider needs a matching OAuth App/client registered with it first,
 with its callback URL set to `<external_url>/oauth/callback`.
 
+### API tokens
+
+Scripts use an API token instead. Once logged in, press "Create API
+token" in the sidebar of the cupboard pages. A token lasts 180 days, or
+fewer if you enter fewer days next to the button. The site shows the new
+token once and keeps only its sha256 hash. Send it as an
+`Authorization: Bearer <token>` header to act as the user who made it.
+`janitor-admin --token <token>` sends the header for you. Once a token
+expires, the site answers 401.
+`GET /api-tokens` lists your tokens by hash, creation and expiry time, and
+`DELETE /api-tokens/<hash>` deletes one.
+
+A token keeps the groups its user had when it was made. If a user loses a
+group, for example admin, their tokens keep it until they expire or are
+deleted.
+
 ## Optional configuration
 
 A few `janitor.conf` fields are optional, each with a clean fallback if left
