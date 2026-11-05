@@ -103,6 +103,11 @@ cd {{ codebase }}
         <!-- unknown bugtracker kind {{ bugtracker.kind }} -->
     {% endif %}
 {% endmacro %}
+{% macro login_on_401() -%}
+    {%- if openid_configured and not user -%}
+        if (response.status == 401) return window.location.replace("/login?url=" + encodeURIComponent(window.location.href));
+    {%- endif -%}
+{%- endmacro %}
 {% macro reschedule_button(campaign, codebase, title="Reschedule", id="reschedule", data={}, accesskey="s") %}
     <button id="{{ id }}"
             {% if accesskey %}accesskey="{{ accesskey }}"{% endif %}>{{ title }}</button>
@@ -116,6 +121,7 @@ cd {{ codebase }}
                         $('.queue-position.{{ codebase }}').attr('style', '')
                     }, 'json')
                     .fail(function(response) {
+                        {{ login_on_401() }}
                         $("#{{ id }}").replaceWith("<span>Failed to schedule new run: " + response.responseText + "</span>");
                     });
             });
@@ -131,6 +137,7 @@ cd {{ codebase }}
                         $("#{{ id }}").replaceWith("<span>Scheduled control run at position " + data.queue_position + ".</span>");
                     }, 'json')
                     .fail(function(response) {
+                        {{ login_on_401() }}
                         $("#{{ id }}").replaceWith("<span>Failed to schedule control run: " + response.responseText + "</span>");
                     });
             });
@@ -158,6 +165,7 @@ cd {{ codebase }}
                         }
                     }, 'json')
                     .fail(function(response) {
+                        {{ login_on_401() }}
                         $("#{{ publish_id }}").replaceWith("<span>Failed to publish: " + response.responseText + "</span>");
                     });
             });
@@ -215,7 +223,8 @@ cd {{ codebase }}
     {% endif %}
 {% endmacro %}
 {% macro display_result_code(result_code, transient=None) %}
-    <span class="result-code-{{ classify_result_code(result_code, transient) }}">{{ result_code }}</span>
+    {%- set kind = classify_result_code(result_code, transient) %}
+    <span class="result-code-{{ kind }}{{ {'success': ' state-ok', 'transient-failure': ' state-waiting', 'failure': ' state-blocked', 'bug': ' state-blocked'}.get(kind, '') }}">{{ result_code }}</span>
 {%- endmacro -%}
 {% macro result_code_explanation(result_code, run=None) %}
     {% if result_code %}
@@ -240,35 +249,57 @@ cd {{ codebase }}
 {% endmacro %}
 {% macro display_publish_result_code(code) %}
     {% if code == 'success' %}
-        <span class="publish-success">{{ code }}</span>
+        <span class="publish-success state-ok">{{ code }}</span>
     {%- elif code == 'nothing-to-do' %}
         <span class="publish-nothing-to-do">{{ code }}</span>
-    {%- elif code in ('differ-unreachable') %}
-        <span class="publish-transient">{{ code }}</span>
-    {%- elif code in ('missing-build-diff-control') %}
-        <span class="publish-missing">{{ code }}</span>
-    {%- elif code in ('publisher-invalid-response') %}
-        <span class="publish-bug">{{ code }}</span>
+    {%- elif code in ('differ-unreachable', 'merge-conflict', 'diverged-branches', 'missing-build-diff-self') %}
+        <span class="publish-transient state-waiting">{{ code }}</span>
+    {%- elif code == 'missing-build-diff-control' %}
+        <span class="publish-missing state-waiting">{{ code }}</span>
+    {%- elif code == 'publisher-invalid-response' %}
+        <span class="publish-bug state-blocked">{{ code }}</span>
     {%- else %}
-        <span class="publish-failure">{{ code }}</span>
+        <span class="publish-failure state-blocked">{{ code }}</span>
     {%- endif %}
+{%- endmacro %}
+{% macro display_publish_status(status, succeeded=True) -%}
+    {%- if status == 'approved' -%}
+        <span class="state-ok">{{ status }}</span>
+    {%- elif status == 'unknown' and succeeded -%}
+        <span class="state-waiting">{{ status }}</span>
+    {%- elif status in ('unknown', 'blocked', 'needs-manual-review', 'rejected') -%}
+        <span class="state-blocked">{{ status }}</span>
+    {%- else -%}
+        {{ status }}
+    {%- endif -%}
+{%- endmacro %}
+{% macro display_merge_proposal_status(status) -%}
+    {%- if status in ('merged', 'applied') -%}
+        <span class="state-ok">{{ status }}</span>
+    {%- elif status == 'open' -%}
+        <span class="state-waiting">{{ status }}</span>
+    {%- elif status in ('closed', 'rejected') -%}
+        <span class="state-blocked">{{ status }}</span>
+    {%- else -%}
+        {{ status }}
+    {%- endif -%}
 {%- endmacro %}
 {% macro display_publish_result(mode, code, description, mp_url) %}
     {% if mode == 'push' %}
         {% if code == 'success' %}
-            Successfully pushed
+            <span class="state-ok">Successfully pushed</span>
         {% else %}
-            Failed to push: <span class="publish-failure">{{ code }}</span>
+            Failed to push: {{ display_publish_result_code(code) }}
         {% endif %}
     {% elif mode == 'propose' %}
         {% if code == 'success' %}
             {% if mp_url %}
-                <a href="{{ mp_url }}">Merge proposal</a> updated
+                <a href="{{ mp_url }}">Merge proposal</a> <span class="state-ok">updated</span>
             {% else %}
                 Changes not significant enough for merge request.
             {% endif %}
         {% else %}
-            Failed to create merge proposal: <span class="publish-failure">{{ code }}</span>
+            Failed to create merge proposal: {{ display_publish_result_code(code) }}
         {% endif %}
     {% endif %}
     {% if description %}
@@ -316,7 +347,7 @@ cd {{ codebase }}
 {% macro display_publish_blockers(blockers) %}
     <ul>
         {% for k, v in blockers.items() %}
-            <li>
+            <li class="{{ 'state-ok' if v.result else 'state-waiting' if v.waiting else 'state-blocked' }}">
                 {%- if v.result -%}☑
                 {% else -%}
                     ☒
@@ -342,8 +373,8 @@ cd {{ codebase }}
                         unknown publish status {{ d.status }}
                     {%- endif -%}
                 {%- elif k == 'backoff' -%}
-                    {{ d.attempt_count }} publish attempts so far.
-                    {%- if r -%}
+                    {{ d.attempt_count }} publish attempts so far,
+                    {% if r -%}
                         not currently attempting to back off
                     {%- else -%}
                         next attempt after {{ d.next_try_time }}
@@ -355,10 +386,13 @@ cd {{ codebase }}
                         command changed from <code>{{ d.actual }}</code> to <code>{{ d.correct }}</code>
                     {%- endif -%}
                 {%- elif k == 'propose_rate_limit' -%}
-                    {%- if r -%}
+                    {%- if r and d.bucket -%}
                         proposals not currently being rate-limited for maintainer {{ d.bucket }}
+                    {%- elif r -%}
+                        no rate limit for merge proposals
                     {%- else -%}
-                        merge proposals for the package maintainer {{ d.bucket }} are currently being rate-limited (open: {{ d.open }}, max open: {{ d.max_open }})
+                        merge proposals are currently being rate-limited
+                        {%- if d.open is not none %} (open: {{ d.open }}{% if d.max_open is not none %}, max open: {{ d.max_open }}{% endif %}){% endif %}
                     {%- endif -%}
                 {%- elif k == 'success' -%}
                     {%- if r -%}
@@ -376,16 +410,16 @@ cd {{ codebase }}
                     {%- if r -%}
                         {%- if not d -%}no relevant previous merge proposals
                         {%- else -%}merge proposals for previous run were not rejected:
-                            {% for (url, status) in d %}
-                                <a href="{{ url }}">{{ status }}</a>
+                            {% for mp in d %}
+                                <a href="{{ mp.url }}">{{ mp.status }}</a>
                                 {% if not loop.last %},{% endif %}
                             {% endfor %}
                             .
                         {%- endif -%}
                     {%- else -%}
                         merge proposals for previous run were rejected:
-                        {% for (url, status) in d %}
-                            <a href="{{ url }}">{{ status }}</a>
+                        {% for mp in d %}
+                            <a href="{{ mp.url }}">{{ mp.status }}</a>
                             {% if not loop.last %},{% endif %}
                         {% endfor %}
                         .

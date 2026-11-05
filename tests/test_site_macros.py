@@ -166,12 +166,183 @@ def test_display_publish_blockers():
 
     <ul>
         
-            <li>☑
+            <li class="state-ok">☑
                 codebase is not inactive</li>
         
     </ul>
 """
     )
+
+
+def _blocker_html(name, result, details):
+    template = env.get_template("run_util.html")
+    blockers = {name: {"result": result, "details": details}}
+    return BeautifulSoup(
+        str(template.module.display_publish_blockers(blockers)),  # type: ignore
+        "html.parser",
+    ).li
+
+
+def _blocker_text(name, result, details):
+    return " ".join(_blocker_html(name, result, details).get_text().split())
+
+
+@pytest.mark.parametrize(
+    "result,details,expected",
+    [
+        (
+            True,
+            {"attempt_count": 0, "next_try_time": "2026-11-05T12:00:00Z"},
+            "☑ 0 publish attempts so far, not currently attempting to back off",
+        ),
+        (
+            False,
+            {"attempt_count": 1, "next_try_time": "2026-11-05T12:00:00Z"},
+            "☒ 1 publish attempts so far, next attempt after 2026-11-05T12:00:00Z",
+        ),
+    ],
+)
+def test_display_publish_blockers_backoff(result, details, expected):
+    assert _blocker_text("backoff", result, details) == expected
+
+
+@pytest.mark.parametrize(
+    "result,details,expected",
+    [
+        (
+            True,
+            {"bucket": "jelmer@debian.org"},
+            "☑ proposals not currently being rate-limited for maintainer "
+            "jelmer@debian.org",
+        ),
+        (True, {"bucket": None}, "☑ no rate limit for merge proposals"),
+        (
+            False,
+            {"open": 3, "max_open": 2},
+            "☒ merge proposals are currently being rate-limited (open: 3, max open: 2)",
+        ),
+        (
+            False,
+            {"open": 3, "max_open": None},
+            "☒ merge proposals are currently being rate-limited (open: 3)",
+        ),
+        (
+            False,
+            {"open": None, "max_open": None},
+            "☒ merge proposals are currently being rate-limited",
+        ),
+    ],
+)
+def test_display_publish_blockers_rate_limit(result, details, expected):
+    assert _blocker_text("propose_rate_limit", result, details) == expected
+
+
+def test_display_publish_blockers_previous_mp():
+    li = _blocker_html(
+        "previous_mp",
+        False,
+        [
+            {"url": "https://example.com/mp/1", "status": "rejected"},
+            {"url": "https://example.com/mp/2", "status": "closed"},
+        ],
+    )
+    assert [(a["href"], a.string) for a in li.find_all("a")] == [
+        ("https://example.com/mp/1", "rejected"),
+        ("https://example.com/mp/2", "closed"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "result,waiting,expected",
+    [
+        (True, False, "state-ok"),
+        (False, True, "state-waiting"),
+        (False, False, "state-blocked"),
+    ],
+)
+def test_display_publish_blockers_state(result, waiting, expected):
+    template = env.get_template("run_util.html")
+    blockers = {"inactive": {"result": result, "waiting": waiting, "details": {}}}
+    li = BeautifulSoup(
+        str(template.module.display_publish_blockers(blockers)),  # type: ignore
+        "html.parser",
+    ).li
+    assert li["class"] == [expected]
+
+
+def _state_of(html):
+    return [
+        c
+        for el in BeautifulSoup(html, "html.parser").find_all(class_=True)
+        for c in el["class"]
+        if c.startswith("state-")
+    ]
+
+
+@pytest.mark.parametrize(
+    "result_code,transient,expected",
+    [
+        ("success", None, ["state-ok"]),
+        ("nothing-to-do", None, []),
+        ("cancelled", None, ["state-waiting"]),
+        ("worker-failure", None, ["state-blocked"]),
+        ("build-failed", False, ["state-blocked"]),
+    ],
+)
+def test_display_result_code_state(result_code, transient, expected):
+    from janitor.site import classify_result_code
+
+    code_env = Environment(loader=template_loader)
+    code_env.globals["classify_result_code"] = classify_result_code
+    template = code_env.get_template("run_util.html")
+    html = str(template.module.display_result_code(result_code, transient))  # type: ignore
+    assert _state_of(html) == expected
+
+
+@pytest.mark.parametrize(
+    "macro,value,expected",
+    [
+        ("display_publish_result_code", "success", ["state-ok"]),
+        ("display_publish_result_code", "nothing-to-do", []),
+        ("display_publish_result_code", "differ-unreachable", ["state-waiting"]),
+        ("display_publish_result_code", "merge-conflict", ["state-waiting"]),
+        (
+            "display_publish_result_code",
+            "missing-build-diff-control",
+            ["state-waiting"],
+        ),
+        ("display_publish_result_code", "branch-unavailable", ["state-blocked"]),
+        ("display_merge_proposal_status", "merged", ["state-ok"]),
+        ("display_merge_proposal_status", "open", ["state-waiting"]),
+        ("display_merge_proposal_status", "rejected", ["state-blocked"]),
+        ("display_merge_proposal_status", "abandoned", []),
+        ("display_publish_status", "approved", ["state-ok"]),
+        ("display_publish_status", "unknown", ["state-waiting"]),
+        ("display_publish_status", "needs-manual-review", ["state-blocked"]),
+        ("display_publish_status", "ignored", []),
+    ],
+)
+def test_display_state(macro, value, expected):
+    template = env.get_template("run_util.html")
+    html = str(getattr(template.module, macro)(value))
+    assert _state_of(html) == expected
+    assert value in html
+
+
+def test_display_publish_status_failed_run():
+    template = env.get_template("run_util.html")
+    html = str(template.module.display_publish_status("unknown", False))  # type: ignore
+    assert _state_of(html) == ["state-blocked"]
+
+
+@pytest.mark.parametrize(
+    "verdict,expected",
+    [("approved", ["state-ok"]), ("rejected", ["state-blocked"]), ("abstained", [])],
+)
+def test_display_review_verdict(verdict, expected):
+    template = env.get_template("review_util.html")
+    html = str(template.module.display_review_verdict(verdict))  # type: ignore
+    assert _state_of(html) == expected
 
 
 # What the worker stores for a real lintian 2.141.0 run on a small package.

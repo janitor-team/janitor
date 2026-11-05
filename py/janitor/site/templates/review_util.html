@@ -8,6 +8,9 @@
         <a href="/login?url={{ url | urlencode }}">Login to see reviewer identities</a>
     {%- endif -%}
 {% endmacro %}
+{% macro display_review_verdict(verdict) -%}
+    <span class="review-{{ verdict }}{{ ' state-ok' if verdict == 'approved' else ' state-blocked' if verdict == 'rejected' else '' }}">{{ verdict }}</span>
+{%- endmacro %}
 {% macro display_reviews_table(reviews, user=None) %}
     <table class="reviews">
         <thead>
@@ -25,7 +28,7 @@
                 <tr>
                     <td>{{ display_reviewer(review['reviewer']) }}</td>
                     <td>
-                        <span class="review-{{ review['verdict'] }}">{{ review['verdict'] }}</span>
+                        {{ display_review_verdict(review['verdict']) }}
                     </td>
                     <td>{{ trimmed_comment(review['comment']) }}</td>
                 </tr>

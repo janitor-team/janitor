@@ -1898,6 +1898,11 @@ async fn get_all_rate_limits(State(state): State<Arc<AppState>>) -> impl IntoRes
 pub struct Blocker<D> {
     /// Whether this check allows publishing.
     pub result: bool,
+    /// Whether this check blocks for now but needs no fix, such as a
+    /// running backoff or rate limit, or a successful run that is not yet
+    /// reviewed or whose change set is still being worked on.
+    #[serde(default)]
+    pub waiting: bool,
     /// What the check looked at.
     pub details: D,
 }
@@ -2026,7 +2031,8 @@ struct RunDetails {
 /// `GET /blockers/{run_id}`: diagnose why a run isn't being published.
 ///
 /// Each top-level key in the response is a Blocker with a `result`
-/// boolean and a `details` object explaining the value:
+/// boolean, a `waiting` boolean that is set when the check blocks for now
+/// but needs no fix, and a `details` object explaining the value:
 ///
 ///   * success: result_code = 'success'
 ///   * inactive: codebase isn't marked inactive
@@ -2169,8 +2175,10 @@ WHERE run.id = $1
             }
         };
 
+    let run_succeeded = run.result_code == "success";
     let success = Blocker {
-        result: run.result_code == "success",
+        result: run_succeeded,
+        waiting: false,
         details: BlockerSuccessDetails {
             result_code: run.result_code,
         },
@@ -2178,6 +2186,7 @@ WHERE run.id = $1
 
     let inactive = Blocker {
         result: !run.inactive,
+        waiting: false,
         details: BlockerInactiveDetails {
             inactive: run.inactive,
         },
@@ -2185,6 +2194,7 @@ WHERE run.id = $1
 
     let command = Blocker {
         result: run.run_command == run.policy_command,
+        waiting: false,
         details: BlockerCommandDetails {
             correct: run.policy_command,
             actual: run.run_command,
@@ -2193,6 +2203,7 @@ WHERE run.id = $1
 
     let publish_status = Blocker {
         result: run.publish_status == "approved",
+        waiting: run_succeeded && run.publish_status == "unknown",
         details: BlockerPublishStatusDetails {
             status: run.publish_status,
             reviews: reviews
@@ -2213,8 +2224,10 @@ WHERE run.id = $1
 
     let next_try_time = crate::calculate_next_try_time(run.finish_time, attempt_count);
 
+    let backoff_over = chrono::Utc::now() >= next_try_time;
     let backoff = Blocker {
-        result: chrono::Utc::now() >= next_try_time,
+        result: backoff_over,
+        waiting: !backoff_over,
         details: BlockerBackoffDetails {
             attempt_count,
             next_try_time,
@@ -2230,6 +2243,7 @@ WHERE run.id = $1
                 if allowed {
                     Blocker {
                         result: true,
+                        waiting: false,
                         details: serde_json::json!({"bucket": bucket}),
                     }
                 } else {
@@ -2240,6 +2254,7 @@ WHERE run.id = $1
                     let max_open = limiter.get_max_open(bucket);
                     Blocker {
                         result: false,
+                        waiting: true,
                         details: serde_json::json!({
                             "open": open,
                             "max_open": max_open,
@@ -2250,6 +2265,7 @@ WHERE run.id = $1
                 // No bucket configured: treat as unconstrained.
                 Blocker {
                     result: true,
+                    waiting: false,
                     details: serde_json::json!({"bucket": serde_json::Value::Null}),
                 }
             }
@@ -2265,6 +2281,7 @@ WHERE run.id = $1
 
     let change_set = Blocker {
         result: crate::change_set_state_allows_publish(&run.change_set_state),
+        waiting: run_succeeded && matches!(run.change_set_state.as_str(), "created" | "working"),
         details: BlockerChangeSetDetails {
             change_set_id: run.change_set,
             change_set_state: run.change_set_state,
@@ -2277,6 +2294,7 @@ WHERE run.id = $1
         // predicate consider_publish_run uses, so the two paths
         // can't drift.
         result: !crate::previous_mp_blocks_publish(&last_mps),
+        waiting: false,
         details: last_mps
             .into_iter()
             .map(|(url, status)| BlockerPreviousMpDetails { url, status })

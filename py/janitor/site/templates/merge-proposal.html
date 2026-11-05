@@ -6,7 +6,7 @@
         {% include [campaign + "-sidebar.html", "generic/sidebar.html"] %}
     {% endif %}
 {% endblock sidebar %}
-{% from "run_util.html" import display_publish_result_code %}
+{% from "run_util.html" import display_publish_result_code, display_merge_proposal_status %}
 {% block page_title %}
     Merge proposal status - {{ proposal.url }}
 {% endblock page_title %}
@@ -24,9 +24,9 @@
             {% endif %}
             {% if proposal.can_be_merged is not none %}
                 {% if proposal.can_be_merged %}
-                    <li>Can be merged</li>
+                    <li {% if proposal.status == 'open' %}class="state-ok"{% endif %}>Can be merged</li>
                 {% else %}
-                    <li>Can not be merged</li>
+                    <li {% if proposal.status == 'open' %}class="state-waiting"{% endif %}>Can not be merged</li>
                 {% endif %}
             {% endif %}
             {% if proposal.last_scanned %}<li>Last scanned: {{ format_timestamp(proposal.last_scanned) }}</li>{% endif %}
@@ -53,13 +53,13 @@
                         }
                     </script>
                 {% elif proposal.status == 'merged' %}
-                    Merged
+                    <span class="state-ok">Merged</span>
                     {% if proposal.merged_at %}
                         at {{ format_timestamp(proposal.merged_at) }}
                     {% endif %}
                     {% if proposal.merged_by %}by {{ proposal.merged_by }}{% endif %}
                 {% else %}
-                    {{ proposal.status }}
+                    {{ display_merge_proposal_status(proposal.status) }}
                 {% endif %}
             </li>
             {% if proposal.suite %}

@@ -4,7 +4,7 @@
         {% include [campaign + "/sidebar.html", "generic/sidebar.html"] %}
     {% endwith %}
 {% endblock sidebar %}
-{% from "run_util.html" import local_command, merge_command, reschedule_button, describe_publish_policy, publish_buttons, result_code_explanation, display_result_code, display_vcs_diffs, display_branch_url with context %}
+{% from "run_util.html" import local_command, merge_command, reschedule_button, describe_publish_policy, publish_buttons, result_code_explanation, display_result_code, display_merge_proposal_status, display_vcs_diffs, display_branch_url with context %}
 {% block page_title %}
     {{ suite }} codebase - {{ codebase }}
 {% endblock page_title %}
@@ -23,7 +23,7 @@
             {% if vcs_url %}<li>Branch URL: {{ display_branch_url(vcs_browse, vcs_url) }}</li>{% endif %}
             {% if queue_position %}
                 <li id="queue-position.{{ codebase }}">
-                    Queue position: {{ queue_position }}
+                    Queue position: <span class="state-waiting">{{ queue_position }}</span>
                     {% if queue_wait_time %}(a {{ format_duration(queue_wait_time) }} wait){% endif %}
                 </li>
             {% else %}
@@ -37,7 +37,7 @@
                 <ul>
                     {% for url, status in merge_proposals %}
                         <li>
-                            <a href="{{ url }}">{{ url }}</a> ({{ status }})
+                            <a href="{{ url }}">{{ url }}</a> ({{ display_merge_proposal_status(status) }})
                         </li>
                     {% endfor %}
                 </ul>

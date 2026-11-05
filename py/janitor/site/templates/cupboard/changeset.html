@@ -10,7 +10,8 @@
     <div class="section">
         <h1>Changeset {{ changeset.id }}</h1>
         <p>
-            Status: <i>{{ changeset.state }}</i>
+            {% set succeeded = runs|selectattr('result_code', 'equalto', 'success')|list %}
+            Status: <i class="{{ 'state-ok' if changeset.state in ('ready', 'publishing', 'done') else 'state-waiting' if changeset.state == 'created' or succeeded else 'state-blocked' }}">{{ changeset.state }}</i>
         </p>
         <h2>Runs</h2>
         <ul>
