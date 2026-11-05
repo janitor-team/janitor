@@ -232,7 +232,10 @@ impl ArchiveWebService {
             .route("/last-publish", get(last_publish_status))
             .route("/gpg-key", get(serve_gpg_key))
             .route("/pgp_keys", get(handle_pgp_keys))
-            .route("/metrics", get(shared::metrics_ok))
+            .route(
+                "/metrics",
+                get(janitor_service::prometheus::metrics_handler),
+            )
             // One span per request, exported when zipkin_address is set.
             .layer(TraceLayer::new_for_http())
             .with_state(self.state.clone())
