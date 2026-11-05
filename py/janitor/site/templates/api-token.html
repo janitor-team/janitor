@@ -1,0 +1,12 @@
+{% extends "layout.html" %}
+{% block page_title %}
+    API token
+{% endblock page_title %}
+{% block body %}
+    <div class="section" id="api-token">
+        <h1>API token</h1>
+        <p>Copy this token now. It will not be shown again.</p>
+        <pre id="token">{{ token }}</pre>
+        <p>It expires at {{ format_timestamp(expires_at) }}.</p>
+    </div>
+{% endblock body %}
