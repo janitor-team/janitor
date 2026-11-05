@@ -109,6 +109,9 @@ message Campaign {
 
   // Default command, can be overridden on a per-package basis
   optional string command = 9;
+
+  // Plain text shown on the campaign page and on the front page.
+  optional string description = 13;
 }
 
 message GenericBuild {

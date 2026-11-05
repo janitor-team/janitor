@@ -8,7 +8,11 @@
 {% block body %}
     <div class="section" id="{{ campaign }}">
         <h1>{{ campaign }}</h1>
-        <p><em>Status pages for the {{ campaign }} campaign.</em></p>
+        {% if campaign_description %}
+            <p>{{ campaign_description }}</p>
+        {% else %}
+            <p><em>Status pages for the {{ campaign }} campaign.</em></p>
+        {% endif %}
         {% if campaign_command %}
             <p>Default command: <code>{{ campaign_command }}</code></p>
         {% endif %}

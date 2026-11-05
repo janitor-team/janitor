@@ -275,6 +275,37 @@ async def test_merge_proposal_without_url_returns_400(
     assert await resp.text() == "no url specified"
 
 
+async def test_campaign_description(aiohttp_client, database_location):
+    _private_app, app = await create_app(
+        config=create_config(
+            database_location,
+            'campaign { name: "fresh" description: "New <em>upstream</em> releases." }',
+        ),
+        redis=FakeRedis(),
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/")
+    assert resp.status == 200
+    soup = BeautifulSoup(await resp.text(), "html.parser")
+    campaigns = soup.find("h2").find_next("ul")
+    assert [li.get_text().strip() for li in campaigns.find_all("li")] == [
+        "lintian-fixes",
+        "fresh: New <em>upstream</em> releases.",
+    ]
+
+    for path, expected in [
+        ("/lintian-fixes/", "Status pages for the lintian-fixes campaign."),
+        ("/fresh/", "New <em>upstream</em> releases."),
+    ]:
+        resp = await client.get(path)
+        assert resp.status == 200
+        section = BeautifulSoup(await resp.text(), "html.parser").find(
+            "div", class_="section"
+        )
+        assert [p.get_text() for p in section.find_all("p")] == [expected]
+
+
 async def _start_provider(aiohttp_server, *, discovery=None, userinfo=None):
     """A local server standing in for the OpenID provider."""
 

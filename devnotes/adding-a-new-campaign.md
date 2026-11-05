@@ -23,6 +23,7 @@ In janitor.conf, add a section for the campaign. E.g.:
 
     campaign {
       name: "some-name"
+      description: "Fix some issue in all packages."
       command: "myscript"
       branch_name: "some-name"
       debian_build {

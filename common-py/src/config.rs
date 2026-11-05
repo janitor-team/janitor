@@ -279,6 +279,11 @@ impl Campaign {
     pub fn command(&self) -> Option<&str> {
         self.0.command.as_deref()
     }
+
+    #[getter]
+    pub fn description(&self) -> Option<&str> {
+        self.0.description.as_deref()
+    }
 }
 
 #[pyclass]

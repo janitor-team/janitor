@@ -76,6 +76,8 @@ distribution {
 
 campaign {
   name: "lintian-fixes"
+  # Plain text shown on the campaign page and on the front page. Optional.
+  description: "Fix issues that lintian reports in Debian packages."
   # This codemod is not in the published worker image. Install it in a
   # worker image of your own, see "Custom worker tooling" in
   # docs/containers.md.

@@ -12,9 +12,10 @@
         </p>
         <h2>Campaigns</h2>
         <ul>
-            {% for campaign in all_campaigns %}
+            {% for campaign in config.campaign %}
                 <li>
-                    <a href="{{ campaign }}">{{ campaign }}</a>
+                    <a href="{{ campaign.name }}">{{ campaign.name }}</a>
+                    {%- if campaign.description %}: {{ campaign.description }}{% endif %}
                 </li>
             {% endfor %}
         </ul>

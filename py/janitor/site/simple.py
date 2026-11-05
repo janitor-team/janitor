@@ -104,6 +104,9 @@ async def handle_generic_start(request):
     return {
         "campaign": campaign,
         "campaign_command": campaign_config.command if campaign_config else None,
+        "campaign_description": (
+            campaign_config.description if campaign_config else None
+        ),
     }
 
 
