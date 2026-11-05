@@ -1,5 +1,5 @@
 use clap::Parser;
-use minijinja::{self, AutoEscape, Environment, Value};
+use minijinja::{self, Environment, Value};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -35,13 +35,6 @@ fn load_template_env(path: &Path) -> Environment {
     environment.set_loader(minijinja::path_loader(path));
     environment.set_trim_blocks(true);
     environment.set_lstrip_blocks(true);
-    environment.set_auto_escape_callback(|name| {
-        if name.ends_with(".md") || name.ends_with(".txt") {
-            AutoEscape::None
-        } else {
-            AutoEscape::Html
-        }
-    });
 
     environment.add_function("debdiff_is_empty", debdiff_is_empty);
     environment.add_function("markdownify_debdiff", markdownify_debdiff);
@@ -105,5 +98,25 @@ fn main() {
     if let Err(e) = serde_json::to_writer(std::io::stdout(), &publish_result) {
         eprintln!("Failed to write result to stdout: {}", e);
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_templates_are_not_html_escaped() {
+        let mut env = load_template_env(Path::new("."));
+        let context = serde_json::json!({"value": "debian/upstream & <b>"});
+        for name in ["title", "commit_message"] {
+            let rendered = env.render_named_str(name, "{{ value }}", &context).unwrap();
+            assert_eq!(rendered, "debian/upstream & <b>", "{}", name);
+        }
+        for name in ["lintian-fixes.md", "lintian-fixes.txt"] {
+            env.add_template(name, "{{ value }}").unwrap();
+            let rendered = env.get_template(name).unwrap().render(&context).unwrap();
+            assert_eq!(rendered, "debian/upstream & <b>", "{}", name);
+        }
     }
 }
