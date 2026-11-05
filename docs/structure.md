@@ -12,3 +12,4 @@
   - `run list` - list active runs
   - `run kill <run-id>` - kill an active run
   - `logs <run-id> <name>` - print a log file of a run, e.g. `worker.log`
+- `janitor-render-publish-template` - prints the merge proposal description for a run, without publishing anything.

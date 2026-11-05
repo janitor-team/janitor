@@ -1,6 +1,6 @@
 use clap::Parser;
-use minijinja::{self, AutoEscape, Environment, Value};
-use std::path::{Path, PathBuf};
+use janitor_publish::publish_one::load_template_env;
+use std::path::PathBuf;
 
 #[derive(Parser)]
 struct Args {
@@ -10,43 +10,6 @@ struct Args {
 
     #[clap(flatten)]
     logs: janitor::logging::LoggingArgs,
-}
-
-fn debdiff_is_empty(debdiff: &str) -> Result<bool, minijinja::Error> {
-    Ok(janitor::debdiff::debdiff_is_empty(debdiff))
-}
-
-fn markdownify_debdiff(debdiff: &str) -> Result<String, minijinja::Error> {
-    Ok(janitor::debdiff::markdownify_debdiff(debdiff))
-}
-
-fn parseaddr(addr: &str) -> Result<Value, minijinja::Error> {
-    let (name, email) = debian_changelog::parseaddr(addr);
-
-    Ok(if let Some(name) = name {
-        minijinja::Value::from_iter(vec![Value::from(name), Value::from(email)])
-    } else {
-        minijinja::Value::from_iter(vec![Value::from(()), Value::from(email)])
-    })
-}
-
-fn load_template_env(path: &Path) -> Environment {
-    let mut environment = Environment::new();
-    environment.set_loader(minijinja::path_loader(path));
-    environment.set_trim_blocks(true);
-    environment.set_lstrip_blocks(true);
-    environment.set_auto_escape_callback(|name| {
-        if name.ends_with(".md") || name.ends_with(".txt") {
-            AutoEscape::None
-        } else {
-            AutoEscape::Html
-        }
-    });
-
-    environment.add_function("debdiff_is_empty", debdiff_is_empty);
-    environment.add_function("markdownify_debdiff", markdownify_debdiff);
-    environment.add_function("parseaddr", parseaddr);
-    environment
 }
 
 fn main() {
