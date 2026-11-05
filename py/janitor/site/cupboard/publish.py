@@ -2,6 +2,8 @@ from typing import Optional
 
 from aiohttp import web
 
+from ..common import bad_row_count_as_400
+
 
 async def iter_publish_history(conn, limit: Optional[int] = None):
     query = """
@@ -15,7 +17,8 @@ LEFT JOIN codebase ON codebase.name = publish.codebase
 ORDER BY timestamp DESC
 LIMIT $1
 """
-    return await conn.fetch(query, limit)
+    async with bad_row_count_as_400():
+        return await conn.fetch(query, limit)
 
 
 async def write_history(conn, limit: Optional[int] = None):

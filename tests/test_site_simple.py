@@ -19,6 +19,7 @@ import asyncio
 import base64
 import json
 import tempfile
+from unittest.mock import ANY
 
 import aiohttp
 import asyncpg
@@ -655,3 +656,33 @@ async def test_pgp_keys_serves_every_reported_key(
         200,
         [IMPORTABLE_KEY_FPR, ROTATED_KEY_FPR],
     )
+
+
+async def test_cupboard_answers_400_on_a_bad_limit_or_offset(
+    aiohttp_client, database_location
+):
+    _private_app, app = await create_app(
+        config=create_config(database_location), redis=FakeRedis()
+    )
+    client = await aiohttp_client(app)
+    answers = {}
+    for path in [
+        "/cupboard/history?limit=abc",
+        "/cupboard/history?limit=",
+        "/cupboard/history?offset=-1",
+        "/cupboard/queue?limit=-1",
+        "/cupboard/publish/?limit=9223372036854775808",
+        "/cupboard/review?limit=99999999999999999999",
+        "/cupboard/api/needs-review?limit=-1",
+    ]:
+        resp = await client.get(path)
+        answers[path] = (resp.status, await resp.text())
+    assert answers == {
+        "/cupboard/history?limit=abc": (400, "limit must be an integer"),
+        "/cupboard/history?limit=": (400, "limit must be an integer"),
+        "/cupboard/history?offset=-1": (400, ANY),
+        "/cupboard/queue?limit=-1": (400, ANY),
+        "/cupboard/publish/?limit=9223372036854775808": (400, ANY),
+        "/cupboard/review?limit=99999999999999999999": (400, ANY),
+        "/cupboard/api/needs-review?limit=-1": (400, ANY),
+    }
