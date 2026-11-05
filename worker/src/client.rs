@@ -2,10 +2,33 @@ use crate::get_build_arch;
 use backoff::ExponentialBackoff;
 use janitor::api::worker::{Assignment, Metadata};
 use janitor_types::{Campaign, CodebaseName, RunId};
+use prometheus::{register_int_counter_with_registry, IntCounter, Registry};
 use reqwest::multipart::{Form, Part};
 use reqwest::{Error as ReqwestError, Response, StatusCode, Url};
 use std::error::Error;
 use std::path::Path;
+
+pub struct Metrics {
+    assignment_failed_count: IntCounter,
+    upload_result_retries: IntCounter,
+}
+
+impl Metrics {
+    pub fn new(registry: &Registry) -> prometheus::Result<Self> {
+        Ok(Self {
+            assignment_failed_count: register_int_counter_with_registry!(
+                "assignment_failed_count",
+                "Failed to obtain assignment",
+                registry
+            )?,
+            upload_result_retries: register_int_counter_with_registry!(
+                "upload_result_retries",
+                "Number of result upload retries.",
+                registry
+            )?,
+        })
+    }
+}
 
 #[derive(Debug)]
 pub enum AssignmentError {
@@ -34,6 +57,7 @@ pub async fn get_assignment_raw(
     jenkins_build_url: Option<&Url>,
     codebase: Option<&CodebaseName>,
     campaign: Option<&Campaign>,
+    metrics: &Metrics,
 ) -> Result<serde_json::Value, AssignmentError> {
     let assign_url = base_url
         .join("active-runs")
@@ -83,7 +107,7 @@ pub async fn get_assignment_raw(
         builder = builder.json(json);
         builder.send().await
     }
-    let assignment = backoff::future::retry(ExponentialBackoff::default(), || async {
+    let op = || async {
         let session = session.clone();
         let assign_url = assign_url.clone();
         match send_assignment_request(session, assign_url, credentials, &json).await {
@@ -131,6 +155,9 @@ pub async fn get_assignment_raw(
                 e.to_string(),
             ))),
         }
+    };
+    let assignment = backoff::future::retry_notify(ExponentialBackoff::default(), op, |_, _| {
+        metrics.assignment_failed_count.inc()
     })
     .await?;
     log::debug!("Got assignment: {:?}", assignment);
@@ -148,6 +175,7 @@ pub async fn get_assignment_raw(
 /// * `jenkins_build_url` - The URL of the Jenkins build.
 /// * `codebase` - Request an assignment for a specific codebase.
 /// * `campaign` - Request an assignment for a specific campaign.
+/// * `metrics` - Counters to update.
 ///
 /// # Returns
 ///
@@ -161,6 +189,7 @@ pub async fn get_assignment(
     jenkins_build_url: Option<&Url>,
     codebase: Option<&CodebaseName>,
     campaign: Option<&Campaign>,
+    metrics: &Metrics,
 ) -> Result<Assignment, AssignmentError> {
     let assignment = get_assignment_raw(
         session,
@@ -171,6 +200,7 @@ pub async fn get_assignment(
         jenkins_build_url,
         codebase,
         campaign,
+        metrics,
     )
     .await?;
     serde_json::from_value(assignment)
@@ -181,6 +211,7 @@ pub struct Client {
     client: reqwest::Client,
     base_url: Url,
     credentials: Credentials,
+    metrics: Metrics,
 }
 
 pub enum Credentials {
@@ -273,6 +304,7 @@ impl Client {
         base_url: Url,
         credentials: Credentials,
         user_agent: &str,
+        metrics: Metrics,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let mut builder = reqwest::Client::builder();
         builder = builder.user_agent(user_agent);
@@ -283,6 +315,7 @@ impl Client {
             client,
             base_url,
             credentials,
+            metrics,
         })
     }
 
@@ -307,6 +340,7 @@ impl Client {
             jenkins_build_url,
             codebase,
             campaign,
+            &self.metrics,
         )
         .await
     }
@@ -328,6 +362,7 @@ impl Client {
             jenkins_build_url,
             codebase,
             campaign,
+            &self.metrics,
         )
         .await
     }
@@ -345,6 +380,7 @@ impl Client {
             run_id,
             metadata,
             output_directory,
+            &self.metrics,
         )
         .await
     }
@@ -419,8 +455,9 @@ pub async fn upload_results(
     run_id: &RunId,
     metadata: &Metadata,
     output_directory: Option<&Path>,
+    metrics: &Metrics,
 ) -> Result<serde_json::Value, UploadFailure> {
-    backoff::future::retry(ExponentialBackoff::default(), || async {
+    backoff::future::retry_notify(ExponentialBackoff::default(), || async {
         let finish_url = base_url
             .join(&format!("active-runs/{}/finish", run_id))
             .map_err(|e| UploadFailure(format!("Error building finish URL: {}", e)))?;
@@ -526,7 +563,7 @@ pub async fn upload_results(
                 }
             }
         }
-    }).await
+    }, |_, _| metrics.upload_result_retries.inc()).await
 }
 
 pub async fn abort_run(client: &Client, run_id: &RunId, metadata: &Metadata, description: &str) {
@@ -654,6 +691,7 @@ mod tests {
             &RunId::new("run-1").unwrap(),
             &metadata,
             None,
+            &Metrics::new(&Registry::new()).unwrap(),
         )
         .await
         .expect("expected success");
@@ -682,6 +720,7 @@ mod tests {
                 &RunId::new("run-2").unwrap(),
                 &metadata,
                 None,
+                &Metrics::new(&Registry::new()).unwrap(),
             ),
         )
         .await
@@ -720,6 +759,7 @@ mod tests {
                 &RunId::new("run-3").unwrap(),
                 &metadata,
                 None,
+                &Metrics::new(&Registry::new()).unwrap(),
             ),
         )
         .await

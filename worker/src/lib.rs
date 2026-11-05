@@ -893,13 +893,12 @@ pub async fn process_single_item(
     my_url: Option<&Url>,
     node_name: &str,
     jenkins_build_url: Option<&Url>,
-    prometheus: Option<&Url>,
     codebase: Option<&CodebaseName>,
     campaign: Option<&Campaign>,
     tee: bool,
     output_directory_base: Option<&std::path::Path>,
     state: std::sync::Arc<std::sync::RwLock<AppState>>,
-) -> Result<(), SingleItemError> {
+) -> Result<(RunId, Campaign), SingleItemError> {
     let assignment = client
         .get_assignment(my_url, node_name, jenkins_build_url, codebase, campaign)
         .await?;
@@ -1044,21 +1043,25 @@ pub async fn process_single_item(
 
     log::debug!("Result: {:?}", result);
 
-    if let Some(prometheus) = prometheus {
-        push_to_gateway(
-            prometheus,
-            "janitor.worker",
-            maplit::hashmap! {
-                "run_id" => assignment.id.as_str(),
-                "campaign" => assignment.campaign.as_str(),
-            },
-            prometheus::default_registry(),
-        )
-        .await
-        .unwrap();
-    }
+    Ok((assignment.id, assignment.campaign))
+}
 
-    Ok(())
+pub async fn push_metrics(
+    prometheus: &Url,
+    registry: &prometheus::Registry,
+    run_id: &RunId,
+    campaign: &Campaign,
+) -> Result<(), Box<dyn std::error::Error>> {
+    push_to_gateway(
+        prometheus,
+        "janitor.worker",
+        maplit::hashmap! {
+            "run_id" => run_id.as_str(),
+            "campaign" => campaign.as_str(),
+        },
+        registry,
+    )
+    .await
 }
 
 fn push_error_to_worker_failure(e: BrzError, stage: Vec<String>) -> WorkerFailure {
@@ -1418,6 +1421,73 @@ check:
         assert_eq!(metadata.branches, vec![]);
         assert_eq!(metadata.tags, vec![]);
         std::mem::drop(env);
+    }
+
+    #[tokio::test]
+    async fn test_push_metrics() {
+        use axum::http::StatusCode;
+        use axum::response::IntoResponse;
+
+        // Fails the first request on each runner path, so both calls retry once.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let failed = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        let app = axum::Router::new().fallback(move |uri: axum::http::Uri, body: String| {
+            let tx = tx.clone();
+            let failed = failed.clone();
+            async move {
+                let path = uri.path().to_string();
+                if path.starts_with("/metrics/") {
+                    tx.send((path, body)).unwrap();
+                    StatusCode::OK.into_response()
+                } else if failed.lock().unwrap().insert(path) {
+                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                } else {
+                    (StatusCode::CREATED, axum::Json(serde_json::json!({}))).into_response()
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url: Url = format!("http://{}/", listener.local_addr().unwrap())
+            .parse()
+            .unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let registry = prometheus::Registry::new();
+        let client = client::Client::new(
+            base_url.clone(),
+            client::Credentials::None,
+            DEFAULT_USER_AGENT,
+            client::Metrics::new(&registry).unwrap(),
+        )
+        .unwrap();
+        let run_id = RunId::new("run-1").unwrap();
+        let campaign = Campaign::new("control").unwrap();
+        client
+            .get_assignment_raw(None, "node", None, None, None)
+            .await
+            .unwrap();
+        client
+            .upload_results(&run_id, &Metadata::default(), None)
+            .await
+            .unwrap();
+        push_metrics(&base_url, &registry, &run_id, &campaign)
+            .await
+            .unwrap();
+
+        let (path, body) = rx.recv().await.unwrap();
+        let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+        assert_eq!(segments[..3], ["metrics", "job", "janitor.worker"]);
+        let mut labels: Vec<(&str, &str)> = segments[3..].chunks(2).map(|c| (c[0], c[1])).collect();
+        labels.sort();
+        assert_eq!(labels, [("campaign", "control"), ("run_id", "run-1")]);
+        assert!(body.contains("\nassignment_failed_count 1\n"), "{}", body);
+        assert!(body.contains("\nupload_result_retries 1\n"), "{}", body);
+
+        server.abort();
+        let _ = server.await;
+        assert!(push_metrics(&base_url, &registry, &run_id, &campaign)
+            .await
+            .is_err());
     }
 
     /*
