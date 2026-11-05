@@ -102,11 +102,11 @@ campaign {
     name: "lintian-brush"
   }
   # Only propose a merge once the run's value estimate reaches
-  # value_threshold; commit_message and title are templates for the
-  # proposal. All optional.
+  # value_threshold. commit_message and title are templates for the
+  # proposal, rendered with the command's result. All optional.
   # merge_proposal {
     # value_threshold: 10
-    # commit_message: "Apply lintian fixes for {package}"
+    # commit_message: "Apply lintian-brush fixes: {{ applied | map(attribute='fixer_name') | join(', ') }}"
     # title: "Fix lintian issues"
   # }
   # Build even if the command made no changes. Optional; defaults to false.
