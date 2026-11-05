@@ -22,7 +22,7 @@ pub async fn store_publish(
     role: &str,
     mode: Mode,
     result_code: &str,
-    description: &str,
+    description: Option<&str>,
     merge_proposal_url: Option<&Url>,
     publish_id: Option<&PublishId>,
     requester: Option<&str>,
