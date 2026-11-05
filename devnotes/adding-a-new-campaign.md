@@ -19,7 +19,10 @@ This commits the change to that checkout, so use a copy you can throw away.
 
 ## Add configuration for the campaign
 
-In janitor.conf, add a section for the campaign. E.g.:
+In janitor.conf, add a section for the campaign.
+`examples/debian-campaign.conf`, `examples/generic-campaign.conf` and
+`examples/control-campaign.conf` are commented sections, one for each
+kind of campaign. For example:
 
     campaign {
       name: "some-name"

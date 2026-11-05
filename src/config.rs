@@ -222,6 +222,18 @@ mod tests {
     }
 
     #[test]
+    fn test_example_campaigns() {
+        for (path, name) in [
+            ("examples/debian-campaign.conf", "lintian-fixes"),
+            ("examples/generic-campaign.conf", "generic"),
+            ("examples/control-campaign.conf", "control"),
+        ] {
+            let config = read_file(std::path::Path::new(path)).unwrap();
+            assert!(config.get_campaign(name).is_some(), "{}", path);
+        }
+    }
+
+    #[test]
     fn test_example_config_campaigns() {
         let config = read_file(std::path::Path::new("janitor.conf.example")).unwrap();
 
