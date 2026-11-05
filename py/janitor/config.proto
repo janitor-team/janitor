@@ -72,6 +72,9 @@ message Config {
 
   // Hide reviewer e-mail addresses from visitors who are not logged in
   optional bool hide_reviewer_identities = 20 [default=false];
+
+  // Rows on the cupboard history and queue pages when the URL sets no limit
+  optional uint32 cupboard_page_size = 21 [default=100];
 }
 
 message MergeProposalConfig {

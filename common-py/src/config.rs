@@ -136,6 +136,11 @@ impl Config {
     pub fn hide_reviewer_identities(&self) -> bool {
         self.0.hide_reviewer_identities.unwrap_or(false)
     }
+
+    #[getter]
+    pub fn cupboard_page_size(&self) -> u32 {
+        self.0.cupboard_page_size()
+    }
 }
 
 #[pyclass]

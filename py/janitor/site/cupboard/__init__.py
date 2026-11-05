@@ -62,7 +62,7 @@ async def handle_rejected(request):
 @routes.get("/cupboard/history", name="history")
 @html_template("cupboard/history.html", headers={"Vary": "Cookie"})
 async def handle_history(request):
-    limit = int(request.query.get("limit", "100"))
+    limit = int(request.query.get("limit", request.app["config"].cupboard_page_size))
     offset = int(request.query.get("offset", "0"))
 
     query = """\
@@ -106,7 +106,7 @@ async def handle_workers(request):
 @routes.get("/cupboard/queue", name="queue")
 @html_template("cupboard/queue.html", headers={"Vary": "Cookie"})
 async def handle_queue(request):
-    limit = int(request.query.get("limit", "100"))
+    limit = int(request.query.get("limit", request.app["config"].cupboard_page_size))
     from .queue import write_queue
 
     return await write_queue(
