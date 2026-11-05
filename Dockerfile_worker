@@ -49,6 +49,7 @@ RUN apt-get update --yes \
         sbuild \
         schroot \
         mmdebstrap \
+        ognibuild \
  && apt-get satisfy --yes --no-install-recommends \
         "libpython$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')" \
  && apt-get clean

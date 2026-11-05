@@ -2,7 +2,7 @@ use breezyshim::branch::Branch;
 use breezyshim::repository::Repository;
 use breezyshim::tree::{Tree, WorkingTree};
 use breezyshim::workingtree::PyWorkingTree;
-use janitor::api::worker::DebianBuildConfig;
+use janitor::api::worker::{DebianBuildConfig, WorkerFailure};
 use ognibuild::debian::build::{BuildOnceError, BuildOnceResult};
 use ognibuild::debian::context::Phase;
 use ognibuild::debian::fix_build::IterateBuildError;
@@ -14,6 +14,19 @@ pub struct BuildFailure {
     pub description: String,
     pub details: Option<serde_json::Value>,
     pub stage: Vec<String>,
+    pub transient: Option<bool>,
+}
+
+impl From<WorkerFailure> for BuildFailure {
+    fn from(f: WorkerFailure) -> Self {
+        BuildFailure {
+            code: f.code,
+            description: f.description,
+            details: f.details,
+            stage: f.stage,
+            transient: f.transient,
+        }
+    }
 }
 
 impl std::fmt::Display for BuildFailure {
@@ -43,30 +56,35 @@ fn build_failure(e: IterateBuildError) -> BuildFailure {
             description: format!("Error resetting tree: {}", e),
             stage: vec![],
             details: None,
+            transient: None,
         },
         IterateBuildError::Persistent(phase, e) => BuildFailure {
             code: e.kind().to_string(),
             description: e.to_string(),
             stage: phase_stage(phase),
             details: None,
+            transient: None,
         },
         IterateBuildError::MissingPhase => BuildFailure {
             code: "missing-phase".to_string(),
             description: "Missing phase".to_string(),
             stage: vec![],
             details: None,
+            transient: None,
         },
         IterateBuildError::FixerLimitReached(n) => BuildFailure {
             code: "fixer-limit-reached".to_string(),
             description: format!("Fixer limit reached: {}", n),
             stage: vec![],
             details: None,
+            transient: None,
         },
         IterateBuildError::Other(o) => BuildFailure {
             code: "other".to_string(),
             description: format!("Other error: {}", o),
             stage: vec![],
             details: None,
+            transient: None,
         },
         IterateBuildError::Unidentified {
             retcode: _,
@@ -78,6 +96,7 @@ fn build_failure(e: IterateBuildError) -> BuildFailure {
             description: format!("Unidentified error: {}", lines.join("\n")),
             stage: phase.map(phase_stage).unwrap_or_default(),
             details: None,
+            transient: None,
         },
     }
 }
@@ -96,26 +115,13 @@ pub(crate) fn build(
             description: "Missing changelog".to_string(),
             stage: vec!["pre-check".to_string()],
             details: None,
+            transient: None,
         });
     }
 
     #[cfg(target_os = "linux")]
-    let session: Box<dyn Session> = if let Some(chroot) = config.chroot.as_ref() {
-        Box::new(
-            ognibuild::session::schroot::SchrootSession::new(chroot, Some("janitor-worker"))
-                .map_err(|e| match e {
-                    ognibuild::session::Error::SetupFailure(_n, e) => BuildFailure {
-                        code: "session-setup-failure".to_string(),
-                        description: format!("Error setting up schroot session: {}", e),
-                        details: None,
-                        stage: vec![],
-                    },
-                    _e => unreachable!(),
-                })?,
-        ) as Box<dyn Session>
-    } else {
-        Box::new(ognibuild::session::plain::PlainSession::new()) as Box<dyn Session>
-    };
+    let session: Box<dyn Session> =
+        crate::open_session(config.chroot.as_deref(), Some("janitor-worker"), &[])?;
 
     #[cfg(not(target_os = "linux"))]
     let session: Box<dyn Session> = if config.chroot.is_some() {
@@ -124,6 +130,7 @@ pub(crate) fn build(
             description: "Schroot is not supported on this platform".to_string(),
             stage: vec!["pre-check".to_string()],
             details: None,
+            transient: None,
         });
     } else {
         Box::new(ognibuild::session::plain::PlainSession::new()) as Box<dyn Session>
@@ -162,6 +169,7 @@ pub(crate) fn build(
                         code: "fixers-unavailable".to_string(),
                         description: e.to_string(),
                         details: None,
+                        transient: None,
                         stage: vec![],
                     })?;
 
@@ -250,6 +258,7 @@ pub(crate) fn build(
             description: format!("Error running lintian: {}", e),
             stage: vec!["lintian".to_string()],
             details: None,
+            transient: None,
         })?;
         Ok(DebianBuildResult {
             lintian: lintian_result,
