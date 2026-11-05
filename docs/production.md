@@ -154,3 +154,21 @@ This calls the admin-only `POST /cupboard/api/workers` API on the site, which
 generates a random password, stores its hash, and returns the plaintext password once
 in the response. It isn't kept anywhere in recoverable form, so copy it down when it's
 printed.
+
+## Logs and artifacts
+
+Each run leaves two kinds of files. Its logs, such as `worker.log` and
+`build.log`, go to `logs_location`. Its other files, such as the `.deb` and
+`.changes` files of a Debian build, are artifacts and go to
+`artifact_location`. The runner stores both when a worker finishes. The site
+serves them, and the differ, archiver and auto-upload jobs read the artifacts.
+
+Both take a local path, or a `gs://` or `s3://` URL. See
+`janitor.conf.example` for the S3 settings. Logs are kept gzipped as
+`<codebase>/<run_id>/<name>.gz`, artifacts as `<run_id>/<name>`.
+
+If the runner is started with `--backup-directory`, it writes to the `logs`
+and `artifacts` subdirectories there when the main store fails.
+
+`janitor-migrate-logs <from> <to>` moves the logs of every run in the database
+from one log store to another, for example from a local directory to a bucket.
