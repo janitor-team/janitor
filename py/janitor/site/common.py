@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 
 import asyncio
+from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 import aiohttp_jinja2
@@ -19,6 +20,68 @@ from janitor.site import (
     get_archive_diff,
     update_vars_from_request,
 )
+
+
+def parse_int_query_param(request, name: str, default: int) -> int:
+    raw = request.query.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError as e:
+        raise web.HTTPBadRequest(text=f"{name} must be an integer") from e
+
+
+def parse_choice_query_param(request, name: str, choices, default):
+    raw = request.query.get(name)
+    if raw is None:
+        return default
+    if raw not in choices:
+        raise web.HTTPBadRequest(text=f"{name} must be one of: {', '.join(choices)}")
+    return raw
+
+
+def query_url(request, **changes) -> str:
+    """This page's URL with some query parameters set, or removed when None."""
+    query = dict(request.query)
+    for name, value in changes.items():
+        if value is None:
+            query.pop(name, None)
+        else:
+            query[name] = str(value)
+    return str(request.rel_url.with_query(query))
+
+
+def page_links(
+    request, limit: int, offset: int, count: int, **changes
+) -> dict[str, Any]:
+    """Links to the pages before and after this one."""
+    previous_url = next_url = None
+    if offset > 0 and limit > 0:
+        previous_url = query_url(
+            request, offset=offset - limit if offset > limit else None, **changes
+        )
+    if limit > 0 and count >= limit:
+        next_url = query_url(request, offset=offset + limit, **changes)
+    return {"offset": offset, "previous_url": previous_url, "next_url": next_url}
+
+
+@asynccontextmanager
+async def bad_row_count_as_400():
+    """Answer 400 when the database refuses a LIMIT or OFFSET from the request."""
+    try:
+        yield
+    except (
+        asyncpg.InvalidRowCountInLimitClauseError,
+        asyncpg.InvalidRowCountInResultOffsetClauseError,
+        asyncpg.NumericValueOutOfRangeError,
+    ) as e:
+        raise web.HTTPBadRequest(text=str(e)) from e
+    except asyncpg.DataError as e:
+        # asyncpg itself refuses to bind an int outside int64.
+        if not isinstance(e.__cause__, OverflowError):
+            raise
+        raise web.HTTPBadRequest(text=str(e)) from e
 
 
 async def get_previous_runs(conn: asyncpg.Connection, codebase: str, suite: str):
