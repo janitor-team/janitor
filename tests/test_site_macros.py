@@ -174,6 +174,84 @@ def test_display_publish_blockers():
     )
 
 
+def _blocker_html(name, result, details):
+    template = env.get_template("run_util.html")
+    blockers = {name: {"result": result, "details": details}}
+    return BeautifulSoup(
+        str(template.module.display_publish_blockers(blockers)),  # type: ignore
+        "html.parser",
+    ).li
+
+
+def _blocker_text(name, result, details):
+    return " ".join(_blocker_html(name, result, details).get_text().split())
+
+
+@pytest.mark.parametrize(
+    "result,details,expected",
+    [
+        (
+            True,
+            {"attempt_count": 0, "next_try_time": "2026-11-05T12:00:00Z"},
+            "☑ 0 publish attempts so far, not currently attempting to back off",
+        ),
+        (
+            False,
+            {"attempt_count": 1, "next_try_time": "2026-11-05T12:00:00Z"},
+            "☒ 1 publish attempts so far, next attempt after 2026-11-05T12:00:00Z",
+        ),
+    ],
+)
+def test_display_publish_blockers_backoff(result, details, expected):
+    assert _blocker_text("backoff", result, details) == expected
+
+
+@pytest.mark.parametrize(
+    "result,details,expected",
+    [
+        (
+            True,
+            {"bucket": "jelmer@debian.org"},
+            "☑ proposals not currently being rate-limited for maintainer "
+            "jelmer@debian.org",
+        ),
+        (True, {"bucket": None}, "☑ no rate limit for merge proposals"),
+        (
+            False,
+            {"open": 3, "max_open": 2},
+            "☒ merge proposals are currently being rate-limited (open: 3, max open: 2)",
+        ),
+        (
+            False,
+            {"open": 3, "max_open": None},
+            "☒ merge proposals are currently being rate-limited (open: 3)",
+        ),
+        (
+            False,
+            {"open": None, "max_open": None},
+            "☒ merge proposals are currently being rate-limited",
+        ),
+    ],
+)
+def test_display_publish_blockers_rate_limit(result, details, expected):
+    assert _blocker_text("propose_rate_limit", result, details) == expected
+
+
+def test_display_publish_blockers_previous_mp():
+    li = _blocker_html(
+        "previous_mp",
+        False,
+        [
+            {"url": "https://example.com/mp/1", "status": "rejected"},
+            {"url": "https://example.com/mp/2", "status": "closed"},
+        ],
+    )
+    assert [(a["href"], a.string) for a in li.find_all("a")] == [
+        ("https://example.com/mp/1", "rejected"),
+        ("https://example.com/mp/2", "closed"),
+    ]
+
+
 # What the worker stores for a real lintian 2.141.0 run on a small package.
 LINTIAN_RESULT = {
     "groups": [
