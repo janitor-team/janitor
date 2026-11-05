@@ -1,0 +1,11 @@
+{# The same, on forges that take plain text. When the campaign sets no
+   title, the first line is the title. #}
+Strip trailing whitespace
+
+{% for file in files %}
+* {{ file }}
+{% endfor %}
+{% if external_url %}
+
+Build and test logs: {{ external_url }}/cupboard/run/{{ log_id }}/
+{% endif %}
