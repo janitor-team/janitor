@@ -1,0 +1,49 @@
+#!/usr/bin/python3
+# Example codemod for a generic campaign: strip trailing whitespace from the
+# text files in the checkout. It edits the tree and writes a description and
+# context to $SVP_RESULT, as in the silver-platter codemod protocol. The
+# worker commits the change with the description as the commit message.
+#
+# Put it on the worker's PATH, for example in a worker image of your own
+# (see "Custom worker tooling" in docs/containers.md), and add a campaign:
+#
+#   campaign {
+#     name: "trailing-whitespace"
+#     command: "strip-trailing-whitespace"
+#     branch_name: "trailing-whitespace"
+#     generic_build {
+#     }
+#   }
+
+import json
+import os
+import re
+
+changed = []
+for root, dirs, files in os.walk("."):
+    dirs[:] = sorted(d for d in dirs if d not in (".git", ".bzr"))
+    for name in sorted(files):
+        path = os.path.join(root, name)
+        if os.path.islink(path):
+            continue
+        with open(path, "rb") as f:
+            data = f.read()
+        if b"\0" in data or name.endswith((".diff", ".patch")):
+            continue
+        new = re.sub(rb"(?<![ \t])[ \t]+(?=\r?\n|$)", b"", data)
+        if new != data:
+            with open(path, "wb") as f:
+                f.write(new)
+            changed.append(os.path.relpath(path))
+
+if changed:
+    files = "1 file" if len(changed) == 1 else f"{len(changed)} files"
+    with open(os.environ["SVP_RESULT"], "w") as f:
+        json.dump(
+            {
+                "code": "success",
+                "description": f"Strip trailing whitespace from {files}.",
+                "context": {"files": changed},
+            },
+            f,
+        )

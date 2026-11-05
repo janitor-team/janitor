@@ -17,6 +17,9 @@ codebase, run:
 
 This commits the change to that checkout, so use a copy you can throw away.
 
+`examples/strip-trailing-whitespace` is a small example codemod for a generic
+campaign, with a campaign section for it in its header.
+
 ## Add configuration for the campaign
 
 In janitor.conf, add a section for the campaign. E.g.:
