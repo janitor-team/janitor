@@ -32,6 +32,15 @@ def parse_int_query_param(request, name: str, default: int) -> int:
         raise web.HTTPBadRequest(text=f"{name} must be an integer") from e
 
 
+def parse_choice_query_param(request, name: str, choices, default):
+    raw = request.query.get(name)
+    if raw is None:
+        return default
+    if raw not in choices:
+        raise web.HTTPBadRequest(text=f"{name} must be one of: {', '.join(choices)}")
+    return raw
+
+
 def query_url(request, **changes) -> str:
     """This page's URL with some query parameters set, or removed when None."""
     query = dict(request.query)
@@ -43,15 +52,17 @@ def query_url(request, **changes) -> str:
     return str(request.rel_url.with_query(query))
 
 
-def page_links(request, limit: int, offset: int, count: int) -> dict[str, Any]:
+def page_links(
+    request, limit: int, offset: int, count: int, **changes
+) -> dict[str, Any]:
     """Links to the pages before and after this one."""
     previous_url = next_url = None
     if offset > 0 and limit > 0:
         previous_url = query_url(
-            request, offset=offset - limit if offset > limit else None
+            request, offset=offset - limit if offset > limit else None, **changes
         )
     if limit > 0 and count >= limit:
-        next_url = query_url(request, offset=offset + limit)
+        next_url = query_url(request, offset=offset + limit, **changes)
     return {"offset": offset, "previous_url": previous_url, "next_url": next_url}
 
 

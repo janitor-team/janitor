@@ -45,7 +45,9 @@ from ..common import (
     bad_row_count_as_400,
     html_template,
     page_links,
+    parse_choice_query_param,
     parse_int_query_param,
+    query_url,
 )
 from ..pkg import MergeProposalUserUrlResolver
 from ..setup import setup_postgres
@@ -63,21 +65,107 @@ async def handle_rejected(request):
         return await generate_rejected(conn, request.app["config"], campaign=campaign)
 
 
+# Sort key: (SQL expression, order of the first click on its header)
+HISTORY_SORT_COLUMNS = {
+    "finish_time": ("finish_time", "desc"),
+    "codebase": ("codebase", "asc"),
+    "campaign": ("suite", "asc"),
+    "duration": ("finish_time - start_time", "desc"),
+    "result_code": ("result_code", "asc"),
+}
+
+HISTORY_FILTERS = [
+    "campaign",
+    "result_code",
+    "codebase",
+    "worker",
+    "transient",
+    "hide_success",
+]
+
+
 @routes.get("/cupboard/history", name="history")
 @html_template("cupboard/history.html", headers={"Vary": "Cookie"})
 async def handle_history(request):
     limit = parse_int_query_param(request, "limit", 100)
     offset = parse_int_query_param(request, "offset", 0)
+    sort = parse_choice_query_param(
+        request, "sort", HISTORY_SORT_COLUMNS, "finish_time"
+    )
+    order = parse_choice_query_param(
+        request, "order", ["asc", "desc"], HISTORY_SORT_COLUMNS[sort][1]
+    )
+    # The filter form sends empty fields, so an empty filter is no filter.
+    filters = {name: request.query.get(name) or None for name in HISTORY_FILTERS}
+    for name in ["transient", "hide_success"]:
+        if filters[name] not in [None, "true", "false"]:
+            raise web.HTTPBadRequest(text=f"{name} must be true or false")
+
+    conditions = []
+    args: list[Any] = []
+    for name, column in [
+        ("campaign", "suite"),
+        ("result_code", "result_code"),
+        ("codebase", "codebase"),
+        ("worker", "worker"),
+    ]:
+        if filters[name] is not None:
+            args.append(filters[name])
+            conditions.append(f"{column} = ${len(args)}")
+    if filters["transient"] == "true":
+        conditions.append("failure_transient IS TRUE")
+    elif filters["transient"] == "false":
+        conditions.append("failure_transient IS NOT TRUE")
+    if filters["hide_success"] == "true":
+        conditions.append(
+            "result_code NOT IN ('success', 'nothing-to-do', 'nothing-new-to-do')"
+        )
+    order_by = [f"{HISTORY_SORT_COLUMNS[sort][0]} {order.upper()}"]
+    if sort != "finish_time":
+        order_by.append("finish_time DESC")
+    order_by.append("id")
 
     query = """\
 SELECT finish_time, codebase, suite, worker_link,
 worker as worker_name, finish_time - start_time AS duration,
-result_code, id, description, failure_transient FROM run
-ORDER BY finish_time DESC, id LIMIT $1 OFFSET $2"""
+result_code, id, description, failure_transient FROM run"""
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    query += f" ORDER BY {', '.join(order_by)}"
+    args.extend([limit, offset])
+    query += f" LIMIT ${len(args) - 1} OFFSET ${len(args)}"
     async with request.app["pool"].acquire() as conn:
         async with bad_row_count_as_400():
-            runs = await conn.fetch(query, limit, offset)
-    return {"history": runs, **page_links(request, limit, offset, len(runs))}
+            runs = await conn.fetch(query, *args)
+
+    unset = {name: None for name in HISTORY_FILTERS if filters[name] is None}
+    sort_links = {}
+    for name, (_expr, first_order) in HISTORY_SORT_COLUMNS.items():
+        if name == sort:
+            next_order = "asc" if order == "desc" else "desc"
+        else:
+            next_order = first_order
+        sort_links[name] = {
+            "url": query_url(
+                request, sort=name, order=next_order, offset=None, **unset
+            ),
+            "order": order if name == sort else None,
+        }
+    return {
+        "history": runs,
+        "newest_first": sort == "finish_time" and order == "desc",
+        "filters": filters,
+        "kept_params": {
+            name: request.query[name]
+            for name in ["sort", "order", "limit"]
+            if name in request.query
+        },
+        "clear_filters_url": query_url(
+            request, offset=None, **dict.fromkeys(HISTORY_FILTERS)
+        ),
+        "sort_links": sort_links,
+        **page_links(request, limit, offset, len(runs), **unset),
+    }
 
 
 @routes.get("/cupboard/reprocess-logs", name="reprocess-logs")
