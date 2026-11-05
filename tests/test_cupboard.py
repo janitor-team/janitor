@@ -40,8 +40,10 @@ from janitor.site import (
     worker_link_is_global,
 )
 from janitor.site.cupboard import (
+    HistoryQuerySchema,
     create_app,
     generate_codebase,
+    generate_history,
     handle_result_file,
     routes,
 )
@@ -644,6 +646,162 @@ async def test_history_limit_zero_lists_no_runs(aiohttp_client, db):
     resp = await client.get("/cupboard/history?limit=0")
     assert resp.status == 200
     assert "somerun" not in await resp.text()
+
+
+async def _insert_history_runs(db):
+    async with db.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO worker (name, password) VALUES ('w1', 'x'), ('w2', 'x')"
+        )
+        now = utcnow()
+        for i, (
+            campaign,
+            result_code,
+            worker,
+            transient,
+            minutes,
+            resume_from,
+        ) in enumerate(
+            [
+                ("alpha", "success", "w1", None, 10, None),
+                ("beta", "build-failed", "w2", True, 30, None),
+                ("alpha", "worker-timeout", "w1", None, 20, None),
+                ("beta", "success", "w2", None, 40, None),
+                ("alpha", "nothing-to-do", "w1", None, 50, None),
+                ("beta", "nothing-new-to-do", "w2", None, 5, "run-0"),
+            ]
+        ):
+            await _insert_codebase(conn, f"cb{i}")
+            await _insert_run(
+                conn,
+                run_id=f"run-{i}",
+                codebase=f"cb{i}",
+                campaign=campaign,
+                start_time=now - timedelta(hours=i, minutes=minutes),
+                finish_time=now - timedelta(hours=i),
+            )
+            await conn.execute(
+                "UPDATE run SET worker = $1, failure_transient = $2, result_code = $3, "
+                "resume_from = $4 WHERE id = $5",
+                worker,
+                transient,
+                result_code,
+                resume_from,
+                f"run-{i}",
+            )
+
+
+async def _history_vars(db, query):
+    url = URL("/cupboard/history?" + query)
+    async with db.acquire() as conn:
+        return await generate_history(conn, url, HistoryQuerySchema().load(url.query))
+
+
+async def test_history_filters(db):
+    await _insert_history_runs(db)
+
+    async def codebases(query):
+        return [run["codebase"] for run in (await _history_vars(db, query))["history"]]
+
+    everything = ["cb0", "cb1", "cb2", "cb3", "cb4", "cb5"]
+    assert await codebases("") == everything
+    assert await codebases("campaign=alpha") == ["cb0", "cb2", "cb4"]
+    assert await codebases("campaign=gamma") == []
+    assert await codebases("result_code=success") == ["cb0", "cb3"]
+    assert await codebases("codebase=cb1") == ["cb1"]
+    assert await codebases("worker=w2") == ["cb1", "cb3", "cb5"]
+    assert await codebases("transient=true") == ["cb1", "cb2"]
+    assert await codebases("transient=false") == ["cb0", "cb3", "cb4", "cb5"]
+    assert await codebases("hide_success=true") == ["cb1", "cb2"]
+    assert await codebases("hide_success=true&campaign=beta") == ["cb1"]
+    empty = "campaign=&result_code=&codebase=&worker=&transient=&hide_success="
+    assert await codebases(empty) == everything
+
+    vs = await _history_vars(db, "campaign=gamma&codebase=%22it%27s%22&transient=false")
+    assert vs["filters"] == {
+        "campaign": "gamma",
+        "result_code": None,
+        "codebase": '"it\'s"',
+        "worker": None,
+        "transient": False,
+        "hide_success": None,
+    }
+    assert vs["newest_first"] is True
+
+
+async def test_history_sort(db):
+    await _insert_history_runs(db)
+
+    async def codebases(query):
+        return [run["codebase"] for run in (await _history_vars(db, query))["history"]]
+
+    newest = ["cb0", "cb1", "cb2", "cb3", "cb4", "cb5"]
+    assert await codebases("sort=finish_time&order=asc") == newest[::-1]
+    assert await codebases("sort=campaign") == [
+        "cb0",
+        "cb2",
+        "cb4",
+        "cb1",
+        "cb3",
+        "cb5",
+    ]
+    by_duration = ["cb4", "cb3", "cb1", "cb2", "cb0", "cb5"]
+    assert await codebases("sort=duration") == by_duration
+    assert await codebases("sort=duration&order=asc") == by_duration[::-1]
+    assert await codebases("sort=result_code") == [
+        "cb1",
+        "cb5",
+        "cb4",
+        "cb0",
+        "cb3",
+        "cb2",
+    ]
+
+    vs = await _history_vars(db, "hide_success=true&campaign=&sort=duration&offset=1")
+    assert vs["sort_links"] == {
+        "finish_time": {
+            "url": "/cupboard/history?hide_success=true&sort=finish_time&order=desc",
+            "order": None,
+        },
+        "codebase": {
+            "url": "/cupboard/history?hide_success=true&sort=codebase&order=asc",
+            "order": None,
+        },
+        "campaign": {
+            "url": "/cupboard/history?hide_success=true&sort=campaign&order=asc",
+            "order": None,
+        },
+        "duration": {
+            "url": "/cupboard/history?hide_success=true&sort=duration&order=asc",
+            "order": "desc",
+        },
+        "result_code": {
+            "url": "/cupboard/history?hide_success=true&sort=result_code&order=asc",
+            "order": None,
+        },
+    }
+    assert vs["kept_params"] == {"sort": "duration"}
+    assert vs["clear_filters_url"] == "/cupboard/history?sort=duration"
+    assert vs["newest_first"] is False
+
+
+async def test_history_bad_parameters(aiohttp_client, db):
+    client = await create_client(aiohttp_client, db)
+    for query, errors in [
+        (
+            "sort=id",
+            {
+                "sort": [
+                    "Must be one of: finish_time, codebase, campaign, duration, result_code."
+                ]
+            },
+        ),
+        ("order=up", {"order": ["Must be one of: asc, desc."]}),
+        ("transient=maybe", {"transient": ["Not a valid boolean."]}),
+    ]:
+        resp = await client.get("/cupboard/history?" + query)
+        assert resp.status == 422
+        assert await resp.json() == errors
 
 
 async def test_write_history_shapes_publisher_rows_for_the_template(aiohttp_server):
