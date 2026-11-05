@@ -32,3 +32,28 @@ runs as, or the key given with `--gpg-key-id`.
 The site, when started with `--archiver-url`, gets the public key from the
 archive and serves it to users as `/archive-keyring.asc` and
 `/archive-keyring.gpg`.
+
+## Result codes and failure stages
+
+Every run ends with a result code. [The overview](../devnotes/overview.md)
+says what `success`, `nothing-to-do`, `nothing-new-to-do` and transient
+failures mean.
+
+A failed run usually also has a stage, which says where it stopped. It is a
+path such as `codemod`, `build/build`, `build/apt-get-update` or
+`build/lintian`.
+
+The code comes from whichever part stopped the run:
+
+- The worker has its own codes for the codemod stage, such as
+  `command-failed`, and a codemod can report a code of its own.
+- When a Debian build fails, ognibuild reads the sbuild log with
+  buildlog-consultant and names the problem, such as
+  `unsatisfied-apt-dependencies`.
+- The runner sets codes such as `worker-timeout` when a worker times out or
+  goes away.
+
+`/cupboard/result-codes/` and `/cupboard/failure-stages/` count the latest run
+of each codebase and campaign by code and by stage, leaving out transient
+failures unless asked. The page of a run explains its code when
+`py/janitor/site/templates/result-codes/` has a page for it.
