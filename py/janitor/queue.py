@@ -186,7 +186,10 @@ LIMIT 1
         return QueueItem.from_row(row), vcs_info
 
     async def iter_queue(
-        self, limit: Optional[int] = None, campaign: Optional[str] = None
+        self,
+        limit: Optional[int] = None,
+        campaign: Optional[str] = None,
+        offset: int = 0,
     ):
         query = """
 SELECT
@@ -219,6 +222,8 @@ queue.id ASC
 """
         args.append(limit)
         query += f" LIMIT ${len(args)}"
+        args.append(offset)
+        query += f" OFFSET ${len(args)}"
         for row in await self.conn.fetch(query, *args):
             yield QueueItem.from_row(row)
 

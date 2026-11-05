@@ -154,10 +154,16 @@
                             </td>
                         </tr>
                     {% else %}
-                        <tr><td colspan="5">Nothing queued.</td></tr>
+                        <tr><td colspan="5">{{ "No more entries." if offset else "Nothing queued." }}</td></tr>
                     {% endfor %}
                 </tbody>
             </table>
+            {% if previous_url or next_url %}
+                <p>
+                    {% if previous_url %}<a href="{{ previous_url }}">Previous page</a>{% endif %}
+                    {% if next_url %}<a href="{{ next_url }}">Next page</a>{% endif %}
+                </p>
+            {% endif %}
             <script>
                 registerHandler('queue', function(msg) {
                     console.log('Refreshing queue items');
