@@ -207,7 +207,7 @@ impl RunnerDatabase {
                     .collect()
             }),
             failure_details: run.failure_details,
-            failure_stage: run.failure_stage.map(|s| vec![s]),
+            failure_stage: run.failure_stage,
             resume,
             target,
             worker_name: run.worker_name,
@@ -384,7 +384,7 @@ INSERT INTO run (
         .bind(result_tags_present)
         .bind(result.resume.as_ref().map(|r| r.run_id.as_str()))
         .bind(result.failure_details.as_ref())
-        .bind(result.failure_stage.as_ref())
+        .bind(result.failure_stage.as_deref())
         .bind(result.target_branch_url.as_deref())
         .bind(result.change_set.as_deref())
         .bind(result.transient)
