@@ -33,6 +33,10 @@ redis_location: "redis://localhost"
 # "janitor/<version>" if unset.
 # user_agent: "my-janitor-instance/1.0"
 
+# Number of rows on the cupboard history and queue pages when the URL sets
+# no limit. Optional, defaults to 100.
+# cupboard_page_size: 100
+
 # Set the default committer; if unset defaults to current users' preferences
 # (i.e. ~/.gitconfig)
 committer: "Janitor Bot <janitor@jelmer.uk>"

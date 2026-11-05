@@ -101,6 +101,8 @@ unset:
 - `hide_reviewer_identities` - if `true`, visitors who are not logged in
   see a login link instead of each reviewer's e-mail address. If unset,
   everyone sees the addresses.
+- `cupboard_page_size` - the number of rows on `/cupboard/history` and
+  `/cupboard/queue` when the URL has no `limit`. Defaults to 100.
 
 For a Janitor instance, you probably want a custom website in combination with
 the Janitor API. See the existing instances for inspiration.

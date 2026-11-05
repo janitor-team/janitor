@@ -247,6 +247,52 @@ async def test_queue_pages(aiohttp_client, db):
         assert resp.status == 400
 
 
+def test_cupboard_page_size_defaults_to_100():
+    assert read_config_string("").cupboard_page_size == 100
+    assert read_config_string("cupboard_page_size: 2").cupboard_page_size == 2
+
+
+async def test_cupboard_page_size(aiohttp_client, db):
+    async with db.acquire() as conn:
+        queue = Queue(conn)
+        now = utcnow()
+        for i in range(3):
+            await _insert_codebase(conn, f"cb{i}")
+            await _insert_run(
+                conn,
+                run_id=f"run-{i}",
+                codebase=f"cb{i}",
+                start_time=now - timedelta(hours=i + 1),
+                finish_time=now - timedelta(hours=i),
+            )
+            await queue.add(codebase=f"cb{i}", campaign="mycampaign", command="true")
+    client = await create_client(aiohttp_client, db, config="cupboard_page_size: 2")
+
+    async def get(path, rows, column):
+        resp = await client.get(path)
+        assert resp.status == 200
+        return _codebases_and_page_links(await resp.text(), rows, column)
+
+    history = "#history tbody tr"
+    queue_rows = "div[name=coming-up] tbody tr"
+    assert await get("/cupboard/history", history, 1) == (
+        ["cb0", "cb1"],
+        {"Older runs": "/cupboard/history?offset=2"},
+    )
+    assert await get("/cupboard/history?limit=3", history, 1) == (
+        ["cb0", "cb1", "cb2"],
+        {"Older runs": "/cupboard/history?limit=3&offset=3"},
+    )
+    assert await get("/cupboard/queue", queue_rows, 0) == (
+        ["cb0", "cb1"],
+        {"Next page": "/cupboard/queue?offset=2"},
+    )
+    assert await get("/cupboard/queue?offset=2", queue_rows, 0) == (
+        ["cb2"],
+        {"Previous page": "/cupboard/queue"},
+    )
+
+
 async def test_history(aiohttp_client, db):
     client = await create_client(aiohttp_client, db)
     resp = await client.get("/cupboard/history")
