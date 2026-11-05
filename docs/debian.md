@@ -57,3 +57,24 @@ The code comes from whichever part stopped the run:
 of each codebase and campaign by code and by stage, leaving out transient
 failures unless asked. The page of a run explains its code when
 `py/janitor/site/templates/result-codes/` has a page for it.
+
+## The lifetime of a run
+
+This is how one run of a Debian campaign moves through the janitor.
+
+```mermaid
+flowchart TD
+    candidate[Candidate] -->|the runner queues it| queue[Queue]
+    queue -->|a worker asks for work| codemod[Worker runs the codemod]
+    codemod -->|changes| build[Worker pushes the branch to the VCS store and builds the package with sbuild]
+    codemod -->|no change or failure| upload
+    build --> upload[Worker uploads the logs, artifacts and result to the runner]
+    upload --> run[Runner stores the run and, on success, queues a control run]
+    run -->|result on Redis| differ[Differ compares the packages with those of the control run]
+    run -->|result on Redis| archive[Archive adds the packages to the apt suites of the campaign]
+    run -->|result on Redis| autoupload[Auto-upload signs the packages and uploads them with dput]
+    run --> review[Reviewers approve or reject the run]
+    review -->|approved| publish[Publisher opens a merge proposal or pushes the change]
+    publish --> scan[Publisher checks the merge proposal]
+    scan -->|conflict| queue
+```
