@@ -45,7 +45,7 @@ from .. import (
     is_qa_reviewer,
     worker_link_is_global,
 )
-from ..common import html_template
+from ..common import html_template, page_links
 from ..pkg import MergeProposalUserUrlResolver
 from ..setup import setup_postgres
 
@@ -62,21 +62,32 @@ async def handle_rejected(request):
         return await generate_rejected(conn, request.app["config"], campaign=campaign)
 
 
-@routes.get("/cupboard/history", name="history")
-@html_template("cupboard/history.html", headers={"Vary": "Cookie"})
-async def handle_history(request):
-    limit = int(request.query.get("limit", "100"))
-    offset = int(request.query.get("offset", "0"))
+class PageQuerySchema(Schema):
+    limit = fields.Int(load_default=100, validate=validate.Range(min=0))
+    offset = fields.Int(load_default=0, validate=validate.Range(min=0))
 
+
+async def generate_history(conn, url: URL, limit: int, offset: int):
     query = """\
 SELECT finish_time, codebase, campaign, worker.link AS worker_link,
 worker as worker_name, finish_time - start_time AS duration,
 result_code, id, description, failure_transient FROM run
 LEFT JOIN worker ON worker.name = run.worker
-ORDER BY finish_time DESC LIMIT $1 OFFSET $2"""
+ORDER BY finish_time DESC, id LIMIT $1 OFFSET $2"""
+    runs = await conn.fetch(query, limit + 1, offset)
+    return {
+        "count": limit,
+        "history": runs[:limit],
+        **page_links(url, limit, offset, len(runs)),
+    }
+
+
+@routes.get("/cupboard/history", name="history")
+@html_template("cupboard/history.html", headers={"Vary": "Cookie"})
+@use_kwargs(PageQuerySchema(), locations=("query",))
+async def handle_history(request, limit, offset):
     async with request.app["pool"].acquire() as conn:
-        runs = await conn.fetch(query, limit, offset)
-    return {"count": limit, "history": runs}
+        return await generate_history(conn, request.rel_url, limit, offset)
 
 
 @routes.get("/cupboard/reprocess-logs", name="reprocess-logs")
@@ -109,15 +120,19 @@ async def handle_workers(request):
 
 @routes.get("/cupboard/queue", name="queue")
 @html_template("cupboard/queue.html", headers={"Vary": "Cookie"})
-async def handle_queue(request):
-    limit = int(request.query.get("limit", "100"))
+@use_kwargs(PageQuerySchema(), locations=("query",))
+async def handle_queue(request, limit, offset):
     from .queue import write_queue
 
-    return await write_queue(
+    ret = await write_queue(
         request.app["pool"],
         queue_status=request.app["runner_status"],
-        limit=limit,
+        limit=limit + 1,
+        offset=offset,
     )
+    ret.update(page_links(request.rel_url, limit, offset, len(ret["queue"])))
+    ret["queue"] = ret["queue"][:limit]
+    return ret
 
 
 @routes.get("/cupboard/never-processed", name="never-processed")

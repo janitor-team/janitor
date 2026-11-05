@@ -40,8 +40,10 @@ from janitor.site import (
     worker_link_is_global,
 )
 from janitor.site.cupboard import (
+    PageQuerySchema,
     create_app,
     generate_codebase,
+    generate_history,
     handle_result_file,
     routes,
 )
@@ -185,6 +187,62 @@ def test_classify_result_code_debian_validate():
         classify_result_code("vcs-up-to-date-check-failed", None) == "transient-failure"
     )
     assert classify_result_code("missing-dependency", None) == "bug"
+
+
+async def test_history_pages(db):
+    async with db.acquire() as conn:
+        now = utcnow()
+        # cb3 and cb4 finish at the same time.
+        for i in range(5):
+            await _insert_codebase(conn, f"cb{i}")
+            await _insert_run(
+                conn,
+                run_id=f"run-{i}",
+                codebase=f"cb{i}",
+                start_time=now - timedelta(hours=4),
+                finish_time=now - timedelta(hours=min(i, 3)),
+            )
+
+    async def page(query):
+        url = URL("/cupboard/history?" + query)
+        async with db.acquire() as conn:
+            vs = await generate_history(conn, url, **PageQuerySchema().load(url.query))
+        return {
+            "codebases": [run["codebase"] for run in vs["history"]],
+            "previous_url": vs["previous_url"],
+            "next_url": vs["next_url"],
+        }
+
+    assert await page("") == {
+        "codebases": ["cb0", "cb1", "cb2", "cb3", "cb4"],
+        "previous_url": None,
+        "next_url": None,
+    }
+    assert await page("limit=2") == {
+        "codebases": ["cb0", "cb1"],
+        "previous_url": None,
+        "next_url": "/cupboard/history?limit=2&offset=2",
+    }
+    assert await page("limit=2&offset=2") == {
+        "codebases": ["cb2", "cb3"],
+        "previous_url": "/cupboard/history?limit=2",
+        "next_url": "/cupboard/history?limit=2&offset=4",
+    }
+    assert await page("offset=3&limit=2") == {
+        "codebases": ["cb3", "cb4"],
+        "previous_url": "/cupboard/history?offset=1&limit=2",
+        "next_url": None,
+    }
+    assert await page("limit=2&offset=4") == {
+        "codebases": ["cb4"],
+        "previous_url": "/cupboard/history?limit=2&offset=2",
+        "next_url": None,
+    }
+    assert await page("limit=0&offset=2") == {
+        "codebases": [],
+        "previous_url": None,
+        "next_url": None,
+    }
 
 
 async def test_history(aiohttp_client, db):
