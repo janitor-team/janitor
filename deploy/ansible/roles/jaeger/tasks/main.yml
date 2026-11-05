@@ -1,0 +1,56 @@
+---
+# Optional (enable_tracing): Jaeger on the control host, keeping the
+# services' spans in memory. roles/caddy joins its two receivers on
+# tracing_port, the zipkin_address of janitor.conf.
+- name: Create the Jaeger directory
+  ansible.builtin.file:
+    path: "{{ jaeger_home }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0755"
+
+- name: Deploy Jaeger's configuration
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ jaeger_home }}/config.yaml"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  notify: Restart jaeger
+
+- name: Create the quadlet unit directory
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.config/containers/systemd"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0755"
+
+- name: Deploy the Jaeger quadlet unit
+  ansible.builtin.template:
+    src: jaeger.container.j2
+    dest: "/home/{{ ansible_user }}/.config/containers/systemd/jaeger.container"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  notify: Restart jaeger
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Start Jaeger
+  # The first start pulls the image.
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  ansible.builtin.systemd:
+    name: jaeger.service
+    scope: user
+    daemon_reload: true
+    state: started
+
+- name: Wait for Jaeger's health route
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ jaeger_health_port }}/status"
+  register: jaeger_health
+  until: jaeger_health.status == 200
+  retries: 30
+  delay: 2

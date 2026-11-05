@@ -1,0 +1,36 @@
+---
+name: Ansible lint
+
+"on":
+  push:
+    paths:
+      - 'deploy/**'
+      - '.github/workflows/ansible-lint.yaml'
+  pull_request:
+    paths:
+      - 'deploy/**'
+      - '.github/workflows/ansible-lint.yaml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ansible-lint:
+    name: Ansible Lint
+    runs-on: ubuntu-latest
+
+    # Steps to perform in job
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Ansible playbook checks (ansible-lint)
+        working-directory: deploy/ansible
+        run: |
+          set -x
+          pip3 install --break-system-packages \
+            ansible-core==2.19.14 \
+            ansible-lint==25.2.1
+          ansible-galaxy collection install -r requirements.yml
+          ansible-lint --offline -p site.yml roles
