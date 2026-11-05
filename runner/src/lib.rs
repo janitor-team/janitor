@@ -519,6 +519,17 @@ impl JanitorResult {
         Duration::from_secs(duration.num_seconds().max(0) as u64)
     }
 
+    /// Whether to pair this run with a `control` run. A control run is a
+    /// Debian build of the base revision, so only a successful Debian build
+    /// gets one.
+    pub fn wants_control_run(&self) -> bool {
+        self.campaign != "control"
+            && self.campaign != "unchanged"
+            && self.code == "success"
+            && self.main_branch_revision.is_some()
+            && matches!(self.builder_result, Some(BuilderResult::Debian { .. }))
+    }
+
     /// Convert to JSON representation.
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
@@ -2326,6 +2337,62 @@ mod tests {
         assert_eq!(roundtripped.transient, Some(true));
         assert!(roundtripped.failure_details.is_some());
         assert_eq!(roundtripped.failure_stage, Some(vec!["build".to_string()]));
+    }
+
+    #[test]
+    fn test_wants_control_run() {
+        let debian_build = BuilderResult::Debian {
+            source: Some("pkg".to_string()),
+            build_version: Some("1.0-1".to_string()),
+            build_distribution: Some("lintian-fixes".to_string()),
+            changes_filenames: None,
+            lintian_result: None,
+            binary_packages: None,
+        };
+        let result =
+            |campaign: &str, code: &str, builder_result: Option<BuilderResult>| JanitorResult {
+                log_id: RunId::new("log-control").unwrap(),
+                branch_url: "https://example.com/repo".to_string(),
+                subpath: None,
+                code: code.to_string(),
+                transient: None,
+                codebase: CodebaseName::new("pkg").unwrap(),
+                campaign: Campaign::new(campaign).unwrap(),
+                description: None,
+                codemod: None,
+                value: None,
+                logfilenames: vec![],
+                start_time: chrono::Utc::now(),
+                finish_time: chrono::Utc::now(),
+                revision: None,
+                main_branch_revision: Some(breezyshim::RevisionId::from(b"rev-0".to_vec())),
+                change_set: None,
+                tags: None,
+                remotes: None,
+                branches: None,
+                failure_details: None,
+                failure_stage: None,
+                resume: None,
+                target: None,
+                worker_name: None,
+                vcs_type: None,
+                target_branch_url: None,
+                context: None,
+                builder_result,
+            };
+
+        assert!(result("lintian-fixes", "success", Some(debian_build.clone())).wants_control_run());
+        assert!(!result("generic", "success", Some(BuilderResult::Generic)).wants_control_run());
+        assert!(!result("generic", "success", None).wants_control_run());
+        assert!(
+            !result("lintian-fixes", "build-failed", Some(debian_build.clone()))
+                .wants_control_run()
+        );
+        assert!(!result("control", "success", Some(debian_build.clone())).wants_control_run());
+        assert!(!result("unchanged", "success", Some(debian_build.clone())).wants_control_run());
+        let mut no_base = result("lintian-fixes", "success", Some(debian_build));
+        no_base.main_branch_revision = None;
+        assert!(!no_base.wants_control_run());
     }
 
     #[test]

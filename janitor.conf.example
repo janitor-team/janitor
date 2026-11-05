@@ -119,7 +119,8 @@ campaign {
   # default_empty: false
 }
 
-# The runner queues a "control" run (the unchanged branch) after each successful run.
+# The runner queues a "control" run (the unchanged branch) after each
+# successful Debian build.
 campaign {
   name: "control"
   command: "true"

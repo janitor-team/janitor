@@ -2243,10 +2243,8 @@ async fn publish_finish_events(
     // publisher later needs to compute a debdiff. We pre-schedule it
     // here so the diff is ready by the time the MR review happens,
     // rather than discovering it's missing mid-publish and scheduling
-    // it reactively. Only worth doing for successful runs that
-    // actually produced a main_branch_revision -- without a revision
-    // there's nothing to compare against.
-    let result_code = janitor_result.code.clone();
+    // it reactively.
+    let wants_control_run = janitor_result.wants_control_run();
     let main_branch_revision = janitor_result.main_branch_revision.clone();
     tokio::spawn(async move {
         match janitor::schedule::do_schedule_regular(
@@ -2287,14 +2285,7 @@ async fn publish_finish_events(
             }
         }
 
-        // Skip if the run itself is a control campaign (no point
-        // producing a control-of-control) or if it didn't succeed /
-        // has no base revision to rebuild against.
-        if campaign != "control"
-            && campaign != "unchanged"
-            && result_code == "success"
-            && main_branch_revision.is_some()
-        {
+        if wants_control_run {
             match janitor::schedule::do_schedule_control(
                 &pool,
                 &codebase,
