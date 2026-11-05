@@ -18,6 +18,7 @@
 import asyncio
 import json
 import tempfile
+from datetime import timedelta
 
 import aiohttp
 import asyncpg
@@ -28,9 +29,12 @@ from aiohttp.test_utils import make_mocked_request
 from bs4 import BeautifulSoup
 from fakeredis.aioredis import FakeRedis
 
+from janitor import utcnow
 from janitor.config import read_string as read_config_string
 from janitor.logs import get_log_manager
 from janitor.site.simple import create_app, handle_result_file
+
+from .conftest import _insert_codebase, _insert_run
 
 
 @pytest_asyncio.fixture()
@@ -193,12 +197,29 @@ async def test_webhook_github_push_reschedules_without_crashing(
 async def test_webhook_gitlab_push_matches_codebase(aiohttp_client, database_location):
     conn = await asyncpg.connect(database_location)
     try:
+        await _insert_codebase(conn, "example")
         await conn.execute(
-            "INSERT INTO codebase (name, branch_url, url, vcs_type) "
-            "VALUES ($1, $2, $2, $3)",
-            "example",
-            "https://gitlab.com/jelmer/example.git",
-            "git",
+            "UPDATE codebase SET vcs_last_revision = $1", "git-v1:" + "1" * 40
+        )
+        await conn.execute(
+            "INSERT INTO named_publish_policy (name, per_branch_policy) VALUES "
+            "('mypolicy', ARRAY[ROW('main', 'propose', NULL)::branch_publish_policy])"
+        )
+        await conn.execute(
+            "INSERT INTO candidate (suite, command, codebase, publish_policy) "
+            "VALUES ('mycampaign', 'true', 'example', 'mypolicy')"
+        )
+        now = utcnow()
+        await _insert_run(
+            conn,
+            run_id="run-1",
+            codebase="example",
+            start_time=now - timedelta(minutes=30),
+            finish_time=now,
+        )
+        await conn.execute(
+            "INSERT INTO new_result_branch (run_id, role, remote_name, "
+            "base_revision, revision) VALUES ('run-1', 'main', 'main', 'base', 'revid')"
         )
     finally:
         await conn.close()
@@ -207,23 +228,37 @@ async def test_webhook_gitlab_push_matches_codebase(aiohttp_client, database_loc
         config=create_config(database_location), redis=FakeRedis()
     )
     client = await aiohttp_client(app)
-    resp = await client.post(
-        "/webhook",
-        headers={"X-Gitlab-Event": "Push Hook"},
-        json={
-            "ref": "refs/heads/main",
-            "after": "0" * 40,
-            "project": {
-                "git_http_url": "https://gitlab.com/jelmer/example.git",
-                "git_ssh_url": "git@gitlab.com:jelmer/example.git",
-                "default_branch": "main",
+
+    async def push(after):
+        resp = await client.post(
+            "/webhook",
+            headers={"X-Gitlab-Event": "Push Hook"},
+            json={
+                "ref": "refs/heads/main",
+                "after": after,
+                "project": {
+                    "git_http_url": "https://example.com/example.git",
+                    "git_ssh_url": "git@example.com:example.git",
+                    "default_branch": "main",
+                },
             },
-        },
-    )
-    assert (resp.status, await resp.json()) == (
+        )
+        return resp.status, await resp.json()
+
+    urls = ["https://example.com/example.git"]
+    assert await push("1" * 40) == (200, {"rescheduled": {}, "urls": urls})
+    assert await push("2" * 40) == (
         200,
-        {"rescheduled": {}, "urls": ["https://gitlab.com/jelmer/example.git"]},
+        {"rescheduled": {"example": ["mycampaign"]}, "urls": urls},
     )
+    conn = await asyncpg.connect(database_location)
+    try:
+        row = await conn.fetchrow(
+            "SELECT vcs_last_revision, last_scanned FROM codebase"
+        )
+    finally:
+        await conn.close()
+    assert tuple(row) == ("git-v1:" + "1" * 40, None)
 
 
 async def test_candidates_with_multiple_unscored_does_not_500(
