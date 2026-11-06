@@ -23,7 +23,7 @@ struct Args {
     once: bool,
 
     /// Listen address
-    #[clap(long, default_value = "0.0.0.0")]
+    #[clap(long, default_value = "127.0.0.1")]
     listen_address: std::net::IpAddr,
 
     /// Listen port
@@ -311,4 +311,18 @@ async fn main() -> Result<(), i32> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_listen_address_defaults_to_loopback() {
+        let args = Args::parse_from(["janitor-publish"]);
+        assert_eq!(
+            args.listen_address,
+            std::net::IpAddr::from(std::net::Ipv4Addr::LOCALHOST)
+        );
+    }
 }
