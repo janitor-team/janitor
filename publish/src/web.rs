@@ -1156,6 +1156,12 @@ struct PublishQuery {
     role: Option<String>,
 }
 
+/// Whether a manual publish must be refused because a review rejected
+/// the run. A `mode` skips this, as the site only lets admins pass one.
+fn refuse_manual_publish(mode: Option<&str>, verdicts: &[String]) -> bool {
+    mode.is_none() && verdicts.iter().any(|v| v == "rejected")
+}
+
 /// `POST /{campaign}/{codebase}/publish`: operator-initiated publish of
 /// the latest effective run. Loads the last effective run, resolves a
 /// mode per role from either the `mode` form field or the configured
@@ -1204,6 +1210,28 @@ async fn publish(
             );
         }
     };
+
+    let verdicts: Vec<String> =
+        match sqlx::query_scalar("SELECT verdict::text FROM review WHERE run_id = $1")
+            .bind(&run.id)
+            .fetch_all(&state.conn)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                log::error!("Error loading reviews of run {}: {}", run.id, e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    error_response("Database error"),
+                );
+            }
+        };
+    if refuse_manual_publish(form.mode.as_deref(), &verdicts) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Run was rejected in review", "run_id": run.id})),
+        );
+    }
 
     let policy_lookup = match crate::get_publish_policy(&state.conn, &codebase, &campaign).await {
         Ok(p) => p,
@@ -2370,8 +2398,8 @@ async fn metrics_handler() -> impl IntoResponse {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_mp_status_transition, project_per_branch_policy, MpStatusTransition,
-        PerBranchPolicy, PolicyDocument,
+        classify_mp_status_transition, project_per_branch_policy, refuse_manual_publish,
+        MpStatusTransition, PerBranchPolicy, PolicyDocument,
     };
     use std::collections::HashMap;
 
@@ -2590,5 +2618,14 @@ acIBANPYup0ov/aq2XHOEpmkaaw9B6gSHz4uf1urZs/js/sE
         .unwrap();
         assert_eq!(binary.len(), 228);
         assert_eq!(super::armor_public_key(&binary).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_refuse_manual_publish() {
+        let v = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(!refuse_manual_publish(None, &v(&[])));
+        assert!(!refuse_manual_publish(None, &v(&["approved", "abstained"])));
+        assert!(refuse_manual_publish(None, &v(&["approved", "rejected"])));
+        assert!(!refuse_manual_publish(Some("propose"), &v(&["rejected"])));
     }
 }
