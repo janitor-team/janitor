@@ -154,3 +154,43 @@ This calls the admin-only `POST /cupboard/api/workers` API on the site, which
 generates a random password, stores its hash, and returns the plaintext password once
 in the response. It isn't kept anywhere in recoverable form, so copy it down when it's
 printed.
+
+## Ports and firewall
+
+Each image that serves HTTP passes `--listen-address=0.0.0.0`
+(`--host=0.0.0.0` for the site). With `--network=host`, as in
+[containers.md](containers.md), every janitor port below is open on
+every IPv4 address of the host. A second `--listen-address` after the
+image name is an error, so to keep a service on loopback give
+`--entrypoint` with its binary and pass the image's flags again, for
+example `--entrypoint janitor-publish ... --port=9912 --listen-address
+127.0.0.1`. For the worker keep `--entrypoint tini-static` and pass
+`-- janitor-worker ... --listen-address 127.0.0.1`. The site takes a
+later `--host 127.0.0.1`, which puts both of its ports on loopback, so
+it then needs a reverse proxy on the same host.
+
+Only these ports need to be reachable from other hosts, if possible
+through a reverse proxy on ports 80 and 443. Do not open 9914 itself:
+it also serves `POST /publish` with no login.
+
+| Port | Service | Who needs it |
+|---|---|---|
+| 8090 | `site` | everyone |
+| 9919 | `runner`, public API | the workers |
+| 9924 | `git_store`, public | everyone |
+| 9930 | `bzr_store`, public | everyone |
+| 9914 | `archive` | the build chroots and apt users, `/dists/` only, through the proxy |
+| 9934 | `ognibuild_dep` | the workers, for generic builds |
+| 9821 | `worker` | the runner, and the queue page links to it |
+
+Keep every other port on loopback or behind a firewall: 8080 (`site`
+health and metrics), 9911 (`runner` admin), 9912 (`publish`), 9920
+(`differ`), 9923 (`git_store` admin), 9929 (`bzr_store` admin), 9933
+(`auto_upload`), PostgreSQL and Redis. The janitor services on these
+ports have no login.
+
+`0.0.0.0` covers IPv4 only. `::` covers IPv6. For the Rust services it
+covers IPv4 too, unless `net.ipv6.bindv6only` is set. The site on `::`
+takes IPv6 only. Firewall rules must cover both families: with `nft`
+use an `inet` table, with `iptables` add the same rules with
+`ip6tables`. A proxy that serves HTTP/3 also needs UDP 443.
