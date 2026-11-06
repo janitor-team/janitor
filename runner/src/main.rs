@@ -132,31 +132,26 @@ async fn main() -> Result<(), i32> {
             .with_state(state.clone())
             .layer(trace());
 
-        let private_addr = format!("{}:{}", listen_address, port);
-        let public_addr = format!("{}:{}", listen_address, public_port);
-        log::info!("Private (admin) listener on {}", private_addr);
-        log::info!("Public (worker) listener on {}", public_addr);
+        let mut servers = tokio::task::JoinSet::new();
+        for (name, port, router) in [
+            ("Private (admin)", port, private_router),
+            ("Public (worker)", public_port, public_router),
+        ] {
+            for listener in
+                janitor_service::listen::bind_all(format!("{}:{}", listen_address, port)).await?
+            {
+                log::info!("{} listener on {}", name, listener.local_addr()?);
+                let router = router.clone();
+                servers
+                    .spawn(async move { axum::serve(listener, router.into_make_service()).await });
+            }
+        }
 
-        let private_listener = tokio::net::TcpListener::bind(&private_addr).await?;
-        let public_listener = tokio::net::TcpListener::bind(&public_addr).await?;
-
-        let private_serve = axum::serve(private_listener, private_router.into_make_service());
-        let public_serve = axum::serve(public_listener, public_router.into_make_service());
-
-        // Run both. If either errors we surface the first error and
-        // both listeners shut down.
-        tokio::try_join!(
-            async {
-                private_serve
-                    .await
-                    .map_err(Box::<dyn std::error::Error + Send + Sync>::from)
-            },
-            async {
-                public_serve
-                    .await
-                    .map_err(Box::<dyn std::error::Error + Send + Sync>::from)
-            },
-        )?;
+        // Run them all. If one errors we surface the first error and
+        // the listeners shut down.
+        while let Some(res) = servers.join_next().await {
+            res??;
+        }
 
         Ok(())
     })

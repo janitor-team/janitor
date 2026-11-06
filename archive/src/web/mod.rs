@@ -238,11 +238,11 @@ impl ArchiveWebService {
             .with_state(self.state.clone())
     }
 
-    /// Start the web service on the specified address.
+    /// Start the web service on every address `bind_address` resolves to.
     pub async fn serve(&self, bind_address: &str) -> ArchiveResult<()> {
         let app = self.router();
 
-        let listener = tokio::net::TcpListener::bind(bind_address)
+        let listeners = janitor_service::listen::bind_all(bind_address)
             .await
             .map_err(|e| {
                 ArchiveError::InvalidConfiguration(format!(
@@ -251,11 +251,18 @@ impl ArchiveWebService {
                 ))
             })?;
 
-        info!("Archive web service listening on {}", bind_address);
-
-        axum::serve(listener, app)
-            .await
-            .map_err(|e| ArchiveError::InvalidConfiguration(format!("Server error: {}", e)))?;
+        let mut servers = tokio::task::JoinSet::new();
+        for listener in listeners {
+            if let Ok(addr) = listener.local_addr() {
+                info!("Archive web service listening on {}", addr);
+            }
+            let app = app.clone();
+            servers.spawn(async move { axum::serve(listener, app).await });
+        }
+        while let Some(res) = servers.join_next().await {
+            res.map_err(|e| ArchiveError::InvalidConfiguration(format!("Server error: {}", e)))?
+                .map_err(|e| ArchiveError::InvalidConfiguration(format!("Server error: {}", e)))?;
+        }
 
         Ok(())
     }

@@ -9,7 +9,6 @@ use janitor_git_store::{
     config::Config, database::DatabaseManager, repository::RepositoryManager, tracing_setup, web,
     web_utils::HealthChecker,
 };
-use tokio::net::TcpListener;
 use tracing::info;
 
 /// Serve admin and public HTTP interfaces to a directory of
@@ -155,17 +154,21 @@ async fn main() -> Result<()> {
     let admin_app = web::create_admin_app(admin_state, client_max_size);
     let public_app = web::create_public_app(public_state, client_max_size);
 
-    let admin_addr = format!("{}:{}", config.git.host, config.git.admin_port);
-    let public_addr = format!("{}:{}", config.git.host, config.git.public_port);
-
-    let admin_listener = TcpListener::bind(&admin_addr).await?;
-    info!("Admin server listening on {}", admin_addr);
-    let admin_server = axum::serve(admin_listener, admin_app);
-
-    let public_listener = TcpListener::bind(&public_addr).await?;
-    info!("Public server listening on {}", public_addr);
-    let public_server = axum::serve(public_listener, public_app);
-
-    tokio::try_join!(admin_server, public_server)?;
+    let mut servers = tokio::task::JoinSet::new();
+    for (name, port, app) in [
+        ("Admin", config.git.admin_port, admin_app),
+        ("Public", config.git.public_port, public_app),
+    ] {
+        for listener in
+            janitor_service::listen::bind_all(format!("{}:{}", config.git.host, port)).await?
+        {
+            info!("{} server listening on {}", name, listener.local_addr()?);
+            let app = app.clone();
+            servers.spawn(async move { axum::serve(listener, app).await });
+        }
+    }
+    while let Some(res) = servers.join_next().await {
+        res??;
+    }
     Ok(())
 }
