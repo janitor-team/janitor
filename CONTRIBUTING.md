@@ -142,6 +142,9 @@ with other parts of the codebase or with external dependencies.
 Please consider whether the code or test you are adding is really
 necessary, and how easily it can bitrot.
 
+Please keep documentation lean. Out of date documentation is worse than
+no documentation in many cases. Avoid duplication.
+
 ### On tests
 
 Unit tests should live in the same file as the code they are testing.
@@ -178,6 +181,9 @@ Other anti-patterns:
    flaky.
  * Keep the size of tests in proportion to the change; a one-line fix
    rarely needs a hundred lines of tests.
+ * Improve overall test coverage and improve it to cover the bugs
+   you're fixing. Don't just add dedicated tests to the very specific
+   issue you fixed.
 
 ### Comments
 
@@ -212,7 +218,11 @@ PRs or commits should reference the issue they are addressing.
 
 ### Making larger changes
 
-For any feature enhancements or larger changes, please open an issue first to discuss the change.
+For any feature enhancements or larger changes, please open an issue first to
+discuss the change.
+
+Large feature changes or restructuring should usually be accompanied
+by a design doc in devnotes/.
 
 ## Developer Certificate of Origin
 
