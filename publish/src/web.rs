@@ -1933,7 +1933,7 @@ pub struct BlockerCommandDetails {
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ReviewSummary {
     /// When the review was made.
-    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub timestamp: chrono::NaiveDateTime,
     /// Comment of the reviewer.
     pub comment: Option<String>,
     /// Verdict of the reviewer.
@@ -2108,7 +2108,7 @@ WHERE run.id = $1
     #[derive(sqlx::FromRow)]
     struct ReviewRow {
         reviewer: String,
-        reviewed_at: chrono::DateTime<chrono::Utc>,
+        reviewed_at: chrono::NaiveDateTime,
         comment: Option<String>,
         verdict: String,
     }

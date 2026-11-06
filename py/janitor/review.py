@@ -29,7 +29,7 @@ async def store_review(
     run_id: str,
     verdict: str,
     comment: Optional[str],
-    reviewer: Optional[str],
+    reviewer: str,
     is_qa_reviewer: bool,
 ):
     async with conn.transaction():
