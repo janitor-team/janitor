@@ -1541,6 +1541,61 @@ async fn assign_sends_opened_branch_url() {
     );
 }
 
+/// A queue item without a branch URL is stored at the `assign` stage.
+#[tokio::test]
+async fn assign_records_queue_item_without_branch_url() {
+    let Some((app, state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let pool = state.database.pool().clone();
+    sqlx::query("INSERT INTO codebase (name) VALUES ('assign-no-vcs-cb')")
+        .execute(&pool)
+        .await
+        .expect("codebase insert");
+    state
+        .auth_service
+        .create_worker("no-vcs-worker", "no-vcs-pw", None)
+        .await
+        .expect("create worker");
+
+    let candidate_body = json!([{ "codebase": "assign-no-vcs-cb", "campaign": "test-campaign" }]);
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/candidates")
+        .header("content-type", "application/json")
+        .body(Body::from(candidate_body.to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/active-runs")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"worker": "no-vcs-worker"}).to_string()))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let run: (String, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT result_code, description, failure_stage FROM run WHERE codebase = $1",
+    )
+    .bind("assign-no-vcs-cb")
+    .fetch_one(&pool)
+    .await
+    .expect("run row");
+    assert_eq!(
+        run,
+        (
+            "not-in-vcs".to_string(),
+            Some("No VCS URL known for codebase.".to_string()),
+            Some("assign".to_string())
+        )
+    );
+}
+
 /// `GET /active-runs/+peek` returns 201 + the peek envelope when a
 /// queue item is available, and 503 with `{reason: "queue empty"}`
 /// when it isn't. The peek shape is
