@@ -40,7 +40,7 @@ struct Args {
     campaign: Option<janitor_types::Campaign>,
 
     /// Address to listen on
-    #[clap(long, default_value = "0.0.0.0")]
+    #[clap(long, default_value = "127.0.0.1")]
     listen_address: std::net::IpAddr,
 
     /// IP / hostname this instance can be reached on by runner
@@ -64,6 +64,18 @@ struct Args {
     /// Copy work output to standard out, in addition to worker.log
     #[clap(long)]
     tee: bool,
+}
+
+/// Whether the worker listens on loopback only but gives the runner a `url`
+/// that is not on loopback.
+fn only_local(listen: std::net::IpAddr, url: &url::Url) -> bool {
+    let url_is_local = match url.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        Some(url::Host::Domain(name)) => name == "localhost",
+        None => true,
+    };
+    listen.is_loopback() && !url_is_local
 }
 
 #[tokio::main]
@@ -222,6 +234,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Show worker URL
     if let Some(my_url) = my_url.as_ref() {
         log::info!("Diagnostics available at {}", my_url);
+        if only_local(addr.ip(), my_url) {
+            log::warn!(
+                "Listening on {} only, so the runner cannot reach {}. Pass --listen-address.",
+                addr.ip(),
+                my_url
+            );
+        }
     }
 
     // Run worker loop in background
@@ -280,4 +299,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start the server
     axum::serve(listener, app.into_make_service()).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_listen_address_defaults_to_loopback() {
+        let args = Args::parse_from(["janitor-worker", "--base-url", "http://127.0.0.1:9919/"]);
+        assert_eq!(
+            args.listen_address,
+            std::net::IpAddr::from(std::net::Ipv4Addr::LOCALHOST)
+        );
+    }
+
+    #[test]
+    fn test_only_local() {
+        let loopback = std::net::IpAddr::from(std::net::Ipv4Addr::LOCALHOST);
+        let any = std::net::IpAddr::from(std::net::Ipv4Addr::UNSPECIFIED);
+        for (listen, url, expected) in [
+            (loopback, "http://192.0.2.1:9821/", true),
+            (loopback, "http://worker.example.com:9821/", true),
+            (loopback, "http://127.0.0.1:9821/", false),
+            (loopback, "http://localhost:9821/", false),
+            (any, "http://192.0.2.1:9821/", false),
+        ] {
+            assert_eq!(only_local(listen, &url.parse().unwrap()), expected, "{url}");
+        }
+    }
 }
