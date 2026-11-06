@@ -8,10 +8,14 @@ use axum::body::{to_bytes, Body};
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::Response;
+use lru::LruCache;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBytes, PyDict};
-use std::path::Path;
+use std::num::NonZeroUsize;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex};
+use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 
 use crate::error::{GitStoreError, Result};
@@ -82,7 +86,13 @@ pub async fn handle_klaus(
     let query_string = parts.uri.query().unwrap_or("").to_string();
     let headers = parts.headers;
 
+    let permit = KLAUS_CALLS
+        .acquire()
+        .await
+        .expect("klaus semaphore is never closed");
     let (status, response_headers, body_out) = tokio::task::spawn_blocking(move || {
+        // Held until the call ends, also when the client goes away.
+        let _permit = permit;
         invoke_klaus(
             &codebase,
             &repo_path,
@@ -123,12 +133,10 @@ fn invoke_klaus(
     headers: &HeaderMap,
     body: &[u8],
 ) -> Result<KlausResponse> {
-    Python::attach(|py| -> Result<_> {
-        let (klaus_app, fancy_repo) = KLAUS.get_or_try_init(py, || build_klaus_app(py))?;
-        let repo = fancy_repo
-            .bind(py)
-            .call1((repo_path.to_string_lossy().as_ref(), py.None()))
-            .map_err(py_err)?;
+    let klaus_repo = Python::attach(|py| open_repo(py, repo_path))?;
+    let response = Python::attach(|py| -> Result<_> {
+        let (klaus_app, _) = KLAUS.get_or_try_init(py, || build_klaus_app(py))?;
+        let repo = klaus_repo.fancy.bind(py).clone();
 
         // Build a WSGI environ dict.
         let io = py
@@ -253,15 +261,25 @@ fn invoke_klaus(
             .call1((environ, start_response))
             .map_err(py_err)?;
 
-        let mut body_out: Vec<u8> = Vec::new();
-        for chunk in iterable.try_iter().map_err(py_err)? {
-            let chunk = chunk.map_err(py_err)?;
-            let bytes: &[u8] = chunk
-                .cast::<PyBytes>()
-                .map_err(|_| GitStoreError::HttpError("klaus yielded non-bytes chunk".to_string()))?
-                .as_bytes();
-            body_out.extend_from_slice(bytes);
-        }
+        let read_body = || -> Result<Vec<u8>> {
+            let mut body_out: Vec<u8> = Vec::new();
+            for chunk in iterable.try_iter().map_err(py_err)? {
+                let chunk = chunk.map_err(py_err)?;
+                let bytes: &[u8] = chunk
+                    .cast::<PyBytes>()
+                    .map_err(|_| {
+                        GitStoreError::HttpError("klaus yielded non-bytes chunk".to_string())
+                    })?
+                    .as_bytes();
+                body_out.extend_from_slice(bytes);
+            }
+            Ok(body_out)
+        };
+        let body_out = read_body();
+        // PEP 3333: the server must close the result, also after an error.
+        let closed = iterable.call_method0("close").map_err(py_err);
+        let body_out = body_out?;
+        closed?;
 
         let status_holder_bound = status_holder.bind(py);
         let status_item = status_holder_bound
@@ -297,7 +315,60 @@ fn invoke_klaus(
         }
 
         Ok((status, response_headers, body_out))
-    })
+    });
+    let released = Python::attach(|py| release_repo(py, klaus_repo));
+    let response = response?;
+    released?;
+    Ok(response)
+}
+
+/// A klaus `FancyRepo` and the dulwich repository it wraps.
+struct KlausRepo {
+    fancy: Py<PyAny>,
+    dulwich: Py<PyAny>,
+}
+
+/// Most klaus repositories kept open at once. Each keeps its pack files open.
+const MAX_OPEN_REPOS: NonZeroUsize = NonZeroUsize::new(4).unwrap();
+
+/// Most klaus calls at once, so cached plus in-use repositories stay bounded.
+static KLAUS_CALLS: Semaphore = Semaphore::const_new(MAX_OPEN_REPOS.get());
+
+/// Open klaus repositories by path, as klaus keeps one per path, but bounded.
+static REPOS: LazyLock<Mutex<LruCache<PathBuf, Arc<KlausRepo>>>> =
+    LazyLock::new(|| Mutex::new(LruCache::new(MAX_OPEN_REPOS)));
+
+/// Return the open klaus repository for `repo_path`, opening it if needed.
+fn open_repo(py: Python<'_>, repo_path: &Path) -> Result<Arc<KlausRepo>> {
+    if let Some(repo) = REPOS.lock().unwrap().get(repo_path) {
+        return Ok(repo.clone());
+    }
+    let (_, fancy_repo) = KLAUS.get_or_try_init(py, || build_klaus_app(py))?;
+    let fancy = fancy_repo
+        .bind(py)
+        .call1((repo_path.to_string_lossy().as_ref(), py.None()))
+        .map_err(py_err)?;
+    let dulwich = fancy.getattr("dulwich_repo").map_err(py_err)?;
+    let repo = Arc::new(KlausRepo {
+        fancy: fancy.unbind(),
+        dulwich: dulwich.unbind(),
+    });
+    let evicted = REPOS
+        .lock()
+        .unwrap()
+        .push(repo_path.to_path_buf(), repo.clone());
+    if let Some((_, old)) = evicted {
+        release_repo(py, old)?;
+    }
+    Ok(repo)
+}
+
+/// Close `repo` once neither the cache nor a request still holds it.
+fn release_repo(py: Python<'_>, repo: Arc<KlausRepo>) -> Result<()> {
+    if let Some(repo) = Arc::into_inner(repo) {
+        repo.dulwich.call_method0(py, "close").map_err(py_err)?;
+    }
+    Ok(())
 }
 
 /// Locate klaus's bundled `static/` directory so axum can serve it
@@ -477,5 +548,80 @@ mod tests {
     fn test_is_not_git_client_no_ua() {
         let req = build_req("/git/example/tree/main/", None);
         assert!(!is_git_client_request(&req));
+    }
+
+    /// Open `.pack` and `.idx` descriptors of this process under `dir`.
+    #[cfg(target_os = "linux")]
+    fn open_pack_fds(dir: &Path) -> usize {
+        std::fs::read_dir("/proc/self/fd")
+            .unwrap()
+            // Other threads may close a descriptor between listing and reading it.
+            .filter_map(|entry| std::fs::read_link(entry.unwrap().path()).ok())
+            .filter(|target| {
+                target.starts_with(dir)
+                    && matches!(
+                        target.extension().and_then(|e| e.to_str()),
+                        Some("pack" | "idx")
+                    )
+            })
+            .count()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_open_repos_keep_pack_files_bounded() {
+        if Python::attach(|py| py.import("klaus").is_err()) {
+            eprintln!("skipping: klaus not importable");
+            return;
+        }
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths: Vec<PathBuf> = (0..=MAX_OPEN_REPOS.get())
+            .map(|i| {
+                let path = tmp.path().join(format!("repo{}", i));
+                let repo = git2::Repository::init_bare(&path).unwrap();
+                let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+                let tree = repo.treebuilder(None).unwrap().write().unwrap();
+                let tree = repo.find_tree(tree).unwrap();
+                repo.commit(Some("refs/heads/main"), &sig, &sig, "c", &tree, &[])
+                    .unwrap();
+                let status = std::process::Command::new("git")
+                    .args(["repack", "-q", "-d"])
+                    .current_dir(&path)
+                    .status()
+                    .unwrap();
+                assert!(status.success());
+                path.canonicalize().unwrap()
+            })
+            .collect();
+        let codebase = CodebaseName::new("packs").unwrap();
+        let get = |path: &Path| {
+            let (status, _, _) = invoke_klaus(
+                &codebase,
+                path,
+                "GET",
+                "/tree/main/",
+                "",
+                &HeaderMap::new(),
+                b"",
+            )
+            .unwrap();
+            assert_eq!(status, StatusCode::OK);
+            open_pack_fds(path)
+        };
+
+        // One repository keeps the same pack files open across requests.
+        let first = get(&paths[0]);
+        assert_ne!(first, 0);
+        let again: Vec<usize> = (0..10).map(|_| get(&paths[0])).collect();
+        assert_eq!(again, vec![first; 10]);
+
+        // One repository more than the bound closes the least recently used.
+        for path in &paths[1..] {
+            get(path);
+        }
+        let mut expected = vec![first; paths.len()];
+        expected[0] = 0;
+        let open: Vec<usize> = paths.iter().map(|p| open_pack_fds(p)).collect();
+        assert_eq!(open, expected);
     }
 }
