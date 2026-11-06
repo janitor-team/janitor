@@ -2368,12 +2368,15 @@ async fn finish_run_multipart_internal(
         }
     };
 
-    // Process multipart upload. Pass the codebase so logs land in
-    // the `{root}/{codebase}/{run_id}/<name>` layout the site's
-    // FileSystemLogFileManager expects.
+    // Process multipart upload, streaming the logs into the log store.
     let uploaded_result = match state
         .upload_processor
-        .process_upload(multipart, &run_id, &active_run.codebase)
+        .process_upload(
+            multipart,
+            &run_id,
+            &active_run.codebase,
+            state.log_manager.as_ref(),
+        )
         .await
     {
         Ok(result) => result,
@@ -2453,44 +2456,8 @@ async fn finish_run_multipart_internal(
     janitor_result.vcs_type = worker_result.vcs_type;
     janitor_result.subpath = worker_result.subpath;
 
-    let log_filenames: Vec<String> = uploaded_result
-        .log_files
-        .iter()
-        .map(|f| f.filename.clone())
-        .collect();
+    let log_filenames: Vec<String> = uploaded_result.log_files.clone();
     janitor_result.logfilenames = log_filenames.clone();
-
-    for log_file in &uploaded_result.log_files {
-        let Some(path_str) = log_file.stored_path.to_str() else {
-            log::warn!("Invalid UTF-8 in log file path: {:?}", log_file.stored_path);
-            continue;
-        };
-        let Ok(name) = janitor_types::LogFilename::new(log_file.filename.as_str()) else {
-            log::warn!(
-                "Invalid log file name {:?} from run {}",
-                log_file.filename,
-                run_id
-            );
-            continue;
-        };
-        if let Err(e) = janitor::logs::import_log(
-            state.log_manager.as_ref(),
-            state.backup_log_manager.as_deref(),
-            &active_run.codebase,
-            &run_id,
-            path_str,
-            Some(&name),
-        )
-        .await
-        {
-            log::warn!(
-                "Failed to store log file {} from run {}: {}",
-                log_file.filename,
-                run_id,
-                e
-            );
-        }
-    }
 
     // Python's `filenames` is every uploaded part (logs + artifacts +
     // build files); `logs` is just the log entries; `artifacts` is
