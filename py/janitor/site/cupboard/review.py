@@ -7,6 +7,7 @@ import aiozipkin
 import asyncpg
 from aiohttp import ClientConnectorError, ClientResponseError, web
 from breezy.revision import NULL_REVISION
+from yarl import URL
 
 from janitor import state
 
@@ -87,18 +88,24 @@ async def generate_review(
     except (ClientConnectorError, ClientResponseError) as e:
         evaluate = f"Unable to retrieve evaluation: {e}"
 
+    query = [("suite", c) for c in campaigns or []]
+    query.append(("required_only", "true" if required_only else "false"))
+    if reviewer:
+        query.append(("reviewer", reviewer))
+    query.append(("publishable_only", "true" if publishable_only else "false"))
+
     kwargs = {
         "review_instructions_url": request.app.get("review_instructions_url"),
         "codebase": codebase,
         "run_id": run_id,
         "suite": campaign,
-        "suites": campaigns,
         "campaign": campaign,
-        "campaigns": campaigns,
+        "selected_campaigns": campaigns,
         "evaluate": evaluate,
         "evaluate_url": str(request.app["evaluate_url"]),
         "publishable_only": publishable_only,
         "required_only": required_only,
+        "needs_review_url": str(URL("/cupboard/api/needs-review").with_query(query)),
         "todo": [
             {
                 "codebase": entry["codebase"],
