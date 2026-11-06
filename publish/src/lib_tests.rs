@@ -182,7 +182,43 @@ fn test_role_branch_url_with_special_characters() {
     assert!(result_str.contains("feature") && result_str.contains("branch-name"));
 }
 
-// Skip branches_match tests as they require opening actual branches with breezyshim
+// Port 1 refuses connections, so opening these fails at once.
+fn branch_url(rest: &str) -> url::Url {
+    url::Url::parse(&format!("http://127.0.0.1:1/repo{}", rest)).unwrap()
+}
+
+#[test]
+fn test_branches_match_same_url_needs_no_open() {
+    let a = branch_url(",branch=a");
+    assert!(branches_match(Some(&a), Some(&a), None).unwrap());
+    assert!(branches_match(None, None, None).unwrap());
+    assert!(!branches_match(Some(&a), None, None).unwrap());
+}
+
+#[test]
+fn test_branches_match_different_repo_needs_no_open() {
+    let a = branch_url(",branch=a");
+    let b = branch_url("-other,branch=a");
+    assert!(!branches_match(Some(&a), Some(&b), None).unwrap());
+}
+
+#[test]
+fn test_branches_match_open_failure_is_an_error_not_a_panic() {
+    let a = branch_url(",branch=a");
+    let b = branch_url(",branch=b");
+    match branches_match(Some(&a), Some(&b), None) {
+        Err(silver_platter::vcs::BranchOpenError::Unavailable { url, description }) => {
+            assert_eq!(
+                (url.as_str(), description.as_str()),
+                (
+                    "http://127.0.0.1:1/repo",
+                    "while sending GET /repo/info/refs?service=git-upload-pack:"
+                )
+            );
+        }
+        other => panic!("expected Unavailable, got {other:?}"),
+    }
+}
 
 // Skip get_merged_by_user_url tests as they require breezyshim forge operations
 
