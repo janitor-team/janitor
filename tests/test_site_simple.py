@@ -31,7 +31,7 @@ from fakeredis.aioredis import FakeRedis
 
 from janitor.config import read_string as read_config_string
 from janitor.logs import get_log_manager
-from janitor.site.simple import create_app, handle_result_file
+from janitor.site.simple import create_app, handle_result_file, zipkin_endpoint
 
 
 @pytest_asyncio.fixture()
@@ -655,3 +655,17 @@ async def test_pgp_keys_serves_every_reported_key(
         200,
         [IMPORTABLE_KEY_FPR, ROTATED_KEY_FPR],
     )
+
+
+@pytest.mark.parametrize(
+    "host,ipv4,ipv6",
+    [
+        ("127.0.0.1", "127.0.0.1", None),
+        ("::1", None, "::1"),
+        ("localhost", None, None),
+        (None, None, None),
+    ],
+)
+def test_zipkin_endpoint(host, ipv4, ipv6):
+    endpoint = zipkin_endpoint("janitor.site", host, 8080)
+    assert (endpoint.ipv4, endpoint.ipv6, endpoint.port) == (ipv4, ipv6, 8080)
