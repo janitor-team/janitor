@@ -557,7 +557,8 @@ async fn get_status_returns_python_shape() {
     );
 }
 
-/// `GET /queue` returns the entries currently in the queue table.
+/// `GET /queue` returns the entries currently in the queue table, and
+/// `?limit=N` caps them.
 #[tokio::test]
 async fn get_queue_returns_scheduled_entries() {
     let Some((app, state)) = setup().await else {
@@ -584,7 +585,7 @@ async fn get_queue_returns_scheduled_entries() {
         .uri("/queue")
         .body(Body::empty())
         .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = get_body(response).await;
@@ -596,6 +597,23 @@ async fn get_queue_returns_scheduled_entries() {
     assert_eq!(entry["command"], "true");
     assert_eq!(entry["context"], "some-context");
     assert!(entry["queue_id"].is_i64(), "queue_id must be a number");
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/queue?limit=0")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(get_body(response).await, json!([]));
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/queue?limit=-1")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 /// `POST /kill/{id}` on a run whose backchannel does not support
