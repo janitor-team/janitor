@@ -527,6 +527,97 @@ async fn get_run_missing_returns_404() {
     );
 }
 
+/// `POST /runs/{id}/reprocess-logs` analyzes the stored dist log again
+/// and stores the new result on the run.
+#[tokio::test]
+async fn post_reprocess_logs_stores_the_new_analysis() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let pool = state.database.pool().clone();
+    insert_codebase(&pool, "reprocess-cb").await;
+    sqlx::query("INSERT INTO change_set (id, campaign) VALUES ($1, $2)")
+        .bind("cs-reprocess")
+        .bind("test-campaign")
+        .execute(&pool)
+        .await
+        .expect("insert change_set");
+    sqlx::query(
+        "INSERT INTO run (
+             id, suite, codebase, command, result_code, description,
+             vcs_type, branch_url, start_time, finish_time, logfilenames, change_set
+         )
+         VALUES ($1, $2, $3, 'true', 'dist-command-failed', 'Command failed',
+                 'git', 'https://example.invalid/reprocess-cb',
+                 NOW() - INTERVAL '1 minute', NOW(), '{dist.log}', $4)",
+    )
+    .bind("run-reprocess-1")
+    .bind("test-campaign")
+    .bind("reprocess-cb")
+    .bind("cs-reprocess")
+    .execute(&pool)
+    .await
+    .expect("insert run");
+    let td = tempfile::tempdir().unwrap();
+    let log = td.path().join("dist.log");
+    std::fs::write(
+        &log,
+        "checking for foo... no\nconfigure: error: foo not found\n",
+    )
+    .unwrap();
+    state
+        .log_manager
+        .import_log(
+            &janitor::CodebaseName::new("reprocess-cb").unwrap(),
+            &janitor::RunId::new("run-reprocess-1").unwrap(),
+            log.to_str().unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/runs/run-reprocess-1/reprocess-logs")
+        .header("content-type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let failure_details = json!({
+        "current_version": null,
+        "minimum_version": null,
+        "name": "foo",
+        "url": null,
+    });
+    assert_eq!(
+        get_body(response).await,
+        json!({
+            "changed": true,
+            "result_code": "dist-missing-vague-dependency",
+            "description": "Missing dependency: foo",
+            "failure_details": failure_details,
+        })
+    );
+    let stored: (String, String, Value) = sqlx::query_as(
+        "SELECT result_code, description, failure_details::jsonb FROM run WHERE id = 'run-reprocess-1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("fetch stored run");
+    assert_eq!(
+        stored,
+        (
+            "dist-missing-vague-dependency".to_string(),
+            "Missing dependency: foo".to_string(),
+            failure_details,
+        )
+    );
+}
+
 /// `GET /status` returns the three fields the Python handler emits:
 /// `processing`, `avoid_hosts`, `rate_limit_hosts`. With an empty
 /// active-runs set and no env overrides, all three come back empty.
