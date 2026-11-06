@@ -35,6 +35,7 @@ mod tee;
 
 #[derive(Clone, Default)]
 pub struct AppState {
+    pub current_stage: Option<String>,
     pub output_directory: Option<std::path::PathBuf>,
     pub assignment: Option<janitor::api::worker::Assignment>,
     pub metadata: Option<Metadata>,
@@ -194,10 +195,12 @@ pub fn run_worker(
     additional_colocated_branches: Option<HashMap<String, String>>,
     skip_setup_validation: Option<bool>,
     default_empty: Option<bool>,
+    state: &std::sync::RwLock<AppState>,
 ) -> Result<(), WorkerFailure> {
     let force_build = force_build.unwrap_or(false);
     let tee = tee.unwrap_or(false);
     let skip_setup_validation = skip_setup_validation.unwrap_or(false);
+    let set_stage = |stage: &str| state.write().unwrap().current_stage = Some(stage.to_string());
     let worker_log_path = output_directory.join("worker.log");
     log::debug!("Writing worker log to {}", worker_log_path.display());
     let copy_output = crate::tee::CopyOutput::new(&worker_log_path, tee).unwrap();
@@ -618,6 +621,7 @@ pub fn run_worker(
 
     metadata.codemod = Some(serde_json::Value::Null);
 
+    set_stage("codemod");
     if ws.resume_branch().is_none() {
         // If the resume branch was discarded for whatever reason, then we
         // don't need to pass in the codemod result.
@@ -723,6 +727,7 @@ pub fn run_worker(
         result_branches
     );
 
+    set_stage("result-push");
     let actual_vcs_type =
         janitor::vcs::get_branch_vcs_type(&ws.local_tree().branch()).map_err(|e| {
             WorkerFailure::new(
@@ -779,6 +784,7 @@ pub fn run_worker(
     };
 
     let target_details = if should_build {
+        set_stage("build");
         build_target.build(ws.local_tree(), subpath, output_directory, build_config)?
     } else {
         serde_json::Value::Null
@@ -790,6 +796,7 @@ pub fn run_worker(
     });
 
     log::info!("Pushing result branch to {}", target_repo_url);
+    set_stage("result-sym");
 
     crate::vcs::import_branches(
         vcs_type,
@@ -904,7 +911,11 @@ pub async fn process_single_item(
         .get_assignment(my_url, node_name, jenkins_build_url, codebase, campaign)
         .await?;
 
-    state.write().unwrap().assignment = Some(assignment.clone());
+    {
+        let mut state = state.write().unwrap();
+        state.assignment = Some(assignment.clone());
+        state.current_stage = Some("setup".to_string());
+    }
 
     log::debug!("Got back assignment: {:?}", &assignment);
 
@@ -952,6 +963,7 @@ pub async fn process_single_item(
     .unwrap();
 
     let assignment_ = assignment.clone();
+    let state_ = state.clone();
 
     let output_directory_ = output_directory.path().to_path_buf();
 
@@ -1002,6 +1014,7 @@ pub async fn process_single_item(
             }),
             Some(assignment_.skip_setup_validation),
             Some(assignment_.branch.default_empty),
+            &state_,
         );
 
         match result {
@@ -1269,6 +1282,7 @@ check:
             None,
             None,
             None,
+            &std::sync::RwLock::new(AppState::default()),
         )
         .unwrap();
         let found_logfiles = std::fs::read_dir(&output_dir)
@@ -1381,6 +1395,7 @@ check:
         // A file where the VCS store should be, so the push fails.
         std::fs::write(tmp_path.join("target"), "").unwrap();
         let output_dir = tmp_path.join("output");
+        let state = std::sync::RwLock::new(AppState::default());
         std::fs::create_dir(&output_dir).unwrap();
         let mut metadata = Metadata::default();
         let failure = run_worker(
@@ -1411,12 +1426,17 @@ check:
             None,
             None,
             None,
+            &state,
         )
         .unwrap_err();
         assert_eq!(failure.code, "unexpected-error");
         assert_eq!(failure.stage, vec!["result-push".to_string()]);
         assert_eq!(metadata.branches, vec![]);
         assert_eq!(metadata.tags, vec![]);
+        assert_eq!(
+            state.into_inner().unwrap().current_stage.as_deref(),
+            Some("result-push")
+        );
         std::mem::drop(env);
     }
 
