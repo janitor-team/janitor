@@ -7,7 +7,6 @@ import aiohttp_jinja2
 import asyncpg
 from aiohttp import ClientConnectorError, ClientResponseError, web
 from breezy.revision import NULL_REVISION
-from yarl import URL
 
 from janitor import splitout_env, state
 from janitor.config import get_campaign_config
@@ -15,6 +14,7 @@ from janitor.queue import Queue
 from janitor.site import (
     BuildDiffUnavailable,
     DebdiffRetrievalError,
+    backend_url,
     format_debdiff_error,
     get_archive_diff,
     update_vars_from_request,
@@ -189,7 +189,7 @@ ORDER BY finish_time DESC
 async def _fetch_codebase_merge_proposals(client, publisher_url, codebase_name):
     if not publisher_url:
         return []
-    url = URL(publisher_url) / "c" / codebase_name / "merge-proposals"
+    url = backend_url(publisher_url, "c", codebase_name, "merge-proposals")
     async with client.get(url, raise_for_status=True) as resp:
         data = await resp.json()
     return [(entry["url"], entry.get("status")) for entry in data]

@@ -34,6 +34,7 @@ from janitor.queue import Queue
 from janitor.site import (
     BuildDiffUnavailable,
     DebdiffRetrievalError,
+    backend_url,
     format_debdiff_error,
     get_archive_diff,
 )
@@ -152,7 +153,7 @@ WHERE followup.origin = $1""",
     async def publish_blockers():
         if publisher_url is None:
             return {}
-        url = URL(publisher_url) / "blockers" / run["id"]
+        url = backend_url(publisher_url, "blockers", run["id"])
         with span.new_child("publish-blockers"):
             try:
                 async with client.get(
