@@ -2,6 +2,7 @@ from datetime import timedelta
 
 import aiohttp_jinja2
 import aiozipkin
+from aiohttp import web
 from bs4 import BeautifulSoup
 from yarl import URL
 
@@ -12,14 +13,30 @@ from janitor.site.cupboard import create_app
 
 from .test_cupboard import _insert_codebase, _insert_run, _user_middleware
 
+
+async def create_runner_url(aiohttp_client, runner_posts):
+    runner_app = web.Application()
+
+    async def handle_run(request):
+        runner_posts.append((request.match_info["run_id"], await request.json()))
+        return web.json_response({})
+
+    runner_app.router.add_post("/runs/{run_id}", handle_run)
+    runner_client = await aiohttp_client(runner_app)
+    return str(runner_client.make_url("/"))
+
+
 REVIEWER = {"email": "reviewer@example.com", "name": "Reviewer", "groups": []}
 
 
-async def create_publishable_client(aiohttp_client, db):
+async def create_review_client(aiohttp_client, db, campaigns=(), runner_url=None):
+    config = "oauth2_provider {}\n" + "".join(
+        f'campaign {{ name: "{campaign}" }}\n' for campaign in campaigns
+    )
     app = create_app(
-        config=read_config_string("oauth2_provider {}\n"),
+        config=read_config_string(config),
         publisher_url=None,
-        runner_url=None,
+        runner_url=runner_url,
         differ_url=None,
         db=db,
     )
@@ -31,25 +48,47 @@ async def create_publishable_client(aiohttp_client, db):
     return await aiohttp_client(app)
 
 
-async def insert_build_only_run(conn, run_id):
+async def insert_review_run(
+    conn,
+    run_id,
+    *,
+    codebase="foo",
+    campaign="mycampaign",
+    mode="build-only",
+    value=1,
+    publish_status="needs-manual-review",
+):
     await conn.execute(
         "INSERT INTO named_publish_policy (name, per_branch_policy) VALUES "
-        "('mypolicy', ARRAY[ROW('main', 'build-only', NULL)::branch_publish_policy])"
+        "($1, ARRAY[ROW('main', $2, NULL)::branch_publish_policy]) "
+        "ON CONFLICT DO NOTHING",
+        mode,
+        mode,
     )
-    await _insert_codebase(conn, "foo")
+    await _insert_codebase(conn, codebase)
     await conn.execute(
         "INSERT INTO candidate (suite, command, codebase, publish_policy) "
-        "VALUES ('mycampaign', 'true', 'foo', 'mypolicy')"
+        "VALUES ($1, 'true', $2, $3)",
+        campaign,
+        codebase,
+        mode,
     )
     now = utcnow()
     await _insert_run(
         conn,
         run_id=run_id,
-        codebase="foo",
+        codebase=codebase,
+        campaign=campaign,
         start_time=now - timedelta(minutes=30),
         finish_time=now,
     )
-    await conn.execute("UPDATE run SET vcs_type = NULL WHERE id = $1", run_id)
+    # No VCS is set up here, so the evaluate page would fail on vcs_managers["git"].
+    await conn.execute(
+        "UPDATE run SET vcs_type = NULL, value = $2, publish_status = $3 WHERE id = $1",
+        run_id,
+        value,
+        publish_status,
+    )
     await conn.execute(
         "INSERT INTO new_result_branch (run_id, role, remote_name, base_revision, "
         "revision) VALUES ($1, 'main', 'main', 'base', 'revid')",
@@ -63,9 +102,9 @@ def shown_run(text):
 
 
 async def test_review_post_publishable_only_unchecked(aiohttp_client, db):
-    client = await create_publishable_client(aiohttp_client, db)
+    client = await create_review_client(aiohttp_client, db)
     async with db.acquire() as conn:
-        await insert_build_only_run(conn, "somerun")
+        await insert_review_run(conn, "somerun")
 
     resp = await client.get("/cupboard/review?required_only=false")
     assert shown_run(await resp.text()) == []
@@ -77,3 +116,25 @@ async def test_review_post_publishable_only_unchecked(aiohttp_client, db):
     resp = await client.post("/cupboard/review", data={"run_id": "somerun"})
     assert resp.status == 200
     assert shown_run(await resp.text()) == ["somerun"]
+
+
+async def test_review_post_reschedule(aiohttp_client, db):
+    runner_posts: list[tuple[str, dict]] = []
+    runner_url = await create_runner_url(aiohttp_client, runner_posts)
+    client = await create_review_client(aiohttp_client, db, runner_url=runner_url)
+    async with db.acquire() as conn:
+        await insert_review_run(conn, "somerun")
+
+    resp = await client.post(
+        "/cupboard/review", data={"run_id": "somerun", "verdict": "Reschedule"}
+    )
+    assert resp.status == 200
+
+    async with db.acquire() as conn:
+        reviews = await conn.fetch("SELECT run_id, reviewer, verdict FROM review")
+        queue = await conn.fetch("SELECT codebase, suite, refresh FROM queue")
+    assert [tuple(r) for r in reviews] == [
+        ("somerun", "reviewer@example.com", "rejected")
+    ]
+    assert [tuple(q) for q in queue] == [("foo", "mycampaign", True)]
+    assert runner_posts == [("somerun", {"publish_status": "rejected"})]
