@@ -15,15 +15,17 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
+import json
 from datetime import timedelta
 
 import aiozipkin
 import pytest
 from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
 
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
-from janitor.site.api import create_app
+from janitor.site.api import create_app, request_backend
 
 from .conftest import _insert_codebase, _insert_run
 
@@ -351,6 +353,83 @@ async def test_reschedule_returns_runner_result(aiohttp_client, db):
     assert body["campaign"] == "mycampaign"
 
 
+@pytest.mark.parametrize(
+    "status,body", [(200, {"id": "1"}), (404, {"reason": "No such publish"})]
+)
+async def test_request_backend_returns_backend_response(aiohttp_client, status, body):
+    backend_app = web.Application()
+
+    async def _handle(request):
+        return web.json_response(body, status=status)
+
+    backend_app.router.add_get("/publish/1", _handle)
+    backend_client = await aiohttp_client(backend_app)
+
+    request = make_mocked_request(
+        "GET", "/", app={"http_client_session": backend_client.session}
+    )
+    resp = await request_backend(
+        request, "GET", backend_client.make_url("/publish/1"), "publisher"
+    )
+    assert resp.status == status
+    assert resp.content_type == "application/json"
+    assert json.loads(resp.body) == body
+
+
+ADMIN_CONFIG = 'oauth2_provider { client_id: "site" admin_group: "admins" }'
+ADMIN_USER = {"email": "admin@example.com", "groups": ["admins"]}
+
+
+async def test_merge_proposal_change_forwards_publisher_error(aiohttp_client, db):
+    seen = []
+    publisher_app = web.Application()
+
+    async def _handle_change(request):
+        seen.append(dict(await request.post()))
+        return web.json_response({"reason": "No such merge proposal"}, status=404)
+
+    publisher_app.router.add_post("/merge-proposal", _handle_change)
+    publisher_client = await aiohttp_client(publisher_app)
+
+    client = await create_client(
+        aiohttp_client,
+        db,
+        publisher_url=str(publisher_client.make_url("/")),
+        user=ADMIN_USER,
+        config=ADMIN_CONFIG,
+    )
+
+    resp = await client.post(
+        "/merge-proposal",
+        data={"url": "https://example.com/merge/1", "status": "closed"},
+    )
+    assert resp.status == 404
+    assert await resp.json() == {"reason": "No such merge proposal"}
+    assert seen == [{"url": "https://example.com/merge/1", "status": "closed"}]
+
+
+async def test_runner_kill_forwards_runner_error(aiohttp_client, db):
+    runner_app = web.Application()
+
+    async def _handle_kill(request):
+        return web.json_response({"reason": "No such current run: run-1"}, status=404)
+
+    runner_app.router.add_post("/kill/{run_id}", _handle_kill)
+    runner_client = await aiohttp_client(runner_app)
+
+    client = await create_client(
+        aiohttp_client,
+        db,
+        runner_url=str(runner_client.make_url("/")),
+        user=ADMIN_USER,
+        config=ADMIN_CONFIG,
+    )
+
+    resp = await client.post("/active-runs/run-1/kill")
+    assert resp.status == 404
+    assert await resp.json() == {"reason": "No such current run: run-1"}
+
+
 async def test_admin_action_without_oauth2_provider_is_unauthorized(aiohttp_client, db):
     client = await create_client(
         aiohttp_client, db, user={"email": "alice@example.com", "groups": []}
@@ -423,3 +502,33 @@ async def test_run_logs(aiohttp_client, db, tmp_path):
     log.chmod(0)
     resp = await client.get("/run/r1/logs/worker.log")
     assert resp.status == 502
+
+
+async def test_runner_log_index(aiohttp_client, db):
+    runner_app = web.Application()
+
+    async def _handle_log_index(request):
+        run_id = request.match_info["run_id"]
+        if run_id == "r1":
+            return web.json_response(["worker.log", "build.log"])
+        return web.json_response(
+            {"reason": f"No such current run: {run_id}"}, status=404
+        )
+
+    runner_app.router.add_get("/log/{run_id}", _handle_log_index)
+    runner_client = await aiohttp_client(runner_app)
+
+    client = await create_client(
+        aiohttp_client, db, runner_url=str(runner_client.make_url("/"))
+    )
+
+    resp = await client.get(
+        "/active-runs/r1/log/", headers={"Accept": "application/json"}
+    )
+    assert resp.status == 200
+    assert await resp.json() == ["worker.log", "build.log"]
+    resp = await client.get("/active-runs/r1/log/", headers={"Accept": "text/plain"})
+    assert await resp.text() == "worker.log\nbuild.log\n"
+    resp = await client.get("/active-runs/r2/log/")
+    assert resp.status == 404
+    assert await resp.json() == {"reason": "No such current run: r2"}
