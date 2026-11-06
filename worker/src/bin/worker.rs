@@ -66,6 +66,14 @@ struct Args {
     tee: bool,
 }
 
+/// The URL the runner reaches this worker on: a host name, or an IPv4 or IPv6 address.
+fn worker_url(host: &str, port: u16) -> Result<url::Url, url::ParseError> {
+    match host.parse::<std::net::Ipv6Addr>() {
+        Ok(ip) => url::Url::parse(&format!("http://[{}]:{}", ip, port)),
+        Err(_) => url::Url::parse(&format!("http://{}:{}", host, port)),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
@@ -172,7 +180,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let my_url = if let Some(my_url) = args.my_url.as_ref() {
         Some(my_url.clone())
     } else if let Some(external_address) = args.external_address {
-        match format!("http://{}:{}", external_address, site_port).parse() {
+        match worker_url(&external_address, site_port) {
             Ok(url) => Some(url),
             Err(e) => {
                 log::error!(
@@ -184,7 +192,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     } else if let Ok(my_ip) = std::env::var("MY_IP") {
-        match format!("http://{}:{}", my_ip, site_port).parse() {
+        match worker_url(&my_ip, site_port) {
             Ok(url) => Some(url),
             Err(e) => {
                 log::error!("Failed to parse worker URL with MY_IP {}: {}", my_ip, e);
@@ -193,19 +201,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     } else if janitor_worker::is_gce_instance().await {
         match janitor_worker::gce_external_ip().await {
-            Ok(Some(external_ip)) => {
-                match format!("http://{}:{}", external_ip, site_port).parse() {
-                    Ok(url) => Some(url),
-                    Err(e) => {
-                        log::error!(
-                            "Failed to parse worker URL with GCE IP {}: {}",
-                            external_ip,
-                            e
-                        );
-                        return Err(Box::new(e) as Box<dyn std::error::Error>);
-                    }
+            Ok(Some(external_ip)) => match worker_url(&external_ip, site_port) {
+                Ok(url) => Some(url),
+                Err(e) => {
+                    log::error!(
+                        "Failed to parse worker URL with GCE IP {}: {}",
+                        external_ip,
+                        e
+                    );
+                    return Err(Box::new(e) as Box<dyn std::error::Error>);
                 }
-            }
+            },
             Ok(None) => None,
             Err(e) => {
                 log::warn!(
@@ -280,4 +286,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start the server
     axum::serve(listener, app.into_make_service()).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_worker_url() {
+        for (host, url) in [
+            ("192.0.2.1", "http://192.0.2.1:9821/"),
+            ("2001:db8::1", "http://[2001:db8::1]:9821/"),
+            ("[2001:db8::1]", "http://[2001:db8::1]:9821/"),
+            ("worker.example.com", "http://worker.example.com:9821/"),
+        ] {
+            assert_eq!(worker_url(host, 9821).unwrap().as_str(), url);
+        }
+    }
 }
