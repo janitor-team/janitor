@@ -32,7 +32,7 @@ from yarl import URL
 
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
-from janitor.site.simple import create_app, main_async
+from janitor.site.simple import create_app, main_async, zipkin_endpoint
 
 from .conftest import _insert_run
 
@@ -871,3 +871,17 @@ async def test_oauth_callback_goes_back_only_to_a_url_the_site_serves(
         "//evil.example": (302, "/"),
         "https://evil.example/": (302, "/"),
     }
+
+
+@pytest.mark.parametrize(
+    "host,ipv4,ipv6",
+    [
+        ("127.0.0.1", "127.0.0.1", None),
+        ("::1", None, "::1"),
+        ("localhost", None, None),
+        (None, None, None),
+    ],
+)
+def test_zipkin_endpoint(host, ipv4, ipv6):
+    endpoint = zipkin_endpoint("janitor.site", host, 8080)
+    assert (endpoint.ipv4, endpoint.ipv6, endpoint.port) == (ipv4, ipv6, 8080)
