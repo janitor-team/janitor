@@ -5,7 +5,6 @@
 //! `--listen-address`, `--config`, `--vcs-path`, `--client-max-size`,
 //! `--gcp-logging`, `--debug`.
 
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -15,6 +14,7 @@ use janitor_bzr_store::{
     config::{BzrConfig, BzrStoreConfig, Config},
     web::create_applications,
 };
+use janitor_service::listen::bind_all;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
@@ -86,17 +86,17 @@ async fn main() -> Result<()> {
         .await
         .unwrap_or_else(|_| BzrStoreConfig::default());
 
-    let admin_addrs = resolve_bind(&cli.listen_address, cli.port)
+    let admin_listeners = bind_all(format!("{}:{}", cli.listen_address, cli.port))
         .await
         .map_err(|e| anyhow!("invalid admin bind: {}", e))?;
-    let public_addrs = resolve_bind(&cli.listen_address, cli.public_port)
+    let public_listeners = bind_all(format!("{}:{}", cli.listen_address, cli.public_port))
         .await
         .map_err(|e| anyhow!("invalid public bind: {}", e))?;
 
     config.bzr = BzrConfig {
         repository_path: vcs_path,
-        admin_bind: admin_addrs[0],
-        public_bind: public_addrs[0],
+        admin_bind: admin_listeners[0].local_addr()?,
+        public_bind: public_listeners[0].local_addr()?,
         python_path: config.bzr.python_path,
         request_timeout: config.bzr.request_timeout,
     };
@@ -136,15 +136,13 @@ async fn main() -> Result<()> {
 
     let (admin_app, public_app) = create_applications(config.clone(), janitor_config).await?;
 
-    // Bind every address, as aiohttp did, so localhost covers ::1 and 127.0.0.1.
     let mut servers = tokio::task::JoinSet::new();
-    for (name, addrs, app) in [
-        ("Admin", &admin_addrs, admin_app),
-        ("Public", &public_addrs, public_app),
+    for (name, listeners, app) in [
+        ("Admin", admin_listeners, admin_app),
+        ("Public", public_listeners, public_app),
     ] {
-        for addr in addrs {
-            let listener = tokio::net::TcpListener::bind(addr).await?;
-            info!("{} server listening on {}", name, addr);
+        for listener in listeners {
+            info!("{} server listening on {}", name, listener.local_addr()?);
             let app = app.clone();
             servers.spawn(async move { axum::serve(listener, app).await });
         }
@@ -153,15 +151,6 @@ async fn main() -> Result<()> {
         res??;
     }
     Ok(())
-}
-
-/// Resolve a host name or address and a port to all its socket addresses.
-async fn resolve_bind(host: &str, port: u16) -> Result<Vec<SocketAddr>> {
-    let addrs: Vec<_> = tokio::net::lookup_host((host, port)).await?.collect();
-    if addrs.is_empty() {
-        return Err(anyhow!("{} resolves to no address", host));
-    }
-    Ok(addrs)
 }
 
 /// Set up `tracing` with either plain or GCP-structured JSON output.
@@ -177,26 +166,5 @@ fn init_tracing(debug: bool, gcp_logging: bool) {
         builder.json().init();
     } else {
         builder.init();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_resolve_bind_host_name() {
-        let addrs = resolve_bind("localhost", 9929).await.unwrap();
-        let seen: Vec<_> = addrs
-            .iter()
-            .map(|addr| (addr.ip().is_loopback(), addr.port()))
-            .collect();
-        assert_eq!(seen, vec![(true, 9929); addrs.len()]);
-    }
-
-    #[tokio::test]
-    async fn test_resolve_bind_ipv6_address() {
-        let addrs = resolve_bind("::1", 9929).await.unwrap();
-        assert_eq!(addrs, vec!["[::1]:9929".parse::<SocketAddr>().unwrap()]);
     }
 }

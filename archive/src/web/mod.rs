@@ -274,28 +274,38 @@ impl ArchiveWebService {
             )
     }
 
-    /// Serve all routes on `bind_address` and only the public ones on `public_bind_address`.
+    /// Serve all routes on `bind_address` and only the public ones on `public_bind_address`,
+    /// each on every address it resolves to.
     pub async fn serve(&self, bind_address: &str, public_bind_address: &str) -> ArchiveResult<()> {
-        let listener = bind(bind_address).await?;
-        let public_listener = bind(public_bind_address).await?;
+        let listeners = bind(bind_address).await?;
+        let public_listeners = bind(public_bind_address).await?;
 
-        info!("Archive web service listening on {}", bind_address);
-        info!("Public archive listening on {}", public_bind_address);
-
-        tokio::try_join!(
-            axum::serve(listener, self.router()),
-            axum::serve(public_listener, self.public_router()),
-        )
-        .map_err(|e| ArchiveError::InvalidConfiguration(format!("Server error: {}", e)))?;
+        let mut servers = tokio::task::JoinSet::new();
+        for (name, listeners, app) in [
+            ("Archive web service", listeners, self.router()),
+            ("Public archive", public_listeners, self.public_router()),
+        ] {
+            for listener in listeners {
+                info!("{} listening on {}", name, listener.local_addr()?);
+                let app = app.clone();
+                servers.spawn(async move { axum::serve(listener, app).await });
+            }
+        }
+        while let Some(res) = servers.join_next().await {
+            res.map_err(|e| ArchiveError::InvalidConfiguration(format!("Server error: {}", e)))?
+                .map_err(|e| ArchiveError::InvalidConfiguration(format!("Server error: {}", e)))?;
+        }
 
         Ok(())
     }
 }
 
-async fn bind(address: &str) -> ArchiveResult<tokio::net::TcpListener> {
-    tokio::net::TcpListener::bind(address).await.map_err(|e| {
-        ArchiveError::InvalidConfiguration(format!("Failed to bind to {}: {}", address, e))
-    })
+async fn bind(address: &str) -> ArchiveResult<Vec<tokio::net::TcpListener>> {
+    janitor_service::listen::bind_all(address)
+        .await
+        .map_err(|e| {
+            ArchiveError::InvalidConfiguration(format!("Failed to bind to {}: {}", address, e))
+        })
 }
 
 /// Serve a file from the dists tree of a configured suite. Files that

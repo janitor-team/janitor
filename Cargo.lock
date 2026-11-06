@@ -3503,6 +3503,8 @@ dependencies = [
 name = "janitor-service"
 version = "0.1.0"
 dependencies = [
+ "libc",
+ "log",
  "prometheus 0.14.0",
  "reqwest 0.13.5",
  "tokio",

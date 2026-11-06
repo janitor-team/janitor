@@ -14,7 +14,7 @@ use tracing::info;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
-use crate::error::Result;
+use crate::error::{Result, UploadError};
 
 #[derive(utoipa::OpenApi)]
 struct AutoUploadApi;
@@ -69,14 +69,22 @@ async fn metrics_handler() -> Response {
     }
 }
 
-/// Bind and serve `app` on `listen_addr:port` until the connection is
-/// closed. This is a thin wrapper over [`axum::serve`] so callers can
-/// select on it alongside other tasks.
+/// Serve `app` at `port` on every address `listen_addr` resolves to,
+/// until a server stops, so callers can select on it alongside other
+/// tasks.
 pub async fn run_web_server(app: Router, listen_addr: &str, port: u16) -> Result<()> {
-    let addr = format!("{}:{}", listen_addr, port);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    info!("Web server listening on {}", addr);
-    axum::serve(listener, app).await?;
+    let mut servers = tokio::task::JoinSet::new();
+    for listener in janitor_service::listen::bind_all(format!("{}:{}", listen_addr, port)).await? {
+        info!("Web server listening on {}", listener.local_addr()?);
+        let app = app.clone();
+        servers.spawn(async move { axum::serve(listener, app).await });
+    }
+    while let Some(res) = servers.join_next().await {
+        res.map_err(|source| UploadError::TaskPanic {
+            name: "web",
+            source,
+        })??;
+    }
     Ok(())
 }
 

@@ -1535,17 +1535,9 @@ enum StartupError {
         #[source]
         source: std::io::Error,
     },
-    #[error("failed to resolve listen address {address}: {source}")]
-    Resolve {
-        address: String,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("{0} did not resolve to any address")]
-    NoAddress(String),
-    #[error("failed to bind {addr}: {source}")]
+    #[error("failed to bind {address}: {source}")]
     Bind {
-        addr: std::net::SocketAddr,
+        address: String,
         #[source]
         source: std::io::Error,
     },
@@ -1631,33 +1623,19 @@ async fn run() -> std::result::Result<(), StartupError> {
 
     let app = build_router(state);
 
-    let addrs: Vec<_> = tokio::net::lookup_host((args.listen_address.as_str(), args.port))
+    let address = format!("{}:{}", args.listen_address, args.port);
+    let bind_error = |source| StartupError::Bind {
+        address: address.clone(),
+        source,
+    };
+    let listeners = janitor_service::listen::bind_all(&address)
         .await
-        .map_err(|e| StartupError::Resolve {
-            address: args.listen_address.clone(),
-            source: e,
-        })?
-        .collect();
-    if addrs.is_empty() {
-        return Err(StartupError::NoAddress(args.listen_address.clone()));
-    }
-    // Python's aiohttp binds every address returned by getaddrinfo; do the
-    // same so `localhost` covers both ::1 and 127.0.0.1.
-    let mut listeners = Vec::with_capacity(addrs.len());
-    for addr in &addrs {
-        let listener =
-            tokio::net::TcpListener::bind(addr)
-                .await
-                .map_err(|e| StartupError::Bind {
-                    addr: *addr,
-                    source: e,
-                })?;
-        info!("listening on {addr}");
-        listeners.push(listener);
-    }
+        .map_err(bind_error)?;
 
     let mut servers = tokio::task::JoinSet::new();
     for listener in listeners {
+        let addr = listener.local_addr().map_err(bind_error)?;
+        info!("listening on {addr}");
         let app = app.clone();
         let server_shutdown = shutdown.clone();
         servers.spawn(async move {
