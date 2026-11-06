@@ -19,6 +19,7 @@
 
 import asyncio
 import functools
+import ipaddress
 import json
 import logging
 import os
@@ -429,6 +430,20 @@ async def handle_webhook(request):
     return await process_webhook(request, request.app.database)
 
 
+def zipkin_endpoint(service_name: str, host: Optional[str], port: Optional[int]):
+    """Return the Zipkin endpoint, with the listen address only if it is an IP address."""
+    try:
+        address = ipaddress.ip_address(host) if host else None
+    except ValueError:
+        address = None
+    return aiozipkin.create_endpoint(
+        service_name,
+        ipv4=str(address) if address and address.version == 4 else None,
+        ipv6=str(address) if address and address.version == 6 else None,
+        port=port,
+    )
+
+
 async def create_app(
     config: Config,
     *,
@@ -484,7 +499,7 @@ async def create_app(
         name="ws-notifications",
     )
 
-    endpoint = aiozipkin.create_endpoint("janitor.site", ipv4=listen_address, port=port)
+    endpoint = zipkin_endpoint("janitor.site", listen_address, port)
     if config.zipkin_address:
         tracer = await aiozipkin.create(
             config.zipkin_address, endpoint, sample_rate=0.1
