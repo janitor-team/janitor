@@ -274,3 +274,47 @@ fn classify_forge_rate_limit_past_deadline_is_expired() {
         ForgeRateLimitDecision::Expired,
     );
 }
+
+/// A request for `run_worker_process`; the test children ignore it.
+fn worker_request() -> PublishOneRequest {
+    serde_json::from_value(serde_json::json!({
+        "campaign": "lintian-fixes",
+        "command": "true",
+        "role": "main",
+        "log_id": "run-1",
+        "mode": "propose",
+        "revision_id": "rev",
+        "require-binary-diff": false,
+        "derived_branch_name": "b",
+        "allow_create_proposal": false,
+        "codemod_result": {},
+        "target_branch_url": "https://example.com/target",
+        "source_branch_url": "https://example.com/source",
+        "differ_url": "http://localhost:1/",
+    }))
+    .unwrap()
+}
+
+/// Run `script` with `sh -c` as the publish child; panic if it is not done in 5 s.
+async fn run_script(script: &str) -> (i32, serde_json::Value) {
+    let args = vec!["sh".to_string(), "-c".to_string(), script.to_string()];
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        run_worker_process(args, worker_request()),
+    )
+    .await
+    .expect("run_worker_process still waits for the child after 5 s")
+    .unwrap()
+}
+
+#[tokio::test]
+async fn run_worker_process_reads_a_large_stderr() {
+    let result = run_script("head -c 1048576 /dev/zero >&2; echo '{\"ok\": true}'").await;
+    assert_eq!(result, (0, serde_json::json!({"ok": true})));
+}
+
+#[tokio::test]
+async fn run_worker_process_reads_a_large_stdout() {
+    let result = run_script("printf '\"'; head -c 1048576 /dev/zero | tr '\\0' b; echo '\"'").await;
+    assert_eq!(result, (0, serde_json::json!("b".repeat(1024 * 1024))));
+}
