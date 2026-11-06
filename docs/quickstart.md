@@ -87,14 +87,16 @@ of the queue entry the upload added:
     }
   ],
   "unknown_campaigns": [],
+  "unknown_change_sets": [],
   "unknown_codebases": [],
   "unknown_publish_policies": []
 }
 ```
 
-A codebase, campaign or publish policy the runner does not know comes back
-in `unknown_codebases`, `unknown_campaigns` or `unknown_publish_policies`,
-and nothing is stored for that entry.
+A codebase, campaign, publish policy or change set the runner does not know
+comes back in `unknown_codebases`, `unknown_campaigns`,
+`unknown_publish_policies` or `unknown_change_sets`, and nothing is stored
+for that entry.
 
 ## Follow the queue
 

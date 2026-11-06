@@ -1008,6 +1008,8 @@ pub(crate) fn candidate_preflight(
 /// - FK violation on `candidate_codebase_fkey` ->
 ///   `unknown_codebases`. FK violation on
 ///   `candidate_publish_policy_fkey` -> `unknown_publish_policies`.
+///   FK violation on `candidate_change_set_fkey` ->
+///   `unknown_change_sets`.
 ///
 /// After a successful candidate INSERT we look for an open merge
 /// proposal on the same codebase+campaign with a *different*
@@ -1027,7 +1029,8 @@ pub(crate) fn candidate_preflight(
 ///   "invalid_value": [...],
 ///   "unknown_campaigns": [...],
 ///   "unknown_codebases": [...],
-///   "unknown_publish_policies": [...]
+///   "unknown_publish_policies": [...],
+///   "unknown_change_sets": [...]
 /// }
 /// ```
 async fn upload_candidates(
@@ -1042,6 +1045,7 @@ async fn upload_candidates(
     let mut invalid_command = std::collections::BTreeSet::<String>::new();
     let mut invalid_value = std::collections::BTreeSet::<i64>::new();
     let mut unknown_publish_policies = std::collections::BTreeSet::<String>::new();
+    let mut unknown_change_sets = std::collections::BTreeSet::<ChangeSetId>::new();
 
     let known_campaign_names: std::collections::HashSet<String> = state
         .config
@@ -1157,6 +1161,19 @@ async fn upload_candidates(
                 log::warn!("unknown publish policy {:?}", publish_policy);
                 if let Some(pp) = publish_policy {
                     unknown_publish_policies.insert(pp);
+                }
+                let _ = tx.rollback().await;
+                continue;
+            }
+            Err(sqlx::Error::Database(db_err))
+                if db_err
+                    .constraint()
+                    .map(|c| c == "candidate_change_set_fkey")
+                    .unwrap_or(false) =>
+            {
+                log::warn!("unknown change set {:?}", change_set);
+                if let Some(cs) = change_set {
+                    unknown_change_sets.insert(cs);
                 }
                 let _ = tx.rollback().await;
                 continue;
@@ -1320,6 +1337,7 @@ async fn upload_candidates(
             "unknown_campaigns": unknown_campaigns.into_iter().collect::<Vec<_>>(),
             "unknown_codebases": unknown_codebases.into_iter().collect::<Vec<_>>(),
             "unknown_publish_policies": unknown_publish_policies.into_iter().collect::<Vec<_>>(),
+            "unknown_change_sets": unknown_change_sets.into_iter().collect::<Vec<_>>(),
         })),
     )
         .into_response()
