@@ -27,7 +27,9 @@ RUN apt-get update --yes \
 
 COPY . /code
 
-RUN cargo build --release --manifest-path /code/differ/Cargo.toml --bin janitor-differ
+RUN --mount=type=cache,target=/root/.cargo --mount=type=cache,id=janitor-differ-target,target=/code/target \
+    cargo build --release --manifest-path /code/differ/Cargo.toml --bin janitor-differ \
+ && cp /code/target/release/janitor-differ /usr/local/bin/
 
 FROM docker.io/debian:testing-slim
 MAINTAINER Jelmer Vernooij <jelmer@jelmer.uk>
@@ -49,7 +51,7 @@ RUN apt-get update --yes \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /code/target/release/janitor-differ /usr/local/bin/janitor-differ
+COPY --from=build /usr/local/bin/janitor-differ /usr/local/bin/janitor-differ
 
 EXPOSE 9920
 
