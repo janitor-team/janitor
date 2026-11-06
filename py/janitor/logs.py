@@ -22,3 +22,4 @@ from ._common import logs  # type: ignore
 ServiceUnavailable = logs.ServiceUnavailable
 LogRetrievalError = logs.LogRetrievalError
 get_log_manager = logs.get_log_manager
+temp_log_manager = logs.temp_log_manager

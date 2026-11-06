@@ -37,8 +37,8 @@ async fn main() -> ExitCode {
     };
 
     let (from, to) = match (
-        janitor::logs::create_log_manager(Some(&args.from_location)),
-        janitor::logs::create_log_manager(Some(&args.to_location)),
+        janitor::logs::create_log_manager(&args.from_location),
+        janitor::logs::create_log_manager(&args.to_location),
     ) {
         (Ok(from), Ok(to)) => (from, to),
         (Err(e), _) | (_, Err(e)) => {
