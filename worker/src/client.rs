@@ -412,6 +412,16 @@ impl std::fmt::Display for UploadFailure {
 
 impl std::error::Error for UploadFailure {}
 
+fn send_error_to_backoff(e: reqwest::Error) -> backoff::Error<UploadFailure> {
+    let failure = UploadFailure(format!("Error creating multipart: {}", e));
+    // Request errors (connect, timeout, dropped connection) can pass on a retry; others would not.
+    if e.is_request() {
+        backoff::Error::transient(failure)
+    } else {
+        backoff::Error::permanent(failure)
+    }
+}
+
 pub async fn upload_results(
     client: &reqwest::Client,
     credentials: &Credentials,
@@ -433,9 +443,11 @@ pub async fn upload_results(
             .map_err(|e| {
                 backoff::Error::permanent(UploadFailure(format!("Error creating multipart: {}", e)))
             })?;
-        let response = builder.multipart(bundle_info.form).send().await.map_err(|e| {
-            backoff::Error::permanent(UploadFailure(format!("Error creating multipart: {}", e)))
-        })?;
+        let response = builder
+            .multipart(bundle_info.form)
+            .send()
+            .await
+            .map_err(send_error_to_backoff)?;
 
         match response.status() {
             StatusCode::NOT_FOUND => {
@@ -728,5 +740,39 @@ mod tests {
 
         assert_eq!(err.to_string(), "unknown-run");
         assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn send_error_to_backoff_retries_request_errors_only() {
+        let client = reqwest::Client::builder()
+            .connector_layer(tower::layer::layer_fn(|_inner| {
+                tower::service_fn(|_dst| async { Err("refused".into()) })
+            }))
+            .build()
+            .unwrap();
+
+        let refused = client
+            .post("http://runner.invalid/")
+            .send()
+            .await
+            .unwrap_err();
+        match send_error_to_backoff(refused) {
+            backoff::Error::Transient { err, retry_after } => {
+                assert_eq!(
+                    err.to_string(),
+                    "Error creating multipart: error sending request for url (http://runner.invalid/)"
+                );
+                assert_eq!(retry_after, None);
+            }
+            other => panic!("expected a transient error, got {:?}", other),
+        }
+
+        let bad_url = client.post("not a url").build().unwrap_err();
+        match send_error_to_backoff(bad_url) {
+            backoff::Error::Permanent(err) => {
+                assert_eq!(err.to_string(), "Error creating multipart: builder error")
+            }
+            other => panic!("expected a permanent error, got {:?}", other),
+        }
     }
 }
