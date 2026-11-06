@@ -45,6 +45,7 @@ pub struct TestConfigBuilder {
     campaigns: Vec<janitor::config::Campaign>,
     artifact_manager: Option<Arc<janitor::artifacts::ArtifactManager>>,
     backup_artifact_manager: Option<Arc<janitor::artifacts::ArtifactManager>>,
+    vcs_manager: Option<Arc<RunnerVcsManager>>,
 }
 
 impl TestConfigBuilder {
@@ -85,6 +86,12 @@ impl TestConfigBuilder {
         manager: Arc<janitor::artifacts::ArtifactManager>,
     ) -> Self {
         self.backup_artifact_manager = Some(manager);
+        self
+    }
+
+    /// Use `manager` instead of the default empty VCS manager.
+    pub fn with_vcs_manager(mut self, manager: Arc<RunnerVcsManager>) -> Self {
+        self.vcs_manager = Some(manager);
         self
     }
 
@@ -187,9 +194,11 @@ fn assemble_app_state(
         .take()
         .unwrap_or_else(|| Arc::new(janitor::artifacts::ArtifactManager::in_memory()));
     let backup_artifact_manager = config_builder.backup_artifact_manager.take();
+    let vcs_manager = config_builder
+        .vcs_manager
+        .take()
+        .unwrap_or_else(|| Arc::new(RunnerVcsManager::new(std::collections::HashMap::new())));
     let config = Arc::new(config_builder.build_janitor_config());
-
-    let vcs_manager = Arc::new(RunnerVcsManager::new(std::collections::HashMap::new()));
     let error_tracker = Arc::new(ErrorTracker::new(
         crate::error_tracking::ErrorTrackingConfig::default(),
     ));

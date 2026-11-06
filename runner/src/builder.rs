@@ -4,6 +4,8 @@
 
 use crate::{BuilderResult, QueueItem};
 use async_trait::async_trait;
+use breezyshim::branch::GenericBranch;
+use janitor_types::Role;
 use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
 use std::collections::HashMap;
@@ -118,8 +120,9 @@ pub trait Builder: Send + Sync {
         queue_item: &QueueItem,
     ) -> Result<HashMap<String, String>, BuilderError>;
 
-    /// Get additional colocated branches for this build type.
-    fn additional_colocated_branches(&self, main_branch: &str) -> HashMap<String, String>;
+    /// Get additional colocated branches for this build type, as a map
+    /// from branch name to role.
+    fn additional_colocated_branches(&self, main_branch: &GenericBranch) -> HashMap<String, Role>;
 
     /// Process build results from a directory.
     fn process_result(&self, output_dir: &Path) -> Result<BuilderResult, BuilderError>;
@@ -269,8 +272,7 @@ impl Builder for GenericBuilder {
         Ok(HashMap::new())
     }
 
-    fn additional_colocated_branches(&self, _main_branch: &str) -> HashMap<String, String> {
-        // Generic builds don't have additional branches
+    fn additional_colocated_branches(&self, _main_branch: &GenericBranch) -> HashMap<String, Role> {
         HashMap::new()
     }
 
@@ -392,25 +394,16 @@ impl Builder for DebianBuilder {
         Ok(env)
     }
 
-    fn additional_colocated_branches(&self, main_branch: &str) -> HashMap<String, String> {
-        // Implement common Debian branch patterns
-        let mut branches = HashMap::new();
-
-        // Add upstream branch if this is a packaging branch
-        if main_branch.contains("debian") || main_branch == "master" || main_branch == "main" {
-            branches.insert("upstream".to_string(), "upstream".to_string());
-        }
-
-        // Add pristine-tar branch for Debian packaging
-        branches.insert("pristine-tar".to_string(), "pristine-tar".to_string());
-
-        // Add vendor branches if they exist
-        branches.insert("vendor".to_string(), "vendor".to_string());
-
-        // Add experimental branches
-        branches.insert("experimental".to_string(), "experimental".to_string());
-
-        branches
+    fn additional_colocated_branches(&self, main_branch: &GenericBranch) -> HashMap<String, Role> {
+        silver_platter::debian::pick_additional_colocated_branches(main_branch)
+            .into_iter()
+            .map(|(name, role)| {
+                let role = Role::new(&role).unwrap_or_else(|e| {
+                    panic!("silver-platter returned invalid role {role:?}: {e}")
+                });
+                (name, role)
+            })
+            .collect()
     }
 
     fn process_result(&self, output_dir: &Path) -> Result<BuilderResult, BuilderError> {
@@ -559,29 +552,51 @@ mod tests {
 
     #[test]
     fn test_debian_builder_additional_branches() {
-        let distro_config = DistroConfig {
-            lintian_profile: "debian".to_string(),
-            lintian_suppress_tag: vec![],
-        };
+        use breezyshim::branch::Branch;
+        use breezyshim::workingtree::WorkingTree;
 
-        let builder = DebianBuilder::new(distro_config, None, None);
+        let td = tempfile::tempdir().unwrap();
+        let wt = breezyshim::controldir::create_standalone_workingtree(td.path(), "git").unwrap();
+        let revid = wt
+            .build_commit()
+            .message("initial")
+            .allow_pointless(true)
+            .commit()
+            .unwrap();
+        let controldir = wt.branch().controldir();
+        for name in ["upstream", "pristine-tar", "unrelated"] {
+            controldir
+                .create_branch(Some(name))
+                .unwrap()
+                .generate_revision_history(&revid)
+                .unwrap();
+        }
+        let main_branch =
+            silver_platter::vcs::open_branch(&wt.branch().get_user_url(), None, None, None)
+                .unwrap();
 
-        // Test with debian branch
-        let branches = builder.additional_colocated_branches("debian/master");
-        assert!(branches.contains_key("upstream"));
-        assert!(branches.contains_key("pristine-tar"));
-        assert!(branches.contains_key("vendor"));
-        assert!(branches.contains_key("experimental"));
-
-        // Test with main branch
-        let branches = builder.additional_colocated_branches("main");
-        assert!(branches.contains_key("upstream"));
-        assert!(branches.contains_key("pristine-tar"));
-
-        // Test with feature branch
-        let branches = builder.additional_colocated_branches("feature/some-feature");
-        assert!(!branches.contains_key("upstream"));
-        assert!(branches.contains_key("pristine-tar"));
+        let builder = DebianBuilder::new(
+            DistroConfig {
+                lintian_profile: "debian".to_string(),
+                lintian_suppress_tag: vec![],
+            },
+            None,
+            None,
+        );
+        assert_eq!(
+            builder.additional_colocated_branches(&main_branch),
+            HashMap::from([
+                ("upstream".to_string(), Role::new("upstream").unwrap()),
+                (
+                    "pristine-tar".to_string(),
+                    Role::new("pristine-tar").unwrap()
+                ),
+            ])
+        );
+        assert_eq!(
+            GenericBuilder::new(None).additional_colocated_branches(&main_branch),
+            HashMap::new()
+        );
     }
 
     #[test]
