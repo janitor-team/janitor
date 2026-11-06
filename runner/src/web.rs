@@ -8,7 +8,7 @@ use axum::{
     http::StatusCode,
     middleware,
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, MethodRouter},
     Extension, Json, Router,
 };
 use chrono::Utc;
@@ -3689,8 +3689,23 @@ async fn readiness(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }
 }
 
+/// The name of a route in the request metrics.
+#[derive(Clone, Copy)]
+struct RouteName(&'static str);
+
+/// Give `route` a name for the request metrics.
+fn named(name: &'static str, route: MethodRouter<Arc<AppState>>) -> MethodRouter<Arc<AppState>> {
+    route.layer(axum::middleware::map_response(
+        move |mut response: Response| async move {
+            response.extensions_mut().insert(RouteName(name));
+            response
+        },
+    ))
+}
+
 /// Axum middleware: record request count and duration by
-/// method/path/status.
+/// method/route name/status. A request without a named route, such as
+/// one for an unknown path, is counted as `unnamed`.
 async fn record_http_metrics(
     req: axum::extract::Request,
     next: axum::middleware::Next,
@@ -3698,16 +3713,19 @@ async fn record_http_metrics(
     use std::time::Instant;
     let start = Instant::now();
     let method = req.method().to_string();
-    let path = req.uri().path().to_string();
 
     let response = next.run(req).await;
     let status = response.status().as_u16().to_string();
+    let endpoint = response
+        .extensions()
+        .get::<RouteName>()
+        .map_or("unnamed", |n| n.0);
 
     crate::metrics::HTTP_REQUEST_DURATION
-        .with_label_values(&[&method, &path])
+        .with_label_values(&[&method, endpoint])
         .observe(start.elapsed().as_secs_f64());
     crate::metrics::HTTP_REQUESTS_TOTAL
-        .with_label_values(&[&method, &path, &status])
+        .with_label_values(&[&method, endpoint, &status])
         .inc();
 
     response
@@ -3716,12 +3734,18 @@ async fn record_http_metrics(
 /// Create a router for the public API endpoints.
 pub fn public_app(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let public_routes = Router::new()
-        .route("/", get(public_root))
-        .route("/health", get(health))
-        .route("/health/live", get(liveness))
-        .route("/health/ready", get(readiness))
-        .route("/queue/stats", get(public_queue_stats))
-        .route("/watchdog/health", get(public_watchdog_health));
+        .route("/", named("root", get(public_root)))
+        .route("/health", named("health", get(health)))
+        .route("/health/live", named("health-live", get(liveness)))
+        .route("/health/ready", named("health-ready", get(readiness)))
+        .route(
+            "/queue/stats",
+            named("queue-stats", get(public_queue_stats)),
+        )
+        .route(
+            "/watchdog/health",
+            named("watchdog-health", get(public_watchdog_health)),
+        );
 
     // axum's default request body limit is 2 MiB. Worker /finish
     // uploads bundle the metadata JSON, all logs, and every artifact
@@ -3739,80 +3763,155 @@ pub fn public_app(state: Arc<AppState>) -> Router<Arc<AppState>> {
     // before forwarding to this port, so handlers see the same
     // shapes as the private app -- just gated by authenticate_worker.
     let worker_routes = Router::new()
-        .route("/active-runs", post(public_assign))
+        .route("/active-runs", named("assign", post(public_assign)))
         .route(
             "/active-runs/{id}/finish",
-            post(public_finish).layer(DefaultBodyLimit::disable()),
+            named(
+                "finish",
+                post(public_finish).layer(DefaultBodyLimit::disable()),
+            ),
         )
         .route(
             "/active-runs/{id}/finish-multipart",
-            post(public_finish).layer(DefaultBodyLimit::disable()),
+            named(
+                "finish",
+                post(public_finish).layer(DefaultBodyLimit::disable()),
+            ),
         )
-        .route("/active-runs/{id}", get(get_active_run))
+        .route(
+            "/active-runs/{id}",
+            named("get-active-run", get(get_active_run)),
+        )
         .layer(middleware::from_fn_with_state(
             Arc::clone(&state),
             authenticate_worker,
         ));
 
     // Combine both routers
-    public_routes.merge(worker_routes).with_state(state)
+    public_routes
+        .merge(worker_routes)
+        .layer(axum::middleware::from_fn(record_http_metrics))
+        .with_state(state)
 }
 
 /// Create a router for the private API endpoints.
 pub fn app(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/queue/position", get(queue_position))
-        .route("/schedule-control", post(schedule_control))
-        .route("/schedule", post(schedule))
-        .route("/status", get(status))
-        .route("/log/{id}", get(log_index))
-        .route("/kill/{id}", post(kill))
-        .route("/log/{id}/{filename}", get(log))
-        .route("/codebases", get(get_codebases))
-        .route("/codebases", post(update_codebases))
-        .route("/candidates", get(get_candidates))
-        .route("/candidates", post(upload_candidates))
-        .route("/candidates/{id}", delete(delete_candidate))
-        .route("/runs/{id}", get(get_run))
-        .route("/runs/{id}", post(update_run))
-        .route("/active-runs", get(get_active_runs))
+        .route(
+            "/queue/position",
+            named("queue-position", get(queue_position)),
+        )
+        .route(
+            "/schedule-control",
+            named("schedule-control", post(schedule_control)),
+        )
+        .route("/schedule", named("schedule", post(schedule)))
+        .route("/status", named("status", get(status)))
+        .route("/log/{id}", named("log-index", get(log_index)))
+        .route("/kill/{id}", named("kill", post(kill)))
+        .route("/log/{id}/{filename}", named("log", get(log)))
+        .route(
+            "/codebases",
+            named("download-codebases", get(get_codebases)),
+        )
+        .route(
+            "/codebases",
+            named("upload-codebases", post(update_codebases)),
+        )
+        .route(
+            "/candidates",
+            named("download-candidates", get(get_candidates)),
+        )
+        .route(
+            "/candidates",
+            named("upload-candidates", post(upload_candidates)),
+        )
+        .route(
+            "/candidates/{id}",
+            named("delete-candidate", delete(delete_candidate)),
+        )
+        .route("/runs/{id}", named("get-run", get(get_run)))
+        .route("/runs/{id}", named("update-run", post(update_run)))
+        .route(
+            "/active-runs",
+            named("get-active-runs", get(get_active_runs)),
+        )
         // Unauthenticated assign for intra-cluster admin tools (e.g.
         // schedule-codebases CronJob). Body must include `worker`/
         // `node`. Workers themselves should hit /runner/active-runs
         // on the public app, which uses authenticated identity.
-        .route("/active-runs", post(private_assign))
-        .route("/active-runs/{id}", get(get_active_run))
-        .route("/active-runs/{id}/current-stage", get(current_stage))
+        .route("/active-runs", named("assign", post(private_assign)))
+        .route(
+            "/active-runs/{id}",
+            named("get-active-run", get(get_active_run)),
+        )
+        .route(
+            "/active-runs/{id}/current-stage",
+            named("current-stage", get(current_stage)),
+        )
         // Workers POST `/active-runs/{id}/finish` with a multipart
         // body (metadata field + one `file` part per result file).
         // The `-multipart` alias exists for callers that use the
         // explicit path.
         .route(
             "/active-runs/{id}/finish",
-            post(finish_active_run_multipart).layer(DefaultBodyLimit::disable()),
+            named(
+                "finish",
+                post(finish_active_run_multipart).layer(DefaultBodyLimit::disable()),
+            ),
         )
         .route(
             "/active-runs/{id}/finish-multipart",
-            post(finish_active_run_multipart).layer(DefaultBodyLimit::disable()),
+            named(
+                "finish",
+                post(finish_active_run_multipart).layer(DefaultBodyLimit::disable()),
+            ),
         )
-        .route("/active-runs/+peek", get(peek_active_run))
-        .route("/queue", get(get_queue))
-        .route("/health", get(health))
-        .route("/health/live", get(liveness))
-        .route("/health/ready", get(readiness))
-        .route("/ready", get(readiness))
-        .route("/metrics", get(metrics))
-        .route("/workers", get(list_workers))
-        .route("/admin/workers", get(admin_list_workers))
-        .route("/admin/workers", post(admin_create_worker))
-        .route("/admin/workers/{name}", delete(admin_delete_worker))
-        .route("/admin/security/stats", get(admin_security_stats))
-        .route("/admin/runs/cleanup", post(admin_cleanup_runs))
+        .route("/active-runs/+peek", named("peek", get(peek_active_run)))
+        .route("/queue", named("queue", get(get_queue)))
+        .route("/health", named("health", get(health)))
+        .route("/health/live", named("health-live", get(liveness)))
+        .route("/health/ready", named("health-ready", get(readiness)))
+        .route("/ready", named("ready", get(readiness)))
+        .route("/metrics", named("metrics", get(metrics)))
+        .route("/workers", named("workers", get(list_workers)))
+        .route(
+            "/admin/workers",
+            named("admin-list-workers", get(admin_list_workers)),
+        )
+        .route(
+            "/admin/workers",
+            named("admin-create-worker", post(admin_create_worker)),
+        )
+        .route(
+            "/admin/workers/{name}",
+            named("admin-delete-worker", delete(admin_delete_worker)),
+        )
+        .route(
+            "/admin/security/stats",
+            named("admin-security-stats", get(admin_security_stats)),
+        )
+        .route(
+            "/admin/runs/cleanup",
+            named("admin-cleanup-runs", post(admin_cleanup_runs)),
+        )
         // Resume-related endpoints
-        .route("/resume/check", post(check_resume_info))
-        .route("/resume/chain/{run_id}", get(get_resume_chain))
-        .route("/resume/descendants/{run_id}", get(get_resume_descendants))
-        .route("/resume/validate", get(validate_resume_consistency))
+        .route(
+            "/resume/check",
+            named("resume-check", post(check_resume_info)),
+        )
+        .route(
+            "/resume/chain/{run_id}",
+            named("resume-chain", get(get_resume_chain)),
+        )
+        .route(
+            "/resume/descendants/{run_id}",
+            named("resume-descendants", get(get_resume_descendants)),
+        )
+        .route(
+            "/resume/validate",
+            named("resume-validate", get(validate_resume_consistency)),
+        )
         .layer(axum::middleware::from_fn(record_http_metrics))
         .with_state(state)
 }
