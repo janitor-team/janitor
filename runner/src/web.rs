@@ -2447,9 +2447,7 @@ async fn finish_run_multipart_internal(
     janitor_result.builder_result = builder_result;
     janitor_result.transient = worker_result.transient;
     janitor_result.target_branch_url = worker_result.target_branch_url;
-    janitor_result.branch_url = worker_result
-        .branch_url
-        .unwrap_or(janitor_result.branch_url);
+    janitor_result.branch_url = worker_result.branch_url.or(janitor_result.branch_url);
     janitor_result.vcs_type = worker_result.vcs_type;
     janitor_result.subpath = worker_result.subpath;
 
@@ -2756,7 +2754,7 @@ async fn abort_assignment(
     let log_id = new_run_id();
     let mut result = crate::JanitorResult {
         log_id,
-        branch_url: assignment.vcs_info.branch_url.clone().unwrap_or_default(),
+        branch_url: assignment.vcs_info.branch_url.clone(),
         subpath: assignment.vcs_info.subpath.clone(),
         code: code.to_string(),
         transient: Some(false),

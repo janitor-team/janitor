@@ -232,7 +232,7 @@ mod tests {
 
             let mut result = JanitorResult {
                 log_id: janitor_types::RunId::new(log_id).unwrap(),
-                branch_url: "https://example.invalid/finish-run-codebase".to_string(),
+                branch_url: Some("https://example.invalid/finish-run-codebase".to_string()),
                 subpath: Some("".to_string()),
                 code: "success".to_string(),
                 transient: None,
@@ -249,6 +249,7 @@ mod tests {
                 change_set: None,
                 tags: Some(vec![
                     ("v1.0".to_string(), Some(RevisionId::from(b"tag-rev".to_vec()))),
+                    ("removed".to_string(), None),
                 ]),
                 remotes: None,
                 branches: Some(vec![(
