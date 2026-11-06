@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 struct Args {
-    #[clap(long, default_value = "localhost")]
-    listen_address: String,
+    #[clap(long, default_value = "127.0.0.1")]
+    listen_address: std::net::IpAddr,
 
     #[clap(long, default_value = "9911")]
     port: u16,
@@ -139,8 +139,8 @@ async fn main() -> Result<(), i32> {
             .with_state(state.clone())
             .layer(trace());
 
-        let private_addr = format!("{}:{}", listen_address, port);
-        let public_addr = format!("{}:{}", listen_address, public_port);
+        let private_addr = std::net::SocketAddr::new(listen_address, port);
+        let public_addr = std::net::SocketAddr::new(listen_address, public_port);
         log::info!("Private (admin) listener on {}", private_addr);
         log::info!("Public (worker) listener on {}", public_addr);
 

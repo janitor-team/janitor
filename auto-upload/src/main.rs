@@ -13,8 +13,8 @@ struct Args {
     port: u16,
 
     /// Address to listen on for HTTP server.
-    #[arg(long, default_value = "localhost", env = "AUTO_UPLOAD_LISTEN_ADDRESS")]
-    listen_address: String,
+    #[arg(long, default_value = "127.0.0.1", env = "AUTO_UPLOAD_LISTEN_ADDRESS")]
+    listen_address: std::net::IpAddr,
 
     /// Path to configuration file.
     #[arg(long, default_value = "janitor.conf", env = "JANITOR_CONFIG")]
@@ -78,7 +78,7 @@ async fn main() -> Result<(), UploadError> {
 
     run_service(
         config,
-        &args.listen_address,
+        args.listen_address,
         args.port,
         args.dput_host.as_deref(),
         args.debsign_keyid.as_deref(),

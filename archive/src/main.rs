@@ -32,8 +32,8 @@ struct Cli {
     public_port: u16,
 
     /// Listen address.
-    #[arg(long, default_value = "localhost")]
-    listen_address: String,
+    #[arg(long, default_value = "127.0.0.1")]
+    listen_address: std::net::IpAddr,
 
     /// Path to configuration file.
     #[arg(short, long, default_value = "janitor.conf")]
@@ -247,8 +247,9 @@ async fn start_web_server(
     let bind_address = cli
         .bind
         .clone()
-        .unwrap_or_else(|| format!("{}:{}", cli.listen_address, cli.port));
-    let public_bind_address = format!("{}:{}", cli.listen_address, cli.public_port);
+        .unwrap_or_else(|| std::net::SocketAddr::new(cli.listen_address, cli.port).to_string());
+    let public_bind_address =
+        std::net::SocketAddr::new(cli.listen_address, cli.public_port).to_string();
     info!("Starting web server on: {}", bind_address);
 
     let db_pool = locations.connect_database().await?;

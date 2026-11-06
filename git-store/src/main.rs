@@ -25,8 +25,8 @@ struct Cli {
     #[arg(long, default_value_t = 9924)]
     public_port: u16,
 
-    #[arg(long, default_value = "localhost")]
-    listen_address: String,
+    #[arg(long, default_value = "127.0.0.1")]
+    listen_address: std::net::IpAddr,
 
     #[arg(long, default_value = "janitor.conf")]
     config: PathBuf,
@@ -79,7 +79,7 @@ async fn main() -> Result<()> {
     // is the last-resort fallback.
     let mut config = Config::from_env().unwrap_or_else(|_| Config::default());
     config.git.local_path = vcs_path;
-    config.git.host = cli.listen_address.clone();
+    config.git.host = cli.listen_address.to_string();
     config.git.admin_port = cli.port;
     config.git.public_port = cli.public_port;
 
@@ -155,8 +155,8 @@ async fn main() -> Result<()> {
     let admin_app = web::create_admin_app(admin_state, client_max_size);
     let public_app = web::create_public_app(public_state, client_max_size);
 
-    let admin_addr = format!("{}:{}", config.git.host, config.git.admin_port);
-    let public_addr = format!("{}:{}", config.git.host, config.git.public_port);
+    let admin_addr = std::net::SocketAddr::new(cli.listen_address, config.git.admin_port);
+    let public_addr = std::net::SocketAddr::new(cli.listen_address, config.git.public_port);
 
     let admin_listener = TcpListener::bind(&admin_addr).await?;
     info!("Admin server listening on {}", admin_addr);
