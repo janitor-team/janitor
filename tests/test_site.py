@@ -18,6 +18,7 @@
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock
 
+from bs4 import BeautifulSoup
 from yarl import URL
 
 from janitor.site import (
@@ -25,6 +26,7 @@ from janitor.site import (
     format_debdiff_error,
     format_duration,
     format_timestamp,
+    highlight_diff,
     update_vars_from_request,
 )
 
@@ -94,3 +96,20 @@ def test_update_vars_from_request_uses_external_url():
         vs["bzr_vcs_manager"].get_repository_url("mycb")
         == "https://public.example.org/bzr/mycb"
     )
+
+
+def test_highlight_diff_marks_trailing_whitespace_on_added_lines():
+    diff = (
+        "--- a/debian/control\n"
+        "+++ b/debian/control\n"
+        "@@ -1,2 +1,3 @@\n"
+        " Section: misc \n"
+        "-Priority: extra \n"
+        "+Priority: optional  \n"
+        "+Depends: a,\t\n"
+        "+Suggests: b\n"
+    )
+    soup = BeautifulSoup(highlight_diff(diff), "html.parser")
+    (pre,) = soup.find_all("pre")
+    marks = [span.get_text() for span in soup.select("span.gi-TrailingWhitespace")]
+    assert (pre.get_text(), marks) == (diff, ["  ", "\t"])

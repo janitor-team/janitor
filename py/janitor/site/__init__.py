@@ -141,7 +141,8 @@ template_loader = PackageLoader("janitor.site")
 def highlight_diff(diff):
     from pygments import highlight
     from pygments.formatters import HtmlFormatter
-    from pygments.lexers.diff import DiffLexer
+
+    from .difflexer import DiffLexer
 
     return highlight(diff, DiffLexer(stripnl=False), HtmlFormatter())
 
