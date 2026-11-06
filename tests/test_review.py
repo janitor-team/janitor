@@ -2,6 +2,8 @@ from datetime import timedelta
 
 import aiohttp_jinja2
 import aiozipkin
+from aiohttp import web
+from aiohttp.test_utils import unused_port
 from bs4 import BeautifulSoup
 from yarl import URL
 
@@ -23,12 +25,13 @@ async def create_publishable_client(aiohttp_client, db):
         differ_url=None,
         db=db,
     )
-    app["external_url"] = URL("http://example.com/")
+    port = unused_port()
+    app["external_url"] = URL(f"http://127.0.0.1:{port}/")
     aiohttp_jinja2.get_env(app).globals.update(TEMPLATE_ENV)
     app.middlewares.insert(0, _user_middleware(REVIEWER))
     endpoint = aiozipkin.create_endpoint("janitor.site", ipv4="127.0.0.1", port=80)
     aiozipkin.setup(app, await aiozipkin.create_custom(endpoint))
-    return await aiohttp_client(app)
+    return await aiohttp_client(app, server_kwargs={"port": port})
 
 
 async def insert_build_only_run(conn, run_id):
@@ -77,3 +80,27 @@ async def test_review_post_publishable_only_unchecked(aiohttp_client, db):
     resp = await client.post("/cupboard/review", data={"run_id": "somerun"})
     assert resp.status == 200
     assert shown_run(await resp.text()) == ["somerun"]
+
+
+async def test_review_ignores_host_header(aiohttp_client, aiohttp_server, db):
+    contacted = []
+
+    async def attacker(request):
+        contacted.append(request.path)
+        return web.Response(text="<script>evil</script>")
+
+    attacker_app = web.Application()
+    attacker_app.router.add_get("/{tail:.*}", attacker)
+    server = await aiohttp_server(attacker_app)
+    client = await create_publishable_client(aiohttp_client, db)
+    async with db.acquire() as conn:
+        await insert_build_only_run(conn, "somerun")
+
+    resp = await client.get(
+        "/cupboard/review?publishable_only=false&required_only=false",
+        headers={"Host": f"{server.host}:{server.port}"},
+    )
+    assert resp.status == 200
+    assert contacted == []
+    evaluate = BeautifulSoup(await resp.text(), "html.parser").find(id="evaluate")
+    assert evaluate.find(id="command").get_text() == "true"
