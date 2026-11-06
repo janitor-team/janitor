@@ -154,6 +154,7 @@ def test_display_publish_blockers():
     <ul>
         
     </ul>
+        <p>No publish blockers known.</p>
 """
     )
     assert (

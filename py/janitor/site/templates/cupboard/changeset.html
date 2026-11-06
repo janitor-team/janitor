@@ -20,6 +20,9 @@
                 </li>
             {% endfor %}
         </ul>
+        {% if not runs %}
+            <p>No runs yet.</p>
+        {% endif %}
         <h2>Left to process</h2>
         <ul>
             {% for candidate in todo %}
@@ -28,6 +31,9 @@
                 </li>
             {% endfor %}
         </ul>
+        {% if not todo %}
+            <p>Nothing left to process.</p>
+        {% endif %}
         <h2>APT repository</h2>
         <p>
             To install the packages from this changeset, use the following

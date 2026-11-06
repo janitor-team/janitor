@@ -124,7 +124,7 @@
             {% if dist_log_name %}<li>{{ display_log_link(dist_log_name , "Full dist log") }}</li>{% endif %}
         </ul>
         {% if result %}
-            <h3>Summary</h3>
+            <h2>Summary</h2>
             <!-- {{ result|tojson(indent=4) }} -->
             {% include [suite + "/summary.html", "generic/summary.html"] %}
         {% endif %}
@@ -132,7 +132,7 @@
             {{ display_vcs_diffs(show_diff, run.result_branches, run.result_tags) }}
         {% endif %}
         {% if debdiff %}
-            <h3>Debdiff</h3>
+            <h2>Debdiff</h2>
             {% if debdiff.split('\n')|length < 200 %}
                 {{ debdiff|safe }}
             {% else %}
