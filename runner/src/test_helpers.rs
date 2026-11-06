@@ -315,6 +315,14 @@ mod tests {
             assert_eq!(run_worker.as_deref(), Some("worker-42"));
             assert_eq!(run_codebase, "finish-run-codebase");
 
+            let vcs_last_revision: Option<String> =
+                sqlx::query_scalar("SELECT vcs_last_revision FROM codebase WHERE name = $1")
+                    .bind("finish-run-codebase")
+                    .fetch_one(test_db.pool())
+                    .await
+                    .unwrap();
+            assert_eq!(vcs_last_revision.as_deref(), Some("base-revision"));
+
             // result_tags is a result_tag[] composite; verify store_run's
             // unnest-based construction actually materialised our tag.
             let tag_count: i64 = sqlx::query_scalar(

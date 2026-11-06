@@ -487,6 +487,14 @@ INSERT INTO run (
         self.store_run(&mut tx, result, command, instigated_context)
             .await?;
 
+        if let Some(revision) = &result.main_branch_revision {
+            sqlx::query("UPDATE codebase SET vcs_last_revision = $1 WHERE name = $2")
+                .bind(revision.to_string())
+                .bind(&result.codebase)
+                .execute(&mut *tx)
+                .await?;
+        }
+
         if let Some(builder_result) = &result.builder_result {
             self.store_builder_result_tx(&mut tx, &result.log_id, builder_result)
                 .await?;
