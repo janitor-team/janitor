@@ -470,8 +470,6 @@ impl Application {
         if let Some(backup_manager) = self.state.backup_artifact_manager.clone() {
             let artifact_manager = self.state.artifact_manager.clone();
             tokio::spawn(async move {
-                // TODO: Python applied a 15 minute timeout to each
-                // retrieve/store; the Rust artifact managers take no timeout.
                 match janitor::artifacts::upload_backup_artifacts(
                     backup_manager.as_ref(),
                     artifact_manager.as_ref(),

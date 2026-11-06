@@ -346,7 +346,9 @@ fn classify_retrieval_result(
     res: std::result::Result<std::result::Result<(), ArtifactError>, tokio::time::error::Elapsed>,
 ) -> Result<()> {
     match res {
-        Err(_) => Err(Error::ArtifactRetrievalTimeout(run_id.clone())),
+        Err(_) | Ok(Err(ArtifactError::Timeout(_))) => {
+            Err(Error::ArtifactRetrievalTimeout(run_id.clone()))
+        }
         Ok(Ok(())) => Ok(()),
         Ok(Err(ArtifactError::ArtifactsMissing)) => Err(Error::ArtifactsMissing(run_id.clone())),
         Ok(Err(e)) => Err(Error::ArtifactRetrievalFailed {
@@ -1711,6 +1713,16 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(failed, Error::RunNotSuccessful(id) if id == "r2"));
+    }
+
+    #[test]
+    fn classify_retrieval_result_maps_store_timeout_to_timeout() {
+        let err = classify_retrieval_result(
+            &run_id("r1"),
+            Ok(Err(ArtifactError::Timeout("stalled".into()))),
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::ArtifactRetrievalTimeout(id) if id == "r1"));
     }
 
     fn run_id(id: &str) -> RunId {

@@ -41,6 +41,7 @@ fn artifact_err_to_py_err(e: janitor::artifacts::Error) -> PyErr {
         }
         janitor::artifacts::Error::IoError(e) => e.into(),
         janitor::artifacts::Error::InvalidPath => PyValueError::new_err("Invalid path"),
+        janitor::artifacts::Error::Timeout(e) => PyTimeoutError::new_err(e),
         janitor::artifacts::Error::Other(e) => PyRuntimeError::new_err(e),
     }
 }
