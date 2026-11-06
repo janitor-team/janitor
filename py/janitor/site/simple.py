@@ -41,6 +41,7 @@ from .. import state
 from ..artifacts import ArtifactsMissing
 from ..config import Config
 from ..logs import LogRetrievalError
+from ..review import update_stored_reviews
 from ..schedule import do_schedule
 from ..vcs import VcsManager, get_vcs_managers_from_config
 from . import TEMPLATE_ENV, hide_private_worker_links, template_loader
@@ -688,6 +689,12 @@ async def create_app(
         app.router.add_get("/ssh_keys", handle_ssh_keys, name="ssh-keys")
 
     setup_postgres(app)
+
+    async def load_stored_reviews(app):
+        async with app["pool"].acquire() as conn:
+            await update_stored_reviews(conn)
+
+    app.on_startup.append(load_stored_reviews)
 
     app["config"] = config
 
