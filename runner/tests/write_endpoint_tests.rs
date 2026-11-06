@@ -2465,3 +2465,62 @@ async fn finish_stores_artifacts_in_backup() {
         .unwrap();
     assert_eq!(contents, b"deb contents");
 }
+
+/// A queue item whose codebase has a plain path as `branch_url` is finished and the next one is assigned.
+#[tokio::test]
+async fn assign_skips_queue_item_with_plain_path_branch_url() {
+    let Some((app, state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let pool = state.database.pool().clone();
+    sqlx::query(
+        "INSERT INTO codebase (name, branch_url, url, vcs_type)
+         VALUES ('path-cb', '/srv/git/path-cb', '/srv/git/path-cb', 'git')",
+    )
+    .execute(&pool)
+    .await
+    .expect("codebase insert");
+    insert_codebase(&pool, "url-cb").await;
+    state
+        .auth_service
+        .create_worker("path-worker", "path-pw", None)
+        .await
+        .expect("create worker");
+
+    // `path-cb` has the lowest priority value, so it is pulled first.
+    for (cb, prio) in [("path-cb", 1i64), ("url-cb", 100)] {
+        sqlx::query(
+            "INSERT INTO queue (codebase, suite, command, priority)
+             VALUES ($1, 'test-campaign', 'true', $2)",
+        )
+        .bind(cb)
+        .bind(prio)
+        .execute(&pool)
+        .await
+        .expect("insert queue row");
+    }
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/active-runs")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"worker": "path-worker"}).to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(get_body(response).await["codebase"], "url-cb");
+
+    let runs: Vec<(String, Option<bool>)> =
+        sqlx::query_as("SELECT result_code, failure_transient FROM run WHERE codebase = 'path-cb'")
+            .fetch_all(&pool)
+            .await
+            .expect("run lookup");
+    assert_eq!(runs, vec![("invalid-branch-url".to_string(), Some(false))]);
+    let queued: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM queue WHERE codebase = 'path-cb'")
+        .fetch_one(&pool)
+        .await
+        .expect("queue lookup");
+    assert_eq!(queued, 0);
+}
