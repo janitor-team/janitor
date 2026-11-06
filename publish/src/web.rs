@@ -1723,6 +1723,9 @@ async fn refresh_status(
             Err(crate::CheckMpError::InvalidIdentifier(e)) => {
                 log::error!("Invalid identifier refreshing proposal {}: {}", url, e);
             }
+            Err(e @ crate::CheckMpError::NotLinkableUrl(_)) => {
+                log::error!("{}", e);
+            }
         }
     }
 

@@ -123,6 +123,12 @@ pub fn validate_db_identifier(identifier: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether the site can link to `url`. A click on a `javascript:` or `data:`
+/// URL runs script or opens content the URL itself carries.
+pub fn is_linkable_url(url: &url::Url) -> bool {
+    !matches!(url.scheme(), "javascript" | "data")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

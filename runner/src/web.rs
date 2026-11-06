@@ -752,11 +752,22 @@ fn main_branch_name(branch_url: Option<&str>) -> String {
 }
 
 /// `POST /codebases` -- bulk upsert codebases. Returns 200 with an
-/// empty object on success.
+/// empty object on success, or 400 for a `web_url` the site cannot link to.
 async fn update_codebases(
     State(state): State<Arc<AppState>>,
     Json(codebases): Json<Vec<crate::database::CodebaseUpload>>,
 ) -> impl IntoResponse {
+    if let Some(web_url) = codebases
+        .iter()
+        .filter_map(|c| c.web_url.as_deref())
+        .find(|u| !url::Url::parse(u).is_ok_and(|u| janitor::security::is_linkable_url(&u)))
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"reason": format!("web_url {} cannot be linked to", web_url)})),
+        );
+    }
+
     match state.database.upload_codebases(&codebases).await {
         Ok(()) => (StatusCode::OK, Json(json!({}))),
         Err(e) => {
