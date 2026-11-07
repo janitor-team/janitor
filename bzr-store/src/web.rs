@@ -29,7 +29,9 @@ use crate::bzr_browse::BrowseRouters;
 use crate::config::Config;
 use crate::database::DatabaseManager;
 use crate::error::{BzrError, Result};
-use crate::repository::{PyO3RepositoryManager, RepositoryManager, RepositoryPath, RevisionInfo};
+use crate::repository::{
+    PyO3RepositoryManager, RepositoryInfo, RepositoryManager, RepositoryPath, RevisionInfo,
+};
 use crate::smart_protocol::{
     smart_protocol_campaign_handler, smart_protocol_codebase_handler, smart_protocol_dispatch,
     smart_protocol_role_handler,
@@ -558,14 +560,14 @@ async fn create_repository_handler(
 async fn repository_info_handler(
     State(state): State<AppState>,
     Path(codebase): Path<CodebaseName>,
-) -> Result<Json<serde_json::Value>> {
+) -> Result<Json<RepositoryInfo>> {
     let repo_path = RepositoryPath::codebase_only(codebase);
     let info = state
         .repository_manager
         .get_repository_info(&repo_path)
         .await?;
 
-    Ok(Json(serde_json::to_value(info)?))
+    Ok(Json(info))
 }
 
 /// `GET /{codebase}/diff?old=...&new=...` — admin diff endpoint.
