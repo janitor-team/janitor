@@ -13,6 +13,7 @@ breezyshim = { workspace = true, optional = true }
 pyo3 = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 sqlx = { workspace = true, optional = true }
+utoipa = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
@@ -22,3 +23,4 @@ default = []
 breezyshim = ["dep:breezyshim"]
 pyo3 = ["dep:pyo3"]
 sqlx = ["dep:sqlx"]
+utoipa = ["dep:utoipa"]
