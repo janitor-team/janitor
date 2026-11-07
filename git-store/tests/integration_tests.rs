@@ -287,6 +287,38 @@ db_test! {
 }
 
 db_test! {
+    async fn test_admin_openapi(test_db: TestDatabase) {
+        let tmp = TempDir::new().unwrap();
+        let state = build_state(&tmp, &test_db, AppRole::Admin).await;
+        let app = web::create_admin_app(state, 0);
+        let (addr, handle) = spawn(app).await;
+
+        let resp = reqwest::get(format!("http://{}/openapi.json", addr))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        let mut paths: Vec<&String> = body["paths"].as_object().unwrap().keys().collect();
+        paths.sort();
+        assert_eq!(
+            paths,
+            vec![
+                "/",
+                "/health",
+                "/metrics",
+                "/ready",
+                "/{codebase}/diff",
+                "/{codebase}/log",
+                "/{codebase}/remotes/{name}",
+                "/{codebase}/revision-info",
+            ]
+        );
+
+        handle.abort();
+    }
+}
+
+db_test! {
     async fn test_admin_ready(test_db: TestDatabase) {
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;

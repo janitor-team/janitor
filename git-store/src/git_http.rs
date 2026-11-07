@@ -28,13 +28,30 @@ pub struct AuthContext {
 /// `old` and `new` are validated manually so missing values give a
 /// Python-compatible 400 "need both old and new" rather than axum's
 /// default 422 rejection body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct DiffQuery {
+    /// Commit to diff from; required.
     old: Option<String>,
+    /// Commit to diff to; required.
     new: Option<String>,
+    /// Only include changes to this path.
     path: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/{codebase}/diff",
+    params(("codebase" = CodebaseName, Path, description = "Codebase name"), DiffQuery),
+    responses(
+        (status = 200, description = "Diff between the two commits", body = String, content_type = "text/x-diff"),
+        (status = 400, description = "Missing or invalid commit", body = String, content_type = "text/plain", headers(("X-Janitor-Error" = String, description = "Class of the error"))),
+        (status = 404, description = "Commit not found", body = String, content_type = "text/plain", headers(("X-Janitor-Error" = String, description = "Class of the error"))),
+        (status = 408, description = "Generating the diff took too long", body = String, content_type = "text/plain", headers(("X-Janitor-Error" = String, description = "Class of the error"))),
+        (status = 500, description = "Generating the diff failed", body = String, content_type = "text/plain", headers(("X-Janitor-Error" = String, description = "Class of the error"))),
+        (status = 503, description = "The repository is not available locally", body = String, content_type = "text/plain", headers(("X-Janitor-Error" = String, description = "Class of the error"))),
+    )
+)]
 pub async fn git_diff(
     State(state): State<crate::web::AppState>,
     Path(codebase): Path<CodebaseName>,
@@ -211,9 +228,12 @@ async fn ensure_revision_present(
 /// `old` and `new` are validated manually so missing values give a
 /// Python-compatible 400 "need both old and new" rather than axum's
 /// default 422 rejection body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct RevisionInfoQuery {
+    /// Exclusive lower bound; required. All zeros means "from the root".
     old: Option<String>,
+    /// Inclusive upper bound; required.
     new: Option<String>,
 }
 
@@ -223,6 +243,18 @@ const ZERO_SHA: &str = "0000000000000000000000000000000000000000";
 /// Return the commits in `old..new` (newest-first) as a JSON array of
 /// `{commit-id, revision-id, link, message}`, matching what
 /// `py/janitor/site/cupboard/review.py::get_revision_info` expects.
+#[utoipa::path(
+    get,
+    path = "/{codebase}/revision-info",
+    params(("codebase" = CodebaseName, Path, description = "Codebase name"), RevisionInfoQuery),
+    responses(
+        (status = 200, description = "Commits in `old..new`, newest first", body = Vec<RevisionInfoEntry>),
+        (status = 400, description = "Missing or invalid commit", body = String, content_type = "text/plain", headers(("X-Janitor-Error" = String, description = "Class of the error"))),
+        (status = 404, description = "Commit not found", body = String, content_type = "text/plain", headers(("X-Janitor-Error" = String, description = "Class of the error"))),
+        (status = 500, description = "Internal error", body = String, content_type = "text/plain", headers(("X-Janitor-Error" = String, description = "Class of the error"))),
+        (status = 503, description = "The repository is not available locally", body = String, content_type = "text/plain", headers(("X-Janitor-Error" = String, description = "Class of the error"))),
+    )
+)]
 pub async fn revision_info(
     State(state): State<crate::web::AppState>,
     Path(codebase): Path<CodebaseName>,
@@ -329,7 +361,8 @@ pub async fn revision_info(
         .map_err(GitStoreError::HttpLibError)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct LogQuery {
     /// Exclusive lower bound. Absent means "from the root of `new`".
     old: Option<String>,
@@ -339,6 +372,18 @@ pub struct LogQuery {
 
 /// `git log old..new` (or `git log new` when `old` is absent),
 /// oldest first, with author info and message.
+#[utoipa::path(
+    get,
+    path = "/{codebase}/log",
+    params(("codebase" = CodebaseName, Path, description = "Codebase name"), LogQuery),
+    responses(
+        (status = 200, description = "Commits in `old..new`, oldest first", body = LogResponse),
+        (status = 400, description = "Invalid commit", body = String, content_type = "text/plain", headers(("X-Janitor-Error" = String, description = "Class of the error"))),
+        (status = 404, description = "Commit not found", body = String, content_type = "text/plain", headers(("X-Janitor-Error" = String, description = "Class of the error"))),
+        (status = 500, description = "Internal error", body = String, content_type = "text/plain", headers(("X-Janitor-Error" = String, description = "Class of the error"))),
+        (status = 503, description = "The repository is not available locally", body = String, content_type = "text/plain", headers(("X-Janitor-Error" = String, description = "Class of the error"))),
+    )
+)]
 pub async fn git_log(
     State(state): State<crate::web::AppState>,
     Path(codebase): Path<CodebaseName>,
