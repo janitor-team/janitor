@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use tracing::{debug, warn};
 
 /// A node in the diffoscope JSON tree.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct DiffoscopeOutput {
     #[serde(
         rename = "diffoscope-json-version",
@@ -17,13 +17,16 @@ pub struct DiffoscopeOutput {
         default
     )]
     diffoscope_json_version: Option<u8>,
+    #[schema(value_type = String)]
     pub source1: PathBuf,
+    #[schema(value_type = String)]
     pub source2: PathBuf,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub comments: Vec<String>,
     #[serde(default)]
     pub unified_diff: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schema(no_recursion)]
     pub details: Vec<DiffoscopeOutput>,
 }
 

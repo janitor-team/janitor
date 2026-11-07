@@ -72,10 +72,15 @@ impl From<sqlx::Error> for Error {
     }
 }
 
-#[derive(Serialize)]
-struct ErrorBody {
+/// JSON body of an error response.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct ErrorBody {
+    /// Machine-readable identifier of the error, e.g. `run-not-found`.
+    #[schema(value_type = String)]
     reason: &'static str,
+    /// Human-readable description of the error.
     message: String,
+    /// The run that could not be served, when known.
     #[serde(skip_serializing_if = "Option::is_none")]
     unavailable_run_id: Option<String>,
 }

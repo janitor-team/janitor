@@ -111,6 +111,7 @@ askama = ">=0.15,<0.17"
 janitor-types = { path = "types" }
 janitor-service = { path = "service" }
 utoipa = { version = "6", features = ["chrono", "url"] }
+utoipa-axum = "0.3"
 
 [build-dependencies]
 protobuf-codegen = "3"
