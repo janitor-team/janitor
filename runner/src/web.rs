@@ -808,6 +808,26 @@ async fn get_codebases(State(state): State<Arc<AppState>>) -> Response {
     }
 }
 
+/// `GET /codebases/names` -- return the sorted names of all active
+/// codebases as a JSON list.
+#[utoipa::path(
+    get,
+    path = "/codebases/names",
+    responses(
+        (status = 200, description = "Names of all active codebases", body = Vec<CodebaseName>),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
+async fn get_codebase_names(State(state): State<Arc<AppState>>) -> Response {
+    match state.database.get_active_codebase_names().await {
+        Ok(names) => Json(names).into_response(),
+        Err(e) => {
+            log::error!("Failed to get codebase names: {}", e);
+            db_error()
+        }
+    }
+}
+
 /// Best-effort name of the codebase's main branch, for deciding which
 /// colocated branches a build needs.
 ///
@@ -4112,6 +4132,7 @@ fn private_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(kill))
         .routes(routes!(log))
         .routes(routes!(get_codebases, update_codebases))
+        .routes(routes!(get_codebase_names))
         .routes(routes!(get_candidates, upload_candidates))
         .routes(routes!(delete_candidate))
         .routes(routes!(get_run, update_run))
@@ -5208,6 +5229,48 @@ distribution {
                     "No such run: run-2".to_string()
                 ),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_codebase_names() {
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+        let Ok(Some(db)) = crate::test_utils::TestDatabase::new_optional_with_schema(
+            crate::test_utils::TestSchema::Core,
+        )
+        .await
+        else {
+            eprintln!("Skipping: no Postgres available");
+            return;
+        };
+        sqlx::query(
+            "INSERT INTO codebase (name, branch_url, url, inactive) VALUES \
+             ('beta', NULL, NULL, false), ('alpha', NULL, NULL, false), \
+             ('gamma', NULL, NULL, true), \
+             (NULL, 'https://example.com/unnamed.git', \
+              'https://example.com/unnamed.git', false)",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let app = super::app(crate::test_utils::create_test_app_state_without_redis(db));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/codebases/names")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            (status, String::from_utf8(body.to_vec()).unwrap()),
+            (StatusCode::OK, r#"["alpha","beta"]"#.to_string())
         );
     }
 
