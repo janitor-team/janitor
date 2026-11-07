@@ -110,11 +110,24 @@ impl HealthChecker {
 }
 
 /// `GET /health` — alive, independent of downstream state.
+#[utoipa::path(
+    get,
+    path = "/health",
+    responses((status = 200, description = "Service is alive", body = String, content_type = "text/plain"))
+)]
 pub async fn health_handler(State(_): State<Arc<HealthChecker>>) -> impl IntoResponse {
     (StatusCode::OK, "ok")
 }
 
 /// `GET /ready` — alive AND the configured database is reachable.
+#[utoipa::path(
+    get,
+    path = "/ready",
+    responses(
+        (status = 200, description = "Service is ready", body = String, content_type = "text/plain"),
+        (status = 503, description = "Service is not ready", body = String, content_type = "text/plain"),
+    )
+)]
 pub async fn ready_handler(State(checker): State<Arc<HealthChecker>>) -> impl IntoResponse {
     if checker.is_ready().await {
         (StatusCode::OK, "ok")
@@ -125,6 +138,14 @@ pub async fn ready_handler(State(checker): State<Arc<HealthChecker>>) -> impl In
 
 /// `GET /metrics` — Prometheus text-format exposition of every
 /// registered metric.
+#[utoipa::path(
+    get,
+    path = "/metrics",
+    responses(
+        (status = 200, description = "Prometheus metrics", body = String, content_type = "text/plain"),
+        (status = 500, description = "Metrics could not be encoded", body = String, content_type = "text/plain"),
+    )
+)]
 pub async fn metrics_handler() -> impl IntoResponse {
     use prometheus::{Encoder, TextEncoder};
 

@@ -23,20 +23,24 @@ use tokio::fs;
 use tracing::warn;
 
 use crate::api_types::{
-    RemoteConfiguredResponse, RemoteInfo, RemotesListResponse, RepositoryCreatedResponse,
+    ErrorResponse, RemoteConfiguredResponse, RemoteInfo, RemotesListResponse,
+    RepositoryCreatedResponse,
 };
 use crate::bzr_browse::BrowseRouters;
 use crate::config::Config;
 use crate::database::DatabaseManager;
 use crate::error::{BzrError, Result};
-use crate::repository::{PyO3RepositoryManager, RepositoryManager, RepositoryPath, RevisionInfo};
+use crate::repository::{
+    PyO3RepositoryManager, RepositoryInfo, RepositoryManager, RepositoryPath, RevisionInfo,
+};
 use crate::smart_protocol::{
     smart_protocol_campaign_handler, smart_protocol_codebase_handler, smart_protocol_dispatch,
     smart_protocol_role_handler,
 };
-use crate::web_utils::{
-    apply_standard_middleware, health_handler, metrics_handler, ready_handler, HealthChecker,
-};
+use crate::web_utils::{apply_standard_middleware, HealthChecker};
+use utoipa::openapi::OpenApi;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 /// Which app this `AppState` belongs to. Governs write policy: `Admin`
 /// always writes, `Public` requires HTTP Basic worker auth. Matches
@@ -123,7 +127,8 @@ pub(crate) async fn is_worker_request(
 }
 
 /// Query parameters for the diff endpoint.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct DiffQuery {
     /// Old revision identifier to diff from.
     pub old: String,
@@ -132,7 +137,8 @@ pub struct DiffQuery {
 }
 
 /// Query parameters for the revision-info endpoint.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct RevisionInfoQuery {
     /// Starting revision identifier for the range.
     pub old: String,
@@ -270,12 +276,40 @@ fn body_limit_layer(client_max_size: usize) -> DefaultBodyLimit {
 
 /// Sub-router carrying the health / ready / metrics endpoints under
 /// their own `Arc<HealthChecker>` state.
-fn health_router(checker: Arc<HealthChecker>) -> Router {
-    Router::new()
-        .route("/health", get(health_handler))
-        .route("/ready", get(ready_handler))
-        .route("/metrics", get(metrics_handler))
-        .with_state(checker)
+fn health_routes() -> OpenApiRouter<Arc<HealthChecker>> {
+    OpenApiRouter::new()
+        .routes(routes!(crate::web_utils::health_handler))
+        .routes(routes!(crate::web_utils::ready_handler))
+        .routes(routes!(crate::web_utils::metrics_handler))
+}
+
+/// Base of the admin app's OpenAPI document. `CodebaseName` is listed
+/// explicitly because it is only used in path parameters, whose schemas
+/// utoipa does not collect.
+#[derive(utoipa::OpenApi)]
+#[openapi(components(schemas(CodebaseName)))]
+struct AdminApi;
+
+/// REST endpoints of the admin app; the smart protocol routes are
+/// added by [`create_admin_app`].
+fn admin_routes() -> OpenApiRouter<AppState> {
+    OpenApiRouter::with_openapi(<AdminApi as utoipa::OpenApi>::openapi())
+        .routes(routes!(public_repo_list_handler))
+        .routes(routes!(list_repositories_handler))
+        .routes(routes!(create_repository_handler))
+        .routes(routes!(repository_info_handler))
+        .routes(routes!(diff_handler))
+        .routes(routes!(revision_info_handler))
+        .routes(routes!(configure_remote_handler))
+        .routes(routes!(list_remotes_handler))
+}
+
+/// OpenAPI document for the admin app. The smart protocol routes are
+/// not included.
+pub fn admin_openapi() -> OpenApi {
+    let mut openapi = admin_routes().into_openapi();
+    openapi.merge(health_routes().into_openapi());
+    openapi
 }
 
 /// Create the admin application with full access.
@@ -286,19 +320,11 @@ fn health_router(checker: Arc<HealthChecker>) -> Router {
 /// address (9929) and the public one (9930) is what gets
 /// worker-write gating.
 pub fn create_admin_app(state: AppState, client_max_size: usize) -> Router {
-    let health = health_router(state.health_checker.clone());
-    let router = Router::new()
-        .route("/", get(public_repo_list_handler))
-        .route("/repositories", get(list_repositories_handler))
-        .route("/repositories/{codebase}", post(create_repository_handler))
-        .route("/{codebase}/info", get(repository_info_handler))
-        .route("/{codebase}/diff", get(diff_handler))
-        .route("/{codebase}/revision-info", get(revision_info_handler))
-        .route(
-            "/{codebase}/remotes/{remote}",
-            post(configure_remote_handler),
-        )
-        .route("/{codebase}/remotes", get(list_remotes_handler))
+    let spec = admin_openapi()
+        .to_json()
+        .expect("OpenAPI document can be serialized");
+    let health = health_routes().with_state(state.health_checker.clone());
+    let (router, _) = admin_routes()
         .route(
             "/{codebase}/.bzr/smart",
             post(smart_protocol_codebase_handler),
@@ -313,6 +339,12 @@ pub fn create_admin_app(state: AppState, client_max_size: usize) -> Router {
         )
         .with_state(state)
         .merge(health)
+        .split_for_parts();
+    let router = router
+        .route(
+            "/openapi.json",
+            get(move || async move { ([("content-type", "application/json")], spec) }),
+        )
         .layer(body_limit_layer(client_max_size));
 
     apply_standard_middleware(router, &web_config(client_max_size))
@@ -417,6 +449,16 @@ async fn home_handler() -> Response {
 /// `GET /bzr/` — content-negotiated repository listing. Returns sorted
 /// codebase names in whichever of JSON, plain text, or HTML the client
 /// prefers. Matches `py/janitor/bzr_store.py::handle_repo_list`.
+#[utoipa::path(
+    get,
+    path = "/",
+    responses(
+        (status = 200, description = "Names of the repositories; the format depends on the Accept header",
+         content((Vec<String> = "application/json"), (String = "text/plain"), (String = "text/html"))),
+        (status = 406, description = "None of the offered content types is acceptable"),
+        (status = 500, description = "Internal error", body = ErrorResponse),
+    )
+)]
 async fn public_repo_list_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -520,6 +562,14 @@ fn render_default_repo_list(names: &[String]) -> String {
 }
 
 /// `GET /` on the admin app — list repositories as HTML.
+#[utoipa::path(
+    get,
+    path = "/repositories",
+    responses(
+        (status = 200, description = "Overview of the repositories", body = String, content_type = "text/html"),
+        (status = 500, description = "Internal error", body = ErrorResponse),
+    )
+)]
 async fn list_repositories_handler(State(state): State<AppState>) -> Result<Response> {
     let repositories = state.repository_manager.list_repositories().await?;
 
@@ -536,6 +586,17 @@ async fn list_repositories_handler(State(state): State<AppState>) -> Result<Resp
 
 /// `POST /repositories/{codebase}` — admin: ensure the shared bzr
 /// repository for `codebase` exists on disk.
+#[utoipa::path(
+    post,
+    path = "/repositories/{codebase}",
+    params(("codebase" = CodebaseName, Path, description = "Codebase name")),
+    responses(
+        (status = 200, description = "The repository exists", body = RepositoryCreatedResponse),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 404, description = "Repository or revision not found", body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse),
+    )
+)]
 async fn create_repository_handler(
     State(state): State<AppState>,
     Path(codebase): Path<CodebaseName>,
@@ -555,22 +616,44 @@ async fn create_repository_handler(
 }
 
 /// `GET /{codebase}/info` — admin repository metadata.
+#[utoipa::path(
+    get,
+    path = "/{codebase}/info",
+    params(("codebase" = CodebaseName, Path, description = "Codebase name")),
+    responses(
+        (status = 200, description = "Information about the repository", body = RepositoryInfo),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 404, description = "Repository or revision not found", body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse),
+    )
+)]
 async fn repository_info_handler(
     State(state): State<AppState>,
     Path(codebase): Path<CodebaseName>,
-) -> Result<Json<serde_json::Value>> {
+) -> Result<Json<RepositoryInfo>> {
     let repo_path = RepositoryPath::codebase_only(codebase);
     let info = state
         .repository_manager
         .get_repository_info(&repo_path)
         .await?;
 
-    Ok(Json(serde_json::to_value(info)?))
+    Ok(Json(info))
 }
 
 /// `GET /{codebase}/diff?old=...&new=...` — admin diff endpoint.
 /// Matches `py/janitor/bzr_store.py::bzr_diff_request`: produces a
 /// unified diff between two revids in text/x-diff.
+#[utoipa::path(
+    get,
+    path = "/{codebase}/diff",
+    params(("codebase" = CodebaseName, Path, description = "Codebase name"), DiffQuery),
+    responses(
+        (status = 200, description = "Diff between the two revisions", body = String, content_type = "text/x-diff"),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 404, description = "Repository or revision not found", body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse),
+    )
+)]
 async fn diff_handler(
     State(state): State<AppState>,
     Path(codebase): Path<CodebaseName>,
@@ -587,6 +670,17 @@ async fn diff_handler(
 
 /// `GET /{codebase}/revision-info?old=...&new=...` — admin revision
 /// range info. Matches `py/janitor/bzr_store.py::bzr_revision_info_request`.
+#[utoipa::path(
+    get,
+    path = "/{codebase}/revision-info",
+    params(("codebase" = CodebaseName, Path, description = "Codebase name"), RevisionInfoQuery),
+    responses(
+        (status = 200, description = "Revisions in the range", body = Vec<RevisionInfo>),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 404, description = "Repository or revision not found", body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse),
+    )
+)]
 async fn revision_info_handler(
     State(state): State<AppState>,
     Path(codebase): Path<CodebaseName>,
@@ -605,6 +699,21 @@ async fn revision_info_handler(
 /// the campaign-less branch under `<vcs_path>/<codebase>/<remote>`.
 /// Matches `py/janitor/bzr_store.py::handle_set_bzr_remote`: body is
 /// urlencoded with a `url` field.
+#[utoipa::path(
+    post,
+    path = "/{codebase}/remotes/{remote}",
+    params(("codebase" = CodebaseName, Path, description = "Codebase name"), ("remote" = String, Path, description = "Name of the branch to set the parent location of")),
+    request_body(content(
+        (RemoteUrlBody = "application/x-www-form-urlencoded"),
+        (RemoteUrlBody = "application/json"),
+    )),
+    responses(
+        (status = 200, description = "The remote was configured", body = RemoteConfiguredResponse),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 404, description = "Repository or revision not found", body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse),
+    )
+)]
 async fn configure_remote_handler(
     State(state): State<AppState>,
     Path((codebase, remote)): Path<(CodebaseName, String)>,
@@ -629,6 +738,16 @@ async fn configure_remote_handler(
         remote_url: url,
     };
     Ok(Json(response))
+}
+
+/// Body of `POST /{codebase}/remotes/{remote}`; only used to describe
+/// the request in the OpenAPI document. [`extract_remote_url`] parses
+/// the body.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)]
+struct RemoteUrlBody {
+    /// URL of the remote; may also be given as `remote_url`.
+    url: String,
 }
 
 /// Pull the `url` parameter out of either a urlencoded form body
@@ -668,6 +787,15 @@ fn extract_remote_url(headers: &HeaderMap, body: &Bytes) -> Result<String> {
 /// `GET /{codebase}/remotes` — list configured remotes. The current
 /// implementation returns at most one, matching Python's single
 /// `parent_location` config entry per branch.
+#[utoipa::path(
+    get,
+    path = "/{codebase}/remotes",
+    params(("codebase" = CodebaseName, Path, description = "Codebase name")),
+    responses(
+        (status = 200, description = "Configured remotes", body = RemotesListResponse),
+        (status = 404, description = "No such repository", body = ErrorResponse),
+    )
+)]
 async fn list_remotes_handler(
     State(state): State<AppState>,
     Path(codebase): Path<CodebaseName>,
@@ -759,6 +887,46 @@ pub fn init_templates() -> Tera {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn collect_refs<'a>(value: &'a serde_json::Value, refs: &mut Vec<&'a str>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, value) in map {
+                    match value {
+                        serde_json::Value::String(target) if key == "$ref" => refs.push(target),
+                        _ => collect_refs(value, refs),
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    collect_refs(item, refs);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Schemas only end up in the document when utoipa can see them from
+    /// a path or the `OpenApi` derive; a `$ref` to anything else would
+    /// leave clients with a broken document.
+    #[test]
+    fn openapi_refs_resolve() {
+        let doc = serde_json::to_value(admin_openapi()).unwrap();
+        let mut refs = vec![];
+        collect_refs(&doc, &mut refs);
+        assert!(!refs.is_empty());
+        let missing: Vec<&str> = refs
+            .into_iter()
+            .filter(|r| {
+                let name = r
+                    .strip_prefix("#/components/schemas/")
+                    .unwrap_or_else(|| panic!("unexpected $ref {r}"));
+                doc["components"]["schemas"].get(name).is_none()
+            })
+            .collect();
+        assert_eq!(missing, Vec::<&str>::new());
+    }
 
     #[test]
     fn negotiate_wildcard_prefers_html() {

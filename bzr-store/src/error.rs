@@ -3,8 +3,9 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use serde_json::json;
 use thiserror::Error;
+
+use crate::api_types::ErrorResponse;
 
 /// Main error type for the BZR Store service
 #[derive(Debug, Error)]
@@ -110,10 +111,10 @@ impl IntoResponse for BzrError {
             BzrError::Json(_) => (StatusCode::INTERNAL_SERVER_ERROR, "JSON error"),
         };
 
-        let body = Json(json!({
-            "error": error_message,
-            "details": self.to_string(),
-        }));
+        let body = Json(ErrorResponse {
+            error: error_message.to_string(),
+            details: self.to_string(),
+        });
 
         (status, body).into_response()
     }

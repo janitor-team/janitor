@@ -29,7 +29,7 @@ use crate::pyo3_bridge::BreezyOperations;
 /// shared repo on disk at `<base>/<codebase>`, and campaign/role are
 /// bzr transport sub-paths (branches) inside it, obtained via
 /// `transport.clone(campaign_name)` / `transport.clone(role_name)`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct RepositoryPath {
     /// Codebase identifier — the on-disk shared repo directory name.
     pub codebase: CodebaseName,
@@ -75,7 +75,7 @@ impl RepositoryPath {
 }
 
 /// Repository information for the admin UI.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct RepositoryInfo {
     /// Path structure identifying the repository.
     pub path: RepositoryPath,
@@ -129,7 +129,7 @@ pub trait RepositoryManager: Send + Sync {
 /// One row of revision metadata returned by
 /// [`RepositoryManager::get_revision_info`]. Serialized as the
 /// Python response shape expects.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
 pub struct RevisionInfo {
     /// Unique identifier for the revision.
