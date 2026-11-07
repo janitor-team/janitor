@@ -1009,6 +1009,13 @@ async fn handle_precache(
     Ok((StatusCode::ACCEPTED, "Precaching started").into_response())
 }
 
+/// Response for `POST /precache-all`.
+#[derive(Debug, serde::Serialize)]
+struct PrecacheAllResponse {
+    /// Number of run pairs that will be precached.
+    count: usize,
+}
+
 async fn handle_precache_all(State(state): State<Arc<AppState>>) -> Result<Response> {
     let rows = sqlx::query_as::<_, (RunId, RunId)>(
         r#"SELECT run.id, unchanged_run.id
@@ -1025,18 +1032,14 @@ async fn handle_precache_all(State(state): State<Arc<AppState>>) -> Result<Respo
     .await?;
 
     if rows.is_empty() {
-        return Ok((StatusCode::OK, Json(serde_json::json!({"count": 0}))).into_response());
+        return Ok((StatusCode::OK, Json(PrecacheAllResponse { count: 0 })).into_response());
     }
 
     let count = rows.len();
     for (new_id, old_id) in rows {
         spawn_precache(&state, old_id, new_id, "precache-all");
     }
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(serde_json::json!({"count": count})),
-    )
-        .into_response())
+    Ok((StatusCode::ACCEPTED, Json(PrecacheAllResponse { count })).into_response())
 }
 
 fn spawn_precache(state: &Arc<AppState>, old_id: RunId, new_id: RunId, trigger: &'static str) {
