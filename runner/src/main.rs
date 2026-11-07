@@ -44,6 +44,12 @@ struct Args {
     /// Avoid processing runs on a host (e.g. 'salsa.debian.org')
     avoid_host: Vec<String>,
 
+    #[clap(long, default_value_t = true, action = clap::ArgAction::Set)]
+    /// Redirect artifact downloads to the public URL of the artifact
+    /// store, when it has an http(s) one (such as for GCS). Set to false
+    /// if the store is not publicly readable.
+    redirect_artifact_downloads: bool,
+
     // The Python runner accepted these but never used them; they're
     // kept so existing deployments don't fail to start.
     #[clap(long, hide = true)]
@@ -91,7 +97,8 @@ async fn main() -> Result<(), i32> {
         .with_public_vcs_location(args.public_vcs_location)
         .with_public_dep_server_url(args.public_dep_server_url)
         .with_run_timeout_minutes(args.run_timeout)
-        .with_avoid_hosts(args.avoid_host);
+        .with_avoid_hosts(args.avoid_host)
+        .with_redirect_artifact_downloads(args.redirect_artifact_downloads);
 
     let listen_address = args.listen_address;
     let port = args.port;

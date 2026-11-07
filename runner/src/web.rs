@@ -23,7 +23,7 @@ use axum::{
     Extension, Json, Router,
 };
 use chrono::Utc;
-use janitor_types::{Campaign, ChangeSetId, CodebaseName, LogFilename, RunId};
+use janitor_types::{ArtifactName, Campaign, ChangeSetId, CodebaseName, LogFilename, RunId};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -736,6 +736,55 @@ async fn log(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to read log file: {}", e),
             )
+        }
+    }
+}
+
+/// `GET /runs/{run_id}/artifacts/{filename}` -- return an artifact of a
+/// run. Redirects to the artifact store's public URL when that is an
+/// http(s) URL and `redirect_artifact_downloads` is enabled; otherwise
+/// streams the artifact. 404s when there is no such artifact.
+#[utoipa::path(
+    get,
+    path = "/runs/{id}/artifacts/{filename}",
+    params(("id" = RunId, Path, description = "Run id"), ("filename" = ArtifactName, Path, description = "Artifact file name")),
+    responses(
+        (status = 200, description = "Contents of the artifact", body = Vec<u8>, content_type = "application/octet-stream"),
+        (status = 307, description = "Redirect to the artifact's public URL"),
+        (status = 400, description = "Invalid file name", body = String, content_type = "text/plain"),
+        (status = 404, description = "No such artifact", body = String, content_type = "text/plain"),
+        (status = 500, description = "Artifact could not be read", body = String, content_type = "text/plain"),
+    )
+)]
+async fn artifact(
+    State(state): State<Arc<AppState>>,
+    Path((id, filename)): Path<(RunId, ArtifactName)>,
+) -> Response {
+    if state.redirect_artifact_downloads {
+        let url = state.artifact_manager.public_artifact_url(&id, &filename);
+        if matches!(url.scheme(), "http" | "https") {
+            return axum::response::Redirect::temporary(url.as_str()).into_response();
+        }
+    }
+    match state.artifact_manager.get_artifact(&id, &filename).await {
+        Ok(stream) => (
+            StatusCode::OK,
+            [("content-type", "application/octet-stream")],
+            axum::body::Body::from_stream(stream),
+        )
+            .into_response(),
+        Err(janitor::artifacts::Error::ArtifactsMissing) => (
+            StatusCode::NOT_FOUND,
+            format!("No artifact {} for run {}", filename, id),
+        )
+            .into_response(),
+        Err(e) => {
+            log::warn!("Failed to get artifact {} for run {}: {}", filename, id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to read artifact: {}", e),
+            )
+                .into_response()
         }
     }
 }
@@ -3978,7 +4027,14 @@ const WORKER_AUTH: &str = "worker_auth";
 /// body. utoipa only collects schemas from request and response bodies,
 /// so the identifier types used as parameters are listed too.
 #[derive(utoipa::OpenApi)]
-#[openapi(components(schemas(RateLimitedResponse, RunId, CodebaseName, Campaign, LogFilename)))]
+#[openapi(components(schemas(
+    RateLimitedResponse,
+    RunId,
+    CodebaseName,
+    Campaign,
+    LogFilename,
+    ArtifactName
+)))]
 struct RunnerApi;
 
 fn openapi_router() -> OpenApiRouter<Arc<AppState>> {
@@ -4111,6 +4167,7 @@ fn private_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(log_index))
         .routes(routes!(kill))
         .routes(routes!(log))
+        .routes(routes!(artifact))
         .routes(routes!(get_codebases, update_codebases))
         .routes(routes!(get_candidates, upload_candidates))
         .routes(routes!(delete_candidate))
@@ -5103,6 +5160,115 @@ distribution {
         app.oneshot(req.body(body).unwrap()).await.unwrap().status()
     }
 
+    async fn get_artifacts(
+        manager: janitor::artifacts::ArtifactManager,
+        redirect: Option<bool>,
+    ) -> Vec<(axum::http::StatusCode, Option<String>, String)> {
+        use axum::http::Request;
+        use tower::ServiceExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("foo.deb"), "deb contents").unwrap();
+        manager
+            .store_artifacts(
+                &janitor_types::RunId::new("run-1").unwrap(),
+                dir.path(),
+                None,
+            )
+            .await
+            .unwrap();
+        let mut builder = crate::test_utils::TestConfigBuilder::new()
+            .with_artifact_manager(std::sync::Arc::new(manager));
+        if let Some(redirect) = redirect {
+            builder = builder.with_redirect_artifact_downloads(redirect);
+        }
+        let app = super::app(crate::test_utils::create_offline_test_app_state_with_config(builder));
+        let mut got = Vec::new();
+        for uri in [
+            "/runs/run-1/artifacts/foo.deb",
+            "/runs/run-1/artifacts/bar.deb",
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = resp.status();
+            let location = resp
+                .headers()
+                .get("location")
+                .map(|l| l.to_str().unwrap().to_string());
+            let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            got.push((status, location, String::from_utf8(body.to_vec()).unwrap()));
+        }
+        got
+    }
+
+    fn public_artifact_manager() -> janitor::artifacts::ArtifactManager {
+        janitor::artifacts::ArtifactManager::new(
+            std::sync::Arc::new(object_store::memory::InMemory::new()),
+            "https://storage.example.com/artifacts/".parse().unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_artifact_served_without_public_url() {
+        use axum::http::StatusCode;
+        assert_eq!(
+            get_artifacts(janitor::artifacts::ArtifactManager::in_memory(), None).await,
+            vec![
+                (StatusCode::OK, None, "deb contents".to_string()),
+                (
+                    StatusCode::NOT_FOUND,
+                    None,
+                    "No artifact bar.deb for run run-1".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_artifact_redirects_to_public_url() {
+        use axum::http::StatusCode;
+        assert_eq!(
+            get_artifacts(public_artifact_manager(), None).await,
+            vec![
+                (
+                    StatusCode::TEMPORARY_REDIRECT,
+                    Some("https://storage.example.com/artifacts/run-1/foo.deb".to_string()),
+                    String::new()
+                ),
+                (
+                    StatusCode::TEMPORARY_REDIRECT,
+                    Some("https://storage.example.com/artifacts/run-1/bar.deb".to_string()),
+                    String::new()
+                ),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_artifact_served_when_redirect_disabled() {
+        use axum::http::StatusCode;
+        assert_eq!(
+            get_artifacts(public_artifact_manager(), Some(false)).await,
+            vec![
+                (StatusCode::OK, None, "deb contents".to_string()),
+                (
+                    StatusCode::NOT_FOUND,
+                    None,
+                    "No artifact bar.deb for run run-1".to_string()
+                ),
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn test_finished_run_logs() {
         use axum::http::{Request, StatusCode};
@@ -5219,6 +5385,8 @@ distribution {
             "/active-runs/a.b/current-stage",
             "/log/..%2F..%2Fetc/worker.log",
             "/log/run-1/..",
+            "/runs/..%2Fetc/artifacts/foo.deb",
+            "/runs/run-1/artifacts/..",
             "/runs/a%20b",
             "/resume/chain/.hidden",
         ] {

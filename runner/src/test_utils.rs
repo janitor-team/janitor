@@ -45,6 +45,7 @@ pub struct TestConfigBuilder {
     campaigns: Vec<janitor::config::Campaign>,
     artifact_manager: Option<Arc<janitor::artifacts::ArtifactManager>>,
     backup_artifact_manager: Option<Arc<janitor::artifacts::ArtifactManager>>,
+    redirect_artifact_downloads: Option<bool>,
 }
 
 impl TestConfigBuilder {
@@ -85,6 +86,12 @@ impl TestConfigBuilder {
         manager: Arc<janitor::artifacts::ArtifactManager>,
     ) -> Self {
         self.backup_artifact_manager = Some(manager);
+        self
+    }
+
+    /// Set `AppState::redirect_artifact_downloads`; it defaults to true.
+    pub fn with_redirect_artifact_downloads(mut self, redirect: bool) -> Self {
+        self.redirect_artifact_downloads = Some(redirect);
         self
     }
 
@@ -166,13 +173,21 @@ pub async fn create_test_app_state_with_config(
 /// extractor validation) can be tested with this without any external
 /// services; anything that does reach the database or Redis fails.
 pub fn create_offline_test_app_state() -> Arc<AppState> {
+    create_offline_test_app_state_with_config(TestConfigBuilder::new())
+}
+
+/// Like [`create_offline_test_app_state`] but with a caller-provided
+/// [`TestConfigBuilder`].
+pub fn create_offline_test_app_state_with_config(
+    config_builder: TestConfigBuilder,
+) -> Arc<AppState> {
     let pool = PgPool::connect_lazy("postgresql://localhost:1/unused")
         .expect("static database URL parses");
     let redis_client = redis::Client::open("redis://127.0.0.1:1").expect("static redis URL parses");
     assemble_app_state(
         Arc::new(RunnerDatabase::new(pool)),
         redis_client,
-        TestConfigBuilder::new(),
+        config_builder,
     )
 }
 
@@ -195,6 +210,7 @@ fn assemble_app_state(
         .take()
         .unwrap_or_else(|| Arc::new(janitor::artifacts::ArtifactManager::in_memory()));
     let backup_artifact_manager = config_builder.backup_artifact_manager.take();
+    let redirect_artifact_downloads = config_builder.redirect_artifact_downloads.unwrap_or(true);
     let config = Arc::new(config_builder.build_janitor_config());
 
     let vcs_manager = Arc::new(RunnerVcsManager::new(std::collections::HashMap::new()));
@@ -254,6 +270,7 @@ fn assemble_app_state(
         public_vcs_managers: Arc::new(public_vcs_managers),
         public_dep_server_url: None,
         avoid_hosts: Vec::new(),
+        redirect_artifact_downloads,
     })
 }
 

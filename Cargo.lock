@@ -3548,6 +3548,7 @@ dependencies = [
  "log",
  "maplit",
  "num_cpus",
+ "object_store",
  "percent-encoding",
  "prometheus 0.14.0",
  "redis 1.7.0",
