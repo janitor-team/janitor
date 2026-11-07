@@ -358,3 +358,27 @@ test_with_database! {
         );
     }
 }
+
+test_with_database! {
+    schema = Core;
+    async fn openapi_json_is_served(test_db: TestDatabase) {
+        let app = build_app(test_db.pool().clone()).await;
+        let req = Request::builder()
+            .method("GET")
+            .uri("/openapi.json")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["info"]["title"], serde_json::json!("janitor-publish"));
+        assert!(
+            body["paths"]["/blockers/{id}"]["get"].is_object(),
+            "{body}"
+        );
+    }
+}

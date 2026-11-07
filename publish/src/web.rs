@@ -2,12 +2,12 @@ use crate::api_types::{
     AutopublishResponse, EmptyResponse, ErrorResponse, InvalidModeResponse, NotFoundResponse,
     PublishNothingResponse, PublishStartedResponse, SuccessWithUrlResponse,
 };
-use crate::health;
+use crate::health::{self, HealthCheckHandler};
 use crate::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::get;
 use axum::Router;
 use breezyshim::error::Error as BrzError;
 use janitor_types::{Campaign, ChangeSetId, CodebaseName, PublishId, RunId};
@@ -16,6 +16,9 @@ use sequoia_openpgp::armor;
 use sqlx::PgPool;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use utoipa::openapi::OpenApi;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 /// Build an `{"error": ...}` response.
 fn error_response(status: StatusCode, msg: impl Into<String>) -> Response {
@@ -31,7 +34,7 @@ fn not_found(body: NotFoundResponse) -> Response {
 /// `py/janitor/publish.py::handle_merge_proposal_list` returns:
 /// `[{url, status}, ...]` with no other fields. Each of the three
 /// list_merge_proposals endpoints emits a list of these.
-#[derive(serde::Serialize, serde::Deserialize, sqlx::FromRow)]
+#[derive(serde::Serialize, serde::Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct MergeProposalListEntry {
     /// URL of the merge proposal.
     pub url: String,
@@ -95,6 +98,15 @@ async fn fetch_merge_proposal_list(
         .collect())
 }
 
+#[utoipa::path(
+    get,
+    path = "/{campaign}/merge-proposals",
+    params(("campaign" = Campaign, Path, description = "Campaign name")),
+    responses(
+        (status = 200, description = "Merge proposals for runs of the campaign", body = Vec<MergeProposalListEntry>),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
 async fn get_merge_proposals_by_campaign(
     State(state): State<Arc<AppState>>,
     Path(campaign): Path<Campaign>,
@@ -112,6 +124,15 @@ async fn get_merge_proposals_by_campaign(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/c/{codebase}/merge-proposals",
+    params(("codebase" = CodebaseName, Path, description = "Codebase name")),
+    responses(
+        (status = 200, description = "Merge proposals for runs on the codebase", body = Vec<MergeProposalListEntry>),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
 async fn get_merge_proposals_by_codebase(
     State(state): State<Arc<AppState>>,
     Path(codebase): Path<CodebaseName>,
@@ -129,6 +150,14 @@ async fn get_merge_proposals_by_codebase(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/merge-proposals",
+    responses(
+        (status = 200, description = "All merge proposals", body = Vec<MergeProposalListEntry>),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
 async fn list_merge_proposals(State(state): State<Arc<AppState>>) -> Response {
     match fetch_merge_proposal_list(&state.conn, None, None).await {
         Ok(rows) => Json(rows).into_response(),
@@ -140,13 +169,14 @@ async fn list_merge_proposals(State(state): State<Arc<AppState>>) -> Response {
 }
 
 /// Response structure for absorbed runs.
-#[derive(serde::Serialize, sqlx::FromRow)]
+#[derive(serde::Serialize, sqlx::FromRow, utoipa::ToSchema)]
 struct AbsorbedRun {
     mode: String,
     change_set: Option<ChangeSetId>,
     codebase: CodebaseName,
     delay: Option<i64>, // seconds
     campaign: Campaign,
+    #[schema(value_type = Option<Object>)]
     result: Option<serde_json::Value>,
     id: RunId,
     absorbed_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -156,9 +186,27 @@ struct AbsorbedRun {
     merge_proposal_url: Option<String>,
 }
 
+/// Query parameters for `GET /absorbed`.
+#[derive(serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+struct AbsorbedQuery {
+    /// Only include runs absorbed at or after this RFC 3339 time.
+    since: Option<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/absorbed",
+    params(AbsorbedQuery),
+    responses(
+        (status = 200, description = "Runs that were absorbed upstream", body = Vec<AbsorbedRun>),
+        (status = 400, description = "Invalid `since`", body = ErrorResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
 async fn absorbed(
     State(state): State<Arc<AppState>>,
-    Query(params): Query<std::collections::HashMap<String, String>>,
+    Query(params): Query<AbsorbedQuery>,
 ) -> Response {
     let mut query = String::from(
         r#"
@@ -179,7 +227,7 @@ async fn absorbed(
 
     let mut query_params = Vec::new();
 
-    if let Some(since_str) = params.get("since") {
+    if let Some(since_str) = params.since.as_deref() {
         match chrono::DateTime::parse_from_rfc3339(since_str) {
             Ok(since) => {
                 query_params.push(since.with_timezone(&chrono::Utc));
@@ -268,7 +316,7 @@ async fn absorbed(
 
 /// Per-role branch policy entry as it appears on the wire. Matches
 /// the shape `py/janitor/publish.py::handle_policy_get` returns.
-#[derive(serde::Serialize, serde::Deserialize, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Default, utoipa::ToSchema)]
 struct PerBranchPolicy {
     /// Publish mode for this branch role (e.g. "propose", "push").
     mode: String,
@@ -278,7 +326,7 @@ struct PerBranchPolicy {
 
 /// Full policy document as returned by `GET /policy/{name}` and
 /// accepted by `PUT /policy/{name}`.
-#[derive(serde::Serialize, serde::Deserialize, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Default, utoipa::ToSchema)]
 struct PolicyDocument {
     /// Optional rate-limit bucket key.
     rate_limit_bucket: Option<String>,
@@ -382,6 +430,16 @@ where
     Ok(())
 }
 
+#[utoipa::path(
+    get,
+    path = "/policy/{name}",
+    params(("name" = String, Path, description = "Policy name")),
+    responses(
+        (status = 200, description = "The publish policy", body = PolicyDocument),
+        (status = 404, description = "No such publish policy", body = NotFoundResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
 async fn get_policy(State(state): State<Arc<AppState>>, Path(name): Path<String>) -> Response {
     // Confirm the named policy exists, then load its per-branch rows.
     let head: Option<(Option<String>,)> =
@@ -423,6 +481,11 @@ async fn get_policy(State(state): State<Arc<AppState>>, Path(name): Path<String>
     Json(document).into_response()
 }
 
+#[utoipa::path(
+    get,
+    path = "/policy",
+    responses((status = 200, description = "All publish policies, by name", body = HashMap<String, PolicyDocument>))
+)]
 async fn get_policies(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Stream the response one named_publish_policy at a time instead
     // of buffering the whole table.
@@ -563,6 +626,16 @@ async fn get_policies(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     resp.into_response()
 }
 
+#[utoipa::path(
+    put,
+    path = "/policy/{name}",
+    params(("name" = String, Path, description = "Policy name")),
+    request_body = PolicyDocument,
+    responses(
+        (status = 200, description = "Policy was stored", body = EmptyResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
 async fn put_policy(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
@@ -583,6 +656,15 @@ async fn put_policy(
 /// `PUT /policy`: bulk replace the named publish policies. Takes a
 /// `{policy_name: PolicyDocument, ...}` JSON object, upserts each entry,
 /// and DELETEs every other named_publish_policy row in one transaction.
+#[utoipa::path(
+    put,
+    path = "/policy",
+    request_body(content = HashMap<String, PolicyDocument>, description = "All publish policies, by name; policies that are not listed are removed"),
+    responses(
+        (status = 200, description = "Policies were stored", body = EmptyResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
 async fn put_policies(
     State(state): State<Arc<AppState>>,
     Json(documents): Json<HashMap<String, PolicyDocument>>,
@@ -630,7 +712,7 @@ async fn put_policies(
 /// Form body for `POST /merge-proposal`. Matches the urlencoded shape
 /// `py/janitor/site/api.py::handle_merge_proposal_change` forwards:
 /// `url=...&status=...` plus an optional `comment`.
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 struct UpdateMergeProposalForm {
     url: String,
     status: String,
@@ -689,6 +771,18 @@ pub(crate) fn classify_mp_status_transition(
 ///      the close didn't take).
 ///   4. Anything else (closed -> open, etc.) is a 400.
 ///   5. After the forge work, the new status is written to the row.
+#[utoipa::path(
+    post,
+    path = "/merge-proposal",
+    request_body(content = UpdateMergeProposalForm, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 200, description = "Status was updated", body = SuccessWithUrlResponse),
+        (status = 400, description = "Unsupported transition or invalid URL", body = ErrorResponse),
+        (status = 403, description = "Not allowed to close the merge proposal", body = ErrorResponse),
+        (status = 404, description = "No such merge proposal", body = NotFoundResponse),
+        (status = 500, description = "Database or forge error", body = ErrorResponse),
+    )
+)]
 async fn update_merge_proposal(
     State(state): State<Arc<AppState>>,
     axum::extract::Form(form): axum::extract::Form<UpdateMergeProposalForm>,
@@ -866,6 +960,16 @@ async fn update_merge_proposal(
 /// On a foreign-key violation (a candidate still references the policy)
 /// return 412 Precondition Failed with an empty body. On success,
 /// including "no such policy", return 200 with an empty body.
+#[utoipa::path(
+    delete,
+    path = "/policy/{name}",
+    params(("name" = String, Path, description = "Policy name")),
+    responses(
+        (status = 200, description = "Policy was removed, or did not exist", body = EmptyResponse),
+        (status = 412, description = "Policy is still in use", body = EmptyResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
 async fn delete_policy(State(state): State<Arc<AppState>>, Path(name): Path<String>) -> Response {
     match sqlx::query("DELETE FROM named_publish_policy WHERE name = $1")
         .bind(&name)
@@ -887,6 +991,12 @@ async fn delete_policy(State(state): State<Arc<AppState>>, Path(name): Path<Stri
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/consider/{id}",
+    params(("id" = RunId, Path, description = "Run id")),
+    responses((status = 200, description = "Run will be considered for publishing", body = EmptyResponse))
+)]
 async fn consider(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> Response {
     async fn run(state: Arc<AppState>, id: RunId) {
         let (run, rate_limit_bucket, command, unpublished_branches) =
@@ -932,7 +1042,7 @@ async fn consider(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> 
     Json(EmptyResponse {}).into_response()
 }
 
-#[derive(serde::Serialize, serde::Deserialize, sqlx::FromRow)]
+#[derive(serde::Serialize, serde::Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 /// Details about a publish operation.
 pub struct PublishDetails {
     codebase: Option<CodebaseName>,
@@ -946,6 +1056,16 @@ pub struct PublishDetails {
     description: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/publish/{id}",
+    params(("id" = String, Path, description = "Publish id")),
+    responses(
+        (status = 200, description = "The publish attempt", body = PublishDetails),
+        (status = 404, description = "No such publish", body = NotFoundResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
 async fn get_publish_by_id(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let publish = match sqlx::query_as::<_, PublishDetails>(
         r#"
@@ -990,7 +1110,7 @@ WHERE id = $1
     }
 }
 
-#[derive(serde::Deserialize, Default)]
+#[derive(serde::Deserialize, Default, utoipa::ToSchema)]
 struct PublishForm {
     /// One of "push-derived" / "push" / "propose" / "attempt-push".
     /// When None, each role falls back to its configured publish
@@ -1002,7 +1122,8 @@ struct PublishForm {
 
 /// Query parameters for the same endpoint. Python reads `role` from
 /// the query string (`?role=main`); we keep parity.
-#[derive(serde::Deserialize, Default)]
+#[derive(serde::Deserialize, Default, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 struct PublishQuery {
     role: Option<String>,
 }
@@ -1019,6 +1140,23 @@ struct PublishQuery {
 ///
 /// No rate-limit or already-published check: this endpoint is the
 /// operator override.
+#[utoipa::path(
+    post,
+    path = "/{campaign}/{codebase}/publish",
+    params(
+        ("campaign" = Campaign, Path, description = "Campaign name"),
+        ("codebase" = CodebaseName, Path, description = "Codebase name"),
+        PublishQuery,
+    ),
+    request_body(content = PublishForm, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 200, description = "Nothing to publish", body = PublishNothingResponse),
+        (status = 202, description = "Publishing was started", body = PublishStartedResponse),
+        (status = 400, description = "Invalid mode; the body is empty when there is no run to publish", body = InvalidModeResponse),
+        (status = 404, description = "No publish policy and no mode", body = NotFoundResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
 async fn publish(
     State(state): State<Arc<AppState>>,
     Path((campaign, codebase)): Path<(Campaign, CodebaseName)>,
@@ -1203,7 +1341,7 @@ async fn publish(
         .into_response()
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 struct ForgeCredentials {
     kind: String,
     name: String,
@@ -1212,7 +1350,7 @@ struct ForgeCredentials {
     user_url: Option<url::Url>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 struct Credentials {
     ssh_keys: Vec<String>,
     pgp_keys: Vec<String>,
@@ -1234,6 +1372,11 @@ fn armor_public_key(data: &[u8]) -> std::io::Result<String> {
 /// All the breezyshim work runs on a blocking thread: breezyshim is
 /// synchronous and each forge call goes through PyO3, so running these
 /// on the async runtime would freeze the worker.
+#[utoipa::path(
+    get,
+    path = "/credentials",
+    responses((status = 200, description = "Keys and forge accounts used for publishing", body = Credentials))
+)]
 async fn get_credentials(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // SSH public keys: scan ~/.ssh for *.pub. Use dirs::home_dir
     // semantics (HOME on Unix) but fall back to /root on
@@ -1399,7 +1542,8 @@ pub(crate) async fn check_straggler(
 
 /// Query parameters for `POST /check-stragglers`. `?ndays=N` selects
 /// merge proposals not scanned in the last N days; default 5.
-#[derive(serde::Deserialize, Default)]
+#[derive(serde::Deserialize, Default, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 struct CheckStragglersQuery {
     #[serde(default = "default_ndays")]
     ndays: i64,
@@ -1412,6 +1556,15 @@ fn default_ndays() -> i64 {
 /// `POST /check-stragglers`: find merge proposals whose `last_scanned`
 /// is older than `ndays` (default 5) and re-scan them in the background.
 /// Returns the list of URLs that were queued.
+#[utoipa::path(
+    post,
+    path = "/check-stragglers",
+    params(CheckStragglersQuery),
+    responses(
+        (status = 200, description = "URLs of the merge proposals that will be rescanned", body = Vec<String>),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
 async fn check_stragglers(
     State(state): State<Arc<AppState>>,
     Query(query): Query<CheckStragglersQuery>,
@@ -1447,6 +1600,11 @@ async fn check_stragglers(
 
 /// `POST /scan`: kick off a background `check_existing` pass over every
 /// known merge proposal. Returns 202 immediately.
+#[utoipa::path(
+    post,
+    path = "/scan",
+    responses((status = 202, description = "Scan was started", body = String, content_type = "text/plain"))
+)]
 async fn scan(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     async fn scan(state: Arc<AppState>) {
         crate::check_existing(
@@ -1468,13 +1626,22 @@ async fn scan(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 }
 
 /// Form body for `POST /refresh-status`: a urlencoded `url=...`.
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 struct RefreshStatusForm {
     url: String,
 }
 
 /// `POST /refresh-status`: re-run `check_existing_mp` against a single
 /// proposal URL in the background.
+#[utoipa::path(
+    post,
+    path = "/refresh-status",
+    request_body(content = RefreshStatusForm, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 202, description = "Refresh was started", body = String, content_type = "text/plain"),
+        (status = 400, description = "Invalid URL", body = ErrorResponse),
+    )
+)]
 async fn refresh_status(
     State(state): State<Arc<AppState>>,
     axum::extract::Form(form): axum::extract::Form<RefreshStatusForm>,
@@ -1588,12 +1755,19 @@ async fn refresh_status(
 /// for this run only, which is useful for smoke-testing a small batch
 /// (e.g. `POST /autopublish?push_limit=2`) before letting the publisher
 /// work through everything.
-#[derive(Debug, Default, serde::Deserialize)]
+#[derive(Debug, Default, serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 struct AutopublishQuery {
     #[serde(default)]
     push_limit: Option<usize>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/autopublish",
+    params(AutopublishQuery),
+    responses((status = 202, description = "Autopublish was started", body = AutopublishResponse))
+)]
 async fn autopublish(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(query): axum::extract::Query<AutopublishQuery>,
@@ -1621,6 +1795,15 @@ async fn autopublish(
 /// single bucket. An unknown bucket returns 200 with
 /// `{open: null, max_open: null, remaining: null}`, not 404. Both
 /// numbers are read under one lock so they can't drift mid-call.
+#[utoipa::path(
+    get,
+    path = "/rate-limits/{bucket}",
+    params(("bucket" = String, Path, description = "Rate-limit bucket")),
+    responses(
+        (status = 200, description = "Rate limit of the bucket; all null for unknown buckets", body = BucketRateLimit),
+        (status = 500, description = "Rate limiter unavailable", body = ErrorResponse),
+    )
+)]
 async fn get_rate_limit(
     State(state): State<Arc<AppState>>,
     Path(bucket): Path<String>,
@@ -1653,14 +1836,14 @@ async fn get_rate_limit(
     .into_response()
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 struct BucketRateLimit {
     open: Option<usize>,
     max_open: Option<usize>,
     remaining: Option<usize>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 struct RateLimitsInfo {
     /// Per-bucket open/max/remaining figures. Field name matches
     /// the JSON key Python emits in
@@ -1674,6 +1857,14 @@ struct RateLimitsInfo {
 /// forges. `proposals_per_bucket` covers every bucket the limiter knows
 /// about; `per_forge` is the in-memory forge rate-limit table. Both
 /// bucket figures come from the same lock acquisition.
+#[utoipa::path(
+    get,
+    path = "/rate-limits",
+    responses(
+        (status = 200, description = "All rate limits", body = RateLimitsInfo),
+        (status = 500, description = "Rate limiter unavailable", body = ErrorResponse),
+    )
+)]
 async fn get_all_rate_limits(State(state): State<Arc<AppState>>) -> Response {
     let proposals_per_bucket: HashMap<String, BucketRateLimit> =
         match state.bucket_rate_limiter.lock() {
@@ -1721,7 +1912,7 @@ async fn get_all_rate_limits(State(state): State<Arc<AppState>>) -> Response {
 }
 
 /// One entry of the `GET /blockers/{run_id}` response.
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct Blocker<D> {
     /// Whether this check allows publishing.
     pub result: bool,
@@ -1730,21 +1921,21 @@ pub struct Blocker<D> {
 }
 
 /// Details of the `success` blocker.
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct BlockerSuccessDetails {
     /// Result code of the run.
     pub result_code: String,
 }
 
 /// Details of the `inactive` blocker.
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct BlockerInactiveDetails {
     /// Whether the codebase is marked inactive.
     pub inactive: bool,
 }
 
 /// Details of the `command` blocker.
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct BlockerCommandDetails {
     /// Command of the candidate.
     pub correct: String,
@@ -1757,7 +1948,7 @@ pub struct BlockerCommandDetails {
 /// outer map key, not a field on this value, and the `reviewed_at`
 /// timestamp is serialized as `timestamp` to match
 /// py/janitor/publish.py::blockers_request.
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct ReviewSummary {
     /// When the review was made.
     pub timestamp: chrono::DateTime<chrono::Utc>,
@@ -1768,7 +1959,7 @@ pub struct ReviewSummary {
 }
 
 /// Details of the `publish_status` blocker.
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct BlockerPublishStatusDetails {
     /// Publish status of the run.
     pub status: String,
@@ -1777,7 +1968,7 @@ pub struct BlockerPublishStatusDetails {
 }
 
 /// Details of the `backoff` blocker.
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct BlockerBackoffDetails {
     /// Number of earlier publish attempts.
     pub attempt_count: usize,
@@ -1786,7 +1977,7 @@ pub struct BlockerBackoffDetails {
 }
 
 /// Details of the `change_set` blocker.
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct BlockerChangeSetDetails {
     /// Change set of the run.
     pub change_set_id: ChangeSetId,
@@ -1795,17 +1986,18 @@ pub struct BlockerChangeSetDetails {
 }
 
 /// One earlier merge proposal in the `previous_mp` blocker.
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct BlockerPreviousMpDetails {
     /// URL of the merge proposal.
     pub url: String,
     /// Status of the merge proposal.
+    #[schema(value_type = String)]
     pub status: janitor::publish::MergeProposalStatus,
 }
 
 /// Details of the `propose_rate_limit` blocker when the bucket is not
 /// rate-limited.
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BlockerRateLimitAllowedDetails {
     /// Rate-limit bucket of the run; null if it has none.
@@ -1814,7 +2006,7 @@ pub struct BlockerRateLimitAllowedDetails {
 
 /// Details of the `propose_rate_limit` blocker when the bucket is
 /// rate-limited.
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BlockerRateLimitExceededDetails {
     /// Number of open merge proposals in the bucket.
@@ -1825,7 +2017,7 @@ pub struct BlockerRateLimitExceededDetails {
 
 /// Details of the `propose_rate_limit` blocker; the shape depends on
 /// whether the bucket is rate-limited.
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 #[serde(untagged)]
 pub enum BlockerProposeRateLimitDetails {
     /// The bucket is not rate-limited, or the run has no bucket.
@@ -1835,7 +2027,7 @@ pub enum BlockerProposeRateLimitDetails {
 }
 
 /// Response of `GET /blockers/{run_id}`.
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct BlockerInfo {
     /// Whether the run succeeded.
     pub success: Blocker<BlockerSuccessDetails>,
@@ -1893,6 +2085,16 @@ struct RunDetails {
 ///
 /// Python deliberately does NOT include a forge_rate_limit blocker
 /// (there's a TODO comment on it), so neither do we.
+#[utoipa::path(
+    get,
+    path = "/blockers/{id}",
+    params(("id" = RunId, Path, description = "Run id")),
+    responses(
+        (status = 200, description = "What is blocking the run from being published", body = BlockerInfo),
+        (status = 404, description = "No such publish-ready run", body = NotFoundResponse),
+        (status = 500, description = "Database error or rate limiter unavailable", body = ErrorResponse),
+    )
+)]
 async fn get_blockers(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> Response {
     let run_result = sqlx::query_as::<_, RunDetails>(
         r#"
@@ -2124,51 +2326,97 @@ WHERE run.id = $1
     .into_response()
 }
 
+#[utoipa::path(
+    get,
+    path = "/health",
+    responses(
+        (status = 200, description = "Service is healthy or degraded", body = health::HealthCheck),
+        (status = 503, description = "Service is unhealthy", body = health::HealthCheck),
+    )
+)]
+async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let health = state.health_checker.check_health().await;
+    let status_code = match health.status {
+        health::HealthStatus::Healthy | health::HealthStatus::Degraded => StatusCode::OK,
+        health::HealthStatus::Unhealthy => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    (status_code, Json(health))
+}
+
+#[utoipa::path(
+    get,
+    path = "/ready",
+    responses(
+        (status = 200, description = "Service is ready", body = String, content_type = "text/plain"),
+        (status = 503, description = "Service is not ready", body = String, content_type = "text/plain"),
+    )
+)]
+async fn readiness(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    if state.health_checker.check_readiness().await {
+        (StatusCode::OK, "ready")
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "not ready")
+    }
+}
+
+#[derive(utoipa::OpenApi)]
+struct PublishApi;
+
+fn routes() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::with_openapi(<PublishApi as utoipa::OpenApi>::openapi())
+        .routes(routes!(get_merge_proposals_by_campaign))
+        .routes(routes!(get_merge_proposals_by_codebase))
+        .routes(routes!(list_merge_proposals))
+        .routes(routes!(absorbed))
+        .routes(routes!(get_policy, put_policy, delete_policy))
+        .routes(routes!(get_policies, put_policies))
+        .routes(routes!(update_merge_proposal))
+        .routes(routes!(consider))
+        .routes(routes!(get_publish_by_id))
+        .routes(routes!(publish))
+        .routes(routes!(get_credentials))
+        .routes(routes!(health_check))
+        .routes(routes!(readiness))
+        .routes(routes!(scan))
+        .routes(routes!(check_stragglers))
+        .routes(routes!(refresh_status))
+        .routes(routes!(autopublish))
+        .routes(routes!(get_rate_limit))
+        .routes(routes!(get_all_rate_limits))
+        .routes(routes!(get_blockers))
+        .routes(routes!(metrics_handler))
+}
+
+/// OpenAPI document for the publisher's API.
+pub fn openapi() -> OpenApi {
+    routes().into_openapi()
+}
+
 /// Create the web application router with all routes.
 pub fn app(state: Arc<AppState>) -> Router {
-    // axum 0.8 requires `{name}` for captures; `:name` panics at route-
-    // registration time ("Path segments must not start with `:`"). The
-    // runner/archive routers were already migrated; migrate publish.
-    Router::new()
+    let (router, openapi) = routes().split_for_parts();
+    let spec = openapi
+        .to_json()
+        .expect("OpenAPI document can be serialized");
+    router
         .route(
-            "/{campaign}/merge-proposals",
-            get(get_merge_proposals_by_campaign),
+            "/openapi.json",
+            get(move || async move { ([("content-type", "application/json")], spec) }),
         )
-        .route(
-            "/c/{codebase}/merge-proposals",
-            get(get_merge_proposals_by_codebase),
-        )
-        .route("/merge-proposals", get(list_merge_proposals))
-        .route("/absorbed", get(absorbed))
-        .route("/policy/{name}", get(get_policy))
-        .route("/policy", get(get_policies))
-        .route("/policy/{name}", put(put_policy))
-        .route("/policy", put(put_policies))
-        .route("/merge-proposal", post(update_merge_proposal))
-        .route("/policy/{name}", delete(delete_policy))
-        .route("/consider/{id}", post(consider))
-        .route("/publish/{id}", get(get_publish_by_id))
-        .route("/{campaign}/{codebase}/publish", post(publish))
-        .route("/credentials", get(get_credentials))
-        .route(
-            "/health",
-            get(health::health_check_handler::<Arc<AppState>>),
-        )
-        .route("/ready", get(health::readiness_handler::<Arc<AppState>>))
-        .route("/scan", post(scan))
-        .route("/check-stragglers", post(check_stragglers))
-        .route("/refresh-status", post(refresh_status))
-        .route("/autopublish", post(autopublish))
-        .route("/rate-limits/{bucket}", get(get_rate_limit))
-        .route("/rate-limits", get(get_all_rate_limits))
-        .route("/blockers/{id}", get(get_blockers))
-        .route("/metrics", get(metrics_handler))
         .layer(axum::middleware::from_fn(
             crate::middleware::metrics_middleware,
         ))
         .with_state(state)
 }
 
+#[utoipa::path(
+    get,
+    path = "/metrics",
+    responses(
+        (status = 200, description = "Prometheus metrics", body = String, content_type = "text/plain"),
+        (status = 500, description = "Metrics could not be encoded", body = String, content_type = "text/plain"),
+    )
+)]
 async fn metrics_handler() -> impl IntoResponse {
     use axum::http::header;
     use prometheus::{Encoder, TextEncoder};
@@ -2199,6 +2447,46 @@ mod tests {
     };
     use serde_json::json;
     use std::collections::HashMap;
+
+    fn collect_refs<'a>(value: &'a serde_json::Value, refs: &mut Vec<&'a str>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, value) in map {
+                    match value {
+                        serde_json::Value::String(target) if key == "$ref" => refs.push(target),
+                        _ => collect_refs(value, refs),
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    collect_refs(item, refs);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Schemas only end up in the document when utoipa can see them from
+    /// a path; a `$ref` to anything else would leave clients with a
+    /// broken document.
+    #[test]
+    fn test_openapi_refs_resolve() {
+        let doc = serde_json::to_value(super::openapi()).unwrap();
+        let mut refs = vec![];
+        collect_refs(&doc, &mut refs);
+        assert!(!refs.is_empty());
+        let missing: Vec<&str> = refs
+            .into_iter()
+            .filter(|r| {
+                let name = r
+                    .strip_prefix("#/components/schemas/")
+                    .unwrap_or_else(|| panic!("unexpected $ref {r}"));
+                doc["components"]["schemas"].get(name).is_none()
+            })
+            .collect();
+        assert_eq!(missing, Vec::<&str>::new());
+    }
 
     #[test]
     fn test_propose_rate_limit_details_shapes() {

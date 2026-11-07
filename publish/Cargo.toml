@@ -44,6 +44,7 @@ lazy_static = "1.4"
 pyo3 = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 utoipa.workspace = true
+utoipa-axum.workspace = true
 
 [[bin]]
 name = "janitor-publish-one"

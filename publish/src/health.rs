@@ -1,12 +1,11 @@
-//! Types and axum handlers for the `/health` and `/ready` endpoints.
+//! Types for the `/health` and `/ready` endpoints.
 
 use async_trait::async_trait;
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// Health status for the service overall or an individual component.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum HealthStatus {
     /// Fully operational.
@@ -18,7 +17,7 @@ pub enum HealthStatus {
 }
 
 /// Full health-check response body.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct HealthCheck {
     /// Overall status, computed from the individual component checks.
     pub status: HealthStatus,
@@ -33,7 +32,7 @@ pub struct HealthCheck {
 }
 
 /// Health of one component contributing to the overall service health.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ComponentHealth {
     /// Component name.
     pub name: String,
@@ -44,6 +43,7 @@ pub struct ComponentHealth {
     pub error: Option<String>,
     /// Additional structured details.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
     pub details: Option<serde_json::Value>,
 }
 
@@ -215,51 +215,6 @@ impl ComponentChecker for RedisHealthChecker {
                 details: None,
             },
         }
-    }
-}
-
-/// The axum handlers pull the health checker off state through this trait.
-pub trait BaseAppState: Clone + Send + Sync + 'static {
-    /// Service name (used in health JSON).
-    fn service_name(&self) -> &str;
-
-    /// Service version (used in health JSON).
-    fn service_version(&self) -> &str;
-
-    /// The health checker handle.
-    fn health_checker(&self) -> Arc<dyn HealthCheckHandler>;
-}
-
-impl<T: BaseAppState> BaseAppState for Arc<T> {
-    fn service_name(&self) -> &str {
-        (**self).service_name()
-    }
-
-    fn service_version(&self) -> &str {
-        (**self).service_version()
-    }
-
-    fn health_checker(&self) -> Arc<dyn HealthCheckHandler> {
-        (**self).health_checker()
-    }
-}
-
-/// Axum handler for `GET /health`. Returns the full health JSON.
-pub async fn health_check_handler<S: BaseAppState>(State(state): State<S>) -> impl IntoResponse {
-    let health = state.health_checker().check_health().await;
-    let status_code = match health.status {
-        HealthStatus::Healthy | HealthStatus::Degraded => StatusCode::OK,
-        HealthStatus::Unhealthy => StatusCode::SERVICE_UNAVAILABLE,
-    };
-    (status_code, Json(health))
-}
-
-/// Axum handler for `GET /ready`. Returns 200 when ready, 503 otherwise.
-pub async fn readiness_handler<S: BaseAppState>(State(state): State<S>) -> impl IntoResponse {
-    if state.health_checker().check_readiness().await {
-        (StatusCode::OK, "ready")
-    } else {
-        (StatusCode::SERVICE_UNAVAILABLE, "not ready")
     }
 }
 
