@@ -25,13 +25,11 @@ import asyncpg
 import pytest
 import pytest_asyncio
 from aiohttp import web
-from aiohttp.test_utils import make_mocked_request
 from bs4 import BeautifulSoup
 from fakeredis.aioredis import FakeRedis
 
 from janitor.config import read_string as read_config_string
-from janitor.logs import get_log_manager
-from janitor.site.simple import create_app, handle_result_file
+from janitor.site.simple import create_app
 
 
 @pytest_asyncio.fixture()
@@ -411,22 +409,36 @@ async def test_oauth_callback_defaults_missing_groups_claim(
     assert (resp.status, page.status, stored["groups"]) == (302, 200, groups)
 
 
-async def test_result_file_unreadable_log_returns_502(tmp_path):
-    log = tmp_path / "pkg" / "run-id" / "build.log"
-    log.parent.mkdir(parents=True)
-    log.write_text("log")
-    log.chmod(0)
-    app = web.Application()
-    app["logfile_manager"] = get_log_manager(str(tmp_path))
-    request = make_mocked_request(
-        "GET",
-        "/",
-        app=app,
-        match_info={"pkg": "pkg", "run_id": "run-id", "filename": "build.log"},
+async def test_result_file_log_from_runner(aiohttp_client, database_location):
+    async def handle_log(request):
+        key = (request.match_info["run_id"], request.match_info["filename"])
+        responses = {
+            ("run-id", "build.log"): web.Response(text="log"),
+            ("run-id", "worker.log"): web.Response(
+                status=500, text="storage unavailable"
+            ),
+        }
+        return responses.get(key, web.Response(status=404))
+
+    runner_app = web.Application()
+    runner_app.router.add_get("/log/{run_id}/{filename}", handle_log)
+    runner_client = await aiohttp_client(runner_app)
+    _private_app, app = await create_app(
+        config=create_config(database_location),
+        redis=FakeRedis(),
+        runner_url=str(runner_client.make_url("/")),
     )
-    with pytest.raises(web.HTTPBadGateway) as e:
-        await handle_result_file(request)
-    assert str(e.value.__cause__) == "Unable to read build.log"
+    client = await aiohttp_client(app)
+
+    got = []
+    for name in ["build.log", "worker.log", "dist.log"]:
+        resp = await client.get(f"/lintian-fixes/pkg/pkg/run-id/{name}")
+        got.append((name, resp.status, await resp.text()))
+    assert got == [
+        ("build.log", 200, "log"),
+        ("worker.log", 502, "Unable to read log file worker.log for run run-id"),
+        ("dist.log", 404, "No log file dist.log for run run-id"),
+    ]
 
 
 async def test_oauth_callback_clears_state_cookie_with_matching_path(

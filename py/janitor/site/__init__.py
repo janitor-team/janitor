@@ -16,6 +16,7 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
 import html
+import logging
 from typing import Optional
 
 from aiohttp import ClientConnectorError, web
@@ -200,6 +201,35 @@ async def get_archive_diff(
                 )
     except ClientConnectorError as e:
         raise DebdiffRetrievalError(str(e)) from e
+
+
+async def serve_run_log(request: web.Request, run_id: str, filename: str):
+    """Serve a log file of a run, as retrieved from the runner."""
+    if request.app["runner_url"] is None:
+        raise web.HTTPServiceUnavailable(text="no runner configured")
+    url = URL(request.app["runner_url"]) / "log" / run_id / filename
+    try:
+        async with request.app["http_client_session"].get(url) as resp:
+            if resp.status == 404:
+                raise web.HTTPNotFound(text=f"No log file {filename} for run {run_id}")
+            if resp.status != 200:
+                logging.warning(
+                    "Unable to read log %s for run %s: runner returned %d: %s",
+                    filename,
+                    run_id,
+                    resp.status,
+                    await resp.text(),
+                )
+                raise web.HTTPBadGateway(
+                    text=f"Unable to read log file {filename} for run {run_id}"
+                )
+            body = await resp.read()
+    except ClientConnectorError as e:
+        logging.warning(
+            "Unable to contact runner for log %s/%s: %s", run_id, filename, e
+        )
+        raise web.HTTPBadGateway(text="unable to contact runner") from e
+    return web.Response(content_type="text/plain", charset="utf-8", body=body)
 
 
 def is_admin(request: web.Request) -> bool:
