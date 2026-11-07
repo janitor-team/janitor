@@ -3286,6 +3286,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "url",
+ "utoipa",
 ]
 
 [[package]]

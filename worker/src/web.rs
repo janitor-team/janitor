@@ -107,10 +107,7 @@ async fn health() -> String {
 #[utoipa::path(
     get,
     path = "/assignment",
-    responses(
-        // TODO: describe the assignment with a schema rather than as an opaque object.
-        (status = 200, description = "The current assignment; null when there is none", body = Object),
-    )
+    responses((status = 200, description = "The current assignment; null when there is none", body = Option<Assignment>))
 )]
 async fn assignment(State(state): State<Arc<RwLock<AppState>>>) -> Json<Option<Assignment>> {
     Json(state.read().unwrap().assignment.clone())

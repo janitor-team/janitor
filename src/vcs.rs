@@ -97,6 +97,7 @@ pub fn is_authenticated_url(url: &Url) -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy, std::hash::Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum VcsType {
     Bzr,

@@ -180,19 +180,23 @@ impl TargetDetails {
     }
 }
 
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct Codemod {
     pub command: String,
     pub environment: HashMap<String, String>,
 }
 
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct Build {
     pub target: String,
+    #[cfg_attr(feature = "utoipa", schema(value_type = Object))]
     pub config: serde_json::Value,
     pub environment: Option<HashMap<String, String>>,
 }
 
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Branch {
     pub cached_url: Option<Url>,
@@ -202,6 +206,7 @@ pub struct Branch {
     pub url: Option<Url>,
 
     /// Path inside of the branch
+    #[cfg_attr(feature = "utoipa", schema(value_type = String))]
     pub subpath: std::path::PathBuf,
 
     /// Any additional branches that are colocated with this branch that should be checked out.
@@ -211,18 +216,23 @@ pub struct Branch {
     pub default_empty: bool,
 }
 
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TargetRepository {
     pub url: Url,
 }
 
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ResumeBranch {
+    #[cfg_attr(feature = "utoipa", schema(value_type = Object))]
     pub result: serde_json::Value,
     pub branch_url: Url,
+    #[cfg_attr(feature = "utoipa", schema(value_type = Vec<Vec<Option<String>>>))]
     pub branches: Vec<(String, String, Option<RevisionId>, Option<RevisionId>)>,
 }
 
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Assignment {
     pub id: RunId,
