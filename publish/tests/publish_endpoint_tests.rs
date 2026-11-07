@@ -6,7 +6,8 @@ use axum::http::{Request, StatusCode};
 use janitor::{test_utils::TestDatabase, test_with_database};
 use janitor_publish::web::{
     Blocker, BlockerBackoffDetails, BlockerChangeSetDetails, BlockerCommandDetails,
-    BlockerInactiveDetails, BlockerInfo, BlockerPublishStatusDetails, BlockerSuccessDetails,
+    BlockerInactiveDetails, BlockerInfo, BlockerProposeRateLimitDetails,
+    BlockerPublishStatusDetails, BlockerRateLimitAllowedDetails, BlockerSuccessDetails,
 };
 use janitor_publish::{AppState, PublishWorker};
 use janitor_types::{Campaign, ChangeSetId, CodebaseName};
@@ -285,7 +286,9 @@ test_with_database! {
                 },
                 propose_rate_limit: Blocker {
                     result: true,
-                    details: serde_json::json!({"bucket": null}),
+                    details: BlockerProposeRateLimitDetails::Allowed(
+                        BlockerRateLimitAllowedDetails { bucket: None },
+                    ),
                 },
                 change_set: Blocker {
                     result: true,

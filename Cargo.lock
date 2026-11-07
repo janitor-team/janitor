@@ -3509,6 +3509,7 @@ dependencies = [
  "tokio",
  "tower 0.5.3",
  "url",
+ "utoipa",
  "uuid",
 ]
 
