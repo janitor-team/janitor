@@ -20,6 +20,9 @@ pub enum Error {
     #[error("run {0} was not successful")]
     RunNotSuccessful(RunId),
 
+    #[error("no unchanged run for run {0}")]
+    UnchangedRunNotFound(RunId),
+
     #[error("artifacts missing for run {0}")]
     ArtifactsMissing(RunId),
 
@@ -93,6 +96,7 @@ impl Error {
         match self {
             Error::RunNotFound(_) => "run-not-found",
             Error::RunNotSuccessful(_) => "run-not-successful",
+            Error::UnchangedRunNotFound(_) => "unchanged-run-not-found",
             Error::ArtifactsMissing(_) => "artifacts-missing",
             Error::ArtifactRetrievalTimeout(_) => "artifact-retrieval-timeout",
             Error::ArtifactRetrievalFailed { .. } => "artifact-retrieval-failed",
@@ -114,6 +118,7 @@ impl Error {
         match self {
             Error::RunNotFound(_) => StatusCode::NOT_FOUND,
             Error::RunNotSuccessful(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            Error::UnchangedRunNotFound(_) => StatusCode::NOT_FOUND,
             Error::ArtifactsMissing(_) => StatusCode::NOT_FOUND,
             Error::ArtifactRetrievalTimeout(_) => StatusCode::GATEWAY_TIMEOUT,
             Error::ArtifactRetrievalFailed { .. } => StatusCode::BAD_GATEWAY,

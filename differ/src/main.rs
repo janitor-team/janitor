@@ -230,6 +230,8 @@ struct Run {
     campaign: Campaign,
     id: RunId,
     build_version: Option<debversion::Version>,
+    codebase: CodebaseName,
+    main_branch_revision: Option<String>,
 }
 
 impl Run {
@@ -248,7 +250,8 @@ impl Run {
 async fn get_run(pool: &sqlx::PgPool, run_id: &RunId) -> sqlx::Result<Option<Run>> {
     sqlx::query_as::<_, Run>(
         r#"SELECT result_code, source AS build_source, suite::text AS campaign, id,
-                  debian_build.version AS build_version
+                  debian_build.version AS build_version, run.codebase,
+                  run.main_branch_revision
            FROM run
            LEFT JOIN debian_build ON debian_build.run_id = run.id
            WHERE id = $1"#,
@@ -265,7 +268,8 @@ async fn get_unchanged_run(
 ) -> sqlx::Result<Option<Run>> {
     sqlx::query_as::<_, Run>(
         r#"SELECT result_code, source AS build_source, suite::text AS campaign, id,
-                  debian_build.version AS build_version
+                  debian_build.version AS build_version, run.codebase,
+                  run.main_branch_revision
            FROM run
            LEFT JOIN debian_build ON debian_build.run_id = run.id
            WHERE revision = $1 AND codebase = $2 AND result_code = 'success'
@@ -286,6 +290,45 @@ async fn get_run_pair(pool: &sqlx::PgPool, old_id: &RunId, new_id: &RunId) -> Re
     let old_run = check_successful(old_id, old_run)?;
     let new_run = check_successful(new_id, new_run)?;
     Ok((old_run, new_run))
+}
+
+/// The runs to diff, as given in the request path.
+enum DiffRuns<T> {
+    /// An old and a new run.
+    Pair(T, T),
+    /// A run, to diff against the unchanged build of its base revision.
+    AgainstUnchanged(T),
+}
+
+impl DiffRuns<String> {
+    fn parse(self) -> Result<DiffRuns<RunId>> {
+        Ok(match self {
+            DiffRuns::Pair(old_id, new_id) => {
+                DiffRuns::Pair(parse_run_id(old_id)?, parse_run_id(new_id)?)
+            }
+            DiffRuns::AgainstUnchanged(id) => DiffRuns::AgainstUnchanged(parse_run_id(id)?),
+        })
+    }
+}
+
+impl DiffRuns<RunId> {
+    /// Fetch the old and new run, both of which must have succeeded.
+    async fn resolve(&self, pool: &sqlx::PgPool) -> Result<(Run, Run)> {
+        match self {
+            DiffRuns::Pair(old_id, new_id) => get_run_pair(pool, old_id, new_id).await,
+            DiffRuns::AgainstUnchanged(id) => {
+                let run = check_successful(id, get_run(pool, id).await?)?;
+                let Some(main_branch_revision) = run.main_branch_revision.as_deref() else {
+                    return Err(Error::UnchangedRunNotFound(id.clone()));
+                };
+                let rev = RevisionId::from(main_branch_revision.as_bytes().to_vec());
+                let unchanged = get_unchanged_run(pool, &run.codebase, &rev)
+                    .await?
+                    .ok_or_else(|| Error::UnchangedRunNotFound(id.clone()))?;
+                Ok((unchanged, run))
+            }
+        }
+    }
 }
 
 fn check_successful(run_id: &RunId, run: Option<Run>) -> Result<Run> {
@@ -372,7 +415,9 @@ fn routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(handle_health))
         .routes(routes!(handle_ready))
         .routes(routes!(handle_metrics))
+        .routes(routes!(handle_debdiff_against_unchanged))
         .routes(routes!(handle_debdiff))
+        .routes(routes!(handle_diffoscope_against_unchanged))
         .routes(routes!(handle_diffoscope))
         .routes(routes!(handle_precache))
         .routes(routes!(handle_precache_all))
@@ -488,12 +533,56 @@ async fn handle_diffoscope(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Response> {
+    diffoscope(DiffRuns::Pair(old_id, new_id), query, &state, &headers).await
+}
+
+#[utoipa::path(
+    get,
+    path = "/diffoscope/{run_id}",
+    params(
+        ("run_id" = RunId, Path, description = "Run with the changes"),
+        DiffoscopeQuery,
+    ),
+    responses(
+        (status = 200, description = "diffoscope output for the build of the run and the unchanged build of its base revision; the format depends on the Accept header",
+         content(
+            (DiffoscopeOutput = "application/json"),
+            (String = "text/plain"),
+            (String = "text/markdown"),
+            (String = "text/html"),
+         )),
+        (status = 400, description = "Invalid run id, or the diff command failed", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 404, description = "Run, its unchanged run, or their artifacts not found", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 406, description = "None of the offered content types is acceptable", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 422, description = "Run was not successful", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 500, description = "Internal error", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 502, description = "Artifacts could not be retrieved", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 503, description = "Database unavailable", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 504, description = "Timeout retrieving artifacts or running the diff", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 507, description = "Diff command used too much memory", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+    )
+)]
+async fn handle_diffoscope_against_unchanged(
+    Path(run_id): Path<String>,
+    Query(query): Query<DiffoscopeQuery>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    diffoscope(DiffRuns::AgainstUnchanged(run_id), query, &state, &headers).await
+}
+
+async fn diffoscope(
+    runs: DiffRuns<String>,
+    query: DiffoscopeQuery,
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Response> {
     state
         .metrics
         .requests
         .with_label_values(&["diffoscope"])
         .inc();
-    let result = handle_diffoscope_inner(old_id, new_id, query, &state, &headers).await;
+    let result = handle_diffoscope_inner(runs, query, state, headers).await;
     if let Err(e) = &result {
         state
             .metrics
@@ -505,14 +594,12 @@ async fn handle_diffoscope(
 }
 
 async fn handle_diffoscope_inner(
-    old_id: String,
-    new_id: String,
+    runs: DiffRuns<String>,
     query: DiffoscopeQuery,
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<Response> {
-    let old_id = parse_run_id(old_id)?;
-    let new_id = parse_run_id(new_id)?;
+    let runs = runs.parse()?;
 
     let offered = &[
         "text/plain",
@@ -525,7 +612,7 @@ async fn handle_diffoscope_inner(
             offered: offered.join(", "),
         })?;
 
-    let (old_run, new_run) = get_run_pair(&state.pool, &old_id, &new_id).await?;
+    let (old_run, new_run) = runs.resolve(&state.pool).await?;
 
     let cache_path = state.diffoscope_cache_path(&old_run.id, &new_run.id);
     if let Some(parent) = cache_path.as_deref().and_then(|p| p.parent()) {
@@ -765,8 +852,51 @@ async fn handle_debdiff(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Response> {
+    debdiff(DiffRuns::Pair(old_id, new_id), query, &state, &headers).await
+}
+
+#[utoipa::path(
+    get,
+    path = "/debdiff/{run_id}",
+    params(
+        ("run_id" = RunId, Path, description = "Run with the changes"),
+        DebdiffQuery,
+    ),
+    responses(
+        (status = 200, description = "debdiff between the build of the run and the unchanged build of its base revision; the format depends on the Accept header",
+         content(
+            (String = "text/plain"),
+            (String = "text/markdown"),
+            (String = "text/html"),
+         )),
+        (status = 400, description = "Invalid run id, or the diff command failed", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 404, description = "Run, its unchanged run, or their artifacts not found", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 406, description = "None of the offered content types is acceptable", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 422, description = "Run was not successful", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 500, description = "Internal error", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 502, description = "Artifacts could not be retrieved", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 503, description = "Database unavailable", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 504, description = "Timeout retrieving artifacts or running the diff", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 507, description = "Diff command used too much memory", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+    )
+)]
+async fn handle_debdiff_against_unchanged(
+    Path(run_id): Path<String>,
+    Query(query): Query<DebdiffQuery>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    debdiff(DiffRuns::AgainstUnchanged(run_id), query, &state, &headers).await
+}
+
+async fn debdiff(
+    runs: DiffRuns<String>,
+    query: DebdiffQuery,
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Response> {
     state.metrics.requests.with_label_values(&["debdiff"]).inc();
-    let result = handle_debdiff_inner(old_id, new_id, query, &state, &headers).await;
+    let result = handle_debdiff_inner(runs, query, state, headers).await;
     if let Err(e) = &result {
         state
             .metrics
@@ -778,14 +908,12 @@ async fn handle_debdiff(
 }
 
 async fn handle_debdiff_inner(
-    old_id: String,
-    new_id: String,
+    runs: DiffRuns<String>,
     query: DebdiffQuery,
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<Response> {
-    let old_id = parse_run_id(old_id)?;
-    let new_id = parse_run_id(new_id)?;
+    let runs = runs.parse()?;
 
     let offered = &["text/x-diff", "text/plain", "text/markdown", "text/html"];
     let content_type =
@@ -793,7 +921,7 @@ async fn handle_debdiff_inner(
             offered: offered.join(", "),
         })?;
 
-    let (old_run, new_run) = get_run_pair(&state.pool, &old_id, &new_id).await?;
+    let (old_run, new_run) = runs.resolve(&state.pool).await?;
 
     let cache_path = state.debdiff_cache_path(&old_run.id, &new_run.id);
     if let Some(parent) = cache_path.as_deref().and_then(|p| p.parent()) {
@@ -1604,6 +1732,8 @@ mod tests {
             campaign: Campaign::new("lintian-fixes").unwrap(),
             id: RunId::new("run-1").unwrap(),
             build_version,
+            codebase: CodebaseName::new("foo").unwrap(),
+            main_branch_revision: None,
         }
     }
 
@@ -1850,6 +1980,8 @@ mod tests {
                 campaign: Campaign::new("cc").unwrap(),
                 id: run_id("r2"),
                 build_version: None,
+                codebase: CodebaseName::new("foo").unwrap(),
+                main_branch_revision: None,
             }),
         )
         .unwrap_err();
@@ -1900,6 +2032,141 @@ mod tests {
         );
         // A subsequent acquire generates again.
         assert!(matches!(inflight.acquire(key), InFlightHandle::Generate(_)));
+    }
+
+    /// Tests for finding the runs to diff, against a real database.
+    mod against_unchanged {
+        use super::*;
+        use janitor::test_utils::{TestDatabase, TestSchema};
+        use tower::ServiceExt;
+
+        /// A database with codebase `foo` and these runs:
+        /// - `ctl`: a successful control run of revision `base`, in its
+        ///   own change set
+        /// - `r1`: a successful run on top of `base`
+        /// - `r2`: a failed run on top of `base`
+        /// - `r3`: a successful run on top of `other`, for which the only
+        ///   successful run of `other` is part of a larger change set
+        async fn setup() -> Option<TestDatabase> {
+            let db = TestDatabase::new_optional_with_schema(TestSchema::Debian)
+                .await
+                .unwrap()?;
+            sqlx::query("INSERT INTO codebase (name) VALUES ('foo')")
+                .execute(&db.pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO change_set (id, campaign) VALUES \
+                 ('ctl', 'control'), ('r1', 'lintian-fixes'), ('r2', 'lintian-fixes'), \
+                 ('r3', 'lintian-fixes'), ('cs', 'lintian-fixes')",
+            )
+            .execute(&db.pool)
+            .await
+            .unwrap();
+            for (id, suite, result_code, revision, main_branch_revision, change_set) in [
+                ("ctl", "control", "success", "base", "base", "ctl"),
+                ("r1", "lintian-fixes", "success", "new1", "base", "r1"),
+                ("r2", "lintian-fixes", "build-failed", "new2", "base", "r2"),
+                ("in-cs", "lintian-fixes", "success", "other", "older", "cs"),
+                ("r3", "lintian-fixes", "success", "new3", "other", "r3"),
+            ] {
+                sqlx::query(
+                    "INSERT INTO run (id, command, start_time, finish_time, result_code, \
+                     suite, change_set, codebase, revision, main_branch_revision, \
+                     logfilenames) \
+                     VALUES ($1, 'cmd', NOW(), NOW(), $2, $3, $4, 'foo', $5, $6, '{}')",
+                )
+                .bind(id)
+                .bind(result_code)
+                .bind(suite)
+                .bind(change_set)
+                .bind(revision)
+                .bind(main_branch_revision)
+                .execute(&db.pool)
+                .await
+                .unwrap();
+            }
+            Some(db)
+        }
+
+        async fn resolve(pool: &sqlx::PgPool, id: &str) -> Result<(RunId, RunId)> {
+            let runs = DiffRuns::AgainstUnchanged(RunId::new(id).unwrap());
+            let (old_run, new_run) = runs.resolve(pool).await?;
+            Ok((old_run.id, new_run.id))
+        }
+
+        #[tokio::test]
+        async fn resolves_against_unchanged_run() {
+            let Some(db) = setup().await else {
+                eprintln!("Skipping: no Postgres available");
+                return;
+            };
+            let (old_id, new_id) = resolve(&db.pool, "r1").await.unwrap();
+            assert_eq!((old_id.as_str(), new_id.as_str()), ("ctl", "r1"));
+            assert!(matches!(
+                resolve(&db.pool, "missing").await,
+                Err(Error::RunNotFound(id)) if id == "missing"
+            ));
+            assert!(matches!(
+                resolve(&db.pool, "r2").await,
+                Err(Error::RunNotSuccessful(id)) if id == "r2"
+            ));
+            assert!(matches!(
+                resolve(&db.pool, "r3").await,
+                Err(Error::UnchangedRunNotFound(id)) if id == "r3"
+            ));
+        }
+
+        #[tokio::test]
+        async fn missing_unchanged_run_returns_404() {
+            let Some(db) = setup().await else {
+                eprintln!("Skipping: no Postgres available");
+                return;
+            };
+            let art = tempfile::TempDir::new().unwrap();
+            let state = Arc::new(AppState {
+                pool: db.pool.clone(),
+                artifact_manager: Arc::new(
+                    janitor::artifacts::ArtifactManager::local(art.path()).unwrap(),
+                ),
+                task_memory_limit: 100,
+                task_timeout: 10,
+                diffoscope_command: "diffoscope".to_string(),
+                diffoscope_cache_dir: None,
+                debdiff_cache_dir: None,
+                background_tasks: TaskTracker::new(),
+                precache_slots: Arc::new(Semaphore::new(2)),
+                debdiff_inflight: Arc::new(InFlight::default()),
+                diffoscope_inflight: Arc::new(InFlight::default()),
+                metrics: metrics(),
+            });
+            let resp = build_router(state)
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri("/debdiff/r3")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = resp.status();
+            let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&body).unwrap()
+                ),
+                (
+                    StatusCode::NOT_FOUND,
+                    serde_json::json!({
+                        "reason": "unchanged-run-not-found",
+                        "message": "no unchanged run for run r3",
+                    })
+                )
+            );
+        }
     }
 
     /// Router-level tests: build a real axum Router with the same
@@ -2119,8 +2386,8 @@ mod tests {
             let resp = router.clone().oneshot(get("/nope")).await.unwrap();
             assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
-            // /debdiff expects two segments; one segment must not match.
-            let resp = router.oneshot(get("/debdiff/only-one")).await.unwrap();
+            // /debdiff takes one or two run ids, but no more.
+            let resp = router.oneshot(get("/debdiff/a/b/c")).await.unwrap();
             assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         }
 
