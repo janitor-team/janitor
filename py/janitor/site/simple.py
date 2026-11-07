@@ -40,7 +40,6 @@ from jinja2 import select_autoescape
 from .. import state
 from ..artifacts import ArtifactsMissing
 from ..config import Config
-from ..schedule import do_schedule
 from ..vcs import VcsManager, get_vcs_managers_from_config
 from . import (
     TEMPLATE_ENV,
@@ -353,6 +352,7 @@ async def handle_generic_codebase(request):
         aiozipkin.request_span(request),
         run_id,
         publisher_url=request.app["publisher_url"],
+        runner_url=request.app["runner_url"],
     )
 
 
@@ -375,8 +375,6 @@ async def handle_health(request):
 
 
 async def process_webhook(request, db):
-    rescheduled: dict[str, list[str]] = {}
-
     urls = []
     codebases: dict[str, str] = {}
     async for codebase, branch_url in parse_webhook(request, db):
@@ -385,20 +383,31 @@ async def process_webhook(request, db):
             codebases[codebase] = branch_url
 
     async with db.acquire() as conn:
-        for codebase, branch_url in codebases.items():
-            requester = f"Push hook for {branch_url}"
-            for suite in await state.iter_publishable_suites(conn, codebase):
-                if suite not in rescheduled.get(codebase, []):
-                    await do_schedule(
-                        conn,
-                        campaign=suite,
-                        codebase=codebase,
-                        requester=requester,
-                        bucket="hook",
-                    )
-                    rescheduled.setdefault(codebase, []).append(suite)
+        publishable = {
+            codebase: await state.iter_publishable_suites(conn, codebase)
+            for codebase in codebases
+        }
 
-        return web.json_response({"rescheduled": rescheduled, "urls": urls})
+    rescheduled = {
+        codebase: suites for codebase, suites in publishable.items() if suites
+    }
+    if rescheduled and request.app["runner_url"] is None:
+        raise web.HTTPServiceUnavailable(text="no runner configured")
+    for codebase, suites in rescheduled.items():
+        for suite in suites:
+            async with request.app["http_client_session"].post(
+                URL(request.app["runner_url"]) / "schedule",
+                json={
+                    "campaign": suite,
+                    "codebase": codebase,
+                    "requester": f"Push hook for {codebases[codebase]}",
+                    "bucket": "hook",
+                },
+                raise_for_status=True,
+            ):
+                pass
+
+    return web.json_response({"rescheduled": rescheduled, "urls": urls})
 
 
 @routes.post("/webhook", name="webhook")

@@ -1,6 +1,8 @@
 #!/usr/bin/python3
 
 import asyncio
+import logging
+from datetime import timedelta
 from typing import Any, Optional
 
 import aiohttp_jinja2
@@ -11,7 +13,6 @@ from yarl import URL
 
 from janitor import splitout_env, state
 from janitor.config import get_campaign_config
-from janitor.queue import Queue
 from janitor.site import (
     BuildDiffUnavailable,
     DebdiffRetrievalError,
@@ -206,6 +207,7 @@ async def generate_codebase_context(
     span,
     run_id=None,
     publisher_url: Optional[str] = None,
+    runner_url: Optional[str] = None,
 ):
     async with db.acquire() as conn:
         with span.new_child("sql:codebase"):
@@ -264,13 +266,33 @@ WHERE codebase.name = $1""",
             with span.new_child(name):
                 return await query(conn, *args)
 
+    async def queue_position():
+        if runner_url is None:
+            return (None, None)
+        with span.new_child("queue-position"):
+            try:
+                async with client.get(
+                    URL(runner_url) / "queue" / "position",
+                    params={"codebase": codebase["name"], "campaign": suite},
+                    raise_for_status=True,
+                ) as resp:
+                    ret = await resp.json()
+            except (ClientResponseError, ClientConnectorError) as e:
+                logging.warning(
+                    "Unable to retrieve queue position for %s/%s: %r",
+                    codebase["name"],
+                    suite,
+                    e,
+                )
+                return (None, None)
+        if ret["wait_time"] is None:
+            return (ret["position"], None)
+        return (ret["position"], timedelta(seconds=ret["wait_time"]))
+
     candidate, previous_runs, (queue_position, queue_wait_time) = await asyncio.gather(
         fetch("sql:candidate", get_candidate, codebase["name"], suite),
         fetch("sql:previous-runs", get_previous_runs, codebase["name"], suite),
-        fetch(
-            "sql:queue-position",
-            lambda conn: Queue(conn).get_position(suite, codebase["name"]),
-        ),
+        queue_position(),
     )
     if candidate is not None:
         (candidate_context, candidate_value, candidate_success_chance) = candidate
