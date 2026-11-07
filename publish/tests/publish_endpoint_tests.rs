@@ -9,8 +9,8 @@ use janitor_publish::rate_limiter::{FixedRateLimiter, RateLimiter};
 use janitor_publish::web::{
     Blocker, BlockerBackoffDetails, BlockerChangeSetDetails, BlockerCommandDetails,
     BlockerInactiveDetails, BlockerInfo, BlockerPreviousMpDetails, BlockerProposeRateLimitDetails,
-    BlockerPublishStatusDetails, BlockerRateLimitAllowedDetails, BlockerSuccessDetails,
-    ReviewSummary,
+    BlockerPublishStatusDetails, BlockerRateLimitAllowedDetails, BlockerRateLimitExceededDetails,
+    BlockerSuccessDetails, ReviewSummary,
 };
 use janitor_publish::{AppState, PublishWorker};
 use janitor_types::{Campaign, ChangeSetId, CodebaseName};
@@ -441,6 +441,117 @@ test_with_database! {
                     details: vec![BlockerPreviousMpDetails {
                         url: "https://forge.invalid/cb-1/pulls/1".to_string(),
                         status: MergeProposalStatus::Merged,
+                    }],
+                },
+            }
+        );
+    }
+}
+
+test_with_database! {
+    schema = Core;
+    async fn blockers_for_blocked_run(test_db: TestDatabase) {
+        seed_codebase_and_run(test_db.pool(), "cb-1", "lintian-fixes").await;
+        // run-1 failed and comes after run-0, the last successful run,
+        // whose merge proposal was rejected.
+        sqlx::raw_sql(
+            "INSERT INTO named_publish_policy (name, per_branch_policy, rate_limit_bucket)
+                 VALUES ('policy', ARRAY[
+                     ROW('main', 'propose'::publish_mode, NULL::int)::branch_publish_policy],
+                     'bucket-a');
+             INSERT INTO candidate (suite, value, command, publish_policy, codebase)
+                 VALUES ('lintian-fixes', 100, 'other', 'policy', 'cb-1');
+             UPDATE codebase SET inactive = true;
+             UPDATE run SET start_time = '2100-01-01 02:04:05',
+                            finish_time = '2100-01-01 03:04:05',
+                            result_code = 'build-failed',
+                            publish_status = 'rejected';
+             UPDATE change_set SET state = 'done';
+             INSERT INTO run (id, codebase, suite, command, start_time, finish_time,
+                              result_code, revision, change_set, logfilenames)
+                 VALUES ('run-0', 'cb-1', 'lintian-fixes', 'noop', '2026-01-01 02:00:00',
+                         '2026-01-01 03:00:00', 'success', 'rev-old', 'cs-1',
+                         ARRAY[]::text[]);
+             INSERT INTO merge_proposal (url, status, revision)
+                 VALUES ('https://forge.invalid/cb-1/pulls/1', 'rejected', 'rev-old');
+             INSERT INTO publish (id, change_set, target_branch_url, revision, mode,
+                                  result_code) VALUES
+                 ('p1', 'cs-1', 'https://example.invalid/cb-1', 'rev-tip', 'propose',
+                  'publish-failed'),
+                 ('p2', 'cs-1', 'https://example.invalid/cb-1', 'rev-tip', 'propose',
+                  'publish-failed');
+             INSERT INTO review (run_id, comment, reviewer, verdict, reviewed_at) VALUES
+                 ('run-1', 'broken', 'carol', 'rejected', '2100-01-01 04:00:00')",
+        )
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+
+        let app = build_app_with_rate_limiter(test_db.pool().clone(), rate_limiter(1, 1)).await;
+        let (status, body) = get_blockers(app, "run-1").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            serde_json::from_value::<BlockerInfo>(body).unwrap(),
+            BlockerInfo {
+                success: Blocker {
+                    result: false,
+                    details: BlockerSuccessDetails {
+                        result_code: "build-failed".to_string(),
+                    },
+                },
+                inactive: Blocker {
+                    result: false,
+                    details: BlockerInactiveDetails { inactive: true },
+                },
+                command: Blocker {
+                    result: false,
+                    details: BlockerCommandDetails {
+                        correct: "other".to_string(),
+                        actual: "noop".to_string(),
+                    },
+                },
+                publish_status: Blocker {
+                    result: false,
+                    details: BlockerPublishStatusDetails {
+                        status: "rejected".to_string(),
+                        reviews: HashMap::from([(
+                            "carol".to_string(),
+                            ReviewSummary {
+                                timestamp: "2100-01-01T04:00:00Z".parse().unwrap(),
+                                comment: Some("broken".to_string()),
+                                verdict: "rejected".to_string(),
+                            },
+                        )]),
+                    },
+                },
+                backoff: Blocker {
+                    result: false,
+                    details: BlockerBackoffDetails {
+                        attempt_count: 2,
+                        next_try_time: "2100-01-01T07:04:05Z".parse().unwrap(),
+                    },
+                },
+                propose_rate_limit: Blocker {
+                    result: false,
+                    details: BlockerProposeRateLimitDetails::Exceeded(
+                        BlockerRateLimitExceededDetails {
+                            open: Some(1),
+                            max_open: Some(1),
+                        },
+                    ),
+                },
+                change_set: Blocker {
+                    result: false,
+                    details: BlockerChangeSetDetails {
+                        change_set_id: ChangeSetId::new("cs-1").unwrap(),
+                        change_set_state: "done".to_string(),
+                    },
+                },
+                previous_mp: Blocker {
+                    result: false,
+                    details: vec![BlockerPreviousMpDetails {
+                        url: "https://forge.invalid/cb-1/pulls/1".to_string(),
+                        status: MergeProposalStatus::Rejected,
                     }],
                 },
             }

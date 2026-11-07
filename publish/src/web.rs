@@ -3,6 +3,7 @@ use crate::api_types::{
     PublishNothingResponse, PublishStartedResponse, SuccessWithUrlResponse,
 };
 use crate::health::{self, HealthCheckHandler};
+use crate::rate_limiter::RateLimitStatus;
 use crate::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -2252,28 +2253,32 @@ WHERE run.id = $1
     let propose_rate_limit = match state.bucket_rate_limiter.lock() {
         Ok(limiter) => {
             if let Some(bucket) = run.rate_limit_bucket.as_deref() {
-                let allowed = limiter.check_allowed(bucket).is_allowed();
-                if allowed {
-                    Blocker {
+                let exceeded = |open, max_open| Blocker {
+                    result: false,
+                    details: BlockerProposeRateLimitDetails::Exceeded(
+                        BlockerRateLimitExceededDetails { open, max_open },
+                    ),
+                };
+                match limiter.check_allowed(bucket) {
+                    RateLimitStatus::Allowed => Blocker {
                         result: true,
                         details: BlockerProposeRateLimitDetails::Allowed(
                             BlockerRateLimitAllowedDetails {
                                 bucket: Some(bucket.to_string()),
                             },
                         ),
-                    }
-                } else {
-                    let stats = limiter.get_stats();
-                    let open = stats
-                        .as_ref()
-                        .and_then(|s| s.per_bucket.get(bucket).copied());
-                    let max_open = limiter.get_max_open(bucket);
-                    Blocker {
-                        result: false,
-                        details: BlockerProposeRateLimitDetails::Exceeded(
-                            BlockerRateLimitExceededDetails { open, max_open },
-                        ),
-                    }
+                    },
+                    RateLimitStatus::BucketRateLimited {
+                        open_mps,
+                        max_open_mps,
+                        ..
+                    } => exceeded(Some(open_mps), Some(max_open_mps)),
+                    RateLimitStatus::RateLimited => exceeded(
+                        limiter
+                            .get_stats()
+                            .and_then(|s| s.per_bucket.get(bucket).copied()),
+                        limiter.get_max_open(bucket),
+                    ),
                 }
             } else {
                 // No bucket configured: treat as unconstrained.
