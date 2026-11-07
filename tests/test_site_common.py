@@ -18,6 +18,7 @@
 from datetime import timedelta
 
 import aiozipkin
+from aiohttp import web
 
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
@@ -50,7 +51,7 @@ async def test_get_unchanged_run(con):
     assert {key: row.get(key) for key in expected} == expected
 
 
-async def test_generate_codebase_context(db, con):
+async def test_generate_codebase_context(aiohttp_client, db, con):
     await _insert_codebase(con, "foo")
     await _insert_codebase(con, "bar")
     now = utcnow()
@@ -67,12 +68,6 @@ async def test_generate_codebase_context(db, con):
         "success_chance) VALUES ('foo', 'mycampaign', 'true', 'ctx', 10, 0.5)"
     )
     await con.execute(
-        "INSERT INTO queue (codebase, suite, command, bucket, priority, "
-        "estimated_duration) VALUES "
-        "('bar', 'mycampaign', 'true', 'default', 0, interval '5 minutes'), "
-        "('foo', 'mycampaign', 'true', 'default', 1, interval '5 minutes')"
-    )
-    await con.execute(
         "INSERT INTO review (run_id, comment, reviewer, verdict) "
         "VALUES ('run-1', 'fine', 'alice', 'approved')"
     )
@@ -80,8 +75,29 @@ async def test_generate_codebase_context(db, con):
     endpoint = aiozipkin.create_endpoint("janitor.site", ipv4="127.0.0.1", port=80)
     tracer = await aiozipkin.create_custom(endpoint)
 
+    seen_queries = []
+
+    async def handle_queue_position(request):
+        seen_queries.append(dict(request.query))
+        return web.json_response(
+            {"position": 2, "wait_time": 300.0, "cumulative_wait_time": 600.0}
+        )
+
+    runner_app = web.Application()
+    runner_app.router.add_get("/queue/position", handle_queue_position)
+    runner_client = await aiohttp_client(runner_app)
+
     context = await generate_codebase_context(
-        db, config, "mycampaign", None, None, {}, "foo", tracer.new_trace(), "run-1"
+        db,
+        config,
+        "mycampaign",
+        runner_client.session,
+        None,
+        {},
+        "foo",
+        tracer.new_trace(),
+        "run-1",
+        runner_url=str(runner_client.make_url("/")),
     )
 
     assert context["candidate_context"] == "ctx"
@@ -91,3 +107,4 @@ async def test_generate_codebase_context(db, con):
     assert context["queue_position"] == 2
     assert context["queue_wait_time"] == timedelta(minutes=5)
     assert [review["comment"] for review in context["reviews"]] == ["fine"]
+    assert seen_queries == [{"codebase": "foo", "campaign": "mycampaign"}]

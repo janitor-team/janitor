@@ -19,6 +19,7 @@ import asyncio
 import base64
 import json
 import tempfile
+from datetime import timedelta
 
 import aiohttp
 import asyncpg
@@ -29,9 +30,12 @@ from aiohttp.test_utils import make_mocked_request
 from bs4 import BeautifulSoup
 from fakeredis.aioredis import FakeRedis
 
+from janitor import utcnow
 from janitor.config import read_string as read_config_string
 from janitor.logs import get_log_manager
 from janitor.site.simple import create_app, handle_result_file
+
+from .conftest import _insert_run
 
 
 @pytest_asyncio.fixture()
@@ -192,6 +196,90 @@ async def test_webhook_github_push_reschedules_without_crashing(
         200,
         {"rescheduled": {}, "urls": ["https://github.com/jelmer/example"]},
     )
+
+
+async def test_webhook_push_schedules_via_runner(aiohttp_client, database_location):
+    conn = await asyncpg.connect(database_location)
+    try:
+        await conn.execute(
+            "INSERT INTO codebase (name, branch_url, url, vcs_type) "
+            "VALUES ($1, $2, $2, $3)",
+            "example",
+            "https://github.com/jelmer/example",
+            "git",
+        )
+        await conn.execute(
+            "INSERT INTO named_publish_policy (name, per_branch_policy) VALUES "
+            "('mypolicy', ARRAY[ROW('main', 'propose', NULL)"
+            "::branch_publish_policy])"
+        )
+        await conn.execute(
+            "INSERT INTO candidate (suite, command, codebase, publish_policy) "
+            "VALUES ('lintian-fixes', 'true', 'example', 'mypolicy')"
+        )
+        now = utcnow()
+        await _insert_run(
+            conn,
+            run_id="run-1",
+            codebase="example",
+            campaign="lintian-fixes",
+            start_time=now - timedelta(minutes=30),
+            finish_time=now,
+        )
+        await conn.execute(
+            "INSERT INTO new_result_branch (run_id, role, remote_name, "
+            "base_revision, revision) VALUES ('run-1', 'main', 'main', 'base', "
+            "'revid')"
+        )
+    finally:
+        await conn.close()
+
+    scheduled = []
+
+    async def handle_schedule(request):
+        scheduled.append(await request.json())
+        return web.json_response({})
+
+    runner_app = web.Application()
+    runner_app.router.add_post("/schedule", handle_schedule)
+    runner_client = await aiohttp_client(runner_app)
+
+    _private_app, app = await create_app(
+        config=create_config(database_location),
+        redis=FakeRedis(),
+        runner_url=str(runner_client.make_url("/")),
+    )
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/webhook",
+        headers={"X-GitHub-Event": "push"},
+        json={
+            "ref": "refs/heads/main",
+            "after": "0" * 40,
+            "repository": {
+                "clone_url": "https://github.com/jelmer/example",
+                "html_url": "https://github.com/jelmer/example",
+                "git_url": "git://github.com/jelmer/example.git",
+                "ssh_url": "git@github.com:jelmer/example.git",
+                "default_branch": "main",
+            },
+        },
+    )
+    assert (resp.status, await resp.json()) == (
+        200,
+        {
+            "rescheduled": {"example": ["lintian-fixes"]},
+            "urls": ["https://github.com/jelmer/example"],
+        },
+    )
+    assert scheduled == [
+        {
+            "campaign": "lintian-fixes",
+            "codebase": "example",
+            "requester": "Push hook for https://github.com/jelmer/example",
+            "bucket": "hook",
+        }
+    ]
 
 
 async def test_webhook_gitlab_push_matches_codebase(aiohttp_client, database_location):
