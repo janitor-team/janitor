@@ -105,6 +105,33 @@ unset:
 For a Janitor instance, you probably want a custom website in combination with
 the Janitor API. See the existing instances for inspiration.
 
+## Forge webhooks
+
+The site reads push webhooks at `$WEBHOOK_URL`, which is
+`<external_url>/webhook`. A push to the branch in a codebase's `branch_url`
+then reschedules each of the codebase's campaigns that has a run waiting to
+be published. Add the webhook to each repository as follows.
+
+GitHub: in the repository's Settings, open Webhooks and choose Add webhook.
+Set the Payload URL to `$WEBHOOK_URL` and the Content type to
+`application/json`, and pick "Just the push event".
+
+GitLab: in the project's Settings, open Webhooks and choose Add new webhook.
+Set the URL to `$WEBHOOK_URL` and tick "Push events".
+
+Gitea: in the repository's Settings, open Webhooks, choose Add Webhook and
+then Gitea. Set the Target URL to `$WEBHOOK_URL` and the POST Content Type to
+`application/json`, and under Trigger On pick "Push Events".
+
+For GitHub and GitLab, `janitor.site.webhook` adds the webhook to the
+repository of every codebase the runner knows, with the credentials Breezy has
+for the forge. For GitLab, store a token with `brz gitlab-login` first:
+
+```console
+$ brz gitlab-login https://gitlab.example.com $TOKEN
+$ python3 -m janitor.site.webhook --runner-url http://localhost:9911 $WEBHOOK_URL
+```
+
 ## Worker images
 
 The published worker image carries Debian's build tooling, but it carries no
