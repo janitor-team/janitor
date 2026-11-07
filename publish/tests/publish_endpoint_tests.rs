@@ -3,11 +3,14 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use janitor::publish::MergeProposalStatus;
 use janitor::{test_utils::TestDatabase, test_with_database};
+use janitor_publish::rate_limiter::{FixedRateLimiter, RateLimiter};
 use janitor_publish::web::{
     Blocker, BlockerBackoffDetails, BlockerChangeSetDetails, BlockerCommandDetails,
-    BlockerInactiveDetails, BlockerInfo, BlockerProposeRateLimitDetails,
+    BlockerInactiveDetails, BlockerInfo, BlockerPreviousMpDetails, BlockerProposeRateLimitDetails,
     BlockerPublishStatusDetails, BlockerRateLimitAllowedDetails, BlockerSuccessDetails,
+    ReviewSummary,
 };
 use janitor_publish::{AppState, PublishWorker};
 use janitor_types::{Campaign, ChangeSetId, CodebaseName};
@@ -52,6 +55,17 @@ async fn seed_codebase_and_run(pool: &PgPool, codebase: &str, campaign: &str) {
 }
 
 async fn build_app(pool: PgPool) -> axum::Router {
+    build_app_with_rate_limiter(
+        pool,
+        Box::new(janitor_publish::rate_limiter::NonRateLimiter),
+    )
+    .await
+}
+
+async fn build_app_with_rate_limiter(
+    pool: PgPool,
+    bucket_rate_limiter: Box<dyn RateLimiter>,
+) -> axum::Router {
     let config: &'static janitor::config::Config = Box::leak(Box::new(
         janitor::config::read_string("").expect("empty config parses"),
     ));
@@ -70,9 +84,7 @@ async fn build_app(pool: PgPool) -> axum::Router {
     ));
     let state = Arc::new(AppState {
         conn: pool,
-        bucket_rate_limiter: Arc::new(Mutex::new(Box::new(
-            janitor_publish::rate_limiter::NonRateLimiter,
-        ))),
+        bucket_rate_limiter: Arc::new(Mutex::new(bucket_rate_limiter)),
         forge_rate_limiter: Arc::new(RwLock::new(HashMap::new())),
         push_limit: None,
         redis: None,
@@ -88,6 +100,30 @@ async fn build_app(pool: PgPool) -> axum::Router {
         last_full_scan_at: tokio::sync::watch::channel(None).0,
     });
     janitor_publish::web::app(state)
+}
+
+/// A rate limiter allowing at most `max_open` open merge proposals per
+/// bucket, with `open` currently open in `bucket-a`.
+fn rate_limiter(max_open: usize, open: usize) -> Box<dyn RateLimiter> {
+    let mut limiter = FixedRateLimiter::new(max_open);
+    limiter.set_mps_per_bucket(&HashMap::from([(
+        MergeProposalStatus::Open,
+        HashMap::from([("bucket-a".to_string(), open)]),
+    )]));
+    Box::new(limiter)
+}
+
+async fn get_blockers(app: axum::Router, run_id: &str) -> (StatusCode, serde_json::Value) {
+    let req = Request::builder()
+        .uri(format!("/blockers/{}", run_id))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap())
 }
 
 async fn post_merge_proposal_status(
@@ -302,6 +338,140 @@ test_with_database! {
                     details: vec![],
                 },
             }
+        );
+    }
+}
+
+test_with_database! {
+    schema = Core;
+    async fn blockers_for_publishable_run(test_db: TestDatabase) {
+        seed_codebase_and_run(test_db.pool(), "cb-1", "lintian-fixes").await;
+        sqlx::raw_sql(
+            "INSERT INTO named_publish_policy (name, per_branch_policy, rate_limit_bucket)
+                 VALUES ('policy', ARRAY[
+                     ROW('main', 'propose'::publish_mode, NULL::int)::branch_publish_policy],
+                     'bucket-a');
+             INSERT INTO candidate (suite, value, command, publish_policy, codebase)
+                 VALUES ('lintian-fixes', 100, 'noop', 'policy', 'cb-1');
+             UPDATE run SET start_time = '2026-01-02 02:04:05',
+                            finish_time = '2026-01-02 03:04:05',
+                            publish_status = 'approved';
+             UPDATE change_set SET state = 'publishing';
+             INSERT INTO merge_proposal (url, status, revision)
+                 VALUES ('https://forge.invalid/cb-1/pulls/1', 'merged', 'rev-tip');
+             INSERT INTO review (run_id, comment, reviewer, verdict, reviewed_at) VALUES
+                 ('run-1', 'looks good', 'alice', 'approved', '2026-01-02 04:00:00'),
+                 ('run-1', NULL, 'bob', 'abstained', '2026-01-02 05:00:00')",
+        )
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+
+        let app = build_app_with_rate_limiter(test_db.pool().clone(), rate_limiter(5, 1)).await;
+        let (status, body) = get_blockers(app, "run-1").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            serde_json::from_value::<BlockerInfo>(body).unwrap(),
+            BlockerInfo {
+                success: Blocker {
+                    result: true,
+                    details: BlockerSuccessDetails {
+                        result_code: "success".to_string(),
+                    },
+                },
+                inactive: Blocker {
+                    result: true,
+                    details: BlockerInactiveDetails { inactive: false },
+                },
+                command: Blocker {
+                    result: true,
+                    details: BlockerCommandDetails {
+                        correct: "noop".to_string(),
+                        actual: "noop".to_string(),
+                    },
+                },
+                publish_status: Blocker {
+                    result: true,
+                    details: BlockerPublishStatusDetails {
+                        status: "approved".to_string(),
+                        reviews: HashMap::from([
+                            (
+                                "alice".to_string(),
+                                ReviewSummary {
+                                    timestamp: "2026-01-02T04:00:00Z".parse().unwrap(),
+                                    comment: Some("looks good".to_string()),
+                                    verdict: "approved".to_string(),
+                                },
+                            ),
+                            (
+                                "bob".to_string(),
+                                ReviewSummary {
+                                    timestamp: "2026-01-02T05:00:00Z".parse().unwrap(),
+                                    comment: None,
+                                    verdict: "abstained".to_string(),
+                                },
+                            ),
+                        ]),
+                    },
+                },
+                backoff: Blocker {
+                    result: true,
+                    details: BlockerBackoffDetails {
+                        attempt_count: 0,
+                        next_try_time: "2026-01-02T03:04:05Z".parse().unwrap(),
+                    },
+                },
+                propose_rate_limit: Blocker {
+                    result: true,
+                    details: BlockerProposeRateLimitDetails::Allowed(
+                        BlockerRateLimitAllowedDetails {
+                            bucket: Some("bucket-a".to_string()),
+                        },
+                    ),
+                },
+                change_set: Blocker {
+                    result: true,
+                    details: BlockerChangeSetDetails {
+                        change_set_id: ChangeSetId::new("cs-1").unwrap(),
+                        change_set_state: "publishing".to_string(),
+                    },
+                },
+                previous_mp: Blocker {
+                    result: true,
+                    details: vec![BlockerPreviousMpDetails {
+                        url: "https://forge.invalid/cb-1/pulls/1".to_string(),
+                        status: MergeProposalStatus::Merged,
+                    }],
+                },
+            }
+        );
+    }
+}
+
+test_with_database! {
+    schema = Core;
+    async fn blockers_need_publish_ready_run(test_db: TestDatabase) {
+        // run-1 has no candidate with a publish policy.
+        seed_codebase_and_run(test_db.pool(), "cb-1", "lintian-fixes").await;
+
+        let app = build_app(test_db.pool().clone()).await;
+        let mut got = vec![];
+        for run_id in ["run-1", "run-2"] {
+            let (status, body) = get_blockers(app.clone(), run_id).await;
+            got.push((status, body["reason"].clone()));
+        }
+        assert_eq!(
+            got,
+            vec![
+                (
+                    StatusCode::NOT_FOUND,
+                    serde_json::json!("No such publish-ready run")
+                ),
+                (
+                    StatusCode::NOT_FOUND,
+                    serde_json::json!("No such publish-ready run")
+                ),
+            ]
         );
     }
 }

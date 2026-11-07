@@ -2148,7 +2148,8 @@ WHERE run.id = $1
     }
 
     let reviews = match sqlx::query_as::<_, ReviewRow>(
-        "SELECT reviewer, reviewed_at, comment, verdict::text FROM review WHERE run_id = $1",
+        "SELECT reviewer, (reviewed_at AT TIME ZONE 'UTC') AS reviewed_at, comment, \
+         verdict::text FROM review WHERE run_id = $1",
     )
     .bind(&id)
     .fetch_all(&state.conn)
