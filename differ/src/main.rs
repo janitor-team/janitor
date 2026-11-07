@@ -3,12 +3,13 @@ use axum::extract::{Path, Query, State};
 use axum::http::header::HeaderMap;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::get;
 use axum::Json;
 use breezyshim::RevisionId;
 use clap::Parser;
 use janitor::artifacts::{ArtifactManager, Error as ArtifactError};
 use janitor_differ::diffoscope::{self, DiffoscopeOutput};
+use janitor_differ::error::ErrorBody;
 use janitor_differ::{find_binaries, is_binary, Error, Result};
 use janitor_types::{Campaign, CodebaseName, RunId};
 use prometheus::{
@@ -23,6 +24,9 @@ use tokio_util::io::ReaderStream;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{error, info, info_span, warn, Instrument};
+use utoipa::{IntoParams, ToSchema};
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 const TMP_PREFIX: &str = "janitor-differ";
 /// Matches Python's PRECACHE_RETRIEVE_TIMEOUT. Also used by request-path
@@ -356,18 +360,45 @@ fn classify_retrieval_result(
     }
 }
 
+/// Base of the OpenAPI document. `RunId` is listed explicitly because
+/// it is only used in path parameters, whose schemas utoipa does not
+/// collect.
+#[derive(utoipa::OpenApi)]
+#[openapi(components(schemas(RunId)))]
+struct DifferApi;
+
+fn routes() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::with_openapi(<DifferApi as utoipa::OpenApi>::openapi())
+        .routes(routes!(handle_health))
+        .routes(routes!(handle_ready))
+        .routes(routes!(handle_metrics))
+        .routes(routes!(handle_debdiff))
+        .routes(routes!(handle_diffoscope))
+        .routes(routes!(handle_precache))
+        .routes(routes!(handle_precache_all))
+}
+
 fn build_router(state: Arc<AppState>) -> axum::Router {
-    axum::Router::new()
-        .route("/health", get(handle_health))
-        .route("/ready", get(handle_health))
-        .route("/metrics", get(handle_metrics))
-        .route("/debdiff/{old_id}/{new_id}", get(handle_debdiff))
-        .route("/diffoscope/{old_id}/{new_id}", get(handle_diffoscope))
-        .route("/precache/{old_id}/{new_id}", post(handle_precache))
-        .route("/precache-all", post(handle_precache_all))
+    let (router, openapi) = routes().split_for_parts();
+    let spec = openapi
+        .to_json()
+        .expect("OpenAPI document can be serialized");
+    router
+        .route(
+            "/openapi.json",
+            get(move || async move { ([("content-type", "application/json")], spec) }),
+        )
         .with_state(state)
 }
 
+#[utoipa::path(
+    get,
+    path = "/health",
+    responses(
+        (status = 200, description = "Service is healthy", body = String, content_type = "text/plain"),
+        (status = 503, description = "Database unavailable", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+    )
+)]
 async fn handle_health(State(state): State<Arc<AppState>>) -> Result<&'static str> {
     janitor::database::health_check(&state.pool)
         .await
@@ -375,6 +406,29 @@ async fn handle_health(State(state): State<Arc<AppState>>) -> Result<&'static st
     Ok("ok")
 }
 
+#[utoipa::path(
+    get,
+    path = "/ready",
+    responses(
+        (status = 200, description = "Service is ready", body = String, content_type = "text/plain"),
+        (status = 503, description = "Database unavailable", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+    )
+)]
+async fn handle_ready(State(state): State<Arc<AppState>>) -> Result<&'static str> {
+    janitor::database::health_check(&state.pool)
+        .await
+        .map_err(Error::DatabaseUnavailable)?;
+    Ok("ok")
+}
+
+#[utoipa::path(
+    get,
+    path = "/metrics",
+    responses(
+        (status = 200, description = "Prometheus metrics", body = String, content_type = "text/plain"),
+        (status = 500, description = "Metrics could not be encoded", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+    )
+)]
 async fn handle_metrics() -> Result<Response> {
     let encoder = TextEncoder::new();
     let mut buf = Vec::new();
@@ -389,14 +443,45 @@ async fn handle_metrics() -> Result<Response> {
         .into_response())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 struct DiffoscopeQuery {
+    /// When present, leave out differences that are expected between
+    /// the two builds, such as version numbers.
     #[serde(default)]
     filter_boring: Option<String>,
+    /// Stylesheet to link from the HTML output.
     #[serde(default)]
     css_url: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/diffoscope/{old_id}/{new_id}",
+    params(
+        ("old_id" = RunId, Path, description = "Run without the changes"),
+        ("new_id" = RunId, Path, description = "Run with the changes"),
+        DiffoscopeQuery,
+    ),
+    responses(
+        (status = 200, description = "diffoscope output for the builds of the two runs; the format depends on the Accept header",
+         content(
+            (DiffoscopeOutput = "application/json"),
+            (String = "text/plain"),
+            (String = "text/markdown"),
+            (String = "text/html"),
+         )),
+        (status = 400, description = "Invalid run id, or the diff command failed", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 404, description = "Run or its artifacts not found", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 406, description = "None of the offered content types is acceptable", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 422, description = "Run was not successful", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 500, description = "Internal error", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 502, description = "Artifacts could not be retrieved", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 503, description = "Database unavailable", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 504, description = "Timeout retrieving artifacts or running the diff", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 507, description = "Diff command used too much memory", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+    )
+)]
 async fn handle_diffoscope(
     Path((old_id, new_id)): Path<(String, String)>,
     Query(query): Query<DiffoscopeQuery>,
@@ -639,12 +724,41 @@ async fn write_diffoscope_cache(p: &StdPath, diff: &DiffoscopeOutput) -> std::io
     tokio::fs::write(p, bytes).await
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 struct DebdiffQuery {
+    /// When present, leave out differences that are expected between
+    /// the two builds, such as version numbers.
     #[serde(default)]
     filter_boring: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/debdiff/{old_id}/{new_id}",
+    params(
+        ("old_id" = RunId, Path, description = "Run without the changes"),
+        ("new_id" = RunId, Path, description = "Run with the changes"),
+        DebdiffQuery,
+    ),
+    responses(
+        (status = 200, description = "debdiff between the builds of the two runs; the format depends on the Accept header",
+         content(
+            (String = "text/plain"),
+            (String = "text/markdown"),
+            (String = "text/html"),
+         )),
+        (status = 400, description = "Invalid run id, or the diff command failed", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 404, description = "Run or its artifacts not found", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 406, description = "None of the offered content types is acceptable", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 422, description = "Run was not successful", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 500, description = "Internal error", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 502, description = "Artifacts could not be retrieved", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 503, description = "Database unavailable", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 504, description = "Timeout retrieving artifacts or running the diff", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 507, description = "Diff command used too much memory", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+    )
+)]
 async fn handle_debdiff(
     Path((old_id, new_id)): Path<(String, String)>,
     Query(query): Query<DebdiffQuery>,
@@ -998,6 +1112,22 @@ async fn generate_diffoscope_with_binaries(
     Ok(diff)
 }
 
+#[utoipa::path(
+    post,
+    path = "/precache/{old_id}/{new_id}",
+    params(
+        ("old_id" = RunId, Path, description = "Run without the changes"),
+        ("new_id" = RunId, Path, description = "Run with the changes"),
+    ),
+    responses(
+        (status = 202, description = "Precaching was started", body = String, content_type = "text/plain"),
+        (status = 400, description = "Invalid run id", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 404, description = "Run not found", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 422, description = "Run was not successful", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 500, description = "Database error", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 503, description = "Database unavailable", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+    )
+)]
 async fn handle_precache(
     Path((old_id, new_id)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
@@ -1009,6 +1139,23 @@ async fn handle_precache(
     Ok((StatusCode::ACCEPTED, "Precaching started").into_response())
 }
 
+/// Response for `POST /precache-all`.
+#[derive(Debug, serde::Serialize, ToSchema)]
+struct PrecacheAllResponse {
+    /// Number of run pairs that will be precached.
+    count: usize,
+}
+
+#[utoipa::path(
+    post,
+    path = "/precache-all",
+    responses(
+        (status = 200, description = "There is nothing to precache", body = PrecacheAllResponse),
+        (status = 202, description = "Precaching was started", body = PrecacheAllResponse),
+        (status = 500, description = "Database error", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+        (status = 503, description = "Database unavailable", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
+    )
+)]
 async fn handle_precache_all(State(state): State<Arc<AppState>>) -> Result<Response> {
     let rows = sqlx::query_as::<_, (RunId, RunId)>(
         r#"SELECT run.id, unchanged_run.id
@@ -1025,18 +1172,14 @@ async fn handle_precache_all(State(state): State<Arc<AppState>>) -> Result<Respo
     .await?;
 
     if rows.is_empty() {
-        return Ok((StatusCode::OK, Json(serde_json::json!({"count": 0}))).into_response());
+        return Ok((StatusCode::OK, Json(PrecacheAllResponse { count: 0 })).into_response());
     }
 
     let count = rows.len();
     for (new_id, old_id) in rows {
         spawn_precache(&state, old_id, new_id, "precache-all");
     }
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(serde_json::json!({"count": count})),
-    )
-        .into_response())
+    Ok((StatusCode::ACCEPTED, Json(PrecacheAllResponse { count })).into_response())
 }
 
 fn spawn_precache(state: &Arc<AppState>, old_id: RunId, new_id: RunId, trigger: &'static str) {
@@ -1764,6 +1907,46 @@ mod tests {
     /// `oneshot()`, and assert on status/headers/body. Handlers that
     /// need a live database are exercised only via paths that fail
     /// before the DB is touched (validation, negotiation, routing).
+    fn collect_refs<'a>(value: &'a serde_json::Value, refs: &mut Vec<&'a str>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, value) in map {
+                    match value {
+                        serde_json::Value::String(target) if key == "$ref" => refs.push(target),
+                        _ => collect_refs(value, refs),
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    collect_refs(item, refs);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Schemas only end up in the document when utoipa can see them from
+    /// a path; a `$ref` to anything else would leave clients with a
+    /// broken document.
+    #[test]
+    fn openapi_refs_resolve() {
+        let doc = serde_json::to_value(routes().into_openapi()).unwrap();
+        let mut refs = vec![];
+        collect_refs(&doc, &mut refs);
+        assert!(!refs.is_empty());
+        let missing: Vec<&str> = refs
+            .into_iter()
+            .filter(|r| {
+                let name = r
+                    .strip_prefix("#/components/schemas/")
+                    .unwrap_or_else(|| panic!("unexpected $ref {r}"));
+                doc["components"]["schemas"].get(name).is_none()
+            })
+            .collect();
+        assert_eq!(missing, Vec::<&str>::new());
+    }
+
     mod router {
         use super::*;
         use axum::body::Body;
@@ -2016,6 +2199,21 @@ mod tests {
             let resp = router.oneshot(get("/health")).await.unwrap();
             assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
             assert_eq!(body_json(resp).await["reason"], "database-error");
+        }
+
+        #[tokio::test]
+        async fn openapi_json_is_served() {
+            let cache = tempfile::TempDir::new().unwrap();
+            let art = tempfile::TempDir::new().unwrap();
+            let router = build_router(test_state(cache.path(), art.path()));
+            let resp = router.oneshot(get("/openapi.json")).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            let body = body_json(resp).await;
+            assert_eq!(body["info"]["title"], "janitor-differ");
+            assert!(
+                body["paths"]["/debdiff/{old_id}/{new_id}"]["get"].is_object(),
+                "{body}"
+            );
         }
 
         #[tokio::test]

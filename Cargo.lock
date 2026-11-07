@@ -3417,6 +3417,8 @@ dependencies = [
  "tokio-util",
  "tower 0.5.3",
  "tracing",
+ "utoipa",
+ "utoipa-axum",
 ]
 
 [[package]]

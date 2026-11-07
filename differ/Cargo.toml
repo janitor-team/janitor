@@ -10,7 +10,7 @@ homepage = "https://github.com/jelmer/janitor"
 
 [dependencies]
 janitor = { path = ".." }
-janitor-types = { workspace = true, features = ["pyo3", "sqlx"] }
+janitor-types = { workspace = true, features = ["pyo3", "sqlx", "utoipa"] }
 janitor-service = { workspace = true }
 clap = { optional = true, workspace = true }
 serde_json.workspace = true
@@ -29,6 +29,8 @@ nix = { workspace = true, features = ["resource", "signal", "process"] }
 pyo3 = { workspace = true, features = ["auto-initialize"] }
 prometheus = "0.14"
 thiserror = "2.0"
+utoipa.workspace = true
+utoipa-axum.workspace = true
 
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }
