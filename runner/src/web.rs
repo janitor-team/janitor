@@ -19,7 +19,7 @@ use axum::{
     http::StatusCode,
     middleware,
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{get, post},
     Extension, Json, Router,
 };
 use chrono::Utc;
@@ -27,7 +27,11 @@ use janitor_types::{Campaign, ChangeSetId, CodebaseName, LogFilename, RunId};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+use utoipa::openapi::{OpenApi, SecurityRequirement};
 use utoipa::{IntoParams, ToSchema};
+use utoipa_axum::router::{OpenApiRouter, UtoipaMethodRouter};
+use utoipa_axum::routes;
 use uuid::Uuid;
 
 /// Request for work assignment.
@@ -241,6 +245,15 @@ struct QueuePositionQuery {
 ///
 /// `wait_time` divides the cumulative wait by the current number of
 /// active runs to yield a per-worker time estimate.
+#[utoipa::path(
+    get,
+    path = "/queue/position",
+    params(QueuePositionQuery),
+    responses(
+        (status = 200, description = "Queue position and estimated wait", body = QueuePositionResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
 async fn queue_position(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueuePositionQuery>,
@@ -280,6 +293,17 @@ async fn queue_position(
 /// `POST /schedule-control` -- schedule a `control` campaign run for
 /// a codebase. Either the body supplies (codebase, main_branch_revision)
 /// directly, or a `run_id` from which both are derived.
+#[utoipa::path(
+    post,
+    path = "/schedule-control",
+    request_body = ScheduleControlRequest,
+    responses(
+        (status = 200, description = "Control run scheduled", body = ScheduleControlResponse),
+        (status = 400, description = "Invalid request or candidate unavailable", body = ReasonResponse),
+        (status = 404, description = "Run not found", body = ReasonResponse),
+        (status = 500, description = "Database or scheduling error", body = ErrorResponse),
+    )
+)]
 async fn schedule_control(
     State(state): State<Arc<AppState>>,
     Json(request): Json<ScheduleControlRequest>,
@@ -367,6 +391,17 @@ async fn schedule_control(
 /// or a `run_id` from which both are derived. The command is resolved
 /// from the candidate row, then from the campaign config, then from
 /// the run row, in that order.
+#[utoipa::path(
+    post,
+    path = "/schedule",
+    request_body = ScheduleRequest,
+    responses(
+        (status = 200, description = "Run scheduled", body = ScheduleResponse),
+        (status = 400, description = "Invalid request or candidate unavailable", body = ReasonResponse),
+        (status = 404, description = "Run not found", body = ReasonResponse),
+        (status = 500, description = "Database or scheduling error", body = ErrorResponse),
+    )
+)]
 async fn schedule(
     State(state): State<Arc<AppState>>,
     Json(request): Json<ScheduleRequest>,
@@ -505,6 +540,11 @@ async fn schedule(
 /// `processing` is the list of currently-active runs. We don't track per-run keepalive
 /// timestamps, so no keepalive_age / mia / last-keepalive fields are
 /// included.
+#[utoipa::path(
+    get,
+    path = "/status",
+    responses((status = 200, description = "Queue processor status", body = StatusResponse))
+)]
 async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
     let processing: Vec<ActiveRunResponse> = state
         .active_runs
@@ -538,6 +578,16 @@ async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
 /// `GET /log/{run_id}` -- list the log files of a run. For an active
 /// run this asks the live worker; for a finished run it returns the
 /// log file names recorded for the run. 404s if there is no such run.
+#[utoipa::path(
+    get,
+    path = "/log/{id}",
+    params(("id" = RunId, Path, description = "Run id")),
+    responses(
+        (status = 200, description = "Names of the run's log files", body = Vec<String>),
+        (status = 404, description = "No such run", body = ReasonResponse),
+        (status = 500, description = "Worker or database could not be reached", body = ErrorResponse),
+    )
+)]
 async fn log_index(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> Response {
     if let Some(active_run) = state.active_runs.get(&id).await {
         return match active_run.backchannel.list_log_files().await {
@@ -581,6 +631,15 @@ async fn finished_run_logs(
 /// so the operator's eye lands on the file currently being
 /// written. 404s if the run isn't active. Returns
 /// `{"current_stage": "build"}` or `{"current_stage": null}`.
+#[utoipa::path(
+    get,
+    path = "/active-runs/{id}/current-stage",
+    params(("id" = RunId, Path, description = "Run id")),
+    responses(
+        (status = 200, description = "Stage the worker is in", body = CurrentStageResponse),
+        (status = 404, description = "Run is not active", body = ReasonResponse),
+    )
+)]
 async fn current_stage(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> Response {
     let active_run = match current_run(&state, &id).await {
         Ok(run) => run,
@@ -606,6 +665,17 @@ async fn current_stage(State(state): State<Arc<AppState>>, Path(id): Path<RunId>
 /// run, from the live worker while the run is active and from log
 /// storage once it has finished. 404s when there is no such run or
 /// log file.
+#[utoipa::path(
+    get,
+    path = "/log/{id}/{filename}",
+    params(("id" = RunId, Path, description = "Run id"), ("filename" = LogFilename, Path, description = "Log file name")),
+    responses(
+        (status = 200, description = "Contents of the log file", body = String, content_type = "text/plain"),
+        (status = 400, description = "Invalid file name", body = String, content_type = "text/plain"),
+        (status = 404, description = "No such run or log file", body = String, content_type = "text/plain"),
+        (status = 500, description = "Log file could not be read", body = String, content_type = "text/plain"),
+    )
+)]
 async fn log(
     State(state): State<Arc<AppState>>,
     Path((id, filename)): Path<(RunId, LogFilename)>,
@@ -674,6 +744,18 @@ async fn log(
 /// backchannel. On success, returns the active run's JSON snapshot;
 /// 404 when the run isn't active; 501 when the worker doesn't
 /// support kill.
+#[utoipa::path(
+    post,
+    path = "/kill/{id}",
+    params(("id" = RunId, Path, description = "Run id")),
+    responses(
+        (status = 200, description = "Run was killed", body = ActiveRunResponse),
+        (status = 404, description = "Run is not active", body = ReasonResponse),
+        (status = 410, description = "Worker no longer has the run", body = ErrorResponse),
+        (status = 500, description = "Worker could not be reached", body = ErrorResponse),
+        (status = 501, description = "Worker does not support killing runs", body = ErrorResponse),
+    )
+)]
 async fn kill(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> Response {
     let active_run = match current_run(&state, &id).await {
         Ok(run) => run,
@@ -708,6 +790,14 @@ async fn kill(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> Resp
 }
 
 /// `GET /codebases` -- return the codebase table as a JSON list.
+#[utoipa::path(
+    get,
+    path = "/codebases",
+    responses(
+        (status = 200, description = "All codebases", body = Vec<crate::database::CodebaseRow>),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
 async fn get_codebases(State(state): State<Arc<AppState>>) -> Response {
     match state.database.get_codebases().await {
         Ok(codebases) => Json(codebases).into_response(),
@@ -755,6 +845,15 @@ fn main_branch_name(branch_url: Option<&str>) -> String {
 
 /// `POST /codebases` -- bulk upsert codebases. Returns 200 with an
 /// empty object on success.
+#[utoipa::path(
+    post,
+    path = "/codebases",
+    request_body = Vec<crate::database::CodebaseUpload>,
+    responses(
+        (status = 200, description = "Codebases were stored", body = EmptyResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
 async fn update_codebases(
     State(state): State<Arc<AppState>>,
     Json(codebases): Json<Vec<crate::database::CodebaseUpload>>,
@@ -772,6 +871,17 @@ async fn update_codebases(
 /// followup entries and any queue items for the same (suite,
 /// codebase). Returns 200 with an empty object on success, or 404
 /// when no such candidate exists.
+#[utoipa::path(
+    delete,
+    path = "/candidates/{id}",
+    params(("id" = i64, Path, description = "Candidate id")),
+    responses(
+        (status = 200, description = "Candidate was deleted", body = EmptyResponse),
+        (status = 400, description = "Invalid candidate id", body = ReasonResponse),
+        (status = 404, description = "No such candidate", body = ReasonResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
 async fn delete_candidate(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let candidate_id = match id.parse::<i64>() {
         Ok(id) => id,
@@ -791,6 +901,14 @@ async fn delete_candidate(State(state): State<Arc<AppState>>, Path(id): Path<Str
 }
 
 /// `GET /candidates` -- return the candidate table as a JSON list.
+#[utoipa::path(
+    get,
+    path = "/candidates",
+    responses(
+        (status = 200, description = "All candidates", body = Vec<crate::database::CandidateRow>),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
 async fn get_candidates(State(state): State<Arc<AppState>>) -> Response {
     match state.database.get_candidates().await {
         Ok(candidates) => Json(candidates).into_response(),
@@ -1023,6 +1141,21 @@ pub(crate) fn candidate_preflight(
 ///   "unknown_publish_policies": [...]
 /// }
 /// ```
+#[utoipa::path(
+    post,
+    path = "/candidates",
+    request_body(
+        content = Vec<Object>,
+        description = "Candidates, each with `codebase`, `campaign` and optionally `command`, \
+                       `change_set`, `value`, `success_chance`, `context`, `publish-policy`, \
+                       `bucket`, `requester` and `followup_for`",
+    ),
+    responses(
+        (status = 200, description = "Candidates were processed", body = UploadCandidatesResponse),
+        (status = 400, description = "Malformed candidate", body = String, content_type = "text/plain"),
+        (status = 500, description = "Database or scheduling error", body = ErrorResponse),
+    )
+)]
 async fn upload_candidates(
     State(state): State<Arc<AppState>>,
     Json(candidates): Json<Vec<serde_json::Value>>,
@@ -1317,6 +1450,16 @@ async fn upload_candidates(
 /// `GET /runs/{run_id}` -- return a run's `{codebase, campaign,
 /// publish_status}` triple. Only those three fields are returned,
 /// not the entire run row.
+#[utoipa::path(
+    get,
+    path = "/runs/{id}",
+    params(("id" = RunId, Path, description = "Run id")),
+    responses(
+        (status = 200, description = "Publish status of the run", body = RunPublishStatusResponse),
+        (status = 404, description = "No such run", body = ReasonResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
 async fn get_run(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> Response {
     let row: Result<Option<(CodebaseName, Campaign, String)>, _> =
         sqlx::query_as("SELECT codebase, suite, publish_status::text FROM run WHERE id = $1")
@@ -1342,6 +1485,17 @@ async fn get_run(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> R
 /// `POST /runs/{run_id}` -- set the publish_status of a run, then
 /// publish a notification on the Redis `publish-status` channel so
 /// other services can react.
+#[utoipa::path(
+    post,
+    path = "/runs/{id}",
+    params(("id" = RunId, Path, description = "Run id")),
+    request_body = UpdateRunRequest,
+    responses(
+        (status = 200, description = "Publish status was updated", body = PublishStatusUpdate),
+        (status = 404, description = "No such run", body = ReasonResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
 async fn update_run(
     State(state): State<Arc<AppState>>,
     Path(id): Path<RunId>,
@@ -1380,6 +1534,11 @@ async fn update_run(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/active-runs",
+    responses((status = 200, description = "Active runs", body = Vec<ActiveRunResponse>))
+)]
 async fn get_active_runs(State(state): State<Arc<AppState>>) -> Json<Vec<ActiveRunResponse>> {
     let active_runs = state.active_runs.list().await;
     Json(active_runs.iter().map(ActiveRun::to_response).collect())
@@ -1387,6 +1546,15 @@ async fn get_active_runs(State(state): State<Arc<AppState>>) -> Json<Vec<ActiveR
 
 /// `GET /active-runs/{run_id}` -- return a single active run's JSON
 /// snapshot. 404s when the run isn't currently active.
+#[utoipa::path(
+    get,
+    path = "/active-runs/{id}",
+    params(("id" = RunId, Path, description = "Run id")),
+    responses(
+        (status = 200, description = "The active run", body = ActiveRunResponse),
+        (status = 404, description = "Run is not active", body = ReasonResponse),
+    )
+)]
 async fn get_active_run(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> Response {
     match state.active_runs.get(&id).await {
         Some(active_run) => Json(active_run.to_response()).into_response(),
@@ -1406,6 +1574,15 @@ async fn get_active_run(State(state): State<Arc<AppState>>, Path(id): Path<RunId
 /// Currently uses the simplified `next_queue_item_with_rate_limiting`
 /// helper, so the success body is the build_config / queue_item /
 /// vcs_info shape it produces rather than a full assignment dict.
+#[utoipa::path(
+    get,
+    path = "/active-runs/+peek",
+    responses(
+        (status = 201, description = "Next queue item", body = PeekResponse),
+        (status = 503, description = "Queue is empty", body = ReasonResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
 async fn peek_active_run(State(state): State<Arc<AppState>>) -> Response {
     let avoided_hosts = get_avoided_hosts(&state.config);
     match state
@@ -1456,6 +1633,15 @@ struct GetQueueQuery {
 
 /// `GET /queue` -- return the queued items as
 /// `[{queue_id, codebase, campaign, context, command}]`.
+#[utoipa::path(
+    get,
+    path = "/queue",
+    params(GetQueueQuery),
+    responses(
+        (status = 200, description = "Queued items", body = Vec<QueueEntry>),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
 async fn get_queue(
     State(state): State<Arc<AppState>>,
     Query(query): Query<GetQueueQuery>,
@@ -1482,6 +1668,14 @@ async fn get_queue(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/metrics",
+    responses(
+        (status = 200, description = "Prometheus metrics", body = String, content_type = "text/plain"),
+        (status = 500, description = "Metrics could not be collected", body = String, content_type = "text/plain"),
+    )
+)]
 async fn metrics() -> impl IntoResponse {
     match MetricsCollector::collect_metrics() {
         Ok(metrics) => (
@@ -1501,12 +1695,22 @@ async fn metrics() -> impl IntoResponse {
 }
 
 /// Public endpoint to list workers with basic information.
+#[utoipa::path(
+    get,
+    path = "/workers",
+    responses((status = 200, description = "Registered workers", body = WorkerListResponse))
+)]
 async fn list_workers(State(state): State<Arc<AppState>>) -> Json<WorkerListResponse> {
     worker_list(&state, false).await
 }
 
 /// Admin endpoint to list workers, including their links and which
 /// ones have failed.
+#[utoipa::path(
+    get,
+    path = "/admin/workers",
+    responses((status = 200, description = "Registered workers, including links and failed workers", body = WorkerListResponse))
+)]
 async fn admin_list_workers(State(state): State<Arc<AppState>>) -> Json<WorkerListResponse> {
     worker_list(&state, true).await
 }
@@ -1605,6 +1809,15 @@ struct CreateWorkerRequest {
     link: Option<String>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/admin/workers",
+    request_body = CreateWorkerRequest,
+    responses(
+        (status = 201, description = "Worker was created", body = MessageResponse),
+        (status = 500, description = "Worker could not be created", body = MessageResponse),
+    )
+)]
 async fn admin_create_worker(
     State(state): State<Arc<AppState>>,
     Json(request): Json<CreateWorkerRequest>,
@@ -1633,6 +1846,12 @@ async fn admin_create_worker(
 }
 
 /// Admin endpoint to delete a worker.
+#[utoipa::path(
+    delete,
+    path = "/admin/workers/{name}",
+    params(("name" = String, Path, description = "Worker name")),
+    responses((status = 200, description = "Whether the worker was deleted", body = MessageResponse))
+)]
 async fn admin_delete_worker(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
@@ -1654,6 +1873,14 @@ async fn admin_delete_worker(
 }
 
 /// Admin endpoint to get security statistics.
+#[utoipa::path(
+    get,
+    path = "/admin/security/stats",
+    responses(
+        // TODO: errors are reported with a 200 status and an `error` field.
+        (status = 200, description = "Security statistics", body = crate::auth::SecurityStats),
+    )
+)]
 async fn admin_security_stats(State(state): State<Arc<AppState>>) -> Response {
     match state.security_service.get_security_stats().await {
         Ok(stats) => Json(stats).into_response(),
@@ -1710,6 +1937,16 @@ struct CleanupRunsQuery {
     max: Option<i64>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/admin/runs/cleanup",
+    params(CleanupRunsQuery),
+    responses(
+        (status = 200, description = "Runs were rescheduled", body = CleanupRunsResponse),
+        (status = 400, description = "Invalid time bound", body = ErrorResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
 async fn admin_cleanup_runs(
     State(state): State<Arc<AppState>>,
     Query(q): Query<CleanupRunsQuery>,
@@ -2002,6 +2239,15 @@ async fn admin_cleanup_runs(
 }
 
 /// Check for resume information for a campaign and branch.
+#[utoipa::path(
+    post,
+    path = "/resume/check",
+    request_body = ResumeInfoRequest,
+    responses(
+        // TODO: errors are reported with a 200 status and an `error` field.
+        (status = 200, description = "Whether there is a run to resume from", body = ResumeCheckResponse),
+    )
+)]
 async fn check_resume_info(
     State(state): State<Arc<AppState>>,
     Json(request): Json<ResumeInfoRequest>,
@@ -2031,6 +2277,15 @@ async fn check_resume_info(
 }
 
 /// Get the resume chain for a specific run.
+#[utoipa::path(
+    get,
+    path = "/resume/chain/{run_id}",
+    params(("run_id" = RunId, Path, description = "Run id")),
+    responses(
+        // TODO: errors are reported with a 200 status and an `error` field.
+        (status = 200, description = "Runs that the run resumes from", body = ResumeChainResponse),
+    )
+)]
 async fn get_resume_chain(
     State(state): State<Arc<AppState>>,
     Path(run_id): Path<RunId>,
@@ -2049,6 +2304,15 @@ async fn get_resume_chain(
 }
 
 /// Get all runs that resume from a specific run.
+#[utoipa::path(
+    get,
+    path = "/resume/descendants/{run_id}",
+    params(("run_id" = RunId, Path, description = "Run id")),
+    responses(
+        // TODO: errors are reported with a 200 status and an `error` field.
+        (status = 200, description = "Runs that resume from the run", body = ResumeDescendantsResponse),
+    )
+)]
 async fn get_resume_descendants(
     State(state): State<Arc<AppState>>,
     Path(run_id): Path<RunId>,
@@ -2067,6 +2331,14 @@ async fn get_resume_descendants(
 }
 
 /// Validate resume consistency across the database.
+#[utoipa::path(
+    get,
+    path = "/resume/validate",
+    responses(
+        // TODO: errors are reported with a 200 status and an `error` field.
+        (status = 200, description = "Result of the consistency check", body = ResumeValidationResponse),
+    )
+)]
 async fn validate_resume_consistency(State(state): State<Arc<AppState>>) -> Response {
     match state.resume_service.validate_resume_consistency().await {
         Ok(errors) if errors.is_empty() => Json(ResumeValidationResponse {
@@ -2106,6 +2378,19 @@ fn finish_conflict_body(
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/active-runs/{id}/finish",
+    params(("id" = RunId, Path, description = "Run id")),
+    request_body(content = inline(FinishUpload), content_type = "multipart/form-data"),
+    responses(
+        (status = 201, description = "Run result was stored", body = FinishResponse),
+        (status = 400, description = "Invalid upload", body = ErrorResponse),
+        (status = 404, description = "Run is not active", body = ReasonResponse),
+        (status = 409, description = "Run result was already stored", body = FinishConflictResponse),
+        (status = 500, description = "Run result could not be stored", body = ReasonResponse),
+    )
+)]
 async fn finish_active_run_multipart(
     State(state): State<Arc<AppState>>,
     Path(id): Path<RunId>,
@@ -2540,6 +2825,11 @@ async fn finish_run_multipart_internal(
     (StatusCode::CREATED, Json(response)).into_response()
 }
 
+#[utoipa::path(
+    get,
+    path = "/",
+    responses((status = 200, description = "Empty response", body = String, content_type = "text/plain"))
+)]
 async fn public_root() -> impl IntoResponse {
     ""
 }
@@ -2600,6 +2890,18 @@ async fn authenticate_worker(
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/active-runs",
+    request_body = AssignRequest,
+    responses(
+        (status = 201, description = "Work was assigned", body = AssignmentResponse,
+         headers(("Location" = String, description = "URL of the new active run"))),
+        (status = 500, description = "Database error", body = ErrorResponse),
+        (status = 503, description = "Queue is empty, or a forge rate-limited the runner \
+                                     (body is then a `RateLimitedResponse`)", body = ReasonResponse),
+    )
+)]
 async fn public_assign(
     State(state): State<Arc<AppState>>,
     Extension(worker_name): Extension<String>,
@@ -2624,6 +2926,19 @@ async fn public_assign(
 /// name gets a useful run assignment, does the work, then trips
 /// `run_worker_fkey` at /finish -- by which time the worker has
 /// already burned the time and the surface is a database 500.
+#[utoipa::path(
+    post,
+    path = "/active-runs",
+    request_body = AssignRequest,
+    responses(
+        (status = 201, description = "Work was assigned", body = AssignmentResponse,
+         headers(("Location" = String, description = "URL of the new active run"))),
+        (status = 400, description = "Worker is missing or not registered", body = AssignRejectedResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+        (status = 503, description = "Queue is empty, or a forge rate-limited the runner \
+                                     (body is then a `RateLimitedResponse`)", body = ReasonResponse),
+    )
+)]
 async fn private_assign(
     State(state): State<Arc<AppState>>,
     Json(request): Json<AssignRequest>,
@@ -3461,6 +3776,20 @@ async fn assign_work_internal(
         .into_response()
 }
 
+#[utoipa::path(
+    post,
+    path = "/active-runs/{id}/finish",
+    params(("id" = RunId, Path, description = "Run id")),
+    request_body(content = inline(FinishUpload), content_type = "multipart/form-data"),
+    responses(
+        (status = 201, description = "Run result was stored", body = FinishResponse),
+        (status = 400, description = "Invalid upload", body = ErrorResponse),
+        (status = 403, description = "Run is assigned to a different worker", body = ErrorResponse),
+        (status = 404, description = "Run is not active", body = ErrorResponse),
+        (status = 409, description = "Run result was already stored", body = FinishConflictResponse),
+        (status = 500, description = "Run result could not be stored", body = ReasonResponse),
+    )
+)]
 async fn public_finish(
     State(state): State<Arc<AppState>>,
     Extension(worker_name): Extension<String>,
@@ -3493,6 +3822,11 @@ async fn public_finish(
 }
 
 /// Get watchdog health information for all active runs.
+#[utoipa::path(
+    get,
+    path = "/watchdog/health",
+    responses((status = 200, description = "Health of the active runs", body = WatchdogHealthResponse))
+)]
 async fn public_watchdog_health(
     State(state): State<Arc<AppState>>,
 ) -> Json<WatchdogHealthResponse> {
@@ -3544,6 +3878,11 @@ async fn public_watchdog_health(
 }
 
 /// Get public queue statistics.
+#[utoipa::path(
+    get,
+    path = "/queue/stats",
+    responses((status = 200, description = "Queue statistics", body = QueueStatsResponse))
+)]
 async fn public_queue_stats(State(state): State<Arc<AppState>>) -> Json<QueueStatsResponse> {
     // Active runs live in Redis, not Postgres; source them here so
     // the count reflects reality.
@@ -3575,6 +3914,14 @@ async fn public_queue_stats(State(state): State<Arc<AppState>>) -> Json<QueueSta
 }
 
 /// `GET /health` -- full component health report.
+#[utoipa::path(
+    get,
+    path = "/health",
+    responses(
+        (status = 200, description = "Service is healthy or degraded", body = crate::HealthReport),
+        (status = 503, description = "Service is unhealthy", body = crate::HealthReport),
+    )
+)]
 async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let report = state.health_checker.report().await;
     let code = match report.status {
@@ -3588,12 +3935,25 @@ async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
 /// `GET /health/live` -- cheap liveness probe: the process is
 /// responsive if we can service the request at all.
+#[utoipa::path(
+    get,
+    path = "/health/live",
+    responses((status = 200, description = "Service is alive", body = String, content_type = "text/plain"))
+)]
 async fn liveness() -> impl IntoResponse {
     (StatusCode::OK, "alive")
 }
 
 /// `GET /health/ready` (and `/ready`) -- readiness probe: service is
 /// ready iff every component reports healthy.
+#[utoipa::path(
+    get,
+    path = "/health/ready",
+    responses(
+        (status = 200, description = "Service is ready", body = String, content_type = "text/plain"),
+        (status = 503, description = "Service is not ready", body = String, content_type = "text/plain"),
+    )
+)]
 async fn readiness(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     if state.health_checker.is_ready().await {
         (StatusCode::OK, "ready")
@@ -3626,106 +3986,210 @@ async fn record_http_metrics(
     response
 }
 
-/// Create a router for the public API endpoints.
-pub fn public_app(state: Arc<AppState>) -> Router<Arc<AppState>> {
-    let public_routes = Router::new()
-        .route("/", get(public_root))
-        .route("/health", get(health))
-        .route("/health/live", get(liveness))
-        .route("/health/ready", get(readiness))
-        .route("/queue/stats", get(public_queue_stats))
-        .route("/watchdog/health", get(public_watchdog_health));
+/// Multipart body of `POST /active-runs/{id}/finish`; only used to
+/// describe the request in the OpenAPI document.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct FinishUpload {
+    /// JSON-encoded worker result.
+    metadata: String,
+    /// Result files, one part per file. Files ending in `.log` are
+    /// stored as logs, everything else as artifacts.
+    #[schema(value_type = Vec<String>, format = Binary)]
+    file: Vec<Vec<u8>>,
+}
 
-    // axum's default request body limit is 2 MiB. Worker /finish
-    // uploads bundle the metadata JSON, all logs, and every artifact
-    // (.changes, .deb, orig.tar.gz, debian.tar.xz, .dsc, .buildinfo)
-    // -- easily hundreds of MB for any real package. Hitting the cap
-    // lands as a 5ms 400 with "Multipart error: Failed to read file
-    // data: Error parsing `multipart/form-data` request" the moment
-    // axum starts decoding the first file part. Disable the limit
-    // on the upload routes; the per-file size cap is enforced by
-    // the upload processor itself (`max_file_size`), and the ingress
-    // proxy-body-size is the network-edge ceiling.
-    // The `/runner/` prefix that workers use is an ingress concern,
-    // not a routing concern in this binary. nginx matches
-    // `/runner(/|$)(.*)` on the public site and rewrites to `/$2`
-    // before forwarding to this port, so handlers see the same
-    // shapes as the private app -- just gated by authenticate_worker.
-    let worker_routes = Router::new()
-        .route("/active-runs", post(public_assign))
-        .route(
-            "/active-runs/{id}/finish",
-            post(public_finish).layer(DefaultBodyLimit::disable()),
-        )
+/// Name of the security scheme for worker credentials.
+const WORKER_AUTH: &str = "worker_auth";
+
+/// Base of the OpenAPI documents. `RateLimitedResponse` is listed
+/// explicitly because the assign endpoints can only reference one 503
+/// body. utoipa only collects schemas from request and response bodies,
+/// so the identifier types used as parameters are listed too.
+#[derive(utoipa::OpenApi)]
+#[openapi(components(schemas(RateLimitedResponse, RunId, CodebaseName, Campaign, LogFilename)))]
+struct RunnerApi;
+
+fn openapi_router() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::with_openapi(<RunnerApi as utoipa::OpenApi>::openapi())
+}
+
+/// Unauthenticated routes of the public app.
+fn public_routes() -> OpenApiRouter<Arc<AppState>> {
+    openapi_router()
+        .routes(routes!(public_root))
+        .routes(routes!(health))
+        .routes(routes!(liveness))
+        .routes(routes!(readiness))
+        .routes(routes!(public_queue_stats))
+        .routes(routes!(public_watchdog_health))
+}
+
+/// Routes of the public app that require worker credentials. The
+/// caller is responsible for adding the authentication layer.
+///
+/// The `/runner/` prefix that workers use is an ingress concern, not a
+/// routing concern in this binary. nginx matches `/runner(/|$)(.*)` on
+/// the public site and rewrites to `/$2` before forwarding to this
+/// port, so handlers see the same shapes as the private app -- just
+/// gated by authenticate_worker.
+fn worker_routes() -> OpenApiRouter<Arc<AppState>> {
+    let mut router = openapi_router()
+        .routes(routes!(public_assign))
+        .routes(without_body_limit(routes!(public_finish)))
+        .routes(routes!(get_active_run))
         .route(
             "/active-runs/{id}/finish-multipart",
             post(public_finish).layer(DefaultBodyLimit::disable()),
-        )
-        .route("/active-runs/{id}", get(get_active_run))
-        .layer(middleware::from_fn_with_state(
-            Arc::clone(&state),
-            authenticate_worker,
-        ));
-
-    // Combine both routers
-    public_routes.merge(worker_routes).with_state(state)
+        );
+    for item in router.get_openapi_mut().paths.paths.values_mut() {
+        for operation in [
+            &mut item.get,
+            &mut item.put,
+            &mut item.post,
+            &mut item.delete,
+            &mut item.options,
+            &mut item.head,
+            &mut item.patch,
+            &mut item.trace,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            operation.security = Some(vec![SecurityRequirement::new(
+                WORKER_AUTH,
+                Vec::<String>::new(),
+            )]);
+        }
+    }
+    router
 }
 
-/// Create a router for the private API endpoints.
-pub fn app(state: Arc<AppState>) -> Router {
-    Router::new()
-        .route("/queue/position", get(queue_position))
-        .route("/schedule-control", post(schedule_control))
-        .route("/schedule", post(schedule))
-        .route("/status", get(status))
-        .route("/log/{id}", get(log_index))
-        .route("/kill/{id}", post(kill))
-        .route("/log/{id}/{filename}", get(log))
-        .route("/codebases", get(get_codebases))
-        .route("/codebases", post(update_codebases))
-        .route("/candidates", get(get_candidates))
-        .route("/candidates", post(upload_candidates))
-        .route("/candidates/{id}", delete(delete_candidate))
-        .route("/runs/{id}", get(get_run))
-        .route("/runs/{id}", post(update_run))
-        .route("/active-runs", get(get_active_runs))
-        // Unauthenticated assign for intra-cluster admin tools (e.g.
-        // schedule-codebases CronJob). Body must include `worker`/
-        // `node`. Workers themselves should hit /runner/active-runs
-        // on the public app, which uses authenticated identity.
-        .route("/active-runs", post(private_assign))
-        .route("/active-runs/{id}", get(get_active_run))
-        .route("/active-runs/{id}/current-stage", get(current_stage))
+/// Disable axum's default request body limit (2 MiB) for a route.
+///
+/// Worker /finish uploads bundle the metadata JSON, all logs, and every
+/// artifact (.changes, .deb, orig.tar.gz, debian.tar.xz, .dsc,
+/// .buildinfo) -- easily hundreds of MB for any real package. Hitting
+/// the cap lands as a 5ms 400 with "Multipart error: Failed to read
+/// file data: Error parsing `multipart/form-data` request" the moment
+/// axum starts decoding the first file part. The per-file size cap is
+/// enforced by the upload processor itself (`max_file_size`), and the
+/// ingress proxy-body-size is the network-edge ceiling.
+fn without_body_limit(
+    (schemas, paths, method_router): UtoipaMethodRouter<Arc<AppState>>,
+) -> UtoipaMethodRouter<Arc<AppState>> {
+    (
+        schemas,
+        paths,
+        method_router.layer(DefaultBodyLimit::disable()),
+    )
+}
+
+/// Add a route that serves `openapi` as `/openapi.json`.
+fn with_openapi_json<S: Clone + Send + Sync + 'static>(
+    router: Router<S>,
+    openapi: &OpenApi,
+) -> Router<S> {
+    let spec = openapi
+        .to_json()
+        .expect("OpenAPI document can be serialized");
+    router.route(
+        "/openapi.json",
+        get(move || async move { ([("content-type", "application/json")], spec) }),
+    )
+}
+
+/// OpenAPI document for the public API.
+pub fn public_openapi() -> OpenApi {
+    let mut openapi = public_routes().merge(worker_routes()).into_openapi();
+    openapi.info.description = Some("Worker-facing API of the janitor runner".to_string());
+    openapi
+        .components
+        .get_or_insert_with(Default::default)
+        .add_security_scheme(
+            WORKER_AUTH,
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Basic)
+                    .description(Some(
+                        "Worker name and password; a bearer token is accepted as well",
+                    ))
+                    .build(),
+            ),
+        );
+    openapi
+}
+
+/// Create a router for the public API endpoints.
+pub fn public_app(state: Arc<AppState>) -> Router<Arc<AppState>> {
+    let worker_routes = worker_routes().layer(middleware::from_fn_with_state(
+        Arc::clone(&state),
+        authenticate_worker,
+    ));
+    let (router, _) = public_routes().merge(worker_routes).split_for_parts();
+    with_openapi_json(router, &public_openapi()).with_state(state)
+}
+
+/// Routes of the private app.
+fn private_routes() -> OpenApiRouter<Arc<AppState>> {
+    openapi_router()
+        .routes(routes!(queue_position))
+        .routes(routes!(schedule_control))
+        .routes(routes!(schedule))
+        .routes(routes!(status))
+        .routes(routes!(log_index))
+        .routes(routes!(kill))
+        .routes(routes!(log))
+        .routes(routes!(get_codebases, update_codebases))
+        .routes(routes!(get_candidates, upload_candidates))
+        .routes(routes!(delete_candidate))
+        .routes(routes!(get_run, update_run))
+        // The unauthenticated POST is for intra-cluster admin tools
+        // (e.g. schedule-codebases CronJob). Body must include
+        // `worker`/`node`. Workers themselves should hit
+        // /runner/active-runs on the public app, which uses
+        // authenticated identity.
+        .routes(routes!(get_active_runs, private_assign))
+        .routes(routes!(get_active_run))
+        .routes(routes!(current_stage))
         // Workers POST `/active-runs/{id}/finish` with a multipart
         // body (metadata field + one `file` part per result file).
         // The `-multipart` alias exists for callers that use the
         // explicit path.
-        .route(
-            "/active-runs/{id}/finish",
-            post(finish_active_run_multipart).layer(DefaultBodyLimit::disable()),
-        )
+        .routes(without_body_limit(routes!(finish_active_run_multipart)))
         .route(
             "/active-runs/{id}/finish-multipart",
             post(finish_active_run_multipart).layer(DefaultBodyLimit::disable()),
         )
-        .route("/active-runs/+peek", get(peek_active_run))
-        .route("/queue", get(get_queue))
-        .route("/health", get(health))
-        .route("/health/live", get(liveness))
-        .route("/health/ready", get(readiness))
+        .routes(routes!(peek_active_run))
+        .routes(routes!(get_queue))
+        .routes(routes!(health))
+        .routes(routes!(liveness))
+        .routes(routes!(readiness))
         .route("/ready", get(readiness))
-        .route("/metrics", get(metrics))
-        .route("/workers", get(list_workers))
-        .route("/admin/workers", get(admin_list_workers))
-        .route("/admin/workers", post(admin_create_worker))
-        .route("/admin/workers/{name}", delete(admin_delete_worker))
-        .route("/admin/security/stats", get(admin_security_stats))
-        .route("/admin/runs/cleanup", post(admin_cleanup_runs))
-        // Resume-related endpoints
-        .route("/resume/check", post(check_resume_info))
-        .route("/resume/chain/{run_id}", get(get_resume_chain))
-        .route("/resume/descendants/{run_id}", get(get_resume_descendants))
-        .route("/resume/validate", get(validate_resume_consistency))
+        .routes(routes!(metrics))
+        .routes(routes!(list_workers))
+        .routes(routes!(admin_list_workers, admin_create_worker))
+        .routes(routes!(admin_delete_worker))
+        .routes(routes!(admin_security_stats))
+        .routes(routes!(admin_cleanup_runs))
+        .routes(routes!(check_resume_info))
+        .routes(routes!(get_resume_chain))
+        .routes(routes!(get_resume_descendants))
+        .routes(routes!(validate_resume_consistency))
+}
+
+/// OpenAPI document for the private API.
+pub fn private_openapi() -> OpenApi {
+    let mut openapi = private_routes().into_openapi();
+    openapi.info.description = Some("Internal API of the janitor runner".to_string());
+    openapi
+}
+
+/// Create a router for the private API endpoints.
+pub fn app(state: Arc<AppState>) -> Router {
+    let (router, _) = private_routes().split_for_parts();
+    with_openapi_json(router, &private_openapi())
         .layer(axum::middleware::from_fn(record_http_metrics))
         .with_state(state)
 }
@@ -3740,6 +4204,48 @@ mod tests {
     use janitor_types::{Campaign, CodebaseName};
     use serde_json::json;
     use std::collections::HashSet;
+
+    fn collect_refs<'a>(value: &'a serde_json::Value, refs: &mut Vec<&'a str>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, value) in map {
+                    match value {
+                        serde_json::Value::String(target) if key == "$ref" => refs.push(target),
+                        _ => collect_refs(value, refs),
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    collect_refs(item, refs);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Schemas only end up in the document when utoipa can see them from
+    /// a path or the `OpenApi` derive; a `$ref` to anything else would
+    /// leave clients with a broken document.
+    #[test]
+    fn test_openapi_refs_resolve() {
+        for openapi in [super::private_openapi(), super::public_openapi()] {
+            let doc = serde_json::to_value(&openapi).unwrap();
+            let mut refs = vec![];
+            collect_refs(&doc, &mut refs);
+            assert!(!refs.is_empty());
+            let missing: Vec<&str> = refs
+                .into_iter()
+                .filter(|r| {
+                    let name = r
+                        .strip_prefix("#/components/schemas/")
+                        .unwrap_or_else(|| panic!("unexpected $ref {r}"));
+                    doc["components"]["schemas"].get(name).is_none()
+                })
+                .collect();
+            assert_eq!(missing, Vec::<&str>::new());
+        }
+    }
 
     /// Exhaustive 2x2x2 matrix for assignment_validation_outcome:
     ///   - unknown campaign always loses (regardless of other inputs)

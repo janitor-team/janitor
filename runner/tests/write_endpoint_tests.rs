@@ -2465,3 +2465,50 @@ async fn finish_stores_artifacts_in_backup() {
         .unwrap();
     assert_eq!(contents, b"deb contents");
 }
+
+/// `GET /openapi.json` on the private app describes the private routes.
+#[tokio::test]
+async fn private_openapi_json_is_served() {
+    let Some((app, _state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/openapi.json")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    assert_eq!(body["info"]["title"], json!("janitor-runner"));
+    assert!(body["paths"]["/schedule"]["post"].is_object(), "{body}");
+    assert_eq!(body["paths"].get("/watchdog/health"), None);
+}
+
+/// `GET /openapi.json` on the public app needs no worker credentials and
+/// marks the worker routes as authenticated.
+#[tokio::test]
+async fn public_openapi_json_is_served_without_auth() {
+    let Some((app, _state)) = test_utils::create_public_test_app_with_state_if_available()
+        .await
+        .expect("public app setup should either succeed or return None cleanly")
+    else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/openapi.json")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    assert_eq!(
+        body["paths"]["/active-runs"]["post"]["security"],
+        json!([{"worker_auth": []}])
+    );
+    assert_eq!(body["paths"]["/health"]["get"].get("security"), None);
+    assert_eq!(body["paths"].get("/schedule"), None);
+}
