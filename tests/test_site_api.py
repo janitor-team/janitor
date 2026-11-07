@@ -189,29 +189,40 @@ async def test_active_runs_and_runner_status(aiohttp_client, db):
 
 
 async def test_codebase_names(aiohttp_client, db):
-    client = await create_client(aiohttp_client, db)
+    async def handle_codebase_names(request):
+        return web.json_response(["asciijump", "pv", "sl"])
+
+    runner_app = web.Application()
+    runner_app.router.add_get("/codebases/names", handle_codebase_names)
+    runner_client = await aiohttp_client(runner_app)
+    client = await create_client(
+        aiohttp_client, db, runner_url=str(runner_client.make_url("/"))
+    )
 
     resp = await client.get("/codebase-names")
-    assert resp.status == 200
-    assert await resp.json() == []
+    assert (resp.status, resp.headers["Cache-Control"], await resp.json()) == (
+        200,
+        "max-age=600",
+        ["asciijump", "pv", "sl"],
+    )
 
-    async with db.acquire() as conn:
-        for name in ["sl", "pv", "asciijump"]:
-            await _insert_codebase(conn, name)
-        await conn.execute(
-            "INSERT INTO codebase (name, branch_url, url, inactive) "
-            "VALUES ('hello', 'https://example.com/hello.git', "
-            "'https://example.com/hello.git', true)"
-        )
-        await conn.execute(
-            "INSERT INTO codebase (branch_url, url) VALUES "
-            "('https://example.com/unnamed.git', 'https://example.com/unnamed.git')"
-        )
+
+async def test_codebase_names_runner_error(aiohttp_client, db):
+    async def handle_codebase_names(request):
+        return web.Response(status=500, text="Database error")
+
+    runner_app = web.Application()
+    runner_app.router.add_get("/codebases/names", handle_codebase_names)
+    runner_client = await aiohttp_client(runner_app)
+    client = await create_client(
+        aiohttp_client, db, runner_url=str(runner_client.make_url("/"))
+    )
 
     resp = await client.get("/codebase-names")
-    assert resp.status == 200
-    assert resp.headers["Cache-Control"] == "max-age=600"
-    assert await resp.json() == ["asciijump", "pv", "sl"]
+    assert (resp.status, await resp.text()) == (
+        502,
+        "Unable to retrieve codebase names",
+    )
 
 
 async def test_publish_mode_needs_admin(aiohttp_client, db):
