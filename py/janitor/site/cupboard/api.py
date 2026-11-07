@@ -22,12 +22,19 @@ from datetime import timedelta
 import aiozipkin
 import asyncpg
 from aiohttp import ClientConnectorError, ClientResponseError, ClientSession, web
-from aiohttp_apispec import docs
+from aiohttp_apispec import (
+    docs,
+    form_schema,
+    querystring_schema,
+    response_schema,
+    setup_aiohttp_apispec,
+)
 from aiojobs.aiohttp import setup as setup_aiojobs
 from aiojobs.aiohttp import spawn
+from marshmallow import Schema, fields
 from yarl import URL
 
-from janitor import CAMPAIGN_REGEX, utcnow
+from janitor import CAMPAIGN_REGEX, utcnow, version_string
 
 from .. import check_admin, worker_link_is_global
 from ..setup import setup_logfile_manager, setup_postgres
@@ -39,7 +46,28 @@ DIST_LOG_FILENAME = "dist.log"
 routes = web.RouteTableDef()
 
 
-@docs()
+class MassRescheduleSchema(Schema):
+    result_code = fields.Str(
+        required=True,
+        metadata={"description": "result code to match, or 'never-processed'"},
+    )
+    include_transient = fields.Str(metadata={"description": "'on' to include"})
+    campaign = fields.Str()
+    description_re = fields.Str(metadata={"description": "regex for description"})
+    min_age = fields.Int(metadata={"description": "minimum age in days"})
+    rejected = fields.Raw(metadata={"description": "if present, only rejected runs"})
+    offset = fields.Int(metadata={"description": "offset from top of queue"})
+    refresh = fields.Raw(metadata={"description": "if present, start from scratch"})
+
+
+class CodebaseCampaignSchema(Schema):
+    codebase = fields.Str()
+    campaign = fields.Str()
+
+
+@docs(summary="Reschedule all runs matching a set of criteria")
+@form_schema(MassRescheduleSchema())
+@response_schema(CodebaseCampaignSchema(many=True))
 @routes.post("/mass-reschedule", name="admin-reschedule")
 async def handle_mass_reschedule(request):
     check_admin(request)
@@ -162,11 +190,23 @@ AND """
     )
 
 
-@docs()
+class NeedsReviewQuerySchema(Schema):
+    reviewer = fields.Str(metadata={"description": "defaults to the current user"})
+    publishable_only = fields.Str(load_default="true")
+    required_only = fields.Str()
+    limit = fields.Int(load_default=200)
+
+
+class NeedsReviewSchema(Schema):
+    id = fields.Str(metadata={"description": "run identifier"})
+    codebase = fields.Str()
+    campaign = fields.Str()
+
+
+@docs(summary="List runs that need review")
+@querystring_schema(NeedsReviewQuerySchema())
+@response_schema(NeedsReviewSchema(many=True))
 @routes.get("/needs-review", name="needs-review")
-@routes.get(
-    "/{campaign:" + CAMPAIGN_REGEX + "}/needs-review", name="needs-review-campaign"
-)
 async def handle_needs_review(request):
     from . import iter_needs_review
 
@@ -200,7 +240,34 @@ async def handle_needs_review(request):
     return web.json_response(ret, status=200)
 
 
-@docs()
+# TODO(jelmer): Drop this separate handler once
+# https://github.com/maximdanilchenko/aiohttp-apispec/issues/139 is fixed;
+# a handler shared between routes gets the other route's path parameters.
+@docs(summary="List runs of a campaign that need review")
+@querystring_schema(NeedsReviewQuerySchema())
+@response_schema(NeedsReviewSchema(many=True))
+@routes.get(
+    "/{campaign:" + CAMPAIGN_REGEX + "}/needs-review", name="needs-review-campaign"
+)
+async def handle_campaign_needs_review(request):
+    return await handle_needs_review(request)
+
+
+class ReprocessOptionsSchema(Schema):
+    dry_run = fields.Raw(metadata={"description": "if present, do not store results"})
+    reschedule = fields.Raw(metadata={"description": "if present, reschedule"})
+
+
+class ReprocessResultSchema(Schema):
+    changed = fields.Bool()
+    result_code = fields.Str()
+    description = fields.Str(allow_none=True)
+    failure_details = fields.Raw(allow_none=True)
+
+
+@docs(summary="Reprocess the logs of a run")
+@form_schema(ReprocessOptionsSchema())
+@response_schema(ReprocessResultSchema())
 @routes.post("/run/{run_id}/reprocess-logs", name="admin-reprocess-logs-run")
 async def handle_run_reprocess_logs(request):
     from ...reprocess_logs import (  # type: ignore
@@ -322,7 +389,22 @@ WHERE
     return await conn.fetch(query, *args)
 
 
-@docs()
+class ReprocessLogsSchema(ReprocessOptionsSchema):
+    run_id = fields.List(fields.Str())
+    campaign = fields.Str()
+    description_re = fields.Str(metadata={"description": "regex for description"})
+    min_age = fields.Int(metadata={"description": "minimum age in days"})
+
+
+class ReprocessingSchema(Schema):
+    codebase = fields.Str()
+    campaign = fields.Str()
+    log_id = fields.Str()
+
+
+@docs(summary="Reprocess the logs of a set of runs")
+@form_schema(ReprocessLogsSchema())
+@response_schema(ReprocessingSchema(many=True))
 @routes.post("/reprocess-logs", name="admin-reprocess-logs")
 async def handle_reprocess_logs(request):
     from ...reprocess_logs import (
@@ -388,7 +470,10 @@ async def handle_reprocess_logs(request):
     )
 
 
-@docs()
+@docs(
+    summary="Trigger an autopublish run in the publisher",
+    responses={"200": {"description": "publisher response"}},
+)
 @routes.post("/publish/autopublish", name="publish-autopublish")
 async def handle_publish_autopublish(request):
     check_admin(request)
@@ -401,7 +486,10 @@ async def handle_publish_autopublish(request):
         return web.Response(text="unable to contact publisher", status=400)
 
 
-@docs()
+@docs(
+    summary="Trigger a merge proposal scan in the publisher",
+    responses={"200": {"description": "publisher response"}},
+)
 @routes.post("/publish/scan", name="publish-scan")
 async def handle_publish_scan(request):
     check_admin(request)
@@ -414,7 +502,16 @@ async def handle_publish_scan(request):
         return web.Response(text="unable to contact publisher", status=400)
 
 
-@docs()
+class WorkerSchema(Schema):
+    name = fields.Str()
+    link = fields.Url(
+        allow_none=True, metadata={"description": "only set for global links"}
+    )
+    run_count = fields.Int()
+
+
+@docs(summary="List workers")
+@response_schema(WorkerSchema(many=True))
 @routes.get("/workers", name="admin-workers-list")
 async def handle_workers_list(request):
     check_admin(request)
@@ -436,7 +533,20 @@ async def handle_workers_list(request):
     return web.json_response(workers)
 
 
-@docs()
+class WorkerAddSchema(Schema):
+    name = fields.Str(required=True)
+    link = fields.Url()
+
+
+class WorkerCredentialsSchema(Schema):
+    name = fields.Str()
+    link = fields.Url(allow_none=True)
+    password = fields.Str(metadata={"description": "generated password"})
+
+
+@docs(summary="Add a worker")
+@form_schema(WorkerAddSchema())
+@response_schema(WorkerCredentialsSchema(), 201)
 @routes.post("/workers", name="admin-workers-add")
 async def handle_workers_add(request):
     check_admin(request)
@@ -463,7 +573,12 @@ async def handle_workers_add(request):
     )
 
 
-@docs()
+class WorkerNameSchema(Schema):
+    name = fields.Str()
+
+
+@docs(summary="Remove a worker")
+@response_schema(WorkerNameSchema())
 @routes.delete("/workers/{name}", name="admin-workers-delete")
 async def handle_workers_delete(request):
     check_admin(request)
@@ -498,4 +613,11 @@ def create_app(*, config, publisher_url, runner_url, trace_configs=None, db=None
         app["pool"] = db
     setup_logfile_manager(app)
     setup_aiojobs(app)
+    setup_aiohttp_apispec(
+        app=app,
+        title="Janitor Cupboard API Documentation",
+        version=version_string,
+        url="/swagger.json",
+        swagger_path="/docs",
+    )
     return app

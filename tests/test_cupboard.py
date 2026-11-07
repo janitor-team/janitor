@@ -15,6 +15,7 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
+import re
 import sys
 import types
 from datetime import timedelta
@@ -674,3 +675,25 @@ async def test_result_file_unreadable_log_returns_502(tmp_path):
     with pytest.raises(web.HTTPBadGateway) as e:
         await handle_result_file(request)
     assert str(e.value.__cause__) == "Unable to read build.log"
+
+
+async def test_api_swagger_documents_all_routes(aiohttp_client, db):
+    client = await create_api_client(aiohttp_client, db, user=None)
+    resp = await client.get("/swagger.json")
+    assert resp.status == 200
+    spec = await resp.json()
+    documented = {}
+    for path, ops in spec["paths"].items():
+        for method, op in ops.items():
+            if method == "head" or not op["responses"]:
+                continue
+            documented[(path, method)] = {
+                p["name"] for p in op["parameters"] if p["in"] == "path"
+            }
+    assert documented == {
+        (route.resource.canonical, route.method.lower()): set(
+            re.findall(r"\{(\w+)\}", route.resource.canonical)
+        )
+        for route in client.app.router.routes()
+        if route.method != "HEAD" and not (route.name or "").startswith("swagger.")
+    }

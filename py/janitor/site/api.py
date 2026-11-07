@@ -31,11 +31,18 @@ from aiohttp import (
     web,
 )
 from aiohttp.web_middlewares import normalize_path_middleware
-from aiohttp_apispec import docs, response_schema
+from aiohttp_apispec import (
+    docs,
+    form_schema,
+    querystring_schema,
+    response_schema,
+    setup_aiohttp_apispec,
+)
 from breezy.revision import NULL_REVISION
-from marshmallow import Schema, fields
+from marshmallow import Schema, fields, validate
 from yarl import URL
 
+from janitor import version_string
 from janitor.config import Config
 
 from ..vcs import VcsManager
@@ -56,7 +63,31 @@ from .setup import setup_postgres
 routes = web.RouteTableDef()
 
 
-@docs()
+class ReasonSchema(Schema):
+    reason = fields.Str()
+
+
+class PublishRequestSchema(Schema):
+    mode = fields.Str(
+        validate=validate.OneOf(["push-derived", "push", "propose", "attempt-push"]),
+        metadata={"description": "publish mode; overrides the policy (admin only)"},
+    )
+
+
+class PublishResultSchema(Schema):
+    run_id = fields.Str()
+    mode = fields.Str()
+    publish_ids = fields.Dict(
+        keys=fields.Str(), values=fields.Str(), metadata={"description": "by role"}
+    )
+    code = fields.Str()
+    description = fields.Str()
+
+
+@docs(summary="Publish the last run for a codebase")
+@form_schema(PublishRequestSchema())
+@response_schema(PublishResultSchema(), 202, description="publish started")
+@response_schema(PublishResultSchema(), 200, description="nothing to publish")
 @routes.post("/{campaign}/c/{codebase}/publish", name="codebase-publish")
 async def handle_publish(request):
     check_logged_in(request)
@@ -95,19 +126,28 @@ async def handle_publish(request):
         return web.json_response({"reason": "unable to contact publisher"}, status=400)
 
 
+class ScheduleRequestSchema(Schema):
+    offset = fields.Int(metadata={"description": "offset from top of queue"})
+    refresh = fields.Int(metadata={"description": "1 to start from scratch"})
+
+
 class ScheduleResultSchema(Schema):
     codebase = fields.Str(metadata={"description": "codebase name"})
     campaign = fields.Str(metadata={"description": "campaign"})
+    bucket = fields.Str(metadata={"description": "queue bucket"})
+    queue_id = fields.Int(metadata={"description": "queue item identifier"})
     offset = fields.Int(metadata={"description": "offset from top of queue"})
-    estimated_duration_seconds = fields.Int(
+    estimated_duration_seconds = fields.Float(
         metadata={"description": "estimated duration in seconds"}
     )
     queue_position = fields.Int(metadata={"description": "new position in the queue"})
-    queue_wait_time = fields.Int(
+    queue_wait_time = fields.Float(
         metadata={"description": "new delay until run, in seconds"}
     )
 
 
+@docs(summary="Reschedule a run")
+@form_schema(ScheduleRequestSchema())
 @response_schema(ScheduleResultSchema())
 @routes.post("/run/{run_id}/reschedule", name="run-reschedule")
 async def handle_run_reschedule(request):
@@ -148,6 +188,8 @@ async def handle_run_reschedule(request):
     return web.json_response(ret)
 
 
+@docs(summary="Schedule a control run for a run")
+@form_schema(ScheduleRequestSchema())
 @response_schema(ScheduleResultSchema())
 @routes.post("/run/{run_id}/schedule-control", name="run-schedule-control")
 async def handle_schedule_control(request):
@@ -203,6 +245,13 @@ class MergeProposalSchema(Schema):
     status = fields.Str(metadata={"description": "status"})
 
 
+class MergeProposalChangeSchema(Schema):
+    url = fields.Url(required=True, metadata={"description": "merge proposal URL"})
+    status = fields.Str(required=True, metadata={"description": "new status"})
+
+
+@docs(summary="List merge proposals for a campaign")
+@response_schema(MergeProposalSchema(many=True))
 @routes.get("/{campaign}/merge-proposals", name="campaign-merge-proposals")
 async def handle_campaign_merge_proposal_list(request):
     campaign = request.match_info["campaign"]
@@ -214,6 +263,8 @@ async def handle_campaign_merge_proposal_list(request):
         return web.json_response(await resp.json())
 
 
+@docs(summary="List merge proposals for a codebase")
+@response_schema(MergeProposalSchema(many=True))
 @routes.get("/c/{codebase}/merge-proposals", name="codebase-merge-proposals")
 async def handle_codebase_merge_proposal_list(request):
     codebase = request.match_info["codebase"]
@@ -224,7 +275,8 @@ async def handle_codebase_merge_proposal_list(request):
         return web.json_response(await resp.json())
 
 
-@docs()
+@docs(summary="List merge proposals")
+@response_schema(MergeProposalSchema(many=True))
 @routes.get("/merge-proposals", name="merge-proposals")
 async def handle_merge_proposal_list(request):
     url = URL(request.app["publisher_url"]) / "merge-proposals"
@@ -234,7 +286,11 @@ async def handle_merge_proposal_list(request):
         return web.json_response(await resp.json())
 
 
-@docs()
+@docs(
+    summary="Change the status of a merge proposal",
+    responses={"200": {"description": "status changed"}},
+)
+@form_schema(MergeProposalChangeSchema())
 @routes.post("/merge-proposal", name="merge-proposal")
 async def handle_merge_proposal_change(request):
     check_admin(request)
@@ -247,7 +303,16 @@ async def handle_merge_proposal_change(request):
         return web.json_response({})
 
 
-@docs()
+class RefreshProposalStatusSchema(Schema):
+    url = fields.Url(required=True, metadata={"description": "merge proposal URL"})
+
+
+@docs(
+    summary="Refresh the status of a merge proposal",
+    produces=["text/plain"],
+    responses={"202": {"description": "refresh scheduled"}},
+)
+@form_schema(RefreshProposalStatusSchema())
 @routes.post("/refresh-proposal-status", name="refresh-proposal-status")
 async def handle_refresh_proposal_status(request):
     check_logged_in(request)
@@ -267,12 +332,19 @@ async def handle_refresh_proposal_status(request):
 
 class QueueItemSchema(Schema):
     queue_id = fields.Int(metadata={"description": "Queue identifier"})
-    branch_url = fields.Str(metadata={"description": "Branch URL"})
-    context = fields.Str(metadata={"description": "Run context"})  # type: ignore
+    codebase = fields.Str(metadata={"description": "Codebase name"})
+    campaign = fields.Str(metadata={"description": "Campaign"})
+    context = fields.Raw(metadata={"description": "Run context"})  # type: ignore
     command = fields.Str(metadata={"description": "Command"})
 
 
-@docs()
+class QueueQuerySchema(Schema):
+    limit = fields.Int(metadata={"description": "maximum number of items"})
+
+
+@docs(summary="List the queue")
+@querystring_schema(QueueQuerySchema())
+@response_schema(QueueItemSchema(many=True))
 @routes.get("/queue", name="queue")
 async def handle_queue(request):
     limit = request.query.get("limit")
@@ -289,7 +361,10 @@ async def handle_queue(request):
             return web.json_response(await resp.json(), status=resp.status)
 
 
-@docs()
+@docs(
+    summary="List the names of active codebases",
+    responses={"200": {"description": "array of codebase names"}},
+)
 @routes.get("/codebase-names", name="codebase-names")
 async def handle_codebase_names(request):
     async with request.app["pool"].acquire() as conn:
@@ -302,7 +377,16 @@ async def handle_codebase_names(request):
     )
 
 
-@docs()
+class RunDiffQuerySchema(Schema):
+    role = fields.Str(load_default="main", metadata={"description": "branch role"})
+
+
+@docs(
+    summary="Retrieve the VCS diff for a run",
+    produces=["text/x-diff", "text/plain", "text/html"],
+    responses={"200": {"description": "the diff"}},
+)
+@querystring_schema(RunDiffQuerySchema())
 @routes.get("/run/{run_id}/diff", name="run-diff")
 async def handle_diff(request):
     return await serve_run_diff(request, request.match_info["run_id"])
@@ -371,7 +455,25 @@ async def serve_run_diff(request, run_id):
         return web.Response(text="unable to contact publisher - oserror", status=502)
 
 
-@docs()
+class ArchiveDiffQuerySchema(Schema):
+    filter_boring = fields.Raw(
+        metadata={"description": "if present, filter out uninteresting changes"}
+    )
+
+
+class ArchiveDiffUnavailableSchema(Schema):
+    reason = fields.Str()
+    run_id = fields.List(fields.Str())
+    unavailable_run_id = fields.Str(allow_none=True)
+    campaign = fields.Str()
+
+
+@docs(
+    summary="Retrieve the debdiff or diffoscope output for a run",
+    produces=["text/plain", "text/html", "application/json"],
+)
+@querystring_schema(ArchiveDiffQuerySchema())
+@response_schema(ArchiveDiffUnavailableSchema(), 404, description="diff unavailable")
 @routes.get("/run/{run_id}/{kind:debdiff|diffoscope}", name="run-archive-diff")
 async def handle_archive_diff(request):
     run_id = request.match_info["run_id"]
@@ -447,7 +549,10 @@ async def handle_archive_diff(request):
     )
 
 
-@docs()
+@docs(
+    summary="List the log files of a run",
+    responses={"200": {"description": "array of log file names"}},
+)
 @routes.get("/run/{run_id}/logs", name="run-logs")
 async def handle_run_logs(request):
     run_id = request.match_info["run_id"]
@@ -470,7 +575,11 @@ async def handle_run_logs(request):
         raise web.HTTPBadGateway(text="unable to contact runner") from e
 
 
-@docs()
+@docs(
+    summary="Retrieve a log file of a run",
+    produces=["text/plain"],
+    responses={"200": {"description": "the log file"}},
+)
 @routes.get("/run/{run_id}/logs/{filename}", name="run-log-file")
 async def handle_run_log_file(request):
     return await serve_run_log(
@@ -478,9 +587,17 @@ async def handle_run_log_file(request):
     )
 
 
-@docs()
+class ReviewSchema(Schema):
+    verdict = fields.Str(
+        validate=validate.OneOf(["approved", "rejected", "abstained", "reschedule"])
+    )
+    review_comment = fields.Str(data_key="review-comment")
+
+
+@docs(summary="Review a run")
+@form_schema(ReviewSchema())
+@response_schema(ReviewSchema())
 @routes.post("/run/{run_id}", name="run-update")
-@routes.post("/c/{codebase}/run/{run_id}", name="codebase-run-update")
 async def handle_run_post(request):
     from ..review import store_review
 
@@ -512,22 +629,51 @@ async def handle_run_post(request):
         return web.json_response({"verdict": verdict, "review-comment": review_comment})
 
 
-class BuildInfoSchema(Schema):
-    version = fields.Str(metadata={"description": "build version"})
-    distribution = fields.Str(metadata={"description": "build distribution name"})
+# TODO(jelmer): Drop this separate handler once
+# https://github.com/maximdanilchenko/aiohttp-apispec/issues/139 is fixed;
+# a handler shared between routes gets the other route's path parameters.
+@docs(summary="Review a run")
+@form_schema(ReviewSchema())
+@response_schema(ReviewSchema())
+@routes.post("/c/{codebase}/run/{run_id}", name="codebase-run-update")
+async def handle_codebase_run_post(request):
+    return await handle_run_post(request)
 
 
-class RunSchema(Schema):
-    run_id = fields.Str(metadata={"description": "Run identifier"})
-    start_time = fields.DateTime(metadata={"description": "Run start time"})
-    finish_time = fields.DateTime(metadata={"description": "Run finish time"})
-    command = fields.Str(metadata={"description": "Command to run"})
-    description = fields.Str(metadata={"description": "Build result description"})
-    build_info = BuildInfoSchema()
-    result_code = fields.Str(metadata={"description": "Result code"})
+class ActiveRunSchema(Schema):
+    id = fields.Str(metadata={"description": "Run identifier"})
+    queue_id = fields.Int()
+    codebase = fields.Str()
+    campaign = fields.Str()
+    change_set = fields.Str(allow_none=True)
+    command = fields.Str()
+    estimated_duration = fields.Float(
+        allow_none=True, metadata={"description": "in seconds"}
+    )
+    current_duration = fields.Float(metadata={"description": "in seconds"})
+    start_time = fields.DateTime()
+    worker = fields.Str()
+    worker_link = fields.Url(
+        allow_none=True, metadata={"description": "only set for global links"}
+    )
+    vcs = fields.Dict()
+    backchannel = fields.Dict()
+    instigated_context = fields.Raw(allow_none=True)
+    resume_from = fields.Str(allow_none=True)
 
 
-@docs()
+class RunnerStatusSchema(Schema):
+    processing = fields.List(fields.Nested(ActiveRunSchema))
+    avoid_hosts = fields.List(fields.Str())
+    rate_limit_hosts = fields.Dict(
+        keys=fields.Str(),
+        values=fields.DateTime(),
+        metadata={"description": "rate limited hosts and when the limit expires"},
+    )
+
+
+@docs(summary="Retrieve the runner status")
+@response_schema(RunnerStatusSchema())
 @routes.get("/runner/status", name="runner-status")
 async def handle_runner_status(request):
     url = URL(request.app["runner_url"]) / "status"
@@ -551,7 +697,11 @@ async def handle_runner_status(request):
             )
 
 
-@docs()
+@docs(
+    summary="List the log files of an active run",
+    produces=["application/json", "text/plain", "text/html"],
+    responses={"200": {"description": "array of log file names"}},
+)
 @routes.get("/active-runs/{run_id}/log/", name="run-log-list")
 async def handle_runner_log_index(request):
     run_id = request.match_info["run_id"]
@@ -593,11 +743,10 @@ async def handle_runner_log_index(request):
     raise web.HTTPNotAcceptable()
 
 
-@docs(
-    responses={
-        200: {"description": "success response"},
-    }
-)
+@docs(summary="Kill an active run")
+@response_schema(ActiveRunSchema(), 200, description="the killed run")
+@response_schema(ReasonSchema(), 410, description="worker has no active run")
+@response_schema(ReasonSchema(), 501, description="kill not supported")
 @routes.post("/active-runs/{run_id}/kill", name="run-kill")
 async def handle_runner_kill(request):
     span = aiozipkin.request_span(request)
@@ -635,7 +784,11 @@ async def handle_runner_kill(request):
             return web.json_response({"reason": str(e)}, status=502)
 
 
-@docs()
+@docs(
+    summary="Retrieve a log file of an active run",
+    produces=["text/plain"],
+    responses={"200": {"description": "the log file"}},
+)
 @routes.get("/active-runs/{run_id}/log/{filename}", name="run-log")
 async def handle_runner_log(request):
     run_id = request.match_info["run_id"]
@@ -657,7 +810,20 @@ async def handle_runner_log(request):
             return web.Response(text="timeout contacting runner", status=502)
 
 
-@docs()
+class PublishDetailsSchema(Schema):
+    codebase = fields.Str(allow_none=True)
+    target_branch_url = fields.Str(allow_none=True)
+    branch_name = fields.Str(allow_none=True)
+    main_branch_revision = fields.Str(allow_none=True)
+    revision = fields.Str(allow_none=True)
+    mode = fields.Str()
+    merge_proposal_url = fields.Str(allow_none=True)
+    result_code = fields.Str()
+    description = fields.Str(allow_none=True)
+
+
+@docs(summary="Retrieve details of a publish attempt")
+@response_schema(PublishDetailsSchema())
 @routes.get("/publish/{publish_id}", name="publish-details")
 async def handle_publish_id(request):
     publish_id = request.match_info["publish_id"]
@@ -675,7 +841,29 @@ async def handle_publish_id(request):
             return web.Response(text="timeout contacting runner", status=502)
 
 
-@docs()
+class QueueAssignmentItemSchema(Schema):
+    id = fields.Int()
+    context = fields.Raw(allow_none=True)  # type: ignore
+    command = fields.Str()
+    estimated_duration = fields.Float(allow_none=True)
+    campaign = fields.Str()
+    refresh = fields.Bool()
+    requester = fields.Str(allow_none=True)
+    change_set = fields.Str(allow_none=True)
+    codebase = fields.Str()
+
+
+class PeekSchema(Schema):
+    queue_item = fields.Nested(QueueAssignmentItemSchema)
+    vcs_info = fields.Dict()
+    build_config = fields.Dict(keys=fields.Str(), values=fields.Str())
+    estimated_duration = fields.Int(
+        allow_none=True, metadata={"description": "in seconds"}
+    )
+
+
+@docs(summary="Show the item that would be assigned next")
+@response_schema(PeekSchema(), 201)
 @routes.get("/active-runs/+peek")
 async def handle_run_peek(request):
     span = aiozipkin.request_span(request)
@@ -707,7 +895,8 @@ async def handle_run_peek(request):
             )
 
 
-@docs()
+@docs(summary="List active runs")
+@response_schema(ActiveRunSchema(many=True))
 @routes.get("/active-runs", name="active-runs-list")
 async def handle_list_active_runs(request):
     span = aiozipkin.request_span(request)
@@ -723,7 +912,8 @@ async def handle_list_active_runs(request):
             )
 
 
-@docs()
+@docs(summary="Retrieve an active run")
+@response_schema(ActiveRunSchema())
 @routes.get("/active-runs/{run_id}", name="active-run-get")
 async def handle_get_active_run(request):
     run_id = request.match_info["run_id"]
@@ -779,4 +969,11 @@ def create_app(
         app["pool"] = db
 
     # app.middlewares.append(apispec_validation_middleware)
+    setup_aiohttp_apispec(
+        app=app,
+        title="Janitor API Documentation",
+        version=version_string,
+        url="/swagger.json",
+        swagger_path="/docs",
+    )
     return app
