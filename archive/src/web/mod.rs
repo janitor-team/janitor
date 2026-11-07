@@ -10,7 +10,7 @@ use axum::{
     extract::{Form, Path, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::get,
     Json, Router,
 };
 use janitor_types::{Campaign, InvalidIdentifier};
@@ -20,6 +20,8 @@ use tower::ServiceExt;
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, info, warn};
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 use crate::config::ArchiveConfig;
 use crate::database::BuildManager;
@@ -65,7 +67,7 @@ pub struct AppState {
 /// Body accepted by `POST /publish`. Plain form body with an
 /// optional `campaign` field. Absent campaign means "trigger every
 /// apt_repository that consumes a debian_build campaign".
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
 pub struct PublishRequest {
     /// Optional campaign filter. When set, only apt_repositories that
     /// select this campaign are triggered.
@@ -73,8 +75,40 @@ pub struct PublishRequest {
 }
 
 /// Response payload for `POST /publish`. Returns `{}` on success.
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, utoipa::ToSchema)]
 pub struct PublishResponse {}
+
+#[derive(utoipa::OpenApi)]
+struct ArchiveApi;
+
+/// Routes for managing the archive, as opposed to the apt repositories
+/// it serves.
+fn management_routes() -> OpenApiRouter<AppState> {
+    OpenApiRouter::with_openapi(<ArchiveApi as utoipa::OpenApi>::openapi())
+        // Plain "ok" health endpoint. No health aggregation --
+        // the periodic services keep their own /health state
+        // internally.
+        .routes(routes!(shared::health_ok))
+        // /ready returns 500 with a list of apt_repository
+        // suites that have never been published yet, plaintext
+        // body listing whatever *has* been published. Handled
+        // here rather than by the shared readiness handler
+        // because the shared one only knows about generic
+        // health checks and can't tell that a suite is still
+        // missing its first Release file.
+        .routes(routes!(archive_ready_handler))
+        .routes(routes!(publish_repository))
+        .routes(routes!(last_publish_status))
+        .routes(routes!(serve_gpg_key))
+        .routes(routes!(handle_pgp_keys))
+        .routes(routes!(shared::metrics_ok))
+}
+
+/// OpenAPI document for the archive's management API. The apt
+/// repositories under `/dists` are not included.
+pub fn openapi() -> utoipa::openapi::OpenApi {
+    management_routes().into_openapi()
+}
 
 /// Archive web service.
 pub struct ArchiveWebService {
@@ -147,19 +181,15 @@ impl ArchiveWebService {
 
     /// Create the Axum router with all routes.
     pub fn router(&self) -> Router {
-        Router::new()
-            // Plain "ok" health endpoint. No health aggregation --
-            // the periodic services keep their own /health state
-            // internally.
-            .route("/health", get(shared::health_ok))
-            // /ready returns 500 with a list of apt_repository
-            // suites that have never been published yet, plaintext
-            // body listing whatever *has* been published. Handled
-            // here rather than by the shared readiness handler
-            // because the shared one only knows about generic
-            // health checks and can't tell that a suite is still
-            // missing its first Release file.
-            .route("/ready", get(archive_ready_handler))
+        let (router, openapi) = management_routes().split_for_parts();
+        let spec = openapi
+            .to_json()
+            .expect("OpenAPI document can be serialized");
+        router
+            .route(
+                "/openapi.json",
+                get(move || async move { ([("content-type", "application/json")], spec) }),
+            )
             // Repository serving endpoints
             .route("/dists/{suite}/Release", get(serve_suite_file))
             .route("/dists/{suite}/Release.gpg", get(serve_suite_file))
@@ -227,12 +257,6 @@ impl ArchiveWebService {
                 "/dists/{kind}/{id}/{component}/source/by-hash/{algo}/{hash}",
                 get(serve_on_demand_file),
             )
-            // Publishing and management endpoints
-            .route("/publish", post(publish_repository))
-            .route("/last-publish", get(last_publish_status))
-            .route("/gpg-key", get(serve_gpg_key))
-            .route("/pgp_keys", get(handle_pgp_keys))
-            .route("/metrics", get(shared::metrics_ok))
             // One span per request, exported when zipkin_address is set.
             .layer(TraceLayer::new_for_http())
             .with_state(self.state.clone())
@@ -372,6 +396,16 @@ pub(crate) fn publish_apply_filter<'a>(
         .collect()
 }
 
+#[utoipa::path(
+    post,
+    path = "/publish",
+    request_body(content = PublishRequest, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 200, description = "Publishing was triggered", body = PublishResponse),
+        (status = 500, description = "Invalid campaign in the configuration"),
+        (status = 503, description = "Publishing is not available in this deployment"),
+    )
+)]
 async fn publish_repository(
     State(state): State<AppState>,
     Form(request): Form<PublishRequest>,
@@ -420,6 +454,11 @@ pub(crate) fn last_publish_json(
 
 /// `GET /last-publish` -- return the last successful publish time
 /// for each apt_repository as a JSON object `{suite: iso8601}`.
+#[utoipa::path(
+    get,
+    path = "/last-publish",
+    responses((status = 200, description = "Last successful publish time (RFC 3339) of each apt repository", body = HashMap<String, String>))
+)]
 async fn last_publish_status(State(state): State<AppState>) -> Json<HashMap<String, String>> {
     let times = state.last_publish_times.read().await;
     Json(last_publish_json(&times))
@@ -458,6 +497,14 @@ pub(crate) fn compute_ready_response<'a>(
 
 /// `GET /ready` -- 500 with a list of apt_repositories that have
 /// never been published, plaintext body listing those that have.
+#[utoipa::path(
+    get,
+    path = "/ready",
+    responses(
+        (status = 200, description = "Every apt repository has been published; lists the publish times", body = String, content_type = "text/plain"),
+        (status = 500, description = "Some apt repositories have not been published yet", body = String, content_type = "text/plain"),
+    )
+)]
 async fn archive_ready_handler(State(state): State<AppState>) -> Response {
     let times = state.last_publish_times.read().await;
     match compute_ready_response(
@@ -470,6 +517,15 @@ async fn archive_ready_handler(State(state): State<AppState>) -> Response {
 }
 
 /// Serve GPG public key.
+#[utoipa::path(
+    get,
+    path = "/gpg-key",
+    responses(
+        (status = 200, description = "The signing key", body = String, content_type = "application/pgp-keys"),
+        (status = 404, description = "No signing key is configured"),
+        (status = 500, description = "The key could not be exported"),
+    )
+)]
 async fn serve_gpg_key(State(state): State<AppState>) -> Result<Response, StatusCode> {
     let Some(gpg_config) = &state.config.gpg else {
         debug!("No GPG configuration available");
@@ -496,6 +552,14 @@ async fn serve_gpg_key(State(state): State<AppState>) -> Result<Response, Status
 /// `GET /pgp_keys` -- return the signing PGP public keys as a JSON
 /// array of armored strings. When no GPG is configured, returns an
 /// empty JSON array.
+#[utoipa::path(
+    get,
+    path = "/pgp_keys",
+    responses(
+        (status = 200, description = "ASCII-armored signing keys; empty when no signing key is configured", body = Vec<String>),
+        (status = 500, description = "The keys could not be exported", body = String, content_type = "text/plain"),
+    )
+)]
 async fn handle_pgp_keys(State(state): State<AppState>) -> Response {
     let Some(gpg_config) = &state.config.gpg else {
         return Json(Vec::<String>::new()).into_response();
@@ -654,6 +718,46 @@ async fn serve_from_on_demand(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn collect_refs<'a>(value: &'a serde_json::Value, refs: &mut Vec<&'a str>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, value) in map {
+                    match value {
+                        serde_json::Value::String(target) if key == "$ref" => refs.push(target),
+                        _ => collect_refs(value, refs),
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    collect_refs(item, refs);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Schemas only end up in the document when utoipa can see them from
+    /// a path or the `OpenApi` derive; a `$ref` to anything else would
+    /// leave clients with a broken document.
+    #[test]
+    fn test_openapi_refs_resolve() {
+        let doc = serde_json::to_value(openapi()).unwrap();
+        let mut refs = vec![];
+        collect_refs(&doc, &mut refs);
+        assert!(!refs.is_empty());
+        let missing: Vec<&str> = refs
+            .into_iter()
+            .filter(|r| {
+                let name = r
+                    .strip_prefix("#/components/schemas/")
+                    .unwrap_or_else(|| panic!("unexpected $ref {r}"));
+                doc["components"]["schemas"].get(name).is_none()
+            })
+            .collect();
+        assert_eq!(missing, Vec::<&str>::new());
+    }
 
     #[tokio::test]
     async fn test_health_ok_returns_ok_body() {

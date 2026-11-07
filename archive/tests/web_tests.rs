@@ -319,3 +319,23 @@ test_with_database! {
         }
     }
 }
+
+test_with_database! {
+    schema = Debian;
+    async fn openapi_json_describes_the_management_api(test_db: TestDatabase) {
+        let (app, _tmp) = build_app(test_db.pool().clone()).await;
+        let (status, body) = get(&app, "/openapi.json").await;
+        assert_eq!(status, StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["info"]["title"], "janitor-archive");
+        assert!(body["paths"]["/publish"]["post"].is_object(), "{body}");
+        let mut dists: Vec<&String> = body["paths"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .filter(|p| p.starts_with("/dists"))
+            .collect();
+        dists.sort();
+        assert_eq!(dists, Vec::<&String>::new());
+    }
+}
