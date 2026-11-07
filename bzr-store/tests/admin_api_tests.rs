@@ -554,3 +554,41 @@ test_with_database! {
         handle.abort();
     }
 }
+
+test_with_database! {
+    schema = Core;
+    async fn test_admin_openapi(test_db: TestDatabase) {
+        let tmp = TempDir::new().unwrap();
+        let cfg = build_config(tmp.path(), test_db_url(&test_db));
+        let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
+            .await
+            .unwrap();
+        let (addr, handle) = spawn(admin).await;
+
+        let resp = reqwest::get(format!("http://{}/openapi.json", addr))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        let mut paths: Vec<&String> = body["paths"].as_object().unwrap().keys().collect();
+        paths.sort();
+        assert_eq!(
+            paths,
+            vec![
+                "/",
+                "/health",
+                "/metrics",
+                "/ready",
+                "/repositories",
+                "/repositories/{codebase}",
+                "/{codebase}/diff",
+                "/{codebase}/info",
+                "/{codebase}/remotes",
+                "/{codebase}/remotes/{remote}",
+                "/{codebase}/revision-info",
+            ]
+        );
+
+        handle.abort();
+    }
+}
