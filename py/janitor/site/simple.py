@@ -38,7 +38,6 @@ from aiohttp_openmetrics import metrics, metrics_middleware
 from jinja2 import select_autoescape
 
 from .. import state
-from ..artifacts import ArtifactsMissing
 from ..config import Config
 from ..vcs import VcsManager, get_vcs_managers_from_config
 from . import (
@@ -268,13 +267,47 @@ async def handle_result_file(request):
 
         return await serve_run_log(request, run_id, filename)
     else:
-        try:
-            f = await request.app["artifact_manager"].get_artifact(run_id, filename)
-        except ArtifactsMissing as e:
-            raise web.HTTPNotFound(
-                text=f"No artifact {filename} for run {run_id}"
-            ) from e
-        return web.Response(body=f)
+        return await serve_artifact(request, run_id, filename)
+
+
+async def serve_artifact(request, run_id, filename):
+    if request.app["runner_url"] is None:
+        raise web.HTTPServiceUnavailable(text="no runner configured")
+    url = URL(request.app["runner_url"]) / "runs" / run_id / "artifacts" / filename
+    try:
+        async with request.app["http_client_session"].get(
+            url, allow_redirects=False
+        ) as resp:
+            if resp.status in (301, 302, 303, 307, 308):
+                raise web.HTTPTemporaryRedirect(resp.headers["Location"])
+            if resp.status == 404:
+                raise web.HTTPNotFound(text=f"No artifact {filename} for run {run_id}")
+            if resp.status != 200:
+                logging.warning(
+                    "Unable to retrieve artifact %s for run %s: runner returned %d: %s",
+                    filename,
+                    run_id,
+                    resp.status,
+                    await resp.text(),
+                )
+                raise web.HTTPBadGateway(
+                    text=f"Unable to retrieve artifact {filename} for run {run_id}"
+                )
+            response = web.StreamResponse(
+                headers={"Content-Type": resp.headers["Content-Type"]}
+            )
+            if resp.content_length is not None:
+                response.content_length = resp.content_length
+            await response.prepare(request)
+            async for chunk in resp.content.iter_chunked(64 * 1024):
+                await response.write(chunk)
+            await response.write_eof()
+            return response
+    except ClientConnectorError as e:
+        logging.warning(
+            "Unable to contact runner for artifact %s/%s: %s", run_id, filename, e
+        )
+        raise web.HTTPBadGateway(text="unable to contact runner") from e
 
 
 @html_template("ready-list.html", headers={"Vary": "Cookie"})
