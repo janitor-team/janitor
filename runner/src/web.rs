@@ -12,7 +12,7 @@ use axum::{
     Extension, Json, Router,
 };
 use chrono::Utc;
-use janitor_types::{Campaign, ChangeSetId, CodebaseName, RunId};
+use janitor_types::{Campaign, ChangeSetId, CodebaseName, LogFilename, RunId};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -575,25 +575,44 @@ async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }))
 }
 
-/// `GET /log/{run_id}` -- list the log files the live worker for
-/// this run currently has. Looks up the active run, calls
-/// `backchannel.list_log_files()`, and returns the bare list.
-/// 404s if the run isn't active.
+/// `GET /log/{run_id}` -- list the log files of a run. For an active
+/// run this asks the live worker; for a finished run it returns the
+/// log file names recorded for the run. 404s if there is no such run.
 async fn log_index(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> impl IntoResponse {
-    let active_run = match current_run(&state, &id).await {
-        Ok(run) => run,
-        Err(response) => return response,
-    };
-    match active_run.backchannel.list_log_files().await {
-        Ok(files) => (StatusCode::OK, Json(json!(files))),
+    if let Some(active_run) = state.active_runs.get(&id).await {
+        return match active_run.backchannel.list_log_files().await {
+            Ok(files) => (StatusCode::OK, Json(json!(files))),
+            Err(e) => {
+                log::warn!("Failed to list log files for {}: {}", id, e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": format!("Failed to list log files: {}", e)})),
+                )
+            }
+        };
+    }
+    match finished_run_logs(&state, &id).await {
+        Ok(Some((_, logfilenames))) => (StatusCode::OK, Json(json!(logfilenames))),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"reason": format!("No such run: {}", id)})),
+        ),
         Err(e) => {
-            log::warn!("Failed to list log files for {}: {}", id, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to list log files: {}", e)})),
-            )
+            log::error!("Failed to look up log files for {}: {}", id, e);
+            db_error()
         }
     }
+}
+
+/// The codebase and log file names of a run that is no longer active.
+async fn finished_run_logs(
+    state: &AppState,
+    id: &RunId,
+) -> Result<Option<(CodebaseName, Vec<String>)>, sqlx::Error> {
+    sqlx::query_as("SELECT codebase, logfilenames FROM run WHERE id = $1")
+        .bind(id)
+        .fetch_optional(state.database.pool())
+        .await
 }
 
 /// `GET /active-runs/{run_id}/current-stage` -- query the live
@@ -625,44 +644,69 @@ async fn current_stage(
     }
 }
 
-/// `GET /log/{run_id}/{filename}` -- stream a single log file from
-/// the live worker for this run. Returns 400 for filenames
-/// containing `/`, 404 when the run isn't active or the file
-/// doesn't exist on the worker.
+/// `GET /log/{run_id}/{filename}` -- return a single log file of a
+/// run, from the live worker while the run is active and from log
+/// storage once it has finished. 404s when there is no such run or
+/// log file.
 async fn log(
     State(state): State<Arc<AppState>>,
-    Path((id, filename)): Path<(RunId, String)>,
-) -> impl IntoResponse {
-    if filename.contains('/') {
-        return (
-            StatusCode::BAD_REQUEST,
-            [("content-type", "text/plain")],
-            format!("Invalid filename {}", filename).into_bytes(),
-        );
-    }
-    let active_run = match state.active_runs.get(&id).await {
-        Some(run) => run,
-        None => {
-            return (
+    Path((id, filename)): Path<(RunId, LogFilename)>,
+) -> Response {
+    let text_response = |status: StatusCode, body: String| {
+        (status, [("content-type", "text/plain")], body).into_response()
+    };
+    if let Some(active_run) = state.active_runs.get(&id).await {
+        return match active_run.backchannel.get_log_file(&filename).await {
+            Ok(content) => {
+                (StatusCode::OK, [("content-type", "text/plain")], content).into_response()
+            }
+            Err(crate::PingError::NotFound(_)) => text_response(
                 StatusCode::NOT_FOUND,
-                [("content-type", "text/plain")],
-                format!("No such current run: {}", id).into_bytes(),
-            );
+                format!("No such log file: {}", filename),
+            ),
+            Err(e) => {
+                log::warn!("Failed to get log {} for run {}: {}", filename, id, e);
+                text_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to read log file: {}", e),
+                )
+            }
+        };
+    }
+    let codebase = match finished_run_logs(&state, &id).await {
+        Ok(Some((codebase, logfilenames)))
+            if logfilenames.iter().any(|n| n == filename.as_str()) =>
+        {
+            codebase
+        }
+        Ok(Some(_)) => {
+            return text_response(
+                StatusCode::NOT_FOUND,
+                format!("No such log file: {}", filename),
+            )
+        }
+        Ok(None) => return text_response(StatusCode::NOT_FOUND, format!("No such run: {}", id)),
+        Err(e) => {
+            log::error!("Failed to look up log files for {}: {}", id, e);
+            return db_error().into_response();
         }
     };
-    match active_run.backchannel.get_log_file(&filename).await {
-        Ok(content) => (StatusCode::OK, [("content-type", "text/plain")], content),
-        Err(crate::PingError::NotFound(_)) => (
-            StatusCode::NOT_FOUND,
+    match state.log_manager.get_log(&codebase, &id, &filename).await {
+        Ok(stream) => (
+            StatusCode::OK,
             [("content-type", "text/plain")],
-            format!("No such log file: {}", filename).into_bytes(),
+            axum::body::Body::from_stream(stream),
+        )
+            .into_response(),
+        Err(janitor::logs::Error::NotFound) => text_response(
+            StatusCode::NOT_FOUND,
+            format!("No such log file: {}", filename),
         ),
         Err(e) => {
             log::warn!("Failed to get log {} for run {}: {}", filename, id, e);
-            (
+            text_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                [("content-type", "text/plain")],
-                format!("Failed to read log file: {}", e).into_bytes(),
+                format!("Failed to read log file: {}", e),
             )
         }
     }
@@ -4692,12 +4736,121 @@ distribution {
     }
 
     #[tokio::test]
+    async fn test_finished_run_logs() {
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+        let Ok(Some(db)) = crate::test_utils::TestDatabase::new_optional_with_schema(
+            crate::test_utils::TestSchema::Core,
+        )
+        .await
+        else {
+            eprintln!("Skipping: no Postgres available");
+            return;
+        };
+        sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs1', 'mycampaign')")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO codebase (name) VALUES ('foo')")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO run (id, command, start_time, finish_time, result_code, \
+             suite, change_set, codebase, logfilenames) \
+             VALUES ('run-1', 'cmd', NOW(), NOW(), 'success', 'mycampaign', 'cs1', \
+             'foo', ARRAY['build.log', 'worker.log'])",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let state = crate::test_utils::create_test_app_state_without_redis(db);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("build.log");
+        std::fs::write(&path, "build output\n").unwrap();
+        state
+            .log_manager
+            .import_log(
+                &CodebaseName::new("foo").unwrap(),
+                &janitor_types::RunId::new("run-1").unwrap(),
+                path.to_str().unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let app = super::app(state);
+        let mut got = Vec::new();
+        for uri in [
+            "/log/run-1",
+            "/log/run-1/build.log",
+            "/log/run-1/worker.log",
+            "/log/run-1/dist.log",
+            "/log/run-2",
+            "/log/run-2/build.log",
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = resp.status();
+            let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            got.push((uri, status, String::from_utf8(body.to_vec()).unwrap()));
+        }
+        assert_eq!(
+            got,
+            vec![
+                (
+                    "/log/run-1",
+                    StatusCode::OK,
+                    r#"["build.log","worker.log"]"#.to_string()
+                ),
+                (
+                    "/log/run-1/build.log",
+                    StatusCode::OK,
+                    "build output\n".to_string()
+                ),
+                (
+                    "/log/run-1/worker.log",
+                    StatusCode::NOT_FOUND,
+                    "No such log file: worker.log".to_string()
+                ),
+                (
+                    "/log/run-1/dist.log",
+                    StatusCode::NOT_FOUND,
+                    "No such log file: dist.log".to_string()
+                ),
+                (
+                    "/log/run-2",
+                    StatusCode::NOT_FOUND,
+                    r#"{"reason":"No such run: run-2"}"#.to_string()
+                ),
+                (
+                    "/log/run-2/build.log",
+                    StatusCode::NOT_FOUND,
+                    "No such run: run-2".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn test_invalid_run_id_in_path_is_rejected() {
         use axum::http::{Method, StatusCode};
         for uri in [
             "/active-runs/..%2Fetc",
             "/active-runs/a.b/current-stage",
             "/log/..%2F..%2Fetc/worker.log",
+            "/log/run-1/..",
             "/runs/a%20b",
             "/resume/chain/.hidden",
         ] {

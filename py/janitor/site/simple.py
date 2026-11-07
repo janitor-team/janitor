@@ -40,9 +40,13 @@ from jinja2 import select_autoescape
 from .. import state
 from ..artifacts import ArtifactsMissing
 from ..config import Config
-from ..logs import LogRetrievalError
 from ..vcs import VcsManager, get_vcs_managers_from_config
-from . import TEMPLATE_ENV, hide_private_worker_links, template_loader
+from . import (
+    TEMPLATE_ENV,
+    hide_private_worker_links,
+    serve_run_log,
+    template_loader,
+)
 from .common import html_template, render_template_for_request
 from .openid import setup_openid
 from .pubsub import Topic, pubsub_handler
@@ -262,24 +266,7 @@ async def handle_result_file(request):
         if not re.match("^[+a-z0-9\\.]+$", filename) or len(filename) < 3:
             raise web.HTTPNotFound(text=f"No log file {filename} for run {run_id}")
 
-        try:
-            logfile = await request.app["logfile_manager"].get_log(
-                pkg, run_id, filename
-            )
-        except FileNotFoundError as e:
-            raise web.HTTPNotFound(
-                text=f"No log file {filename} for run {run_id}"
-            ) from e
-        except (PermissionError, LogRetrievalError) as e:
-            logging.warning("Unable to read log %s for run %s: %s", filename, run_id, e)
-            raise web.HTTPBadGateway(
-                text=f"Unable to read log file {filename} for run {run_id}"
-            ) from e
-        return web.Response(
-            content_type="text/plain",
-            charset="utf-8",
-            body=logfile,
-        )
+        return await serve_run_log(request, run_id, filename)
     else:
         try:
             f = await request.app["artifact_manager"].get_artifact(run_id, filename)

@@ -387,39 +387,54 @@ async def test_review_without_oauth2_provider_is_not_qa_review(aiohttp_client, d
     assert [tuple(row) for row in rows] == [("r1", "alice@example.com", "approved")]
 
 
-async def test_run_logs(aiohttp_client, db, tmp_path):
-    async with db.acquire() as conn:
-        await _insert_codebase(conn, "foo")
-        now = utcnow()
-        await _insert_run(
-            conn,
-            run_id="r1",
-            codebase="foo",
-            start_time=now - timedelta(hours=1),
-            finish_time=now,
-        )
-        await conn.execute(
-            "UPDATE run SET logfilenames = ARRAY['build.log', 'worker.log']"
-        )
-    logs = tmp_path / "logs"
-    (logs / "foo" / "r1").mkdir(parents=True)
-    log = logs / "foo" / "r1" / "worker.log"
-    log.write_text("Opening branch\n")
-    client = await create_client(aiohttp_client, db, config=f'logs_location: "{logs}"')
+async def test_run_logs(aiohttp_client, db):
+    async def handle_log_index(request):
+        if request.match_info["run_id"] != "r1":
+            raise web.HTTPNotFound()
+        return web.json_response(["build.log", "worker.log"])
 
-    resp = await client.get("/run/r1/logs")
-    assert await resp.json() == ["build.log", "worker.log"]
-    resp = await client.get("/run/r1/logs/worker.log")
-    assert resp.content_type == "text/plain"
-    assert await resp.text() == "Opening branch\n"
+    async def handle_log(request):
+        key = (request.match_info["run_id"], request.match_info["filename"])
+        responses = {
+            ("r1", "worker.log"): web.Response(text="Opening branch\n"),
+            ("r1", "build.log"): web.Response(status=500, text="storage unavailable"),
+        }
+        return responses.get(key, web.Response(status=404))
+
+    runner_app = web.Application()
+    runner_app.router.add_get("/log/{run_id}", handle_log_index)
+    runner_app.router.add_get("/log/{run_id}/{filename}", handle_log)
+    runner_client = await aiohttp_client(runner_app)
+    client = await create_client(
+        aiohttp_client, db, runner_url=str(runner_client.make_url("/"))
+    )
+
+    got = []
     for path in [
+        "/run/r1/logs",
+        "/run/r1/logs/worker.log",
         "/run/r1/logs/build.log",
         "/run/r1/logs/x.log",
         "/run/r2/logs",
         "/run/r2/logs/worker.log",
     ]:
         resp = await client.get(path)
-        assert resp.status == 404
-    log.chmod(0)
-    resp = await client.get("/run/r1/logs/worker.log")
-    assert resp.status == 502
+        got.append((path, resp.status, resp.content_type, await resp.text()))
+    assert got == [
+        ("/run/r1/logs", 200, "application/json", '["build.log", "worker.log"]'),
+        ("/run/r1/logs/worker.log", 200, "text/plain", "Opening branch\n"),
+        (
+            "/run/r1/logs/build.log",
+            502,
+            "text/plain",
+            "Unable to read log file build.log for run r1",
+        ),
+        ("/run/r1/logs/x.log", 404, "text/plain", "No log file x.log for run r1"),
+        ("/run/r2/logs", 404, "text/plain", "No such run: r2"),
+        (
+            "/run/r2/logs/worker.log",
+            404,
+            "text/plain",
+            "No log file worker.log for run r2",
+        ),
+    ]

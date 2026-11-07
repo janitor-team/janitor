@@ -38,7 +38,6 @@ from yarl import URL
 
 from janitor.config import Config
 
-from ..logs import LogRetrievalError
 from ..vcs import VcsManager
 from . import (
     BuildDiffUnavailable,
@@ -49,9 +48,10 @@ from . import (
     hide_private_worker_links,
     highlight_diff,
     is_qa_reviewer,
+    serve_run_log,
 )
 from .common import render_template_for_request
-from .setup import setup_logfile_manager, setup_postgres
+from .setup import setup_postgres
 
 routes = web.RouteTableDef()
 
@@ -451,38 +451,31 @@ async def handle_archive_diff(request):
 @routes.get("/run/{run_id}/logs", name="run-logs")
 async def handle_run_logs(request):
     run_id = request.match_info["run_id"]
-    async with request.app["pool"].acquire() as conn:
-        logfilenames = await conn.fetchval(
-            "SELECT logfilenames FROM run WHERE id = $1", run_id
-        )
-    if logfilenames is None:
-        raise web.HTTPNotFound(text=f"No such run: {run_id}")
-    return web.json_response(logfilenames)
+    url = URL(request.app["runner_url"]) / "log" / run_id
+    try:
+        async with request.app["http_client_session"].get(url) as resp:
+            if resp.status == 404:
+                raise web.HTTPNotFound(text=f"No such run: {run_id}")
+            if resp.status != 200:
+                logging.warning(
+                    "Unable to list logs for run %s: runner returned %d: %s",
+                    run_id,
+                    resp.status,
+                    await resp.text(),
+                )
+                raise web.HTTPBadGateway(text=f"Unable to list logs for run {run_id}")
+            return web.json_response(await resp.json())
+    except ClientConnectorError as e:
+        logging.warning("Unable to contact runner for logs of %s: %s", run_id, e)
+        raise web.HTTPBadGateway(text="unable to contact runner") from e
 
 
 @docs()
 @routes.get("/run/{run_id}/logs/{filename}", name="run-log-file")
 async def handle_run_log_file(request):
-    run_id = request.match_info["run_id"]
-    filename = request.match_info["filename"]
-    async with request.app["pool"].acquire() as conn:
-        run = await conn.fetchrow(
-            "SELECT codebase, logfilenames FROM run WHERE id = $1", run_id
-        )
-    if run is None or filename not in run["logfilenames"]:
-        raise web.HTTPNotFound(text=f"No log file {filename} for run {run_id}")
-    try:
-        logfile = await request.app["logfile_manager"].get_log(
-            run["codebase"], run_id, filename
-        )
-    except FileNotFoundError as e:
-        raise web.HTTPNotFound(text=f"No log file {filename} for run {run_id}") from e
-    except (PermissionError, LogRetrievalError) as e:
-        logging.warning("Unable to read log %s for run %s: %s", filename, run_id, e)
-        raise web.HTTPBadGateway(
-            text=f"Unable to read log file {filename} for run {run_id}"
-        ) from e
-    return web.Response(content_type="text/plain", charset="utf-8", body=logfile)
+    return await serve_run_log(
+        request, request.match_info["run_id"], request.match_info["filename"]
+    )
 
 
 @docs()
@@ -774,7 +767,6 @@ def create_app(
     app.cleanup_ctx.append(persistent_session)
     app["config"] = config
 
-    setup_logfile_manager(app)
     app["external_url"] = external_url
     app["publisher_url"] = publisher_url
     app["vcs_managers"] = vcs_managers
