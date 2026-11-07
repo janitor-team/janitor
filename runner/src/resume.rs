@@ -15,7 +15,7 @@ use std::fmt;
 /// serialization, populated from `new_result_branch.remote_name` for
 /// the `main` role rather than from a (nonexistent) `run.branch_name`
 /// column.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ResumeInfo {
     /// ID of the run to resume from.
     pub run_id: RunId,
@@ -33,9 +33,11 @@ pub struct ResumeInfo {
     /// The completed run's `result` JSON blob (Python calls this
     /// `codemod_result`). Included in the assign response's `resume`
     /// field so the worker can rehydrate the previous run's output.
+    #[schema(value_type = Option<Object>)]
     pub result: Option<serde_json::Value>,
     /// Per-role result branches for the completed run.
     /// Each tuple is `(role, remote_name, base_revision, revision)`.
+    #[schema(value_type = Vec<Vec<Option<String>>>)]
     pub result_branches: Vec<(String, Option<String>, Option<String>, Option<String>)>,
 }
 

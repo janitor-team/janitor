@@ -791,25 +791,25 @@ impl ActiveRun {
         }
     }
 
-    /// Convert to JSON representation.
-    pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "queue_id": self.queue_id,
-            "id": self.log_id,
-            "codebase": self.codebase,
-            "change_set": self.change_set,
-            "campaign": self.campaign,
-            "command": self.command,
-            "estimated_duration": self.estimated_duration.map(|d| d.as_secs_f64()),
-            "current_duration": self.current_duration().as_secs_f64(),
-            "start_time": self.start_time.to_rfc3339(),
-            "worker": self.worker_name,
-            "worker_link": self.worker_link,
-            "vcs": self.vcs_info,
-            "backchannel": self.backchannel.to_json(),
-            "instigated_context": self.instigated_context,
-            "resume_from": self.resume_from
-        })
+    /// Representation of this run in API responses.
+    pub fn to_response(&self) -> api_types::ActiveRunResponse {
+        api_types::ActiveRunResponse {
+            queue_id: self.queue_id,
+            id: self.log_id.clone(),
+            codebase: self.codebase.clone(),
+            change_set: self.change_set.clone(),
+            campaign: self.campaign.clone(),
+            command: self.command.clone(),
+            estimated_duration: self.estimated_duration.map(|d| d.as_secs_f64()),
+            current_duration: self.current_duration().as_secs_f64(),
+            start_time: self.start_time.to_rfc3339(),
+            worker: self.worker_name.clone(),
+            worker_link: self.worker_link.clone(),
+            vcs: self.vcs_info.clone(),
+            backchannel: self.backchannel.to_json(),
+            instigated_context: self.instigated_context.clone(),
+            resume_from: self.resume_from.clone(),
+        }
     }
 
     /// Ping the worker to check if it's still alive.
@@ -1577,19 +1577,19 @@ pub struct QueueItem {
 }
 
 impl QueueItem {
-    /// Convert to JSON representation.
-    pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "id": self.id,
-            "context": self.context,
-            "command": self.command,
-            "estimated_duration": self.estimated_duration.map(|d| d.as_secs_f64()),
-            "campaign": self.campaign,
-            "refresh": self.refresh,
-            "requester": self.requester,
-            "change_set": self.change_set,
-            "codebase": self.codebase
-        })
+    /// Representation of this queue item in API responses.
+    pub fn to_response(&self) -> api_types::QueueItemResponse {
+        api_types::QueueItemResponse {
+            id: self.id,
+            context: self.context.clone(),
+            command: self.command.clone(),
+            estimated_duration: self.estimated_duration.map(|d| d.as_secs_f64()),
+            campaign: self.campaign.clone(),
+            refresh: self.refresh,
+            requester: self.requester.clone(),
+            change_set: self.change_set.clone(),
+            codebase: self.codebase.clone(),
+        }
     }
 }
 
@@ -1657,7 +1657,7 @@ pub struct AppState {
 /// as returned by the `/health` endpoint. Distinct from
 /// [`backchannel::HealthStatus`], which describes a *worker*'s
 /// state as reported through its backchannel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ServiceHealthStatus {
     /// Fully healthy.
@@ -1669,7 +1669,7 @@ pub enum ServiceHealthStatus {
 }
 
 /// Health of a single named component (database, logs, etc).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ComponentHealth {
     /// Component name (e.g. `"database"`).
     pub name: String,
@@ -1681,7 +1681,7 @@ pub struct ComponentHealth {
 }
 
 /// Aggregated health report as returned by `/health`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct HealthReport {
     /// Overall status derived from the component statuses.
     pub status: ServiceHealthStatus,

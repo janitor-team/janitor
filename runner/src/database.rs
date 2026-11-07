@@ -1069,7 +1069,7 @@ INSERT INTO run (
 }
 
 /// Row of the codebase table as served by `GET /codebases`.
-#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct CodebaseRow {
     /// Name of the codebase.
     pub name: Option<CodebaseName>,
@@ -1092,7 +1092,7 @@ pub struct CodebaseRow {
 }
 
 /// Entry in a `POST /codebases` request body.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct CodebaseUpload {
     /// Name of the codebase.
     pub name: Option<CodebaseName>,
@@ -1115,7 +1115,7 @@ pub struct CodebaseUpload {
 }
 
 /// Row of the candidate table as served by `GET /candidates`.
-#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct CandidateRow {
     /// Candidate id.
     pub id: i32,

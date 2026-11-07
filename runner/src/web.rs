@@ -1,4 +1,15 @@
-use crate::api_types::MessageResponse;
+use crate::api_types::{
+    ActiveRunResponse, AssignRejectedResponse, AssignmentBranch, AssignmentBuild,
+    AssignmentCodemod, AssignmentResponse, AssignmentTargetRepository, BuildAssignmentConfig,
+    CleanupRunsResponse, CurrentStageResponse, DebianBuildAssignment, EmptyResponse, ErrorResponse,
+    FinishConflictResponse, FinishResponse, GenericBuildAssignment, MessageResponse, PeekResponse,
+    PublishStatusUpdate, QueueEntry, QueuePositionResponse, QueueStatsResponse,
+    RateLimitedResponse, ReasonResponse, ResumeAssignment, ResumeChainResponse,
+    ResumeCheckResponse, ResumeDescendantsResponse, ResumeValidationResponse, RunHealthSummary,
+    RunPublishStatusResponse, ScheduleControlResponse, ScheduleResponse, ScheduledCandidate,
+    StatusResponse, UploadCandidatesResponse, WatchdogHealthResponse, WorkerInfo,
+    WorkerListResponse, WorkerSummary,
+};
 use crate::{
     get_builder, metrics::MetricsCollector, ActiveRun, AppState, Backchannel, BuilderResult,
     CampaignConfig, QueueItem,
@@ -13,10 +24,10 @@ use axum::{
 };
 use chrono::Utc;
 use janitor_types::{Campaign, ChangeSetId, CodebaseName, LogFilename, RunId};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use std::collections::HashMap;
+use serde::Deserialize;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 /// Request for work assignment.
@@ -26,7 +37,7 @@ use uuid::Uuid;
 /// public app's `/active-runs` route (workers reach it via the ingress
 /// `/runner/(.*)` -> `/$2`) ignores this field entirely and reads
 /// the worker name from the credentials extension instead.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 struct AssignRequest {
     /// Worker name (private/admin path only). The Rust worker sends
     /// this as `node`; older Python workers sent `worker`.
@@ -49,14 +60,14 @@ struct AssignRequest {
 }
 
 /// Request for updating run publish status.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 struct UpdateRunRequest {
     /// New publish status.
     publish_status: String,
 }
 
 /// Request for resume information.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 struct ResumeInfoRequest {
     /// Campaign name (stored as `run.suite` in the schema).
     campaign: Campaign,
@@ -69,7 +80,7 @@ struct ResumeInfoRequest {
 /// (in which case campaign+codebase are derived from the run row) or
 /// an explicit (campaign, codebase) pair, plus optional scheduling
 /// knobs.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 struct ScheduleRequest {
     run_id: Option<RunId>,
     campaign: Option<Campaign>,
@@ -84,7 +95,7 @@ struct ScheduleRequest {
 }
 
 /// JSON body for `POST /schedule-control`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 struct ScheduleControlRequest {
     run_id: Option<RunId>,
     codebase: Option<CodebaseName>,
@@ -98,40 +109,29 @@ struct ScheduleControlRequest {
     estimated_duration: Option<f64>,
 }
 
-/// Response for finishing a run.
-#[derive(Debug, Serialize)]
-struct FinishResponse {
-    /// Run ID.
-    id: RunId,
-    /// Uploaded filenames.
-    filenames: Vec<String>,
-    /// Log filenames.
-    logs: Vec<String>,
-    /// Artifact names; null when storing the artifacts failed.
-    artifacts: Option<Vec<String>>,
-    /// Result information.
-    result: serde_json::Value,
-}
-
 /// Look up an active run, or build the 404 response for a missing one.
-async fn current_run(
-    state: &AppState,
-    id: &RunId,
-) -> Result<ActiveRun, (StatusCode, Json<serde_json::Value>)> {
+async fn current_run(state: &AppState, id: &RunId) -> Result<ActiveRun, Response> {
     state.active_runs.get(id).await.ok_or_else(|| {
-        (
+        reason(
             StatusCode::NOT_FOUND,
-            Json(json!({"reason": format!("No such current run: {}", id)})),
+            format!("No such current run: {}", id),
         )
     })
 }
 
+/// Build a `{"reason": ...}` response.
+fn reason(status: StatusCode, reason: impl Into<String>) -> Response {
+    (status, Json(ReasonResponse::new(reason))).into_response()
+}
+
+/// Build an `{"error": ...}` response.
+fn error(status: StatusCode, error: impl Into<String>) -> Response {
+    (status, Json(ErrorResponse::new(error))).into_response()
+}
+
 /// Response for a failed database operation; the caller logs the cause.
-fn db_error() -> (StatusCode, Json<serde_json::Value>) {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(json!({"error": "Database error"})),
-    )
+fn db_error() -> Response {
+    error(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
 }
 
 /// Extract avoided hosts from configuration: any archive mirror URI
@@ -228,7 +228,8 @@ fn create_campaign_config(
 
 /// Query parameters for `GET /queue/position`
 /// (`?codebase=...&campaign=...`).
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 struct QueuePositionQuery {
     codebase: CodebaseName,
     campaign: Campaign,
@@ -243,7 +244,7 @@ struct QueuePositionQuery {
 async fn queue_position(
     State(state): State<Arc<AppState>>,
     Query(query): Query<QueuePositionQuery>,
-) -> impl IntoResponse {
+) -> Response {
     let queue = janitor::queue::Queue::new(state.database.pool());
     let eta = match queue.get_position(&query.campaign, &query.codebase).await {
         Ok(eta) => eta,
@@ -268,14 +269,12 @@ async fn queue_position(
         _ => None,
     };
 
-    (
-        StatusCode::OK,
-        Json(json!({
-            "position": eta.as_ref().map(|e| e.position),
-            "wait_time": per_run_wait_seconds,
-            "cumulative_wait_time": cumulative_wait_seconds,
-        })),
-    )
+    Json(QueuePositionResponse {
+        position: eta.as_ref().map(|e| e.position),
+        wait_time: per_run_wait_seconds,
+        cumulative_wait_time: cumulative_wait_seconds,
+    })
+    .into_response()
 }
 
 /// `POST /schedule-control` -- schedule a `control` campaign run for
@@ -284,7 +283,7 @@ async fn queue_position(
 async fn schedule_control(
     State(state): State<Arc<AppState>>,
     Json(request): Json<ScheduleControlRequest>,
-) -> impl IntoResponse {
+) -> Response {
     let pool = state.database.pool();
 
     let (codebase, main_branch_revision) = if let Some(run_id) = request.run_id.as_ref() {
@@ -303,35 +302,23 @@ async fn schedule_control(
         match row {
             Some((Some(rev), codebase)) => (codebase, rev),
             Some((None, _)) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"reason": "Run has no main branch revision"})),
-                );
+                return reason(StatusCode::BAD_REQUEST, "Run has no main branch revision");
             }
             None => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({"reason": "Run not found"})),
-                );
+                return reason(StatusCode::NOT_FOUND, "Run not found");
             }
         }
     } else {
         let codebase = match request.codebase {
             Some(c) => c,
             None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"reason": "missing codebase"})),
-                );
+                return reason(StatusCode::BAD_REQUEST, "missing codebase");
             }
         };
         let rev = match request.main_branch_revision {
             Some(r) => r,
             None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"reason": "missing main_branch_revision"})),
-                );
+                return reason(StatusCode::BAD_REQUEST, "missing main_branch_revision");
             }
         };
         (codebase, rev)
@@ -356,27 +343,21 @@ async fn schedule_control(
     .await;
 
     match result {
-        Ok((offset, duration, queue_id, bucket)) => (
-            StatusCode::OK,
-            Json(json!({
-                "campaign": "control",
-                "offset": offset,
-                "bucket": bucket,
-                "codebase": codebase,
-                "queue_id": queue_id,
-                "estimated_duration_seconds": duration.as_seconds_f64(),
-            })),
-        ),
-        Err(janitor::schedule::Error::CandidateUnavailable { .. }) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"reason": "Candidate not available"})),
-        ),
+        Ok((offset, duration, queue_id, bucket)) => Json(ScheduleControlResponse {
+            campaign: Campaign::new("control").expect("control is a valid campaign name"),
+            offset,
+            bucket,
+            codebase,
+            queue_id,
+            estimated_duration_seconds: duration.as_seconds_f64(),
+        })
+        .into_response(),
+        Err(janitor::schedule::Error::CandidateUnavailable { .. }) => {
+            reason(StatusCode::BAD_REQUEST, "Candidate not available")
+        }
         Err(e) => {
             log::error!("do_schedule_control failed for {}: {}", codebase, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Schedule error"})),
-            )
+            error(StatusCode::INTERNAL_SERVER_ERROR, "Schedule error")
         }
     }
 }
@@ -389,7 +370,7 @@ async fn schedule_control(
 async fn schedule(
     State(state): State<Arc<AppState>>,
     Json(request): Json<ScheduleRequest>,
-) -> impl IntoResponse {
+) -> Response {
     let pool = state.database.pool();
 
     let (campaign, codebase, run_command) = if let Some(run_id) = request.run_id.as_ref() {
@@ -409,29 +390,20 @@ async fn schedule(
         match row {
             Some((campaign, codebase, command)) => (campaign, codebase, command),
             None => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({"reason": "Run not found"})),
-                );
+                return reason(StatusCode::NOT_FOUND, "Run not found");
             }
         }
     } else {
         let campaign = match request.campaign {
             Some(c) => c,
             None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"reason": "missing campaign"})),
-                );
+                return reason(StatusCode::BAD_REQUEST, "missing campaign");
             }
         };
         let codebase = match request.codebase {
             Some(c) => c,
             None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"reason": "missing codebase"})),
-                );
+                return reason(StatusCode::BAD_REQUEST, "missing codebase");
             }
         };
         (campaign, codebase, None)
@@ -470,10 +442,7 @@ async fn schedule(
     let command = match command {
         Some(c) => c,
         None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"reason": "no command specified"})),
-            );
+            return reason(StatusCode::BAD_REQUEST, "no command specified");
         }
     };
 
@@ -508,30 +477,24 @@ async fn schedule(
                 Ok(Some((pos, wait))) => (Some(pos), wait.map(|w| w.as_secs_f64())),
                 _ => (None, None),
             };
-            (
-                StatusCode::OK,
-                Json(json!({
-                    "campaign": campaign,
-                    "offset": offset,
-                    "bucket": bucket,
-                    "codebase": codebase,
-                    "queue_id": queue_id,
-                    "estimated_duration_seconds": duration.as_seconds_f64(),
-                    "queue_position": queue_position,
-                    "queue_wait_time": queue_wait_time,
-                })),
-            )
+            Json(ScheduleResponse {
+                campaign,
+                offset,
+                bucket,
+                codebase,
+                queue_id,
+                estimated_duration_seconds: duration.as_seconds_f64(),
+                queue_position,
+                queue_wait_time,
+            })
+            .into_response()
         }
-        Err(janitor::schedule::Error::CandidateUnavailable { .. }) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"reason": "Candidate not available"})),
-        ),
+        Err(janitor::schedule::Error::CandidateUnavailable { .. }) => {
+            reason(StatusCode::BAD_REQUEST, "Candidate not available")
+        }
         Err(e) => {
             log::error!("do_schedule failed for {}/{}: {}", campaign, codebase, e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Schedule error"})),
-            )
+            error(StatusCode::INTERNAL_SERVER_ERROR, "Schedule error")
         }
     }
 }
@@ -539,64 +502,58 @@ async fn schedule(
 /// `GET /status` -- return the live status of the queue processor as
 /// `{processing: [...], avoid_hosts: [...], rate_limit_hosts: {...}}`.
 ///
-/// `processing` is the list of currently-active runs (each in the
-/// shape `ActiveRun.to_json()`). We don't track per-run keepalive
+/// `processing` is the list of currently-active runs. We don't track per-run keepalive
 /// timestamps, so no keepalive_age / mia / last-keepalive fields are
 /// included.
-async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let processing: Vec<serde_json::Value> = state
+async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
+    let processing: Vec<ActiveRunResponse> = state
         .active_runs
         .list()
         .await
         .iter()
-        .map(|r| r.to_json())
+        .map(ActiveRun::to_response)
         .collect();
-
-    let avoid_hosts = &state.avoid_hosts;
 
     // Rate-limited hosts come from Redis; emit an ISO-8601 timestamp
     // per host so downstream tooling can compare to `now()`.
-    let rate_limit_hosts: serde_json::Map<String, serde_json::Value> =
+    let rate_limit_hosts: BTreeMap<String, String> =
         match state.database.get_rate_limited_hosts().await {
             Ok(map) => map
                 .into_iter()
-                .map(|(host, until)| (host, serde_json::Value::String(until.to_rfc3339())))
+                .map(|(host, until)| (host, until.to_rfc3339()))
                 .collect(),
             Err(e) => {
                 log::debug!("status: failed to read rate-limited hosts: {}", e);
-                serde_json::Map::new()
+                BTreeMap::new()
             }
         };
 
-    Json(json!({
-        "processing": processing,
-        "avoid_hosts": avoid_hosts,
-        "rate_limit_hosts": rate_limit_hosts,
-    }))
+    Json(StatusResponse {
+        processing,
+        avoid_hosts: state.avoid_hosts.clone(),
+        rate_limit_hosts,
+    })
 }
 
 /// `GET /log/{run_id}` -- list the log files of a run. For an active
 /// run this asks the live worker; for a finished run it returns the
 /// log file names recorded for the run. 404s if there is no such run.
-async fn log_index(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> impl IntoResponse {
+async fn log_index(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> Response {
     if let Some(active_run) = state.active_runs.get(&id).await {
         return match active_run.backchannel.list_log_files().await {
-            Ok(files) => (StatusCode::OK, Json(json!(files))),
+            Ok(files) => Json(files).into_response(),
             Err(e) => {
                 log::warn!("Failed to list log files for {}: {}", id, e);
-                (
+                error(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": format!("Failed to list log files: {}", e)})),
+                    format!("Failed to list log files: {}", e),
                 )
             }
         };
     }
     match finished_run_logs(&state, &id).await {
-        Ok(Some((_, logfilenames))) => (StatusCode::OK, Json(json!(logfilenames))),
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({"reason": format!("No such run: {}", id)})),
-        ),
+        Ok(Some((_, logfilenames))) => Json(logfilenames).into_response(),
+        Ok(None) => reason(StatusCode::NOT_FOUND, format!("No such run: {}", id)),
         Err(e) => {
             log::error!("Failed to look up log files for {}: {}", id, e);
             db_error()
@@ -624,24 +581,25 @@ async fn finished_run_logs(
 /// so the operator's eye lands on the file currently being
 /// written. 404s if the run isn't active. Returns
 /// `{"current_stage": "build"}` or `{"current_stage": null}`.
-async fn current_stage(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<RunId>,
-) -> impl IntoResponse {
+async fn current_stage(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> Response {
     let active_run = match current_run(&state, &id).await {
         Ok(run) => run,
         Err(response) => return response,
     };
-    match active_run.backchannel.get_current_stage().await {
-        Ok(stage) => (StatusCode::OK, Json(json!({"current_stage": stage}))),
+    let response = match active_run.backchannel.get_current_stage().await {
+        Ok(stage) => CurrentStageResponse {
+            current_stage: stage,
+            error: None,
+        },
         Err(e) => {
             log::warn!("Failed to fetch current_stage for {}: {}", id, e);
-            (
-                StatusCode::OK,
-                Json(json!({"current_stage": null, "error": format!("{}", e)})),
-            )
+            CurrentStageResponse {
+                current_stage: None,
+                error: Some(e.to_string()),
+            }
         }
-    }
+    };
+    Json(response).into_response()
 }
 
 /// `GET /log/{run_id}/{filename}` -- return a single log file of a
@@ -688,7 +646,7 @@ async fn log(
         Ok(None) => return text_response(StatusCode::NOT_FOUND, format!("No such run: {}", id)),
         Err(e) => {
             log::error!("Failed to look up log files for {}: {}", id, e);
-            return db_error().into_response();
+            return db_error();
         }
     };
     match state.log_manager.get_log(&codebase, &id, &filename).await {
@@ -716,14 +674,14 @@ async fn log(
 /// backchannel. On success, returns the active run's JSON snapshot;
 /// 404 when the run isn't active; 501 when the worker doesn't
 /// support kill.
-async fn kill(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> impl IntoResponse {
+async fn kill(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> Response {
     let active_run = match current_run(&state, &id).await {
         Ok(run) => run,
         Err(response) => return response,
     };
-    let snapshot = active_run.to_json();
+    let snapshot = active_run.to_response();
     match active_run.backchannel.kill().await {
-        Ok(()) => (StatusCode::OK, Json(snapshot)),
+        Ok(()) => Json(snapshot).into_response(),
         Err(crate::PingError::NotSupported(msg)) => {
             // 501 with this exact text -- existing clients rely on the
             // wording.
@@ -732,30 +690,30 @@ async fn kill(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> impl
             } else {
                 msg
             };
-            (StatusCode::NOT_IMPLEMENTED, Json(json!({"error": reason})))
+            error(StatusCode::NOT_IMPLEMENTED, reason)
         }
         Err(crate::PingError::NoActiveRun(msg)) => {
             // Worker has no active run (it likely restarted while this
             // run was in progress); map to 410 Gone.
-            (StatusCode::GONE, Json(json!({"error": msg})))
+            error(StatusCode::GONE, msg)
         }
         Err(e) => {
             log::error!("Failed to kill run {}: {}", id, e);
-            (
+            error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("Failed to kill run: {}", e)})),
+                format!("Failed to kill run: {}", e),
             )
         }
     }
 }
 
 /// `GET /codebases` -- return the codebase table as a JSON list.
-async fn get_codebases(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn get_codebases(State(state): State<Arc<AppState>>) -> Response {
     match state.database.get_codebases().await {
-        Ok(codebases) => (StatusCode::OK, Json(codebases)).into_response(),
+        Ok(codebases) => Json(codebases).into_response(),
         Err(e) => {
             log::error!("Failed to get codebases: {}", e);
-            db_error().into_response()
+            db_error()
         }
     }
 }
@@ -800,9 +758,9 @@ fn main_branch_name(branch_url: Option<&str>) -> String {
 async fn update_codebases(
     State(state): State<Arc<AppState>>,
     Json(codebases): Json<Vec<crate::database::CodebaseUpload>>,
-) -> impl IntoResponse {
+) -> Response {
     match state.database.upload_codebases(&codebases).await {
-        Ok(()) => (StatusCode::OK, Json(json!({}))),
+        Ok(()) => Json(EmptyResponse {}).into_response(),
         Err(e) => {
             log::error!("Failed to upload codebases: {}", e);
             db_error()
@@ -814,26 +772,17 @@ async fn update_codebases(
 /// followup entries and any queue items for the same (suite,
 /// codebase). Returns 200 with an empty object on success, or 404
 /// when no such candidate exists.
-async fn delete_candidate(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
+async fn delete_candidate(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let candidate_id = match id.parse::<i64>() {
         Ok(id) => id,
         Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"reason": "Invalid candidate ID"})),
-            );
+            return reason(StatusCode::BAD_REQUEST, "Invalid candidate ID");
         }
     };
 
     match state.database.delete_candidate(candidate_id).await {
-        Ok(true) => (StatusCode::OK, Json(json!({}))),
-        Ok(false) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({"reason": "No such candidate"})),
-        ),
+        Ok(true) => Json(EmptyResponse {}).into_response(),
+        Ok(false) => reason(StatusCode::NOT_FOUND, "No such candidate"),
         Err(e) => {
             log::error!("Failed to delete candidate {}: {}", candidate_id, e);
             db_error()
@@ -842,12 +791,12 @@ async fn delete_candidate(
 }
 
 /// `GET /candidates` -- return the candidate table as a JSON list.
-async fn get_candidates(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn get_candidates(State(state): State<Arc<AppState>>) -> Response {
     match state.database.get_candidates().await {
-        Ok(candidates) => (StatusCode::OK, Json(candidates)).into_response(),
+        Ok(candidates) => Json(candidates).into_response(),
         Err(e) => {
             log::error!("Failed to get candidates: {}", e);
-            db_error().into_response()
+            db_error()
         }
     }
 }
@@ -1080,7 +1029,7 @@ async fn upload_candidates(
 ) -> Response {
     let pool = state.database.pool();
 
-    let mut success = Vec::<serde_json::Value>::new();
+    let mut success = Vec::<ScheduledCandidate>::new();
     let mut unknown_codebases = std::collections::BTreeSet::<CodebaseName>::new();
     let mut unknown_campaigns = std::collections::BTreeSet::<Campaign>::new();
     let mut invalid_command = std::collections::BTreeSet::<String>::new();
@@ -1144,7 +1093,7 @@ async fn upload_candidates(
             Ok(tx) => tx,
             Err(e) => {
                 log::error!("Failed to begin transaction: {}", e);
-                return db_error().into_response();
+                return db_error();
             }
         };
 
@@ -1213,7 +1162,7 @@ async fn upload_candidates(
                     e
                 );
                 let _ = tx.rollback().await;
-                return db_error().into_response();
+                return db_error();
             }
         };
 
@@ -1271,7 +1220,7 @@ async fn upload_candidates(
                 Err(e) => {
                     log::error!("Failed to look up existing MPs: {}", e);
                     let _ = tx.rollback().await;
-                    return db_error().into_response();
+                    return db_error();
                 }
             };
 
@@ -1300,7 +1249,7 @@ async fn upload_candidates(
 
         if let Err(e) = tx.commit().await {
             log::error!("Failed to commit candidate insert: {}", e);
-            return db_error().into_response();
+            return db_error();
         }
 
         // Schedule on the pool (do_schedule_regular uses its own
@@ -1325,16 +1274,16 @@ async fn upload_candidates(
         .await
         {
             Ok((offset, estimated_duration, queue_id, bucket)) => {
-                success.push(json!({
-                    "campaign": campaign,
-                    "codebase": codebase,
-                    "bucket": bucket,
-                    "change_set": change_set,
-                    "offset": offset,
-                    "estimated_duration": estimated_duration.num_seconds(),
-                    "queue-id": queue_id,
-                    "refresh": refresh,
-                }));
+                success.push(ScheduledCandidate {
+                    campaign,
+                    codebase,
+                    bucket,
+                    change_set,
+                    offset,
+                    estimated_duration: estimated_duration.num_seconds(),
+                    queue_id,
+                    refresh,
+                });
             }
             Err(janitor::schedule::Error::CandidateUnavailable { .. }) => {
                 // Shouldn't happen -- we just inserted the candidate.
@@ -1346,33 +1295,29 @@ async fn upload_candidates(
             }
             Err(e) => {
                 log::error!("Failed to schedule {}/{}: {}", codebase, campaign, e);
-                return (
+                return error(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": format!("Schedule error: {}", e)})),
-                )
-                    .into_response();
+                    format!("Schedule error: {}", e),
+                );
             }
         }
     }
 
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": success,
-            "invalid_command": invalid_command.into_iter().collect::<Vec<_>>(),
-            "invalid_value": invalid_value.into_iter().collect::<Vec<_>>(),
-            "unknown_campaigns": unknown_campaigns.into_iter().collect::<Vec<_>>(),
-            "unknown_codebases": unknown_codebases.into_iter().collect::<Vec<_>>(),
-            "unknown_publish_policies": unknown_publish_policies.into_iter().collect::<Vec<_>>(),
-        })),
-    )
-        .into_response()
+    Json(UploadCandidatesResponse {
+        success,
+        invalid_command: invalid_command.into_iter().collect(),
+        invalid_value: invalid_value.into_iter().collect(),
+        unknown_campaigns: unknown_campaigns.into_iter().collect(),
+        unknown_codebases: unknown_codebases.into_iter().collect(),
+        unknown_publish_policies: unknown_publish_policies.into_iter().collect(),
+    })
+    .into_response()
 }
 
 /// `GET /runs/{run_id}` -- return a run's `{codebase, campaign,
 /// publish_status}` triple. Only those three fields are returned,
 /// not the entire run row.
-async fn get_run(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> impl IntoResponse {
+async fn get_run(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> Response {
     let row: Result<Option<(CodebaseName, Campaign, String)>, _> =
         sqlx::query_as("SELECT codebase, suite, publish_status::text FROM run WHERE id = $1")
             .bind(&id)
@@ -1380,18 +1325,13 @@ async fn get_run(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> i
             .await;
 
     match row {
-        Ok(Some((codebase, campaign, publish_status))) => (
-            StatusCode::OK,
-            Json(json!({
-                "codebase": codebase,
-                "campaign": campaign,
-                "publish_status": publish_status,
-            })),
-        ),
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({"reason": format!("no such run: {}", id)})),
-        ),
+        Ok(Some((codebase, campaign, publish_status))) => Json(RunPublishStatusResponse {
+            codebase,
+            campaign,
+            publish_status,
+        })
+        .into_response(),
+        Ok(None) => reason(StatusCode::NOT_FOUND, format!("no such run: {}", id)),
         Err(e) => {
             log::error!("Failed to get run {}: {}", id, e);
             db_error()
@@ -1406,19 +1346,20 @@ async fn update_run(
     State(state): State<Arc<AppState>>,
     Path(id): Path<RunId>,
     Json(request): Json<UpdateRunRequest>,
-) -> impl IntoResponse {
+) -> Response {
     match state
         .database
         .update_run_publish_status(&id, &request.publish_status)
         .await
     {
         Ok(Some((run_id, codebase, suite))) => {
-            let payload = json!({
-                "run_id": run_id,
-                "publish_status": request.publish_status,
-                "codebase": codebase,
-                "campaign": suite,
-            });
+            let update = PublishStatusUpdate {
+                run_id,
+                publish_status: request.publish_status,
+                codebase,
+                campaign: suite,
+            };
+            let payload = serde_json::to_value(&update).expect("PublishStatusUpdate is plain data");
             // Best-effort fanout to subscribers. A failed publish
             // shouldn't fail the HTTP request -- the DB row is already
             // updated. Alert on `janitor_runner_redis_operations_total
@@ -1429,12 +1370,9 @@ async fn update_run(
                     .with_label_values(&["publish_publish_status", "error"])
                     .inc();
             }
-            (StatusCode::OK, Json(payload))
+            Json(update).into_response()
         }
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({"reason": format!("no such run: {}", id)})),
-        ),
+        Ok(None) => reason(StatusCode::NOT_FOUND, format!("no such run: {}", id)),
         Err(e) => {
             log::error!("Failed to update run {}: {}", id, e);
             db_error()
@@ -1442,24 +1380,17 @@ async fn update_run(
     }
 }
 
-async fn get_active_runs(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn get_active_runs(State(state): State<Arc<AppState>>) -> Json<Vec<ActiveRunResponse>> {
     let active_runs = state.active_runs.list().await;
-    let runs_json: Vec<_> = active_runs.iter().map(|r| r.to_json()).collect();
-    (StatusCode::OK, Json(runs_json))
+    Json(active_runs.iter().map(ActiveRun::to_response).collect())
 }
 
 /// `GET /active-runs/{run_id}` -- return a single active run's JSON
 /// snapshot. 404s when the run isn't currently active.
-async fn get_active_run(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<RunId>,
-) -> impl IntoResponse {
+async fn get_active_run(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> Response {
     match state.active_runs.get(&id).await {
-        Some(active_run) => (StatusCode::OK, Json(active_run.to_json())),
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(json!({"reason": format!("no such run {}", id)})),
-        ),
+        Some(active_run) => Json(active_run.to_response()).into_response(),
+        None => reason(StatusCode::NOT_FOUND, format!("no such run {}", id)),
     }
 }
 
@@ -1475,7 +1406,7 @@ async fn get_active_run(
 /// Currently uses the simplified `next_queue_item_with_rate_limiting`
 /// helper, so the success body is the build_config / queue_item /
 /// vcs_info shape it produces rather than a full assignment dict.
-async fn peek_active_run(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn peek_active_run(State(state): State<Arc<AppState>>) -> Response {
     let avoided_hosts = get_avoided_hosts(&state.config);
     match state
         .database
@@ -1486,32 +1417,28 @@ async fn peek_active_run(State(state): State<Arc<AppState>>) -> impl IntoRespons
             let campaign_config = create_campaign_config(&assignment.queue_item, &state.config);
             let build_config = match get_builder(&campaign_config, None, None) {
                 Ok(builder) => {
-                    let mut config = HashMap::new();
-                    config.insert("builder_kind".to_string(), builder.kind().to_string());
-                    config
+                    BTreeMap::from([("builder_kind".to_string(), builder.kind().to_string())])
                 }
-                Err(_) => HashMap::new(),
+                Err(_) => BTreeMap::new(),
             };
 
             (
                 StatusCode::CREATED,
-                Json(json!({
-                    "queue_item": assignment.queue_item.to_json(),
-                    "vcs_info": assignment.vcs_info,
-                    "build_config": build_config,
-                    "estimated_duration": assignment
+                Json(PeekResponse {
+                    queue_item: assignment.queue_item.to_response(),
+                    vcs_info: assignment.vcs_info,
+                    build_config,
+                    estimated_duration: assignment
                         .queue_item
                         .estimated_duration
                         .map(|d| d.as_secs()),
-                })),
+                }),
             )
+                .into_response()
         }
         Ok(None) => {
             crate::metrics::QUEUE_EMPTY_COUNT.inc();
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({"reason": "queue empty"})),
-            )
+            reason(StatusCode::SERVICE_UNAVAILABLE, "queue empty")
         }
         Err(e) => {
             log::error!("Failed to peek queue item: {}", e);
@@ -1521,7 +1448,8 @@ async fn peek_active_run(State(state): State<Arc<AppState>>) -> impl IntoRespons
 }
 
 /// Query parameters for `GET /queue` (`?limit=N`).
-#[derive(serde::Deserialize, Default)]
+#[derive(serde::Deserialize, Default, IntoParams)]
+#[into_params(parameter_in = Query)]
 struct GetQueueQuery {
     limit: Option<i64>,
 }
@@ -1531,23 +1459,21 @@ struct GetQueueQuery {
 async fn get_queue(
     State(state): State<Arc<AppState>>,
     Query(query): Query<GetQueueQuery>,
-) -> impl IntoResponse {
+) -> Response {
     let queue = janitor::queue::Queue::new(state.database.pool());
     match queue.iter_queue(query.limit, None).await {
         Ok(items) => {
-            let payload: Vec<serde_json::Value> = items
+            let payload: Vec<QueueEntry> = items
                 .into_iter()
-                .map(|entry| {
-                    json!({
-                        "queue_id": entry.id,
-                        "codebase": entry.codebase,
-                        "campaign": entry.campaign,
-                        "context": entry.context,
-                        "command": entry.command,
-                    })
+                .map(|entry| QueueEntry {
+                    queue_id: entry.id,
+                    codebase: entry.codebase,
+                    campaign: entry.campaign,
+                    context: entry.context,
+                    command: entry.command,
                 })
                 .collect();
-            (StatusCode::OK, Json(serde_json::Value::Array(payload)))
+            Json(payload).into_response()
         }
         Err(e) => {
             log::error!("Failed to iterate queue: {}", e);
@@ -1575,28 +1501,30 @@ async fn metrics() -> impl IntoResponse {
 }
 
 /// Public endpoint to list workers with basic information.
-async fn list_workers(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn list_workers(State(state): State<Arc<AppState>>) -> Json<WorkerListResponse> {
     worker_list(&state, false).await
 }
 
 /// Admin endpoint to list workers, including their links and which
 /// ones have failed.
-async fn admin_list_workers(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn admin_list_workers(State(state): State<Arc<AppState>>) -> Json<WorkerListResponse> {
     worker_list(&state, true).await
 }
 
-async fn worker_list(state: &AppState, admin: bool) -> Json<serde_json::Value> {
+async fn worker_list(state: &AppState, admin: bool) -> Json<WorkerListResponse> {
     let workers = match state.auth_service.list_workers().await {
         Ok(workers) => workers,
         Err(e) => {
             log::error!("Failed to list workers: {}", e);
-            return Json(json!({
-                "error": "Failed to list workers",
-                "workers": [],
-                "total_workers": 0,
-                "active_workers": 0,
-                "idle_workers": 0
-            }));
+            return Json(WorkerListResponse {
+                error: Some("Failed to list workers".to_string()),
+                workers: vec![],
+                total_workers: 0,
+                active_workers: 0,
+                idle_workers: 0,
+                summary: None,
+                timestamp: None,
+            });
         }
     };
     let active_runs = state.active_runs.list().await;
@@ -1620,7 +1548,7 @@ async fn worker_list(state: &AppState, admin: bool) -> Json<serde_json::Value> {
         vec![]
     };
 
-    let worker_infos: Vec<serde_json::Value> = workers
+    let worker_infos: Vec<WorkerInfo> = workers
         .iter()
         .map(|worker| {
             let status = if failed_workers.contains(&worker.name) {
@@ -1631,17 +1559,20 @@ async fn worker_list(state: &AppState, admin: bool) -> Json<serde_json::Value> {
                 "idle"
             };
             let last_seen = last_seen_times.get(&worker.name).copied();
-            let mut worker_info = json!({
-                "name": worker.name,
-                "status": status,
-            });
-            if admin {
-                worker_info["link"] = json!(worker.link);
-                worker_info["last_seen"] = json!(last_seen.unwrap_or_else(chrono::Utc::now));
-            } else if let Some(last_seen) = last_seen {
-                worker_info["last_seen"] = json!(last_seen);
+            let (link, last_seen) = if admin {
+                (
+                    Some(worker.link.clone()),
+                    Some(last_seen.unwrap_or_else(chrono::Utc::now)),
+                )
+            } else {
+                (None, last_seen)
+            };
+            WorkerInfo {
+                name: worker.name.clone(),
+                status: status.to_string(),
+                link,
+                last_seen,
             }
-            worker_info
         })
         .collect();
 
@@ -1650,26 +1581,24 @@ async fn worker_list(state: &AppState, admin: bool) -> Json<serde_json::Value> {
     let failed_count = failed_workers.len();
     let idle_count = total_count - active_count - failed_count;
 
-    let mut summary = json!({
-        "total": total_count,
-        "active": active_count,
-        "idle": idle_count,
-    });
-    if admin {
-        summary["failed"] = json!(failed_count);
-    }
-    Json(json!({
-        "workers": worker_infos,
-        "total_workers": total_count,
-        "active_workers": active_count,
-        "idle_workers": idle_count,
-        "summary": summary,
-        "timestamp": chrono::Utc::now()
-    }))
+    Json(WorkerListResponse {
+        error: None,
+        workers: worker_infos,
+        total_workers: total_count,
+        active_workers: active_count,
+        idle_workers: idle_count,
+        summary: Some(WorkerSummary {
+            total: total_count,
+            active: active_count,
+            idle: idle_count,
+            failed: admin.then_some(failed_count),
+        }),
+        timestamp: Some(chrono::Utc::now()),
+    })
 }
 
 /// Admin endpoint to create a worker.
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct CreateWorkerRequest {
     name: String,
     password: String,
@@ -1725,18 +1654,12 @@ async fn admin_delete_worker(
 }
 
 /// Admin endpoint to get security statistics.
-async fn admin_security_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn admin_security_stats(State(state): State<Arc<AppState>>) -> Response {
     match state.security_service.get_security_stats().await {
-        Ok(stats) => match serde_json::to_value(stats) {
-            Ok(value) => Json(value),
-            Err(e) => {
-                log::error!("Failed to serialize security stats: {}", e);
-                Json(json!({"error": "Failed to serialize stats"}))
-            }
-        },
+        Ok(stats) => Json(stats).into_response(),
         Err(e) => {
             log::error!("Failed to get security stats: {}", e);
-            Json(json!({"error": "Failed to get security stats"}))
+            Json(ErrorResponse::new("Failed to get security stats")).into_response()
         }
     }
 }
@@ -1767,7 +1690,8 @@ async fn admin_security_stats(State(state): State<Arc<AppState>>) -> impl IntoRe
 /// * `dry_run=1` -- return the matched run IDs without modifying
 ///   anything. Useful to confirm what would be touched.
 /// * `max=N` -- cap batch size (default 1000, hard cap 5000).
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 struct CleanupRunsQuery {
     result_code: String,
     #[serde(default)]
@@ -1788,8 +1712,8 @@ struct CleanupRunsQuery {
 
 async fn admin_cleanup_runs(
     State(state): State<Arc<AppState>>,
-    axum::extract::Query(q): axum::extract::Query<CleanupRunsQuery>,
-) -> impl IntoResponse {
+    Query(q): Query<CleanupRunsQuery>,
+) -> Response {
     let dry_run = q
         .dry_run
         .as_deref()
@@ -1812,22 +1736,18 @@ async fn admin_cleanup_runs(
     let min_ts = match q.min_finish_time.as_deref().map(parse_ts).transpose() {
         Ok(v) => v,
         Err(e) => {
-            return (
+            return error(
                 StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": format!("invalid min_finish_time (expect RFC 3339): {}", e)
-                })),
+                format!("invalid min_finish_time (expect RFC 3339): {}", e),
             );
         }
     };
     let max_ts = match q.max_finish_time.as_deref().map(parse_ts).transpose() {
         Ok(v) => v,
         Err(e) => {
-            return (
+            return error(
                 StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": format!("invalid max_finish_time (expect RFC 3339): {}", e)
-                })),
+                format!("invalid max_finish_time (expect RFC 3339): {}", e),
             );
         }
     };
@@ -1888,49 +1808,46 @@ async fn admin_cleanup_runs(
             Ok(r) => r,
             Err(e) => {
                 log::error!("cleanup-runs SELECT failed: {}", e);
-                return (
+                return error(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": format!("select failed: {}", e)})),
+                    format!("select failed: {}", e),
                 );
             }
         };
 
     if rows.is_empty() {
-        return (
-            StatusCode::OK,
-            Json(json!({
-                "matched": 0,
-                "rescheduled": 0,
-                "deleted": 0,
-                "dry_run": dry_run,
-                "result_code": q.result_code,
-            })),
-        );
+        return Json(CleanupRunsResponse {
+            matched: 0,
+            rescheduled: 0,
+            deleted: 0,
+            dry_run,
+            result_code: q.result_code,
+            run_ids: None,
+        })
+        .into_response();
     }
 
     let run_ids: Vec<RunId> = rows.iter().map(|(id, ..)| id.clone()).collect();
 
     if dry_run {
-        return (
-            StatusCode::OK,
-            Json(json!({
-                "matched": rows.len(),
-                "rescheduled": 0,
-                "deleted": 0,
-                "dry_run": true,
-                "result_code": q.result_code,
-                "run_ids": run_ids,
-            })),
-        );
+        return Json(CleanupRunsResponse {
+            matched: rows.len(),
+            rescheduled: 0,
+            deleted: 0,
+            dry_run: true,
+            result_code: q.result_code,
+            run_ids: Some(run_ids),
+        })
+        .into_response();
     }
 
     let mut tx = match state.database.pool().begin().await {
         Ok(t) => t,
         Err(e) => {
             log::error!("cleanup-runs begin tx failed: {}", e);
-            return (
+            return error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("tx begin failed: {}", e)})),
+                format!("tx begin failed: {}", e),
             );
         }
     };
@@ -1967,9 +1884,9 @@ async fn admin_cleanup_runs(
                     e
                 );
                 let _ = tx.rollback().await;
-                return (
+                return error(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": format!("reschedule failed for {}: {}", codebase, e)})),
+                    format!("reschedule failed for {}: {}", codebase, e),
                 );
             }
         }
@@ -1994,9 +1911,9 @@ async fn admin_cleanup_runs(
             {
                 log::error!("cleanup-runs: clear last_run.{} failed: {}", label, e);
                 let _ = tx.rollback().await;
-                return (
+                return error(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": format!("clear {} failed: {}", label, e)})),
+                    format!("clear {} failed: {}", label, e),
                 );
             }
         }
@@ -2007,9 +1924,9 @@ async fn admin_cleanup_runs(
         {
             log::error!("cleanup-runs: clear run.resume_from failed: {}", e);
             let _ = tx.rollback().await;
-            return (
+            return error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("clear resume_from failed: {}", e)})),
+                format!("clear resume_from failed: {}", e),
             );
         }
 
@@ -2030,9 +1947,9 @@ async fn admin_cleanup_runs(
             {
                 log::error!("cleanup-runs: delete {} children failed: {}", label, e);
                 let _ = tx.rollback().await;
-                return (
+                return error(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": format!("delete {} children failed: {}", label, e)})),
+                    format!("delete {} children failed: {}", label, e),
                 );
             }
         }
@@ -2046,9 +1963,9 @@ async fn admin_cleanup_runs(
             Err(e) => {
                 log::error!("cleanup-runs DELETE failed: {}", e);
                 let _ = tx.rollback().await;
-                return (
+                return error(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": format!("delete failed: {}", e)})),
+                    format!("delete failed: {}", e),
                 );
             }
         }
@@ -2058,9 +1975,9 @@ async fn admin_cleanup_runs(
 
     if let Err(e) = tx.commit().await {
         log::error!("cleanup-runs commit failed: {}", e);
-        return (
+        return error(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("commit failed: {}", e)})),
+            format!("commit failed: {}", e),
         );
     }
 
@@ -2073,41 +1990,42 @@ async fn admin_cleanup_runs(
         deleted
     );
 
-    (
-        StatusCode::OK,
-        Json(json!({
-            "matched": rows.len(),
-            "rescheduled": rescheduled,
-            "deleted": deleted,
-            "dry_run": false,
-            "result_code": q.result_code,
-        })),
-    )
+    Json(CleanupRunsResponse {
+        matched: rows.len(),
+        rescheduled,
+        deleted,
+        dry_run: false,
+        result_code: q.result_code,
+        run_ids: None,
+    })
+    .into_response()
 }
 
 /// Check for resume information for a campaign and branch.
 async fn check_resume_info(
     State(state): State<Arc<AppState>>,
     Json(request): Json<ResumeInfoRequest>,
-) -> impl IntoResponse {
+) -> Response {
     match state
         .resume_service
         .check_resume_result(&request.campaign, &request.resume_revision)
         .await
     {
-        Ok(Some(resume_info)) => Json(json!({
-            "resume_available": true,
-            "resume_info": resume_info
-        })),
-        Ok(None) => Json(json!({
-            "resume_available": false,
-            "message": "No resume information found"
-        })),
+        Ok(Some(resume_info)) => Json(ResumeCheckResponse {
+            resume_available: true,
+            resume_info: Some(resume_info),
+            message: None,
+        })
+        .into_response(),
+        Ok(None) => Json(ResumeCheckResponse {
+            resume_available: false,
+            resume_info: None,
+            message: Some("No resume information found".to_string()),
+        })
+        .into_response(),
         Err(e) => {
             log::error!("Failed to check resume info: {}", e);
-            Json(json!({
-                "error": "Failed to check resume information"
-            }))
+            Json(ErrorResponse::new("Failed to check resume information")).into_response()
         }
     }
 }
@@ -2116,17 +2034,16 @@ async fn check_resume_info(
 async fn get_resume_chain(
     State(state): State<Arc<AppState>>,
     Path(run_id): Path<RunId>,
-) -> impl IntoResponse {
+) -> Response {
     match state.resume_service.get_resume_chain(&run_id).await {
-        Ok(chain) => Json(json!({
-            "run_id": run_id,
-            "resume_chain": chain
-        })),
+        Ok(resume_chain) => Json(ResumeChainResponse {
+            run_id,
+            resume_chain,
+        })
+        .into_response(),
         Err(e) => {
             log::error!("Failed to get resume chain for {}: {}", run_id, e);
-            Json(json!({
-                "error": "Failed to get resume chain"
-            }))
+            Json(ErrorResponse::new("Failed to get resume chain")).into_response()
         }
     }
 }
@@ -2135,42 +2052,38 @@ async fn get_resume_chain(
 async fn get_resume_descendants(
     State(state): State<Arc<AppState>>,
     Path(run_id): Path<RunId>,
-) -> impl IntoResponse {
+) -> Response {
     match state.resume_service.get_resume_descendants(&run_id).await {
-        Ok(descendants) => Json(json!({
-            "run_id": run_id,
-            "descendants": descendants
-        })),
+        Ok(descendants) => Json(ResumeDescendantsResponse {
+            run_id,
+            descendants,
+        })
+        .into_response(),
         Err(e) => {
             log::error!("Failed to get resume descendants for {}: {}", run_id, e);
-            Json(json!({
-                "error": "Failed to get resume descendants"
-            }))
+            Json(ErrorResponse::new("Failed to get resume descendants")).into_response()
         }
     }
 }
 
 /// Validate resume consistency across the database.
-async fn validate_resume_consistency(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn validate_resume_consistency(State(state): State<Arc<AppState>>) -> Response {
     match state.resume_service.validate_resume_consistency().await {
-        Ok(errors) => {
-            if errors.is_empty() {
-                Json(json!({
-                    "status": "consistent",
-                    "message": "All resume relationships are valid"
-                }))
-            } else {
-                Json(json!({
-                    "status": "inconsistent",
-                    "errors": errors
-                }))
-            }
-        }
+        Ok(errors) if errors.is_empty() => Json(ResumeValidationResponse {
+            status: "consistent".to_string(),
+            message: Some("All resume relationships are valid".to_string()),
+            errors: None,
+        })
+        .into_response(),
+        Ok(errors) => Json(ResumeValidationResponse {
+            status: "inconsistent".to_string(),
+            message: None,
+            errors: Some(errors),
+        })
+        .into_response(),
         Err(e) => {
             log::error!("Failed to validate resume consistency: {}", e);
-            Json(json!({
-                "error": "Failed to validate resume consistency"
-            }))
+            Json(ErrorResponse::new("Failed to validate resume consistency")).into_response()
         }
     }
 }
@@ -2183,17 +2096,13 @@ fn finish_conflict_body(
     run_id: &RunId,
     janitor_result: &crate::JanitorResult,
     public: bool,
-) -> serde_json::Value {
-    let reason = "This run was already stored by a previous /finish call. \
-                  Treat this as terminal -- do not retry.";
-    if public {
-        json!({"id": run_id, "reason": reason})
-    } else {
-        json!({
-            "id": run_id,
-            "result": janitor_result.to_json(),
-            "reason": reason,
-        })
+) -> FinishConflictResponse {
+    FinishConflictResponse {
+        id: run_id.clone(),
+        result: (!public).then(|| janitor_result.to_json()),
+        reason: "This run was already stored by a previous /finish call. \
+                 Treat this as terminal -- do not retry."
+            .to_string(),
     }
 }
 
@@ -2201,7 +2110,7 @@ async fn finish_active_run_multipart(
     State(state): State<Arc<AppState>>,
     Path(id): Path<RunId>,
     multipart: Multipart,
-) -> impl IntoResponse {
+) -> Response {
     finish_run_multipart_internal(state, id, multipart, false).await
 }
 
@@ -2247,18 +2156,18 @@ async fn publish_finish_events(
             .inc();
     }
 
-    let processing: Vec<serde_json::Value> = state
-        .active_runs
-        .list()
-        .await
-        .iter()
-        .map(|r| r.to_json())
-        .collect();
-    let status_payload = serde_json::json!({
-        "processing": processing,
-        "avoid_hosts": [],
-        "rate_limit_hosts": {},
-    });
+    let status_payload = serde_json::to_value(StatusResponse {
+        processing: state
+            .active_runs
+            .list()
+            .await
+            .iter()
+            .map(ActiveRun::to_response)
+            .collect(),
+        avoid_hosts: vec![],
+        rate_limit_hosts: BTreeMap::new(),
+    })
+    .expect("StatusResponse is plain data");
     if let Err(e) = state.database.publish("queue", &status_payload).await {
         log::error!("Failed to publish queue status event: {}", e);
         crate::metrics::REDIS_OPERATIONS_TOTAL
@@ -2401,14 +2310,11 @@ async fn finish_run_multipart_internal(
     run_id: RunId,
     multipart: Multipart,
     public: bool,
-) -> (StatusCode, Json<serde_json::Value>) {
+) -> Response {
     let active_run = match state.active_runs.get(&run_id).await {
         Some(run) => run,
         None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"reason": format!("no such run {}", run_id)})),
-            );
+            return reason(StatusCode::NOT_FOUND, format!("no such run {}", run_id));
         }
     };
 
@@ -2423,9 +2329,9 @@ async fn finish_run_multipart_internal(
         Ok(result) => result,
         Err(e) => {
             log::error!("Failed to process upload for run {}: {}", run_id, e);
-            return (
+            return error(
                 StatusCode::BAD_REQUEST,
-                Json(json!({"error": format!("Upload processing failed: {}", e)})),
+                format!("Upload processing failed: {}", e),
             );
         }
     };
@@ -2584,13 +2490,14 @@ async fn finish_run_multipart_internal(
             return (
                 StatusCode::CONFLICT,
                 Json(finish_conflict_body(&run_id, &janitor_result, public)),
-            );
+            )
+                .into_response();
         }
         Err(e) => {
             log::error!("Failed to store run result: {}", e);
-            return (
+            return reason(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"reason": format!("Failed to store result: {}", e)})),
+                format!("Failed to store result: {}", e),
             );
         }
     }
@@ -2630,16 +2537,7 @@ async fn finish_run_multipart_internal(
         "Successfully processed multipart upload for run {}",
         response.id
     );
-    match serde_json::to_value(response) {
-        Ok(json) => (StatusCode::CREATED, Json(json)),
-        Err(e) => {
-            log::error!("Failed to serialize finish response: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Serialization failed"})),
-            )
-        }
-    }
+    (StatusCode::CREATED, Json(response)).into_response()
 }
 
 async fn public_root() -> impl IntoResponse {
@@ -2686,11 +2584,10 @@ async fn authenticate_worker(
                 | sqlx::Error::Tls(_)),
             )) => {
                 log::error!("Cannot check worker credentials: {}", e);
-                Ok((
+                Ok(reason(
                     StatusCode::SERVICE_UNAVAILABLE,
-                    Json(json!({"reason": "database unavailable"})),
-                )
-                    .into_response())
+                    "database unavailable",
+                ))
             }
             Err(_) => {
                 log::warn!("Invalid worker credentials provided");
@@ -2707,7 +2604,7 @@ async fn public_assign(
     State(state): State<Arc<AppState>>,
     Extension(worker_name): Extension<String>,
     Json(request): Json<AssignRequest>,
-) -> impl IntoResponse {
+) -> Response {
     // Worker identity comes from `authenticate_worker` middleware, not
     // from the request body. Workers can't lie about who they are.
     // Python's public app served this under /runner; we rely on the
@@ -2730,18 +2627,20 @@ async fn public_assign(
 async fn private_assign(
     State(state): State<Arc<AppState>>,
     Json(request): Json<AssignRequest>,
-) -> impl IntoResponse {
+) -> Response {
     let worker_name = match request.worker.as_deref() {
         Some(name) if !name.is_empty() => name.to_string(),
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": "missing_worker",
-                    "reason": "Set `worker` (or `node`) on the body. \
-                               This route does not authenticate the caller, \
-                               so identity must be supplied explicitly.",
-                })),
+                Json(AssignRejectedResponse {
+                    error: "missing_worker".to_string(),
+                    worker: None,
+                    reason: "Set `worker` (or `node`) on the body. \
+                             This route does not authenticate the caller, \
+                             so identity must be supplied explicitly."
+                        .to_string(),
+                }),
             )
                 .into_response();
         }
@@ -2751,24 +2650,21 @@ async fn private_assign(
         Ok(false) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": "worker_not_registered",
-                    "worker": worker_name,
-                    "reason": "Worker name is not in the `worker` table. \
-                               Register it via POST /admin/workers before \
-                               assigning runs (otherwise /finish would \
-                               fail later with a FK violation).",
-                })),
+                Json(AssignRejectedResponse {
+                    error: "worker_not_registered".to_string(),
+                    worker: Some(worker_name),
+                    reason: "Worker name is not in the `worker` table. \
+                             Register it via POST /admin/workers before \
+                             assigning runs (otherwise /finish would \
+                             fail later with a FK violation)."
+                        .to_string(),
+                }),
             )
                 .into_response();
         }
         Err(e) => {
             log::error!("private_assign: worker_exists lookup failed: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "worker_lookup_failed"})),
-            )
-                .into_response();
+            return error(StatusCode::INTERNAL_SERVER_ERROR, "worker_lookup_failed");
         }
     }
     assign_work_internal(state, worker_name, request, "/active-runs").await
@@ -2859,21 +2755,6 @@ struct ResumeOutcome {
     rate_limit: Option<(String, Option<f64>)>,
     /// `full_branch_url` of the main branch, if it could be opened.
     main_branch_url: Option<String>,
-}
-
-/// Resume information as returned in the assign response's `resume`
-/// field: `{run_id, result, branch_url, branches}`.
-#[derive(Debug, Clone, Serialize)]
-struct ResumeAssignment {
-    run_id: RunId,
-    /// Previous run's `result` JSON blob.
-    result: Option<serde_json::Value>,
-    /// URL of the resume branch as opened via the forge or the VCS
-    /// manager fallback.
-    branch_url: String,
-    /// Per-role result branches:
-    /// `[(role, remote_name, base_revision, revision), ...]`.
-    branches: Vec<(String, Option<String>, Option<String>, Option<String>)>,
 }
 
 /// Resume-branch lookup. Opens the main branch, asks the forge (via
@@ -3162,10 +3043,10 @@ async fn assign_work_internal(
             );
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({
-                    "reason": "queue empty",
-                    "detail": "only broken queue items available",
-                })),
+                Json(ReasonResponse {
+                    reason: "queue empty".to_string(),
+                    detail: Some("only broken queue items available".to_string()),
+                }),
             )
                 .into_response();
         }
@@ -3182,15 +3063,11 @@ async fn assign_work_internal(
             Ok(Some(assignment)) => assignment,
             Ok(None) => {
                 crate::metrics::QUEUE_EMPTY_COUNT.inc();
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(json!({"reason": "queue empty"})),
-                )
-                    .into_response();
+                return reason(StatusCode::SERVICE_UNAVAILABLE, "queue empty");
             }
             Err(e) => {
                 log::error!("Failed to get next queue item: {}", e);
-                return db_error().into_response();
+                return db_error();
             }
         };
 
@@ -3350,11 +3227,11 @@ async fn assign_work_internal(
 
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
-                "reason": "rate limited",
-                "host": host,
-                "retry_after": retry_after,
-            })),
+            Json(RateLimitedResponse {
+                reason: "rate limited".to_string(),
+                host,
+                retry_after,
+            }),
         )
             .into_response();
     }
@@ -3445,28 +3322,28 @@ async fn assign_work_internal(
             }
         };
 
-    let branch = json!({
-        "cached_url": cached_url,
-        "vcs_type": assignment.vcs_info.vcs_type,
-        "url": vcs_info.branch_url,
-        "subpath": assignment.vcs_info.subpath.clone().unwrap_or_default(),
-        "additional_colocated_branches": additional_colocated_branches,
-        "default-empty": campaign_config.default_empty,
-    });
+    let branch = AssignmentBranch {
+        cached_url,
+        vcs_type: assignment.vcs_info.vcs_type.clone(),
+        url: vcs_info.branch_url.clone(),
+        subpath: assignment.vcs_info.subpath.clone().unwrap_or_default(),
+        additional_colocated_branches,
+        default_empty: campaign_config.default_empty,
+    };
 
-    let target_repository = json!({
-        "url": target_repo_url,
-        "vcs_type": assignment.vcs_info.vcs_type,
-    });
+    let target_repository = AssignmentTargetRepository {
+        url: target_repo_url,
+        vcs_type: assignment.vcs_info.vcs_type.clone(),
+    };
 
     // Environment merged from config committer + command prefix
     // (DEB_UPDATE_CHANGELOG=auto ...). Copy into both codemod and
     // build environments so each execution context has a consistent
     // view.
-    let mut env: HashMap<String, String> = crate::committer_env(Some(state.config.committer()));
-    for (k, v) in extra_env {
-        env.insert(k, v);
-    }
+    let mut env: BTreeMap<String, String> = crate::committer_env(Some(state.config.committer()))
+        .into_iter()
+        .collect();
+    env.extend(extra_env);
 
     // The worker's `DebianBuildConfig` reads these hyphen-cased keys,
     // and a missing `build-command` causes
@@ -3474,27 +3351,9 @@ async fn assign_work_internal(
     // a no-op (no debian_build row, no debdiffs) -- every run since
     // this Rust port stood up has hit that path.
     //
-    // The fields below match `janitor::api::worker::DebianBuildConfig`'s
-    // serde-renamed names so the JSON the worker sees deserialises
-    // directly.
-    #[derive(serde::Serialize)]
-    struct DebianBuildAssignment {
-        #[serde(rename = "build-distribution")]
-        build_distribution: String,
-        #[serde(rename = "build-suffix")]
-        build_suffix: String,
-        // Skipped when None: `build-command` is only sent when
-        // either the campaign or the distribution defines it; the
-        // worker silently no-ops otherwise.
-        #[serde(rename = "build-command", skip_serializing_if = "Option::is_none")]
-        build_command: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        chroot: Option<String>,
-        #[serde(rename = "build-extra-repositories")]
-        extra_repositories: Vec<String>,
-        dep_server_url: Option<String>,
-    }
-
+    // The fields of `DebianBuildAssignment` match
+    // `janitor::api::worker::DebianBuildConfig`'s serde-renamed names so
+    // the JSON the worker sees deserialises directly.
     let (build_target, build_cfg) = if let Some(dcfg) = campaign_config.debian_build.as_ref() {
         let dist = state
             .config
@@ -3545,52 +3404,51 @@ async fn assign_work_internal(
             dep_server_url: state.public_dep_server_url.clone(),
         };
 
-        (
-            "debian",
-            serde_json::to_value(&build_assignment).expect("DebianBuildAssignment is plain data"),
-        )
+        ("debian", BuildAssignmentConfig::Debian(build_assignment))
     } else {
         (
             "generic",
-            json!({ "dep_server_url": state.public_dep_server_url }),
+            BuildAssignmentConfig::Generic(GenericBuildAssignment {
+                dep_server_url: state.public_dep_server_url.clone(),
+            }),
         )
     };
 
-    let codemod = json!({
-        "command": clean_command,
-        "environment": {},
-    });
+    let codemod = AssignmentCodemod {
+        command: clean_command.clone(),
+        environment: BTreeMap::new(),
+    };
 
-    let build = json!({
-        "target": build_target,
-        "config": build_cfg,
-        "environment": env,
-    });
+    let build = AssignmentBuild {
+        target: build_target.to_string(),
+        config: build_cfg,
+        environment: env.clone(),
+    };
 
     let skip_setup_validation = state
         .config
         .get_campaign(&assignment.queue_item.campaign)
         .is_some_and(|c| c.skip_setup_validation());
 
-    let body = json!({
-        "id": active_run.log_id,
-        "description": format!(
+    let body = AssignmentResponse {
+        id: active_run.log_id.clone(),
+        description: format!(
             "{} on {}",
             assignment.queue_item.campaign, assignment.queue_item.codebase
         ),
-        "queue_id": assignment.queue_item.id,
-        "campaign": assignment.queue_item.campaign,
-        "codebase": assignment.queue_item.codebase,
-        "force-build": campaign_config.force_build,
-        "branch": branch,
-        "resume": resume_assignment,
-        "target_repository": target_repository,
-        "skip-setup-validation": skip_setup_validation,
-        "command": clean_command,
-        "codemod": codemod,
-        "env": env,
-        "build": build,
-    });
+        queue_id: assignment.queue_item.id,
+        campaign: assignment.queue_item.campaign.clone(),
+        codebase: assignment.queue_item.codebase.clone(),
+        force_build: campaign_config.force_build,
+        branch,
+        resume: resume_assignment,
+        target_repository,
+        skip_setup_validation,
+        command: clean_command,
+        codemod,
+        env,
+        build,
+    };
 
     (
         StatusCode::CREATED,
@@ -3608,7 +3466,7 @@ async fn public_finish(
     Extension(worker_name): Extension<String>,
     Path(id): Path<RunId>,
     multipart: Multipart,
-) -> impl IntoResponse {
+) -> Response {
     // Worker credentials are verified by authentication middleware
     // Verify that this worker is authorized to finish this specific run
     match state.active_runs.get(&id).await {
@@ -3620,17 +3478,11 @@ async fn public_finish(
                     id,
                     active_run.worker_name
                 );
-                return (
-                    StatusCode::FORBIDDEN,
-                    Json(json!({"error": "Not authorized to finish this run"})),
-                );
+                return error(StatusCode::FORBIDDEN, "Not authorized to finish this run");
             }
         }
         None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": "Run not found"})),
-            );
+            return error(StatusCode::NOT_FOUND, "Run not found");
         }
     }
 
@@ -3641,7 +3493,9 @@ async fn public_finish(
 }
 
 /// Get watchdog health information for all active runs.
-async fn public_watchdog_health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn public_watchdog_health(
+    State(state): State<Arc<AppState>>,
+) -> Json<WatchdogHealthResponse> {
     let watchdog_config = crate::WatchdogConfig::default();
     let watchdog = crate::Watchdog::new(
         Arc::clone(&state.database),
@@ -3652,55 +3506,70 @@ async fn public_watchdog_health(State(state): State<Arc<AppState>>) -> impl Into
     match watchdog.get_detailed_health_status().await {
         Ok(health_statuses) => {
             // Filter to public information only
-            let public_statuses: Vec<_> = health_statuses.into_iter().map(|status| {
-                json!({
-                    "log_id": status.log_id,
-                    "worker_name": status.worker_name,
-                    "start_time": status.start_time,
-                    "estimated_duration": status.estimated_duration.map(|d| d.as_secs()),
-                    "failure_count": status.failure_count,
-                    "max_failures": status.max_failures,
-                    "alive": status.health.as_ref().map(|h| h.alive).unwrap_or(false),
-                    "status": status.health.as_ref().map(|h| h.status.clone()).unwrap_or_else(|| "unknown".to_string()),
-                    "last_ping": status.health.as_ref().and_then(|h| h.last_ping),
+            let public_statuses: Vec<RunHealthSummary> = health_statuses
+                .into_iter()
+                .map(|status| RunHealthSummary {
+                    log_id: status.log_id,
+                    worker_name: status.worker_name,
+                    start_time: status.start_time,
+                    estimated_duration: status.estimated_duration.map(|d| d.as_secs()),
+                    failure_count: status.failure_count,
+                    max_failures: status.max_failures,
+                    alive: status.health.as_ref().is_some_and(|h| h.alive),
+                    status: status
+                        .health
+                        .as_ref()
+                        .map_or_else(|| "unknown".to_string(), |h| h.status.clone()),
+                    last_ping: status.health.as_ref().and_then(|h| h.last_ping),
                 })
-            }).collect();
+                .collect();
 
-            Json(json!({
-                "status": "ok",
-                "active_runs": public_statuses.len(),
-                "health_statuses": public_statuses
-            }))
+            Json(WatchdogHealthResponse {
+                status: "ok".to_string(),
+                active_runs: Some(public_statuses.len()),
+                health_statuses: Some(public_statuses),
+                error: None,
+            })
         }
         Err(e) => {
             log::error!("Failed to get watchdog health status: {}", e);
-            Json(json!({
-                "status": "error",
-                "error": "Failed to get health status"
-            }))
+            Json(WatchdogHealthResponse {
+                status: "error".to_string(),
+                active_runs: None,
+                health_statuses: None,
+                error: Some("Failed to get health status".to_string()),
+            })
         }
     }
 }
 
 /// Get public queue statistics.
-async fn public_queue_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn public_queue_stats(State(state): State<Arc<AppState>>) -> Json<QueueStatsResponse> {
     // Active runs live in Redis, not Postgres; source them here so
     // the count reflects reality.
     let active_runs = state.active_runs.len().await as i64;
     match state.database.get_queue_stats().await {
-        Ok(stats) => Json(json!({
-            "queue_length": stats.get("total").unwrap_or(&0),
-            "active_runs": active_runs,
-            "succeeded": stats.get("succeeded").unwrap_or(&0),
-            "failed": stats.get("failed").unwrap_or(&0),
-            "status": "operational"
-        })),
+        Ok(stats) => {
+            let count = |key: &str| Some(stats.get(key).copied().unwrap_or(0));
+            Json(QueueStatsResponse {
+                queue_length: count("total"),
+                active_runs: Some(active_runs),
+                succeeded: count("succeeded"),
+                failed: count("failed"),
+                status: "operational".to_string(),
+                error: None,
+            })
+        }
         Err(e) => {
             log::error!("Failed to get queue stats: {}", e);
-            Json(json!({
-                "status": "error",
-                "error": "Database error"
-            }))
+            Json(QueueStatsResponse {
+                queue_length: None,
+                active_runs: None,
+                succeeded: None,
+                failed: None,
+                status: "error".to_string(),
+                error: Some("Database error".to_string()),
+            })
         }
     }
 }

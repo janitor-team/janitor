@@ -20,7 +20,7 @@ chrono = { workspace = true, features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true
 janitor = { path = "..", default-features = false, features = ["debian", "otlp", "testing"] }
-janitor-types = { workspace = true, features = ["sqlx"] }
+janitor-types = { workspace = true, features = ["sqlx", "utoipa"] }
 janitor-service = { workspace = true }
 async-trait = "0.1.88"
 url = { workspace = true, features = ["serde"] }
@@ -45,6 +45,7 @@ thiserror = "2.0"
 tempfile = { workspace = true }
 testcontainers = { version = "0.27", default-features = false, features = ["aws-lc-rs"], optional = true }
 testcontainers-modules = { version = "0.15", default-features = false, features = ["redis", "aws-lc-rs"], optional = true }
+utoipa.workspace = true
 
 [dev-dependencies]
 janitor-runner = { path = ".", features = ["testing"] }
