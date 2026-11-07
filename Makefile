@@ -82,6 +82,11 @@ check-html-format:
 djlint:
 	djlint py/janitor/site/templates
 
+style:: shellcheck
+
+shellcheck:
+	shellcheck container-tests/*.sh
+
 typing:
 	$(PYTHON) -m mypy py/janitor tests
 
