@@ -75,6 +75,7 @@ macro_rules! identifier {
         $(#[$meta])*
         #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
         #[cfg_attr(feature = "sqlx", derive(sqlx::Type), sqlx(transparent))]
+        #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema), schema(value_type = String))]
         #[serde(try_from = "String", into = "String")]
         pub struct $name(String);
 
