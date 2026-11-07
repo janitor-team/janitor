@@ -1014,10 +1014,6 @@ pub(crate) enum CandidatePreflight {
         command: String,
         value: Option<i64>,
     },
-    /// Request is malformed: `codebase` or `campaign` field missing
-    /// or not a valid name, or `change_set` not a valid id. Python raises HTTPBadRequest; the handler returns
-    /// 400 with the given message.
-    BadRequest(String),
     /// Candidate references a campaign not in the runner config.
     /// Python adds to `unknown_campaigns` and continues.
     UnknownCampaign(Campaign),
@@ -1028,12 +1024,8 @@ pub(crate) enum CandidatePreflight {
     InvalidValue,
 }
 
-/// Entry in a `POST /candidates` request body; only used to describe
-/// the request in the OpenAPI document. The handler reads the entries
-/// as JSON values, treating fields of the wrong type as absent, so
-/// that one sloppy field doesn't reject the whole upload.
-#[derive(ToSchema)]
-#[allow(dead_code)]
+/// Entry in a `POST /candidates` request body.
+#[derive(Debug, Deserialize, ToSchema)]
 struct CandidateUpload {
     /// Codebase to run on.
     codebase: CodebaseName,
@@ -1050,87 +1042,52 @@ struct CandidateUpload {
     /// Free-form context.
     context: Option<String>,
     /// Name of the publish policy.
-    #[schema(rename = "publish-policy")]
+    #[serde(rename = "publish-policy")]
     publish_policy: Option<String>,
     /// Queue bucket to schedule in.
     bucket: Option<String>,
     /// Who is requesting the run; appended to the generated requester.
     requester: Option<String>,
     /// Ids of candidates that this one is a followup for.
-    followup_for: Option<Vec<i64>>,
+    followup_for: Option<Vec<i32>>,
 }
 
 /// Pure preflight for a single candidate upload entry. Takes the
-/// candidate's JSON value plus a view into the runner config:
+/// candidate plus a view into the runner config:
 ///
 /// - `known_campaigns`: set of campaigns known to the runner
 /// - `campaign_default_command`: looks up the config-level
 ///   fallback command for a campaign name, returning `None` if
 ///   absent or empty
-pub(crate) fn candidate_preflight(
-    candidate: &serde_json::Value,
+fn candidate_preflight(
+    candidate: &CandidateUpload,
     known_campaigns: &std::collections::HashSet<String>,
     campaign_default_command: impl Fn(&str) -> Option<String>,
 ) -> CandidatePreflight {
-    let codebase = match candidate.get("codebase").and_then(|v| v.as_str()) {
-        Some(s) if !s.is_empty() => match CodebaseName::new(s) {
-            Ok(c) => c,
-            Err(e) => return CandidatePreflight::BadRequest(e.to_string()),
-        },
-        _ => {
-            return CandidatePreflight::BadRequest(format!(
-                "no codebase field for candidate {}",
-                candidate
-            ));
-        }
-    };
-    let campaign = match candidate.get("campaign").and_then(|v| v.as_str()) {
-        Some(s) => match Campaign::new(s) {
-            Ok(c) => c,
-            Err(e) => return CandidatePreflight::BadRequest(e.to_string()),
-        },
-        None => {
-            return CandidatePreflight::BadRequest(format!(
-                "no campaign field for candidate {}",
-                candidate
-            ));
-        }
-    };
-
-    let change_set = match candidate
-        .get("change_set")
-        .and_then(|v| v.as_str())
-        .map(ChangeSetId::new)
-        .transpose()
-    {
-        Ok(cs) => cs,
-        Err(e) => return CandidatePreflight::BadRequest(e.to_string()),
-    };
-
+    let campaign = &candidate.campaign;
     if !known_campaigns.contains(campaign.as_str()) {
-        return CandidatePreflight::UnknownCampaign(campaign);
+        return CandidatePreflight::UnknownCampaign(campaign.clone());
     }
 
     let command = candidate
-        .get("command")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
+        .command
+        .clone()
         .filter(|s| !s.is_empty())
-        .or_else(|| campaign_default_command(&campaign).filter(|s| !s.is_empty()));
+        .or_else(|| campaign_default_command(campaign).filter(|s| !s.is_empty()));
     let command = match command {
         Some(c) => c,
         None => return CandidatePreflight::InvalidCommand,
     };
 
-    let value = candidate.get("value").and_then(|v| v.as_i64());
+    let value = candidate.value;
     if value == Some(0) {
         return CandidatePreflight::InvalidValue;
     }
 
     CandidatePreflight::Ok {
-        codebase,
-        campaign,
-        change_set,
+        codebase: candidate.codebase.clone(),
+        campaign: campaign.clone(),
+        change_set: candidate.change_set.clone(),
         command,
         value,
     }
@@ -1142,7 +1099,7 @@ pub(crate) fn candidate_preflight(
 /// inserted (via `ON CONFLICT DO UPDATE`), with per-candidate
 /// fallback behavior:
 ///
-/// - Missing `codebase` or `campaign` -> 400.
+/// - Missing `codebase` or `campaign`, or a field of the wrong type -> 422.
 /// - Unknown campaign -> collected in `unknown_campaigns`, skipped.
 /// - No `command` in entry -> fall back to the campaign config's
 ///   `command`; if neither is present the entry is rejected into
@@ -1179,13 +1136,14 @@ pub(crate) fn candidate_preflight(
     request_body = Vec<CandidateUpload>,
     responses(
         (status = 200, description = "Candidates were processed", body = UploadCandidatesResponse),
-        (status = 400, description = "Malformed candidate", body = String, content_type = "text/plain"),
+        (status = 400, description = "Body is not valid JSON", body = String, content_type = "text/plain"),
+        (status = 422, description = "Malformed candidate", body = String, content_type = "text/plain"),
         (status = 500, description = "Database or scheduling error", body = ErrorResponse),
     )
 )]
 async fn upload_candidates(
     State(state): State<Arc<AppState>>,
-    Json(candidates): Json<Vec<serde_json::Value>>,
+    Json(candidates): Json<Vec<CandidateUpload>>,
 ) -> Response {
     let pool = state.database.pool();
 
@@ -1219,9 +1177,6 @@ async fn upload_candidates(
                     command,
                     value,
                 } => (codebase, campaign, change_set, command, value),
-                CandidatePreflight::BadRequest(msg) => {
-                    return (StatusCode::BAD_REQUEST, msg).into_response();
-                }
                 CandidatePreflight::UnknownCampaign(campaign) => {
                     log::warn!("unknown campaign {:?}", campaign);
                     unknown_campaigns.insert(campaign);
@@ -1239,15 +1194,9 @@ async fn upload_candidates(
                 }
             };
 
-        let publish_policy = candidate
-            .get("publish-policy")
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
-        let context = candidate
-            .get("context")
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
-        let success_chance = candidate.get("success_chance").and_then(|v| v.as_f64());
+        let publish_policy = candidate.publish_policy.clone();
+        let context = candidate.context.clone();
+        let success_chance = candidate.success_chance;
 
         let mut tx = match pool.begin().await {
             Ok(tx) => tx,
@@ -1360,20 +1309,14 @@ async fn upload_candidates(
                         )
                     } else {
                         (
-                            candidate
-                                .get("bucket")
-                                .and_then(|v| v.as_str())
-                                .map(str::to_string),
+                            candidate.bucket.clone(),
                             true,
                             format!("command changed: {:?} -> {:?}", prev_command, command),
                         )
                     }
                 }
                 Ok(None) => (
-                    candidate
-                        .get("bucket")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string),
+                    candidate.bucket.clone(),
                     false,
                     "candidate update".to_string(),
                 ),
@@ -1384,26 +1327,27 @@ async fn upload_candidates(
                 }
             };
 
-        let requester = if let Some(extra) = candidate.get("requester").and_then(|v| v.as_str()) {
+        let requester = if let Some(extra) = candidate.requester.as_deref() {
             format!("{} {}", requester, extra)
         } else {
             requester
         };
 
-        if let Some(followups) = candidate.get("followup_for").and_then(|v| v.as_array()) {
-            for origin in followups {
-                if let Some(origin_id) = origin.as_i64() {
-                    if let Err(e) = sqlx::query(
-                        "INSERT INTO followup (origin, candidate) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-                    )
-                    .bind(origin_id as i32)
-                    .bind(candidate_id)
-                    .execute(&mut *tx)
-                    .await
-                    {
-                        log::warn!("Failed to insert followup {}->{}: {}", origin_id, candidate_id, e);
-                    }
-                }
+        for origin_id in candidate.followup_for.iter().flatten() {
+            if let Err(e) = sqlx::query(
+                "INSERT INTO followup (origin, candidate) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            )
+            .bind(origin_id)
+            .bind(candidate_id)
+            .execute(&mut *tx)
+            .await
+            {
+                log::warn!(
+                    "Failed to insert followup {}->{}: {}",
+                    origin_id,
+                    candidate_id,
+                    e
+                );
             }
         }
 
@@ -4225,7 +4169,7 @@ pub fn app(state: Arc<AppState>) -> Router {
 mod tests {
     use super::{
         assignment_validation_outcome, candidate_preflight, main_branch_name, AssignmentValidation,
-        CandidatePreflight,
+        CandidatePreflight, CandidateUpload,
     };
     use crate::CampaignConfig;
     use janitor_types::{Campaign, CodebaseName};
@@ -4405,30 +4349,74 @@ distribution {
         None
     }
 
-    #[test]
-    fn test_candidate_preflight_missing_codebase_is_bad_request() {
-        let c = json!({"campaign": "lintian-fixes"});
-        let result = candidate_preflight(&c, &known(&["lintian-fixes"]), no_default);
-        assert!(matches!(result, CandidatePreflight::BadRequest(_)));
+    fn parse(value: serde_json::Value) -> Result<CandidateUpload, String> {
+        serde_json::from_value(value).map_err(|e| e.to_string())
+    }
+
+    fn candidate(value: serde_json::Value) -> CandidateUpload {
+        parse(value).unwrap()
     }
 
     #[test]
-    fn test_candidate_preflight_empty_codebase_is_bad_request() {
-        let c = json!({"codebase": "", "campaign": "lintian-fixes"});
-        let result = candidate_preflight(&c, &known(&["lintian-fixes"]), no_default);
-        assert!(matches!(result, CandidatePreflight::BadRequest(_)));
+    fn test_candidate_upload_requires_codebase_and_campaign() {
+        assert_eq!(
+            parse(json!({"campaign": "lintian-fixes"})).unwrap_err(),
+            "missing field `codebase`"
+        );
+        assert_eq!(
+            parse(json!({"codebase": "pkg"})).unwrap_err(),
+            "missing field `campaign`"
+        );
     }
 
     #[test]
-    fn test_candidate_preflight_missing_campaign_is_bad_request() {
-        let c = json!({"codebase": "pkg"});
-        let result = candidate_preflight(&c, &known(&["lintian-fixes"]), no_default);
-        assert!(matches!(result, CandidatePreflight::BadRequest(_)));
+    fn test_candidate_upload_rejects_invalid_names() {
+        assert_eq!(
+            parse(json!({"codebase": "", "campaign": "lintian-fixes"})).unwrap_err(),
+            "invalid codebase name: \"\""
+        );
+        assert_eq!(
+            parse(json!({"codebase": "../pkg", "campaign": "lintian-fixes"})).unwrap_err(),
+            "invalid codebase name: \"../pkg\""
+        );
+        assert_eq!(
+            parse(json!({"codebase": "pkg", "campaign": "Lintian_Fixes"})).unwrap_err(),
+            "invalid campaign name: \"Lintian_Fixes\""
+        );
+        assert_eq!(
+            parse(json!({"codebase": "pkg", "campaign": "lintian-fixes", "change_set": "../cs"}))
+                .unwrap_err(),
+            "invalid change set id: \"../cs\""
+        );
+    }
+
+    #[test]
+    fn test_candidate_upload_rejects_wrong_types() {
+        assert_eq!(
+            parse(json!({"codebase": "pkg", "campaign": "lintian-fixes", "value": "5"}))
+                .unwrap_err(),
+            "invalid type: string \"5\", expected i64"
+        );
+        assert_eq!(
+            parse(json!({"codebase": "pkg", "campaign": "lintian-fixes", "followup_for": ["1"]}))
+                .unwrap_err(),
+            "invalid type: string \"1\", expected i32"
+        );
+    }
+
+    #[test]
+    fn test_candidate_upload_reads_publish_policy() {
+        let c = candidate(json!({
+            "codebase": "pkg",
+            "campaign": "lintian-fixes",
+            "publish-policy": "manual",
+        }));
+        assert_eq!(c.publish_policy.as_deref(), Some("manual"));
     }
 
     #[test]
     fn test_candidate_preflight_unknown_campaign_is_bucketed() {
-        let c = json!({"codebase": "pkg", "campaign": "nope", "command": "true"});
+        let c = candidate(json!({"codebase": "pkg", "campaign": "nope", "command": "true"}));
         let result = candidate_preflight(&c, &known(&["lintian-fixes"]), no_default);
         assert_eq!(
             result,
@@ -4437,37 +4425,15 @@ distribution {
     }
 
     #[test]
-    fn test_candidate_preflight_invalid_names_are_bad_request() {
-        let c = json!({"codebase": "../pkg", "campaign": "lintian-fixes"});
-        let result = candidate_preflight(&c, &known(&["lintian-fixes"]), no_default);
-        assert_eq!(
-            result,
-            CandidatePreflight::BadRequest("invalid codebase name: \"../pkg\"".to_string())
-        );
-        let c = json!({"codebase": "pkg", "campaign": "Lintian_Fixes"});
-        let result = candidate_preflight(&c, &known(&["lintian-fixes"]), no_default);
-        assert_eq!(
-            result,
-            CandidatePreflight::BadRequest("invalid campaign name: \"Lintian_Fixes\"".to_string())
-        );
-        let c = json!({"codebase": "pkg", "campaign": "lintian-fixes", "change_set": "../cs"});
-        let result = candidate_preflight(&c, &known(&["lintian-fixes"]), no_default);
-        assert_eq!(
-            result,
-            CandidatePreflight::BadRequest("invalid change set id: \"../cs\"".to_string())
-        );
-    }
-
-    #[test]
     fn test_candidate_preflight_missing_command_without_fallback_is_invalid() {
-        let c = json!({"codebase": "pkg", "campaign": "lintian-fixes"});
+        let c = candidate(json!({"codebase": "pkg", "campaign": "lintian-fixes"}));
         let result = candidate_preflight(&c, &known(&["lintian-fixes"]), no_default);
         assert_eq!(result, CandidatePreflight::InvalidCommand);
     }
 
     #[test]
     fn test_candidate_preflight_empty_command_falls_back_to_config() {
-        let c = json!({"codebase": "pkg", "campaign": "lintian-fixes", "command": ""});
+        let c = candidate(json!({"codebase": "pkg", "campaign": "lintian-fixes", "command": ""}));
         let result = candidate_preflight(&c, &known(&["lintian-fixes"]), |name| {
             if name == "lintian-fixes" {
                 Some("lintian-brush".to_string())
@@ -4483,11 +4449,11 @@ distribution {
 
     #[test]
     fn test_candidate_preflight_explicit_command_wins() {
-        let c = json!({
+        let c = candidate(json!({
             "codebase": "pkg",
             "campaign": "lintian-fixes",
             "command": "explicit-cmd",
-        });
+        }));
         let result = candidate_preflight(&c, &known(&["lintian-fixes"]), |_| {
             Some("config-fallback".to_string())
         });
@@ -4499,24 +4465,24 @@ distribution {
 
     #[test]
     fn test_candidate_preflight_value_zero_is_invalid() {
-        let c = json!({
+        let c = candidate(json!({
             "codebase": "pkg",
             "campaign": "lintian-fixes",
             "command": "true",
             "value": 0,
-        });
+        }));
         let result = candidate_preflight(&c, &known(&["lintian-fixes"]), no_default);
         assert_eq!(result, CandidatePreflight::InvalidValue);
     }
 
     #[test]
     fn test_candidate_preflight_positive_value_passes_through() {
-        let c = json!({
+        let c = candidate(json!({
             "codebase": "pkg",
             "campaign": "lintian-fixes",
             "command": "true",
             "value": 42,
-        });
+        }));
         let result = candidate_preflight(&c, &known(&["lintian-fixes"]), no_default);
         match result {
             CandidatePreflight::Ok { value, .. } => assert_eq!(value, Some(42)),
@@ -4526,11 +4492,11 @@ distribution {
 
     #[test]
     fn test_candidate_preflight_missing_value_is_none() {
-        let c = json!({
+        let c = candidate(json!({
             "codebase": "pkg",
             "campaign": "lintian-fixes",
             "command": "true",
-        });
+        }));
         let result = candidate_preflight(&c, &known(&["lintian-fixes"]), no_default);
         match result {
             CandidatePreflight::Ok { value, .. } => assert_eq!(value, None),
@@ -4540,12 +4506,12 @@ distribution {
 
     #[test]
     fn test_candidate_preflight_happy_path_full_fields() {
-        let c = json!({
+        let c = candidate(json!({
             "codebase": "pkg",
             "campaign": "lintian-fixes",
             "command": "lintian-brush",
             "value": 10,
-        });
+        }));
         let result = candidate_preflight(&c, &known(&["lintian-fixes"]), no_default);
         match result {
             CandidatePreflight::Ok {

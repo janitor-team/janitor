@@ -422,11 +422,11 @@ async fn post_candidates_records_unknown_campaign() {
 }
 
 /// `POST /candidates` on a candidate whose codebase does not exist
-/// returns 400. Ours diverges from Python here (Python collects it in
+/// returns 422. Ours diverges from Python here (Python collects it in
 /// `unknown_codebases` via the FK-violation path); this test pins the
 /// Rust-side gate so we do not regress silently.
 #[tokio::test]
-async fn post_candidates_missing_codebase_field_is_bad_request() {
+async fn post_candidates_missing_codebase_field_is_unprocessable() {
     let Some((app, _state)) = setup().await else {
         eprintln!("skipping: no test resources");
         return;
@@ -444,7 +444,40 @@ async fn post_candidates_missing_codebase_field_is_bad_request() {
         .unwrap();
     let response = app.oneshot(req).await.unwrap();
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+/// A candidate field with the wrong type rejects the whole upload
+/// before anything is written, including the candidates before it.
+#[tokio::test]
+async fn post_candidates_wrong_field_type_is_unprocessable() {
+    let Some((app, state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let pool = state.database.pool().clone();
+    insert_codebase(&pool, "cand-type-cb").await;
+
+    let body = json!([
+        {"codebase": "cand-type-cb", "campaign": "test-campaign"},
+        {"codebase": "cand-type-cb", "campaign": "test-campaign", "value": "5"},
+    ]);
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/candidates")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let candidates: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM candidate WHERE codebase = 'cand-type-cb'")
+            .fetch_one(&pool)
+            .await
+            .expect("candidate count");
+    assert_eq!(candidates, 0);
 }
 
 /// `GET /runs/{id}` on an existing run returns `{codebase, campaign,
