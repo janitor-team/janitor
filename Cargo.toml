@@ -110,6 +110,7 @@ nix = ">=0.30,<0.32"
 askama = ">=0.15,<0.17"
 janitor-types = { path = "types" }
 janitor-service = { path = "service" }
+utoipa = { version = "6", features = ["chrono", "url"] }
 
 [build-dependencies]
 protobuf-codegen = "3"
