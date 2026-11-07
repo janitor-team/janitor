@@ -49,6 +49,7 @@ from ..vcs import VcsManager
 from . import (
     BuildDiffUnavailable,
     DebdiffRetrievalError,
+    RunWithoutArtifacts,
     check_admin,
     check_logged_in,
     get_archive_diff,
@@ -479,35 +480,6 @@ async def handle_archive_diff(request):
     run_id = request.match_info["run_id"]
     kind = request.match_info["kind"]
     span = aiozipkin.request_span(request)
-    with span.new_child("sql:get-run"):
-        async with request.app["pool"].acquire() as conn:
-            run = await conn.fetchrow(
-                "SELECT id, codebase, suite AS campaign, main_branch_revision, result_code FROM run WHERE id = $1",
-                run_id,
-            )
-            if run is None:
-                raise web.HTTPNotFound(text=f"No such run: {run_id}")
-            unchanged_run_id = await conn.fetchval(
-                "SELECT id FROM run WHERE "
-                "codebase = $1 AND revision = $2 AND result_code = 'success' "
-                "ORDER BY finish_time DESC LIMIT 1",
-                run["codebase"],
-                run["main_branch_revision"],
-            )
-            if unchanged_run_id is None:
-                return web.json_response(
-                    {
-                        "reason": f"No matching unchanged build for {run_id}",
-                        "run_id": [run["id"]],
-                        "unavailable_run_id": None,
-                        "campaign": run["campaign"],
-                    },
-                    status=404,
-                )
-
-    if run["result_code"] != "success":
-        raise web.HTTPNotFound(text=f"Build {run_id} has no artifacts")
-
     filter_boring = "filter_boring" in request.query
 
     try:
@@ -516,7 +488,7 @@ async def handle_archive_diff(request):
                 request.app["http_client_session"],
                 request.app["differ_url"],
                 run_id,
-                unchanged_run_id,
+                None,
                 kind=kind,
                 filter_boring=filter_boring,
                 accept=request.headers.get("ACCEPT", "*/*"),
@@ -524,15 +496,14 @@ async def handle_archive_diff(request):
     except BuildDiffUnavailable as e:
         return web.json_response(
             {
-                "reason": "debdiff not calculated yet (run: {}, unchanged run: {})".format(
-                    run["id"], unchanged_run_id
-                ),
-                "run_id": [unchanged_run_id, run["id"]],
+                "reason": e.reason,
+                "message": e.message,
                 "unavailable_run_id": e.unavailable_run_id,
-                "campaign": run["campaign"],
             },
             status=404,
         )
+    except RunWithoutArtifacts as e:
+        raise web.HTTPNotFound(text=f"Build {run_id} has no artifacts") from e
     except DebdiffRetrievalError as e:
         return web.json_response(
             {

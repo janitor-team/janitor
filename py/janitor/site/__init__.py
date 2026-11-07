@@ -19,7 +19,7 @@ import html
 import logging
 from typing import Optional
 
-from aiohttp import ClientConnectorError, web
+from aiohttp import ClientConnectorError, ContentTypeError, web
 from jinja2 import PackageLoader
 from yarl import URL
 
@@ -170,16 +170,35 @@ def format_debdiff_error(error: Exception) -> str:
 class BuildDiffUnavailable(Exception):
     """The build diff is not available."""
 
-    def __init__(self, unavailable_run_id) -> None:
+    def __init__(
+        self,
+        unavailable_run_id,
+        reason: Optional[str] = None,
+        message: Optional[str] = None,
+    ) -> None:
         self.unavailable_run_id = unavailable_run_id
+        self.reason = reason
+        self.message = message
+
+
+class RunWithoutArtifacts(DebdiffRetrievalError):
+    """The run did not succeed, so it has no artifacts to diff."""
 
 
 async def get_archive_diff(
     client, differ_url, run_id, unchanged_run_id, kind, accept=None, filter_boring=False
 ):
+    """Retrieve a diff between the binaries of two runs.
+
+    If unchanged_run_id is None, the differ diffs run_id against the
+    unchanged build of its base revision.
+    """
     if kind not in ("debdiff", "diffoscope"):
         raise DebdiffRetrievalError(f"invalid diff kind {kind!r}")
-    url = URL(differ_url) / kind / unchanged_run_id / run_id
+    if unchanged_run_id is None:
+        url = URL(differ_url) / kind / run_id
+    else:
+        url = URL(differ_url) / kind / unchanged_run_id / run_id
     params = {
         "jquery_url": "/_static/jquery.js",
     }
@@ -194,7 +213,19 @@ async def get_archive_diff(
             if resp.status == 200:
                 return await resp.read(), resp.content_type
             elif resp.status == 404:
-                raise BuildDiffUnavailable(resp.headers.get("unavailable_run_id"))
+                try:
+                    body = await resp.json()
+                except ContentTypeError as e:
+                    raise DebdiffRetrievalError(
+                        "Unable to get debdiff: %s" % await resp.text()
+                    ) from e
+                raise BuildDiffUnavailable(
+                    resp.headers.get("unavailable_run_id"),
+                    reason=body.get("reason"),
+                    message=body.get("message"),
+                )
+            elif resp.status == 422:
+                raise RunWithoutArtifacts(await resp.text())
             else:
                 raise DebdiffRetrievalError(
                     "Unable to get debdiff: %s" % await resp.text()
