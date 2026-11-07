@@ -330,7 +330,7 @@ impl SecurityService {
 }
 
 /// Security statistics.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct SecurityStats {
     /// Total number of registered workers.
     pub total_workers: u64,
