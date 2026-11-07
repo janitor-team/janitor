@@ -25,6 +25,8 @@ janitor = { path = "..", features = ["debian"] }
 janitor-types = { workspace = true, features = ["sqlx"] }
 janitor-service = { workspace = true }
 nix = { workspace = true, features = ["fs"] }  # for umask()
+utoipa.workspace = true
+utoipa-axum.workspace = true
 
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }
