@@ -1028,6 +1028,38 @@ pub(crate) enum CandidatePreflight {
     InvalidValue,
 }
 
+/// Entry in a `POST /candidates` request body; only used to describe
+/// the request in the OpenAPI document. The handler reads the entries
+/// as JSON values, treating fields of the wrong type as absent, so
+/// that one sloppy field doesn't reject the whole upload.
+#[derive(ToSchema)]
+#[allow(dead_code)]
+struct CandidateUpload {
+    /// Codebase to run on.
+    codebase: CodebaseName,
+    /// Campaign to run.
+    campaign: Campaign,
+    /// Codemod command; defaults to the campaign's command.
+    command: Option<String>,
+    /// Change set the candidate belongs to.
+    change_set: Option<ChangeSetId>,
+    /// Value of the candidate; must not be 0.
+    value: Option<i64>,
+    /// Estimated chance of success, between 0 and 1.
+    success_chance: Option<f64>,
+    /// Free-form context.
+    context: Option<String>,
+    /// Name of the publish policy.
+    #[schema(rename = "publish-policy")]
+    publish_policy: Option<String>,
+    /// Queue bucket to schedule in.
+    bucket: Option<String>,
+    /// Who is requesting the run; appended to the generated requester.
+    requester: Option<String>,
+    /// Ids of candidates that this one is a followup for.
+    followup_for: Option<Vec<i64>>,
+}
+
 /// Pure preflight for a single candidate upload entry. Takes the
 /// candidate's JSON value plus a view into the runner config:
 ///
@@ -1144,12 +1176,7 @@ pub(crate) fn candidate_preflight(
 #[utoipa::path(
     post,
     path = "/candidates",
-    request_body(
-        content = Vec<Object>,
-        description = "Candidates, each with `codebase`, `campaign` and optionally `command`, \
-                       `change_set`, `value`, `success_chance`, `context`, `publish-policy`, \
-                       `bucket`, `requester` and `followup_for`",
-    ),
+    request_body = Vec<CandidateUpload>,
     responses(
         (status = 200, description = "Candidates were processed", body = UploadCandidatesResponse),
         (status = 400, description = "Malformed candidate", body = String, content_type = "text/plain"),
