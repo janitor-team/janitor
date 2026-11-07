@@ -38,6 +38,8 @@ ognibuild = { workspace = true }
 debversion = { workspace = true, optional = true }
 debian-changelog = { workspace = true, optional = true }
 tokio-util = "0.7.14"
+utoipa.workspace = true
+utoipa-axum.workspace = true
 
 [features]
 default = ["debian", "cli"]
