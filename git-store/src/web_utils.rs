@@ -8,8 +8,7 @@ use axum::{
     Router,
 };
 use janitor::shared_config::WebConfig;
-use prometheus::{HistogramVec, IntCounterVec};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tower_http::{
     compression::CompressionLayer,
@@ -22,33 +21,26 @@ use tower_http::{
 /// Per-request counter labelled by method / route / status. Mirrors
 /// what `aiohttp_openmetrics.metrics_middleware` produces so
 /// dashboards keep working.
-fn http_requests_total() -> &'static IntCounterVec {
-    static M: OnceLock<IntCounterVec> = OnceLock::new();
-    M.get_or_init(|| {
-        prometheus::register_int_counter_vec!(
-            "http_requests_total",
-            "Total HTTP requests handled",
-            &["method", "path", "status"]
-        )
-        .expect("register http_requests_total")
-    })
-}
+const HTTP_REQUESTS_TOTAL: &str = "http_requests_total";
 
 /// Per-request latency histogram (seconds). Buckets tuned for the
 /// mix of fast metadata calls and long-running smart-protocol pushes.
-fn http_request_duration_seconds() -> &'static HistogramVec {
-    static M: OnceLock<HistogramVec> = OnceLock::new();
-    M.get_or_init(|| {
-        prometheus::register_histogram_vec!(
-            prometheus::histogram_opts!(
-                "http_request_duration_seconds",
-                "HTTP request duration in seconds",
-                vec![0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0]
-            ),
-            &["method", "path"]
-        )
-        .expect("register http_request_duration_seconds")
-    })
+const HTTP_REQUEST_DURATION_SECONDS: &str = "http_request_duration_seconds";
+
+/// Histogram bucket overrides for this service.
+pub const METRICS_BUCKETS: janitor_service::metrics::BucketOverrides = &[(
+    HTTP_REQUEST_DURATION_SECONDS,
+    &[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0],
+)];
+
+/// Install the metrics recorder and describe this service's metrics.
+pub fn install_metrics() {
+    janitor_service::metrics::install(METRICS_BUCKETS);
+    metrics::describe_counter!(HTTP_REQUESTS_TOTAL, "Total HTTP requests handled");
+    metrics::describe_histogram!(
+        HTTP_REQUEST_DURATION_SECONDS,
+        "HTTP request duration in seconds"
+    );
 }
 
 /// axum middleware that records request-count and latency metrics.
@@ -69,12 +61,15 @@ pub async fn record_http_metrics(req: Request, next: Next) -> Response {
     let elapsed = started.elapsed().as_secs_f64();
 
     let status = response.status().as_u16().to_string();
-    http_requests_total()
-        .with_label_values(&[&method, &path, &status])
-        .inc();
-    http_request_duration_seconds()
-        .with_label_values(&[&method, &path])
-        .observe(elapsed);
+    metrics::counter!(
+        HTTP_REQUESTS_TOTAL,
+        "method" => method.clone(),
+        "path" => path.clone(),
+        "status" => status
+    )
+    .increment(1);
+    metrics::histogram!(HTTP_REQUEST_DURATION_SECONDS, "method" => method, "path" => path)
+        .record(elapsed);
 
     response
 }
@@ -132,30 +127,10 @@ pub async fn ready_handler(State(checker): State<Arc<HealthChecker>>) -> impl In
 #[utoipa::path(
     get,
     path = "/metrics",
-    responses(
-        (status = 200, description = "Prometheus metrics", body = String, content_type = "text/plain"),
-        (status = 500, description = "Metrics could not be encoded", body = String, content_type = "text/plain"),
-    )
+    responses((status = 200, description = "Prometheus metrics", body = String, content_type = "text/plain"))
 )]
-pub async fn metrics_handler() -> impl IntoResponse {
-    use prometheus::{Encoder, TextEncoder};
-
-    let encoder = TextEncoder::new();
-    let metric_families = prometheus::gather();
-    let mut buffer = Vec::new();
-    if let Err(e) = encoder.encode(&metric_families, &mut buffer) {
-        tracing::error!("failed to encode prometheus metrics: {}", e);
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            [("Content-Type", "text/plain")],
-            "failed to gather metrics".to_string(),
-        );
-    }
-    (
-        StatusCode::OK,
-        [("Content-Type", "text/plain; version=0.0.4")],
-        String::from_utf8(buffer).unwrap_or_default(),
-    )
+pub async fn metrics_handler() -> axum::response::Response {
+    janitor_service::metrics::metrics_handler().await
 }
 
 pub fn apply_standard_middleware<S: Clone + Send + Sync + 'static>(
@@ -196,6 +171,7 @@ pub fn apply_standard_middleware<S: Clone + Send + Sync + 'static>(
 mod tests {
     use super::*;
     use axum::{body::Body, http::Request, routing::get, Router};
+    use janitor_service::testing::{capture_async, Value};
     use tower::ServiceExt;
 
     #[tokio::test]
@@ -204,25 +180,28 @@ mod tests {
         assert!(c.is_ready().await);
     }
 
-    #[tokio::test]
-    async fn record_http_metrics_bumps_counters() {
-        let before = http_requests_total()
-            .with_label_values(&["GET", "/x", "200"])
-            .get();
-
-        let app = Router::new()
-            .route("/x", get(|| async { "hi" }))
-            .layer(axum::middleware::from_fn(record_http_metrics));
-
-        let resp = app
-            .oneshot(Request::builder().uri("/x").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), 200);
-
-        let after = http_requests_total()
-            .with_label_values(&["GET", "/x", "200"])
-            .get();
-        assert_eq!(after, before + 1);
+    #[test]
+    fn record_http_metrics_records_request() {
+        let (status, snapshot) = capture_async(async {
+            let app = Router::new()
+                .route("/x/{id}", get(|| async { "hi" }))
+                .layer(axum::middleware::from_fn(record_http_metrics));
+            app.oneshot(Request::builder().uri("/x/1").body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+                .status()
+        });
+        assert_eq!(status, 200);
+        let duration_key = r#"http_request_duration_seconds{method="GET",path="/x/{id}"}"#;
+        let count_key = r#"http_requests_total{method="GET",path="/x/{id}",status="200"}"#;
+        assert_eq!(
+            snapshot.keys().collect::<Vec<_>>(),
+            vec![duration_key, count_key]
+        );
+        assert_eq!(snapshot[count_key], Value::Counter(1));
+        let Value::Histogram(durations) = &snapshot[duration_key] else {
+            panic!("expected histogram, got {:?}", snapshot[duration_key]);
+        };
+        assert_eq!(durations.len(), 1);
     }
 }

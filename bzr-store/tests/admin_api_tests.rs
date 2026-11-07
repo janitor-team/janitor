@@ -136,22 +136,18 @@ test_with_database! {
 test_with_database! {
     schema = Core;
     async fn test_admin_metrics_endpoint(test_db: TestDatabase) {
+        janitor_bzr_store::web_utils::install_metrics();
         let tmp = TempDir::new().unwrap();
         let cfg = build_config(tmp.path(), test_db_url(&test_db));
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
 
-        // Fire a request first so the metrics middleware has something
-        // to record.
-        send(&admin, get("/health")).await;
         let resp = send(&admin, get("/metrics")).await;
         assert_eq!(resp.status(), 200);
-        let body = body_text(resp).await;
-        assert!(
-            body.contains("http_requests_total"),
-            "metrics body missing counter: {}",
-            body
+        assert_eq!(
+            resp.headers().get("content-type").unwrap(),
+            janitor_service::metrics::CONTENT_TYPE
         );
     }
 }

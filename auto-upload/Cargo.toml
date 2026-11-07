@@ -18,7 +18,7 @@ clap = { workspace = true, features = ["derive", "env"] }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2.0"
-prometheus = { version = "0.13", features = ["process"] }
+metrics = { workspace = true }
 tempfile = { workspace = true }
 silver-platter = { workspace = true, features = ["debian"] }
 janitor = { path = "..", features = ["debian"] }
@@ -29,5 +29,6 @@ utoipa.workspace = true
 utoipa-axum.workspace = true
 
 [dev-dependencies]
+janitor-service = { workspace = true, features = ["testing"] }
 tower = { workspace = true, features = ["util"] }
 http-body-util = "0.1"

@@ -3,220 +3,185 @@
 //! Metric names are the contract with the existing Grafana dashboards
 //! and alerting rules, so they are unprefixed (no `janitor_publish_`).
 //!
-//! Not every counter has a call site wired up yet. Registering them
-//! anyway means dashboards see the metric at zero rather than
+//! Not every counter has a call site wired up yet. [`install`] registers
+//! the unlabelled ones at zero so dashboards see the metric rather than
 //! "metric not found"; the call-site wiring is a follow-up task.
 
-use lazy_static::lazy_static;
-use prometheus::{
-    register_counter, register_counter_vec, register_gauge, register_gauge_vec, register_histogram,
-    Counter, CounterVec, Gauge, GaugeVec, Histogram,
-};
+use ::metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge};
 
-lazy_static! {
-    /// Delay between a build finishing and its result being published.
-    pub static ref PUBLISH_LATENCY: Histogram = register_histogram!(
-        "publish_latency",
-        "Delay between build finish and publish."
-    )
-    .unwrap();
+/// Delay between a build finishing and its result being published.
+pub const PUBLISH_LATENCY: &str = "publish_latency";
 
-    /// Number of open proposals.
-    pub static ref OPEN_PROPOSAL_COUNT: Gauge = register_gauge!(
-        "open_proposal_count",
-        "Number of open proposals."
-    )
-    .unwrap();
+/// Number of open proposals.
+pub const OPEN_PROPOSAL_COUNT: &str = "open_proposal_count";
 
-    /// Number of proposals per bucket (labelled by `bucket`).
-    pub static ref BUCKET_PROPOSAL_COUNT: GaugeVec = register_gauge_vec!(
-        "bucket_proposal_count",
-        "Number of proposals per bucket.",
-        &["bucket"]
-    )
-    .unwrap();
+/// Number of proposals per bucket (labelled by `bucket`).
+pub const BUCKET_PROPOSAL_COUNT: &str = "bucket_proposal_count";
 
-    /// Number of merge proposals by status (labelled by `status`).
-    pub static ref MERGE_PROPOSAL_COUNT: GaugeVec = register_gauge_vec!(
-        "merge_proposal_count",
-        "Number of merge proposals by status.",
-        &["status"]
-    )
-    .unwrap();
+/// Number of merge proposals by status (labelled by `status`).
+pub const MERGE_PROPOSAL_COUNT: &str = "merge_proposal_count";
 
-    /// Number of new merge proposals opened.
-    pub static ref NEW_MERGE_PROPOSAL_COUNT: Counter = register_counter!(
-        "new_merge_proposal_count",
+/// Number of new merge proposals opened.
+pub const NEW_MERGE_PROPOSAL_COUNT: &str = "new_merge_proposal_count";
+
+/// Last time pending changes were successfully published (unix ts).
+pub const LAST_PUBLISH_PENDING_SUCCESS: &str = "last_publish_pending_success";
+
+/// Last time existing merge proposals were successfully scanned (unix ts).
+pub const LAST_SCAN_EXISTING_SUCCESS: &str = "last_scan_existing_success";
+
+/// Publishing skipped due to exponential backoff.
+pub const EXPONENTIAL_BACKOFF_COUNT: &str = "exponential_backoff_count";
+
+/// Pushes blocked because the per-cycle push limit was hit.
+pub const PUSH_LIMIT_COUNT: &str = "push_limit_count";
+
+/// Runs not published due to a missing branch URL.
+pub const MISSING_BRANCH_URL_COUNT: &str = "missing_branch_url_count";
+
+/// Last merge proposal was rejected. Unsuffixed name for dashboard
+/// parity.
+pub const REJECTED_LAST_MP_COUNT: &str = "rejected_last_mp";
+
+/// Runs not published due to missing publish mode (labelled by `role`).
+pub const MISSING_PUBLISH_MODE_COUNT: &str = "missing_publish_mode_count";
+
+/// Branches not published because auxiliary branches aren't yet
+/// published (labelled by `role`).
+pub const UNPUBLISHED_AUX_BRANCHES_COUNT: &str = "unpublished_aux_branches_count";
+
+/// Runs not published because the codemod command changed.
+pub const COMMAND_CHANGED_COUNT: &str = "command_changed_count";
+
+/// Runs not published because there were no result branches.
+pub const NO_RESULT_BRANCHES_COUNT: &str = "no_result_branches_count";
+
+/// Runs not published due to missing main result branch.
+pub const MISSING_MAIN_RESULT_BRANCH_COUNT: &str = "missing_main_result_branch_count";
+
+/// Runs not published because the forge is rate-limiting us
+/// (labelled by `forge`).
+pub const FORGE_RATE_LIMITED_COUNT: &str = "forge_rate_limited_count";
+
+/// Unexpected HTTP responses during checks of existing proposals.
+pub const UNEXPECTED_HTTP_RESPONSE_COUNT: &str = "unexpected_http_response_count";
+
+fn describe() {
+    describe_histogram!(PUBLISH_LATENCY, "Delay between build finish and publish.");
+    describe_gauge!(OPEN_PROPOSAL_COUNT, "Number of open proposals.");
+    describe_gauge!(BUCKET_PROPOSAL_COUNT, "Number of proposals per bucket.");
+    describe_gauge!(MERGE_PROPOSAL_COUNT, "Number of merge proposals by status.");
+    describe_counter!(
+        NEW_MERGE_PROPOSAL_COUNT,
         "Number of new merge proposals opened."
-    )
-    .unwrap();
-
-    /// Last time pending changes were successfully published (unix ts).
-    pub static ref LAST_PUBLISH_PENDING_SUCCESS: Gauge = register_gauge!(
-        "last_publish_pending_success",
+    );
+    describe_gauge!(
+        LAST_PUBLISH_PENDING_SUCCESS,
         "Last time pending changes were successfully published"
-    )
-    .unwrap();
-
-    /// Last time existing merge proposals were successfully scanned (unix ts).
-    pub static ref LAST_SCAN_EXISTING_SUCCESS: Gauge = register_gauge!(
-        "last_scan_existing_success",
+    );
+    describe_gauge!(
+        LAST_SCAN_EXISTING_SUCCESS,
         "Last time existing merge proposals were successfully scanned"
-    )
-    .unwrap();
-
-    /// Publishing skipped due to exponential backoff.
-    pub static ref EXPONENTIAL_BACKOFF_COUNT: Counter = register_counter!(
-        "exponential_backoff_count",
+    );
+    describe_counter!(
+        EXPONENTIAL_BACKOFF_COUNT,
         "Number of times publishing has been skipped due to exponential backoff"
-    )
-    .unwrap();
-
-    /// Pushes blocked because the per-cycle push limit was hit.
-    pub static ref PUSH_LIMIT_COUNT: Counter = register_counter!(
-        "push_limit_count",
+    );
+    describe_counter!(
+        PUSH_LIMIT_COUNT,
         "Number of times pushes haven't happened due to the limit"
-    )
-    .unwrap();
-
-    /// Runs not published due to a missing branch URL.
-    pub static ref MISSING_BRANCH_URL_COUNT: Counter = register_counter!(
-        "missing_branch_url_count",
+    );
+    describe_counter!(
+        MISSING_BRANCH_URL_COUNT,
         "Number of runs that weren't published because they had a missing branch URL"
-    )
-    .unwrap();
-
-    /// Last merge proposal was rejected. Unsuffixed name for dashboard
-    /// parity.
-    pub static ref REJECTED_LAST_MP_COUNT: Counter = register_counter!(
-        "rejected_last_mp",
-        "Last merge proposal was rejected"
-    )
-    .unwrap();
-
-    /// Runs not published due to missing publish mode (labelled by `role`).
-    pub static ref MISSING_PUBLISH_MODE_COUNT: CounterVec = register_counter_vec!(
-        "missing_publish_mode_count",
-        "Number of runs not published due to missing publish mode",
-        &["role"]
-    )
-    .unwrap();
-
-    /// Branches not published because auxiliary branches aren't yet
-    /// published (labelled by `role`).
-    pub static ref UNPUBLISHED_AUX_BRANCHES_COUNT: CounterVec = register_counter_vec!(
-        "unpublished_aux_branches_count",
-        "Number of branches not published because auxiliary branches were not yet published",
-        &["role"]
-    )
-    .unwrap();
-
-    /// Runs not published because the codemod command changed.
-    pub static ref COMMAND_CHANGED_COUNT: Counter = register_counter!(
-        "command_changed_count",
+    );
+    describe_counter!(REJECTED_LAST_MP_COUNT, "Last merge proposal was rejected");
+    describe_counter!(
+        MISSING_PUBLISH_MODE_COUNT,
+        "Number of runs not published due to missing publish mode"
+    );
+    describe_counter!(
+        UNPUBLISHED_AUX_BRANCHES_COUNT,
+        "Number of branches not published because auxiliary branches were not yet published"
+    );
+    describe_counter!(
+        COMMAND_CHANGED_COUNT,
         "Number of runs not published because the codemod command changed"
-    )
-    .unwrap();
-
-    /// Runs not published because there were no result branches.
-    pub static ref NO_RESULT_BRANCHES_COUNT: Counter = register_counter!(
-        "no_result_branches_count",
+    );
+    describe_counter!(
+        NO_RESULT_BRANCHES_COUNT,
         "Runs not published since there were no result branches"
-    )
-    .unwrap();
-
-    /// Runs not published due to missing main result branch.
-    pub static ref MISSING_MAIN_RESULT_BRANCH_COUNT: Counter = register_counter!(
-        "missing_main_result_branch_count",
+    );
+    describe_counter!(
+        MISSING_MAIN_RESULT_BRANCH_COUNT,
         "Runs not published because of missing main result branch"
-    )
-    .unwrap();
-
-    /// Runs not published because the forge is rate-limiting us
-    /// (labelled by `forge`).
-    pub static ref FORGE_RATE_LIMITED_COUNT: CounterVec = register_counter_vec!(
-        "forge_rate_limited_count",
-        "Runs were not published because the relevant forge was rate-limiting",
-        &["forge"]
-    )
-    .unwrap();
-
-    /// Unexpected HTTP responses during checks of existing proposals.
-    pub static ref UNEXPECTED_HTTP_RESPONSE_COUNT: Counter = register_counter!(
-        "unexpected_http_response_count",
+    );
+    describe_counter!(
+        FORGE_RATE_LIMITED_COUNT,
+        "Runs were not published because the relevant forge was rate-limiting"
+    );
+    describe_counter!(
+        UNEXPECTED_HTTP_RESPONSE_COUNT,
         "Number of unexpected HTTP responses during checks of existing proposals"
-    )
-    .unwrap();
+    );
+}
+
+/// Install the metrics recorder and register the publisher's metrics.
+pub fn install() {
+    janitor_service::metrics::install(&[]);
+    register();
+}
+
+fn register() {
+    describe();
+    crate::middleware::describe_metrics();
+    for name in [
+        NEW_MERGE_PROPOSAL_COUNT,
+        EXPONENTIAL_BACKOFF_COUNT,
+        PUSH_LIMIT_COUNT,
+        MISSING_BRANCH_URL_COUNT,
+        REJECTED_LAST_MP_COUNT,
+        COMMAND_CHANGED_COUNT,
+        NO_RESULT_BRANCHES_COUNT,
+        MISSING_MAIN_RESULT_BRANCH_COUNT,
+        UNEXPECTED_HTTP_RESPONSE_COUNT,
+    ] {
+        counter!(name).increment(0);
+    }
+    for name in [
+        OPEN_PROPOSAL_COUNT,
+        LAST_PUBLISH_PENDING_SUCCESS,
+        LAST_SCAN_EXISTING_SUCCESS,
+    ] {
+        gauge!(name).increment(0.0);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Touch every metric so `lazy_static!` init actually runs and
-    /// the prometheus registry knows about them. Labelled `*Vec`
-    /// metrics only surface through `gather()` once at least one
-    /// child has been created, so nudge one per Vec to make the
-    /// assertion deterministic.
-    #[test]
-    fn all_publisher_metrics_register_under_python_names() {
-        lazy_static::initialize(&PUBLISH_LATENCY);
-        lazy_static::initialize(&OPEN_PROPOSAL_COUNT);
-        BUCKET_PROPOSAL_COUNT.with_label_values(&["_register_probe"]);
-        MERGE_PROPOSAL_COUNT.with_label_values(&["_register_probe"]);
-        lazy_static::initialize(&NEW_MERGE_PROPOSAL_COUNT);
-        lazy_static::initialize(&LAST_PUBLISH_PENDING_SUCCESS);
-        lazy_static::initialize(&LAST_SCAN_EXISTING_SUCCESS);
-        lazy_static::initialize(&EXPONENTIAL_BACKOFF_COUNT);
-        lazy_static::initialize(&PUSH_LIMIT_COUNT);
-        lazy_static::initialize(&MISSING_BRANCH_URL_COUNT);
-        lazy_static::initialize(&REJECTED_LAST_MP_COUNT);
-        MISSING_PUBLISH_MODE_COUNT.with_label_values(&["_register_probe"]);
-        UNPUBLISHED_AUX_BRANCHES_COUNT.with_label_values(&["_register_probe"]);
-        lazy_static::initialize(&COMMAND_CHANGED_COUNT);
-        lazy_static::initialize(&NO_RESULT_BRANCHES_COUNT);
-        lazy_static::initialize(&MISSING_MAIN_RESULT_BRANCH_COUNT);
-        FORGE_RATE_LIMITED_COUNT.with_label_values(&["_register_probe"]);
-        lazy_static::initialize(&UNEXPECTED_HTTP_RESPONSE_COUNT);
-
-        let mfs = prometheus::default_registry().gather();
-        let names: std::collections::HashSet<_> =
-            mfs.iter().map(|mf| mf.name().to_string()).collect();
-
-        for expected in [
-            "publish_latency",
-            "open_proposal_count",
-            "bucket_proposal_count",
-            "merge_proposal_count",
-            "new_merge_proposal_count",
-            "last_publish_pending_success",
-            "last_scan_existing_success",
-            "exponential_backoff_count",
-            "push_limit_count",
-            "missing_branch_url_count",
-            "rejected_last_mp",
-            "missing_publish_mode_count",
-            "unpublished_aux_branches_count",
-            "command_changed_count",
-            "no_result_branches_count",
-            "missing_main_result_branch_count",
-            "forge_rate_limited_count",
-            "unexpected_http_response_count",
-        ] {
-            assert!(
-                names.contains(expected),
-                "metric {} should be registered (names seen: {:?})",
-                expected,
-                names
-            );
-        }
-    }
+    use janitor_service::testing::{capture, Snapshot, Value};
 
     #[test]
-    fn publish_latency_observe_increments_sample_count() {
-        let before = PUBLISH_LATENCY.get_sample_count();
-        PUBLISH_LATENCY.observe(1.5);
-        let after = PUBLISH_LATENCY.get_sample_count();
-        assert_eq!(after, before + 1);
+    fn unlabelled_metrics_registered_under_python_names() {
+        let counter = |name: &str| (name.to_string(), Value::Counter(0));
+        let gauge = |name: &str| (name.to_string(), Value::Gauge(0.0));
+        assert_eq!(
+            capture(register),
+            Snapshot::from([
+                counter("command_changed_count"),
+                counter("exponential_backoff_count"),
+                gauge("last_publish_pending_success"),
+                gauge("last_scan_existing_success"),
+                counter("missing_branch_url_count"),
+                counter("missing_main_result_branch_count"),
+                counter("new_merge_proposal_count"),
+                counter("no_result_branches_count"),
+                gauge("open_proposal_count"),
+                counter("push_limit_count"),
+                counter("rejected_last_mp"),
+                counter("unexpected_http_response_count"),
+            ])
+        );
     }
 }

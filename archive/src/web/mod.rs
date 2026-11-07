@@ -101,7 +101,7 @@ fn management_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(last_publish_status))
         .routes(routes!(serve_gpg_key))
         .routes(routes!(handle_pgp_keys))
-        .routes(routes!(shared::metrics_ok))
+        .routes(routes!(shared::metrics))
 }
 
 /// OpenAPI document for the archive's management API. The apt
