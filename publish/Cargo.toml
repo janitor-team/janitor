@@ -23,7 +23,7 @@ futures = "0.3"
 async-stream = "0.3"
 bytes.workspace = true
 janitor = { path = ".." }
-janitor-types = { workspace = true, features = ["pyo3", "sqlx"] }
+janitor-types = { workspace = true, features = ["pyo3", "sqlx", "utoipa"] }
 janitor-service = { workspace = true }
 log.workspace = true
 minijinja = { version = "2", features = ["loader"] }
@@ -43,6 +43,8 @@ prometheus = "0.14.0"
 lazy_static = "1.4"
 pyo3 = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
+utoipa.workspace = true
+utoipa-axum.workspace = true
 
 [[bin]]
 name = "janitor-publish-one"
