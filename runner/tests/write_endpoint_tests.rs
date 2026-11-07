@@ -1360,15 +1360,9 @@ async fn get_metrics_returns_prometheus_text() {
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let ct = response
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .expect("content-type must be present")
-        .to_string();
-    assert!(
-        ct.starts_with("text/plain"),
-        "expected text/plain content-type for Prometheus, got {ct}"
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        janitor_service::metrics::CONTENT_TYPE
     );
 }
 

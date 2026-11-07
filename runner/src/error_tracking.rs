@@ -216,13 +216,11 @@ impl ErrorTracker {
 
         self.log_error(&error).await;
 
-        crate::metrics::ERROR_OCCURRENCES_TOTAL
-            .with_label_values(&[
-                &error.category.to_string(),
-                &error.component,
-                &error.severity.to_string(),
-            ])
-            .inc();
+        crate::metrics::MetricsCollector::record_error_occurrence(
+            &error.category.to_string(),
+            &error.component,
+            &error.severity.to_string(),
+        );
 
         // Store the error
         let mut storage = self.error_storage.write().await;

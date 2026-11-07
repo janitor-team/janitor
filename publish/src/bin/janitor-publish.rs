@@ -83,6 +83,7 @@ async fn main() -> Result<(), i32> {
     let args = Args::parse();
 
     args.logging.init();
+    janitor_publish::metrics::install();
 
     // breezyshim::init() runs init_git() + init_bzr() which import
     // breezy.git and breezy.bzr — that's what registers
@@ -265,11 +266,10 @@ async fn main() -> Result<(), i32> {
             })?;
 
         if let Some(prometheus) = args.prometheus.as_ref() {
-            janitor_service::prometheus::push_to_gateway(
+            janitor_service::metrics::push_to_gateway(
                 prometheus,
                 "janitor.publish",
                 maplit::hashmap! {},
-                prometheus::default_registry(),
             )
             .await
             .unwrap();

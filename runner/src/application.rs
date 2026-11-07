@@ -711,8 +711,7 @@ pub enum ApplicationError {
 
 /// Initialize global metrics.
 pub fn init_metrics() {
-    crate::metrics::MetricsCollector::init_system_info();
-    log::info!("Metrics system initialized");
+    crate::metrics::init_metrics();
 }
 
 #[cfg(test)]

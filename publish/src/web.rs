@@ -2572,30 +2572,10 @@ pub fn app(state: Arc<AppState>) -> Router {
 #[utoipa::path(
     get,
     path = "/metrics",
-    responses(
-        (status = 200, description = "Prometheus metrics", body = String, content_type = "text/plain"),
-        (status = 500, description = "Metrics could not be encoded", body = String, content_type = "text/plain"),
-    )
+    responses((status = 200, description = "Prometheus metrics", body = String, content_type = "text/plain"))
 )]
-async fn metrics_handler() -> impl IntoResponse {
-    use axum::http::header;
-    use prometheus::{Encoder, TextEncoder};
-    let encoder = TextEncoder::new();
-    let metric_families = prometheus::gather();
-    let mut buffer = Vec::new();
-    match encoder.encode(&metric_families, &mut buffer) {
-        Ok(_) => (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, encoder.format_type())],
-            buffer,
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("metrics error: {e}"),
-        )
-            .into_response(),
-    }
+async fn metrics_handler() -> Response {
+    janitor_service::metrics::metrics_handler().await
 }
 
 #[cfg(test)]

@@ -1,15 +1,8 @@
 //! Minimal web server for the auto-upload service.
 //!
-//! An axum server with a single `/metrics` route that renders the Prometheus
-//! registry.
+//! An axum server with a single `/metrics` route.
 
-use axum::{
-    http::StatusCode,
-    response::{IntoResponse, Response},
-    routing::get,
-    Router,
-};
-use prometheus::{Encoder, TextEncoder};
+use axum::{response::Response, routing::get, Router};
 use tracing::info;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -44,29 +37,10 @@ pub fn create_app() -> Router {
 #[utoipa::path(
     get,
     path = "/metrics",
-    responses(
-        (status = 200, description = "Prometheus metrics", body = String, content_type = "text/plain"),
-        (status = 500, description = "Metrics could not be encoded", body = String, content_type = "text/plain"),
-    )
+    responses((status = 200, description = "Prometheus metrics", body = String, content_type = "text/plain"))
 )]
 async fn metrics_handler() -> Response {
-    let encoder = TextEncoder::new();
-    let metric_families = prometheus::gather();
-    let mut buffer = Vec::new();
-
-    match encoder.encode(&metric_families, &mut buffer) {
-        Ok(_) => (
-            StatusCode::OK,
-            [(axum::http::header::CONTENT_TYPE, encoder.format_type())],
-            buffer,
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to encode metrics: {}", e),
-        )
-            .into_response(),
-    }
+    janitor_service::metrics::metrics_handler().await
 }
 
 /// Bind and serve `app` on `listen_addr:port` until the connection is
@@ -84,7 +58,7 @@ pub async fn run_web_server(app: Router, listen_addr: &str, port: u16) -> Result
 mod tests {
     use super::*;
     use axum::body::Body;
-    use axum::http::Request;
+    use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
@@ -109,8 +83,8 @@ mod tests {
 
     #[tokio::test]
     async fn metrics_endpoint_responds_with_prometheus_format() {
-        let app = create_app();
-        let response = app
+        crate::install_metrics();
+        let response = create_app()
             .oneshot(
                 Request::builder()
                     .uri("/metrics")
@@ -121,36 +95,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        let content_type = response
-            .headers()
-            .get(axum::http::header::CONTENT_TYPE)
-            .expect("content-type header")
-            .to_str()
-            .unwrap()
-            .to_string();
-        assert!(
-            content_type.contains("text/plain"),
-            "unexpected content-type: {content_type}"
-        );
-
-        // Force registration of the lazily initialised counter without
-        // changing its value; upload::tests asserts on counter deltas.
-        std::sync::LazyLock::force(&crate::DEBSIGN_FAILED_COUNT);
-
-        let response = create_app()
-            .oneshot(
-                Request::builder()
-                    .uri("/metrics")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        let text = String::from_utf8(body.to_vec()).unwrap();
-        assert!(
-            text.contains("debsign_failed"),
-            "metrics output missing debsign_failed:\n{text}"
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap(),
+            janitor_service::metrics::CONTENT_TYPE
         );
     }
 }

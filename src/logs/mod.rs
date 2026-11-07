@@ -60,32 +60,24 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-// Metrics tracking
-use prometheus::{register_int_counter, IntCounter, Result as PrometheusResult};
-use std::sync::LazyLock;
+const PRIMARY_LOGFILE_UPLOAD_FAILED_COUNT: &str = "primary_logfile_upload_failed";
+const LOGFILE_UPLOADED_COUNT: &str = "logfile_uploads";
 
-static PRIMARY_LOGFILE_UPLOAD_FAILED_COUNT: LazyLock<PrometheusResult<IntCounter>> =
-    LazyLock::new(|| {
-        register_int_counter!(
-            "primary_logfile_upload_failed",
-            "Number of failed logs to primary logfile target"
-        )
-    });
+/// Describe the log upload metrics to the installed metrics recorder.
+pub fn describe_metrics() {
+    metrics::describe_counter!(
+        PRIMARY_LOGFILE_UPLOAD_FAILED_COUNT,
+        "Number of failed logs to primary logfile target"
+    );
+    metrics::describe_counter!(LOGFILE_UPLOADED_COUNT, "Number of uploaded log files");
+}
 
-static LOGFILE_UPLOADED_COUNT: LazyLock<PrometheusResult<IntCounter>> =
-    LazyLock::new(|| register_int_counter!("logfile_uploads", "Number of uploaded log files"));
-
-// Helper functions to safely increment counters
 fn increment_upload_failed() {
-    if let Ok(ref counter) = *PRIMARY_LOGFILE_UPLOAD_FAILED_COUNT {
-        counter.inc();
-    }
+    metrics::counter!(PRIMARY_LOGFILE_UPLOAD_FAILED_COUNT).increment(1);
 }
 
 fn increment_upload_success() {
-    if let Ok(ref counter) = *LOGFILE_UPLOADED_COUNT {
-        counter.inc();
-    }
+    metrics::counter!(LOGFILE_UPLOADED_COUNT).increment(1);
 }
 
 /// Create a log file manager based on the location string.

@@ -12,13 +12,10 @@ use janitor_differ::diffoscope::{self, DiffoscopeOutput};
 use janitor_differ::error::ErrorBody;
 use janitor_differ::{find_binaries, is_binary, Error, Result};
 use janitor_types::{Campaign, CodebaseName, RunId};
-use prometheus::{
-    register_int_counter_vec_with_registry, Encoder, IntCounterVec, Registry, TextEncoder,
-};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path as StdPath, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::{Notify, Semaphore};
 use tokio_util::io::ReaderStream;
 use tokio_util::sync::CancellationToken;
@@ -40,65 +37,44 @@ fn parse_run_id(id: String) -> Result<RunId> {
     RunId::new(id.as_str()).map_err(|_| Error::InvalidRunId(id))
 }
 
-/// Prometheus metrics owned by this binary. We register once in
-/// `register_metrics()` and share the counters via `Arc` so multiple test
-/// runs and the real binary don't fight over the default registry.
-static METRICS: OnceLock<Arc<DifferMetrics>> = OnceLock::new();
+const REQUESTS_TOTAL: &str = "differ_requests_total";
+const CACHE_HITS_TOTAL: &str = "differ_cache_hits_total";
+const ERRORS_TOTAL: &str = "differ_errors_total";
+const CACHE_WRITE_ERRORS_TOTAL: &str = "differ_cache_write_errors_total";
+const PRECACHE_STARTED_TOTAL: &str = "differ_precache_started_total";
 
-struct DifferMetrics {
-    requests: IntCounterVec,
-    cache_hits: IntCounterVec,
-    errors: IntCounterVec,
-    cache_write_errors: IntCounterVec,
-    precache_started: IntCounterVec,
+fn describe_metrics() {
+    metrics::describe_counter!(REQUESTS_TOTAL, "Number of requests served, by op");
+    metrics::describe_counter!(CACHE_HITS_TOTAL, "Number of cache hits, by op");
+    metrics::describe_counter!(ERRORS_TOTAL, "Number of errors served, by op and reason");
+    metrics::describe_counter!(
+        CACHE_WRITE_ERRORS_TOTAL,
+        "Number of cache write failures, by op"
+    );
+    metrics::describe_counter!(
+        PRECACHE_STARTED_TOTAL,
+        "Number of precache jobs spawned, by trigger"
+    );
 }
 
-impl DifferMetrics {
-    fn new(registry: &Registry) -> prometheus::Result<Self> {
-        Ok(Self {
-            requests: register_int_counter_vec_with_registry!(
-                "differ_requests_total",
-                "Number of requests served, by op",
-                &["op"],
-                registry
-            )?,
-            cache_hits: register_int_counter_vec_with_registry!(
-                "differ_cache_hits_total",
-                "Number of cache hits, by op",
-                &["op"],
-                registry
-            )?,
-            errors: register_int_counter_vec_with_registry!(
-                "differ_errors_total",
-                "Number of errors served, by op and reason",
-                &["op", "reason"],
-                registry
-            )?,
-            cache_write_errors: register_int_counter_vec_with_registry!(
-                "differ_cache_write_errors_total",
-                "Number of cache write failures, by op",
-                &["op"],
-                registry
-            )?,
-            precache_started: register_int_counter_vec_with_registry!(
-                "differ_precache_started_total",
-                "Number of precache jobs spawned, by trigger",
-                &["trigger"],
-                registry
-            )?,
-        })
-    }
+fn record_request(op: &'static str) {
+    metrics::counter!(REQUESTS_TOTAL, "op" => op).increment(1);
 }
 
-fn metrics() -> Arc<DifferMetrics> {
-    METRICS
-        .get_or_init(|| {
-            Arc::new(
-                DifferMetrics::new(prometheus::default_registry())
-                    .expect("failed to register metrics"),
-            )
-        })
-        .clone()
+fn record_cache_hit(op: &'static str) {
+    metrics::counter!(CACHE_HITS_TOTAL, "op" => op).increment(1);
+}
+
+fn record_error(op: &'static str, reason: &'static str) {
+    metrics::counter!(ERRORS_TOTAL, "op" => op, "reason" => reason).increment(1);
+}
+
+fn record_cache_write_error(op: &'static str) {
+    metrics::counter!(CACHE_WRITE_ERRORS_TOTAL, "op" => op).increment(1);
+}
+
+fn record_precache_started(trigger: &'static str) {
+    metrics::counter!(PRECACHE_STARTED_TOTAL, "trigger" => trigger).increment(1);
 }
 
 /// Coordinates concurrent generation of the same cache entry. When one
@@ -204,7 +180,6 @@ struct AppState {
     /// diffoscope cache entry.
     debdiff_inflight: Arc<InFlight>,
     diffoscope_inflight: Arc<InFlight>,
-    metrics: Arc<DifferMetrics>,
 }
 
 impl AppState {
@@ -469,23 +444,10 @@ async fn handle_ready(State(state): State<Arc<AppState>>) -> Result<&'static str
 #[utoipa::path(
     get,
     path = "/metrics",
-    responses(
-        (status = 200, description = "Prometheus metrics", body = String, content_type = "text/plain"),
-        (status = 500, description = "Metrics could not be encoded", body = ErrorBody, headers(("unavailable_run_id" = String, description = "The run that could not be served, when known"))),
-    )
+    responses((status = 200, description = "Prometheus metrics", body = String, content_type = "text/plain"))
 )]
-async fn handle_metrics() -> Result<Response> {
-    let encoder = TextEncoder::new();
-    let mut buf = Vec::new();
-    encoder
-        .encode(&prometheus::default_registry().gather(), &mut buf)
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
-    Ok((
-        StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, encoder.format_type())],
-        buf,
-    )
-        .into_response())
+async fn handle_metrics() -> Response {
+    janitor_service::metrics::metrics_handler().await
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -577,18 +539,10 @@ async fn diffoscope(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<Response> {
-    state
-        .metrics
-        .requests
-        .with_label_values(&["diffoscope"])
-        .inc();
+    record_request("diffoscope");
     let result = handle_diffoscope_inner(runs, query, state, headers).await;
     if let Err(e) = &result {
-        state
-            .metrics
-            .errors
-            .with_label_values(&["diffoscope", e.reason()])
-            .inc();
+        record_error("diffoscope", e.reason());
     }
     result
 }
@@ -676,11 +630,7 @@ async fn load_or_generate_diffoscope(
     // Try the cache once up front.
     if let Some(p) = cache_path {
         if let Some(d) = try_load_diffoscope_cache(p).await {
-            state
-                .metrics
-                .cache_hits
-                .with_label_values(&["diffoscope"])
-                .inc();
+            record_cache_hit("diffoscope");
             return Ok(d);
         }
     }
@@ -695,11 +645,7 @@ async fn load_or_generate_diffoscope(
             notify.notified().await;
             if let Some(p) = cache_path {
                 if let Some(d) = try_load_diffoscope_cache(p).await {
-                    state
-                        .metrics
-                        .cache_hits
-                        .with_label_values(&["diffoscope"])
-                        .inc();
+                    record_cache_hit("diffoscope");
                     return Ok(d);
                 }
             }
@@ -795,11 +741,7 @@ async fn generate_diffoscope(
     if let Some(p) = cache_path {
         if let Err(e) = write_diffoscope_cache(p, &diff).await {
             error!("failed to write diffoscope cache {}: {e}", p.display());
-            state
-                .metrics
-                .cache_write_errors
-                .with_label_values(&["diffoscope"])
-                .inc();
+            record_cache_write_error("diffoscope");
         }
     }
 
@@ -895,14 +837,10 @@ async fn debdiff(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<Response> {
-    state.metrics.requests.with_label_values(&["debdiff"]).inc();
+    record_request("debdiff");
     let result = handle_debdiff_inner(runs, query, state, headers).await;
     if let Err(e) = &result {
-        state
-            .metrics
-            .errors
-            .with_label_values(&["debdiff", e.reason()])
-            .inc();
+        record_error("debdiff", e.reason());
     }
     result
 }
@@ -935,11 +873,7 @@ async fn handle_debdiff_inner(
     if query.filter_boring.is_none() && matches!(content_type, "text/x-diff" | "text/plain") {
         if let Some(p) = cache_path.as_deref() {
             if let Ok(file) = tokio::fs::File::open(p).await {
-                state
-                    .metrics
-                    .cache_hits
-                    .with_label_values(&["debdiff"])
-                    .inc();
+                record_cache_hit("debdiff");
                 return Ok((
                     StatusCode::OK,
                     [(axum::http::header::CONTENT_TYPE, "text/plain")],
@@ -991,11 +925,7 @@ async fn load_or_generate_debdiff(
     if let Some(p) = cache_path {
         match tokio::fs::read(p).await {
             Ok(bytes) => {
-                state
-                    .metrics
-                    .cache_hits
-                    .with_label_values(&["debdiff"])
-                    .inc();
+                record_cache_hit("debdiff");
                 return Ok(bytes);
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -1010,11 +940,7 @@ async fn load_or_generate_debdiff(
             notify.notified().await;
             if let Some(p) = cache_path {
                 if let Ok(bytes) = tokio::fs::read(p).await {
-                    state
-                        .metrics
-                        .cache_hits
-                        .with_label_values(&["debdiff"])
-                        .inc();
+                    record_cache_hit("debdiff");
                     return Ok(bytes);
                 }
             }
@@ -1078,11 +1004,7 @@ async fn generate_debdiff(
     if let Some(p) = cache_path {
         if let Err(e) = tokio::fs::write(p, &bytes).await {
             error!("failed to write debdiff cache {}: {e}", p.display());
-            state
-                .metrics
-                .cache_write_errors
-                .with_label_values(&["debdiff"])
-                .inc();
+            record_cache_write_error("debdiff");
         }
     }
     Ok(bytes)
@@ -1187,11 +1109,7 @@ async fn generate_debdiff_with_binaries(
     if let Some(p) = cache_path {
         if let Err(e) = tokio::fs::write(p, &bytes).await {
             error!("failed to write debdiff cache {}: {e}", p.display());
-            state
-                .metrics
-                .cache_write_errors
-                .with_label_values(&["debdiff"])
-                .inc();
+            record_cache_write_error("debdiff");
         }
     }
     Ok(bytes)
@@ -1230,11 +1148,7 @@ async fn generate_diffoscope_with_binaries(
     if let Some(p) = cache_path {
         if let Err(e) = write_diffoscope_cache(p, &diff).await {
             error!("failed to write diffoscope cache {}: {e}", p.display());
-            state
-                .metrics
-                .cache_write_errors
-                .with_label_values(&["diffoscope"])
-                .inc();
+            record_cache_write_error("diffoscope");
         }
     }
     Ok(diff)
@@ -1311,11 +1225,7 @@ async fn handle_precache_all(State(state): State<Arc<AppState>>) -> Result<Respo
 }
 
 fn spawn_precache(state: &Arc<AppState>, old_id: RunId, new_id: RunId, trigger: &'static str) {
-    state
-        .metrics
-        .precache_started
-        .with_label_values(&[trigger])
-        .inc();
+    record_precache_started(trigger);
     let state = state.clone();
     state.clone().background_tasks.spawn(async move {
         if let Err(e) = precache(&state, old_id, new_id).await {
@@ -1569,6 +1479,8 @@ async fn main() -> std::process::ExitCode {
 async fn run() -> std::result::Result<(), StartupError> {
     let args = Args::parse();
     args.logging.init();
+    janitor_service::metrics::install(&[]);
+    describe_metrics();
 
     let config = janitor::config::read_file(&args.config).map_err(|e| StartupError::Config {
         path: args.config.clone(),
@@ -1612,7 +1524,6 @@ async fn run() -> std::result::Result<(), StartupError> {
         precache_slots: Arc::new(Semaphore::new(args.precache_concurrency.max(1))),
         debdiff_inflight: Arc::new(InFlight::default()),
         diffoscope_inflight: Arc::new(InFlight::default()),
-        metrics: metrics(),
     });
 
     let shutdown = CancellationToken::new();
@@ -1842,30 +1753,6 @@ mod tests {
                 .unwrap(),
             "text/markdown; charset=utf-8",
         );
-    }
-
-    #[tokio::test]
-    async fn metrics_endpoint_returns_prometheus_text() {
-        let counter = prometheus::IntCounter::new("differ_test_counter", "test").unwrap();
-        prometheus::default_registry()
-            .register(Box::new(counter.clone()))
-            .unwrap();
-        counter.inc();
-
-        let response = handle_metrics().await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response
-                .headers()
-                .get(axum::http::header::CONTENT_TYPE)
-                .unwrap(),
-            TextEncoder::new().format_type(),
-        );
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let text = std::str::from_utf8(&body).unwrap();
-        assert!(text.contains("differ_test_counter"));
     }
 
     #[tokio::test]
@@ -2138,7 +2025,6 @@ mod tests {
                 precache_slots: Arc::new(Semaphore::new(2)),
                 debdiff_inflight: Arc::new(InFlight::default()),
                 diffoscope_inflight: Arc::new(InFlight::default()),
-                metrics: metrics(),
             });
             let resp = build_router(state)
                 .oneshot(
@@ -2218,6 +2104,7 @@ mod tests {
         use super::*;
         use axum::body::Body;
         use axum::http::{Method, Request};
+        use janitor_service::testing::{capture_async, Snapshot, Value};
         use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
         use tower::ServiceExt;
 
@@ -2244,7 +2131,6 @@ mod tests {
                 precache_slots: Arc::new(Semaphore::new(2)),
                 debdiff_inflight: Arc::new(InFlight::default()),
                 diffoscope_inflight: Arc::new(InFlight::default()),
-                metrics: metrics(),
             })
         }
 
@@ -2391,39 +2277,31 @@ mod tests {
             assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         }
 
-        #[tokio::test]
-        async fn metrics_endpoint_serves_prometheus_text() {
+        #[test]
+        fn debdiff_records_request_and_error() {
             let cache = tempfile::TempDir::new().unwrap();
             let art = tempfile::TempDir::new().unwrap();
-            let router = build_router(test_state(cache.path(), art.path()));
-
-            // Hit a handler first so counters have at least one
-            // series to emit (Prometheus vecs are silent until any
-            // label combination is touched).
-            let _ = router
-                .clone()
-                .oneshot(get_with_accept("/debdiff/a/b", "image/png"))
-                .await
-                .unwrap();
-
-            let resp = router.oneshot(get("/metrics")).await.unwrap();
-            assert_eq!(resp.status(), StatusCode::OK);
-            let ct = resp
-                .headers()
-                .get(axum::http::header::CONTENT_TYPE)
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .to_string();
-            assert!(ct.contains("text/plain"), "unexpected content-type {ct:?}");
-            let body = String::from_utf8(body_bytes(resp).await).unwrap();
-            assert!(
-                body.contains("differ_requests_total"),
-                "metrics missing differ_requests_total: {body}"
-            );
-            assert!(
-                body.contains("differ_errors_total"),
-                "metrics missing differ_errors_total: {body}"
+            let (status, snapshot) = capture_async(async {
+                let router = build_router(test_state(cache.path(), art.path()));
+                router
+                    .oneshot(get_with_accept("/debdiff/a/b", "image/png"))
+                    .await
+                    .unwrap()
+                    .status()
+            });
+            assert_eq!(status, StatusCode::NOT_ACCEPTABLE);
+            assert_eq!(
+                snapshot,
+                Snapshot::from([
+                    (
+                        "differ_errors_total{op=\"debdiff\",reason=\"not-acceptable\"}".to_string(),
+                        Value::Counter(1)
+                    ),
+                    (
+                        "differ_requests_total{op=\"debdiff\"}".to_string(),
+                        Value::Counter(1)
+                    ),
+                ])
             );
         }
 
@@ -2459,7 +2337,6 @@ mod tests {
                 precache_slots: Arc::new(Semaphore::new(2)),
                 debdiff_inflight: Arc::new(InFlight::default()),
                 diffoscope_inflight: Arc::new(InFlight::default()),
-                metrics: metrics(),
             });
             let router = build_router(state);
 
@@ -2492,30 +2369,23 @@ mod tests {
             assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
         }
 
-        #[tokio::test]
-        async fn precache_records_started_metric_via_request_label() {
-            // Verifies the "request" trigger label increments when
-            // /precache/... is hit AND that validate_run_id blocks
-            // before spawn_precache runs (so a bad id does NOT bump
-            // the counter). We only assert on the negative side here
-            // because the positive path hits the DB.
+        #[test]
+        fn precache_with_invalid_id_does_not_start_precache() {
+            // validate_run_id must reject the id before spawn_precache
+            // runs. Only the negative side is covered here because the
+            // positive path hits the DB.
             let cache = tempfile::TempDir::new().unwrap();
             let art = tempfile::TempDir::new().unwrap();
-            let router = build_router(test_state(cache.path(), art.path()));
-            let before = metrics()
-                .precache_started
-                .with_label_values(&["request"])
-                .get();
-            let resp = router
-                .oneshot(post("/precache/bad..id/valid"))
-                .await
-                .unwrap();
-            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-            let after = metrics()
-                .precache_started
-                .with_label_values(&["request"])
-                .get();
-            assert_eq!(after, before, "invalid id must not bump precache counter");
+            let (status, snapshot) = capture_async(async {
+                let router = build_router(test_state(cache.path(), art.path()));
+                router
+                    .oneshot(post("/precache/bad..id/valid"))
+                    .await
+                    .unwrap()
+                    .status()
+            });
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(snapshot, Snapshot::new());
         }
     }
 }

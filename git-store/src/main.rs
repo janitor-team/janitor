@@ -55,6 +55,7 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    janitor_git_store::web_utils::install_metrics();
 
     let vcs_path = cli
         .vcs_path

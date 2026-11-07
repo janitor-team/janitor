@@ -27,13 +27,14 @@ breezyshim = { workspace = true, features = ["sqlx"] }
 debversion = { workspace = true, features = ["sqlx"] }
 nix = { workspace = true, features = ["resource", "signal", "process"] }
 pyo3 = { workspace = true, features = ["auto-initialize"] }
-prometheus = "0.14"
+metrics = { workspace = true }
 thiserror = "2.0"
 utoipa.workspace = true
 utoipa-axum.workspace = true
 
 [dev-dependencies]
 janitor = { path = "..", features = ["testing"] }
+janitor-service = { workspace = true, features = ["testing"] }
 tower = { workspace = true, features = ["util"] }
 
 [features]

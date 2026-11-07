@@ -88,6 +88,7 @@ enum Cmd {
 #[tokio::main]
 async fn main() -> ArchiveResult<()> {
     let cli = Cli::parse();
+    janitor_service::metrics::install(&[]);
 
     // `--verbose` -> DEBUG level; `--gcp-logging` -> JSON output for
     // GCP log ingestion.

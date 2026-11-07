@@ -56,9 +56,7 @@ async fn test_application_lifecycle() {
             // Just verify we can access the database state without panicking
 
             // Verify metrics are being collected
-            let metrics = janitor_runner::metrics::MetricsCollector::collect_metrics();
-            // Just verify metrics collection doesn't panic
-            let _ = metrics;
+            janitor_service::metrics::render();
         }
         Err(e) => {
             // If database is not available, that's expected in CI
@@ -80,30 +78,42 @@ async fn test_metrics_collection() {
 
     use janitor_runner::metrics::MetricsCollector;
 
-    // Record some test metrics to ensure we have data to collect
-    MetricsCollector::record_http_request("GET", "/test", 200, 0.1);
-    MetricsCollector::record_database_operation("select", true, 0.05);
-    MetricsCollector::set_active_runs("test-worker", 1);
+    use janitor_service::testing::{capture, Snapshot, Value};
 
-    // Test metrics collection (this should not fail)
-    match MetricsCollector::collect_metrics() {
-        Ok(metrics) => {
-            // Should return some metrics data (we just recorded some)
-            assert!(
-                !metrics.is_empty(),
-                "Expected non-empty metrics after recording test data"
-            );
-            // Verify metrics contain some expected content
-            assert!(
-                metrics.contains("janitor_runner"),
-                "Expected metrics to contain runner-specific metrics"
-            );
-        }
-        Err(e) => {
-            // Metrics collection failure might be expected in test environment
-            println!("Metrics collection failed (expected in test env): {}", e);
-        }
-    }
+    let snapshot = capture(|| {
+        MetricsCollector::record_http_request("GET", "/test", 200, 0.1);
+        MetricsCollector::record_database_operation("select", true, 0.05);
+        MetricsCollector::set_active_runs("test-worker", 1);
+    });
+    assert_eq!(
+        snapshot,
+        Snapshot::from([
+            (
+                "active_runs{worker=\"test-worker\"}".to_string(),
+                Value::Gauge(1.0)
+            ),
+            (
+                "janitor_runner_database_operation_duration_seconds{operation=\"select\"}"
+                    .to_string(),
+                Value::Histogram(vec![0.05])
+            ),
+            (
+                "janitor_runner_database_operations_total{operation=\"select\",status=\"success\"}"
+                    .to_string(),
+                Value::Counter(1)
+            ),
+            (
+                "janitor_runner_http_request_duration_seconds{method=\"GET\",endpoint=\"/test\"}"
+                    .to_string(),
+                Value::Histogram(vec![0.1])
+            ),
+            (
+                "janitor_runner_http_requests_total{method=\"GET\",endpoint=\"/test\",status=\"200\"}"
+                    .to_string(),
+                Value::Counter(1)
+            ),
+        ])
+    );
 }
 
 #[tokio::test]
@@ -332,7 +342,6 @@ async fn test_concurrent_operations() {
 #[serial]
 async fn test_system_integration() {
     // High-level integration test that exercises multiple systems together
-    use janitor_runner::metrics::MetricsCollector;
 
     let config = test_config();
     let app_result = Application::builder(config)
@@ -362,10 +371,7 @@ async fn test_system_integration() {
                 "Should have no errors initially"
             );
 
-            // Test metrics
-            let metrics_result = MetricsCollector::collect_metrics();
-            // Just verify metrics collection doesn't panic
-            let _ = metrics_result;
+            janitor_service::metrics::render();
 
             println!("Integration test completed successfully");
         }
