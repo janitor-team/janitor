@@ -3328,6 +3328,8 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "utoipa",
+ "utoipa-axum",
  "uuid",
  "xz2",
  "zstd",

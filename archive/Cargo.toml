@@ -24,7 +24,7 @@ async-trait = "0.1"
 num_cpus = "1.0"
 sqlx = { workspace = true, features = ["postgres", "chrono", "uuid", "migrate", "macros", "runtime-tokio", "tls-native-tls"] }
 janitor = { path = ".." }
-janitor-types = { workspace = true, features = ["sqlx"] }
+janitor-types = { workspace = true, features = ["sqlx", "utoipa"] }
 janitor-service = { workspace = true }
 # Reading .deb file trees in-process (for Contents-<arch>): outer
 # ar archive, inner data.tar.{,gz,bz2,xz,zst}.
@@ -38,6 +38,8 @@ apt-repository = { path = "../apt-repository" }
 axum.workspace = true
 tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors", "fs", "trace", "validate-request"] }
+utoipa.workspace = true
+utoipa-axum.workspace = true
 hyper = "1.0"
 tokio-util = "0.7"
 redis = { workspace = true, features = ["tokio-comp", "connection-manager"] }
