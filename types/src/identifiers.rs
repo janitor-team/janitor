@@ -66,7 +66,7 @@ fn is_valid_id(s: &str) -> bool {
 
 /// A single path component: not empty, `.` or `..`, and no `/` or control
 /// characters.
-fn is_valid_log_filename(s: &str) -> bool {
+fn is_valid_filename(s: &str) -> bool {
     !matches!(s, "" | "." | "..") && !s.contains(|c: char| c == '/' || c.is_ascii_control())
 }
 
@@ -276,7 +276,14 @@ identifier!(
     /// Name of a log file of a run, such as `build.log`.
     LogFilename,
     "log filename",
-    is_valid_log_filename
+    is_valid_filename
+);
+
+identifier!(
+    /// Name of an artifact of a run, such as `foo_1.0-1_amd64.deb`.
+    ArtifactName,
+    "artifact name",
+    is_valid_filename
 );
 
 #[cfg(test)]
@@ -360,6 +367,17 @@ mod tests {
         }
         for name in ["", ".", "..", "a/b", "../build.log", "a\nb"] {
             assert!(LogFilename::new(name).is_err(), "{:?}", name);
+        }
+    }
+
+    #[test]
+    fn test_artifact_name() {
+        assert_eq!(
+            ArtifactName::new("foo_1.0-1_amd64.deb").unwrap().as_str(),
+            "foo_1.0-1_amd64.deb"
+        );
+        for name in ["", ".", "..", "a/b", "a\nb"] {
+            assert!(ArtifactName::new(name).is_err(), "{:?}", name);
         }
     }
 
