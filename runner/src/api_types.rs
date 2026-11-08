@@ -360,6 +360,40 @@ pub struct RunFollowupsResponse {
     pub followups: Vec<RunFollowup>,
 }
 
+/// One (codebase, campaign) pair that has a candidate but no run yet.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, sqlx::FromRow)]
+pub struct UnprocessedCandidate {
+    /// Codebase name.
+    pub codebase: CodebaseName,
+    /// Campaign the candidate targets.
+    pub campaign: Campaign,
+}
+
+/// Response for `GET /candidates/unprocessed`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct UnprocessedCandidatesResponse {
+    /// Candidates that have no run yet.
+    pub candidates: Vec<UnprocessedCandidate>,
+}
+
+/// One row in a `GET /runs/latest/stats` response, counting runs
+/// grouped by a label.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, sqlx::FromRow)]
+pub struct RunStatsBucket {
+    /// Label the runs are grouped by (e.g. `success`, `build-failed`,
+    /// `never-processed`).
+    pub label: String,
+    /// Number of (codebase, campaign) pairs with that label.
+    pub count: i64,
+}
+
+/// Response for `GET /runs/latest/stats`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RunStatsResponse {
+    /// Buckets, ordered by count descending.
+    pub buckets: Vec<RunStatsBucket>,
+}
+
 /// Response for `POST /runs/{id}`; also sent on the `publish-status`
 /// pub/sub channel.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

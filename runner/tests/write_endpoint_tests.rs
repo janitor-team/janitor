@@ -1036,6 +1036,388 @@ async fn list_runs_paginates_with_offset() {
     assert_eq!(runs[0]["id"], "r-2");
 }
 
+/// Seed one candidate row for (codebase, campaign).
+async fn insert_candidate(pool: &sqlx::PgPool, codebase: &str, campaign: &str) {
+    sqlx::query(
+        "INSERT INTO candidate (codebase, suite, command) \
+         VALUES ($1, $2::suite_name, 'true')",
+    )
+    .bind(codebase)
+    .bind(campaign)
+    .execute(pool)
+    .await
+    .expect("insert candidate");
+}
+
+/// `GET /candidates/unprocessed` returns candidates with no run,
+/// filterable by campaign.
+#[tokio::test]
+async fn list_unprocessed_candidates_filters_by_campaign() {
+    use chrono::{TimeZone, Utc};
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let pool = state.database.pool().clone();
+
+    for cb in ["alpha", "beta"] {
+        insert_codebase(&pool, cb).await;
+    }
+    sqlx::query(
+        "INSERT INTO change_set (id, campaign) VALUES \
+         ('cs-unproc', 'test-campaign'), ('cs-unproc-other', 'other-campaign')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert change_sets");
+    // alpha/test-campaign has a run; alpha/other-campaign does not;
+    // beta/test-campaign does not; beta/other-campaign does not. All
+    // four have candidates.
+    insert_candidate(&pool, "alpha", "test-campaign").await;
+    insert_candidate(&pool, "alpha", "other-campaign").await;
+    insert_candidate(&pool, "beta", "test-campaign").await;
+    insert_candidate(&pool, "beta", "other-campaign").await;
+    insert_run(
+        &pool,
+        "r-alpha-tc",
+        "alpha",
+        "test-campaign",
+        "cs-unproc",
+        "success",
+        Utc.with_ymd_and_hms(2026, 2, 1, 12, 0, 0).unwrap(),
+        None,
+    )
+    .await;
+
+    // No filter: three unprocessed pairs.
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/candidates/unprocessed")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    let got: Vec<(String, String)> = body["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["codebase"].as_str().unwrap().to_string(),
+                c["campaign"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("alpha".to_string(), "other-campaign".to_string()),
+            ("beta".to_string(), "other-campaign".to_string()),
+            ("beta".to_string(), "test-campaign".to_string()),
+        ]
+    );
+
+    // Filter to a single campaign.
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/candidates/unprocessed?campaign=test-campaign")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    let got: Vec<(String, String)> = body["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["codebase"].as_str().unwrap().to_string(),
+                c["campaign"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        vec![("beta".to_string(), "test-campaign".to_string()),]
+    );
+}
+
+/// `GET /runs/current` returns the newest run per (codebase, campaign)
+/// from the `last_effective_runs` view (default) and filters by
+/// campaign.
+#[tokio::test]
+async fn list_current_runs_returns_newest_per_codebase_campaign() {
+    use chrono::{TimeZone, Utc};
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let pool = state.database.pool().clone();
+
+    insert_codebase(&pool, "alpha").await;
+    insert_codebase(&pool, "beta").await;
+    sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs-latest', 'test-campaign')")
+        .execute(&pool)
+        .await
+        .expect("insert change_set");
+    insert_candidate(&pool, "alpha", "test-campaign").await;
+    insert_candidate(&pool, "beta", "test-campaign").await;
+
+    let older = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
+    let newer = Utc.with_ymd_and_hms(2026, 2, 1, 12, 0, 0).unwrap();
+    // alpha: two success runs, only the newer should appear.
+    insert_run(
+        &pool,
+        "r-alpha-old",
+        "alpha",
+        "test-campaign",
+        "cs-latest",
+        "success",
+        older,
+        None,
+    )
+    .await;
+    insert_run(
+        &pool,
+        "r-alpha-new",
+        "alpha",
+        "test-campaign",
+        "cs-latest",
+        "success",
+        newer,
+        None,
+    )
+    .await;
+    insert_run(
+        &pool,
+        "r-beta",
+        "beta",
+        "test-campaign",
+        "cs-latest",
+        "build-failed",
+        newer,
+        None,
+    )
+    .await;
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/runs/current?campaign=test-campaign")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    let mut got: Vec<(String, String)> = body["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["id"].as_str().unwrap().to_string(),
+                r["result_code"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            ("r-alpha-new".to_string(), "success".to_string()),
+            ("r-beta".to_string(), "build-failed".to_string()),
+        ]
+    );
+}
+
+/// `GET /runs/current/stats?group_by=result_code` aggregates runs by
+/// result code and can include a synthetic `never-processed` bucket
+/// counting candidates without runs.
+#[tokio::test]
+async fn list_current_run_stats_group_by_result_code() {
+    use chrono::{TimeZone, Utc};
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let pool = state.database.pool().clone();
+
+    insert_codebase(&pool, "alpha").await;
+    insert_codebase(&pool, "beta").await;
+    insert_codebase(&pool, "gamma").await;
+    sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs-stats', 'test-campaign')")
+        .execute(&pool)
+        .await
+        .expect("insert change_set");
+    for cb in ["alpha", "beta", "gamma"] {
+        insert_candidate(&pool, cb, "test-campaign").await;
+    }
+    let ts = Utc.with_ymd_and_hms(2026, 2, 1, 12, 0, 0).unwrap();
+    insert_run(
+        &pool,
+        "r-alpha",
+        "alpha",
+        "test-campaign",
+        "cs-stats",
+        "success",
+        ts,
+        None,
+    )
+    .await;
+    insert_run(
+        &pool,
+        "r-beta",
+        "beta",
+        "test-campaign",
+        "cs-stats",
+        "build-failed",
+        ts,
+        None,
+    )
+    .await;
+    // gamma has a candidate but no run.
+
+    // Without include_never_processed: only alpha and beta are counted.
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/runs/current/stats?group_by=result_code&campaign=test-campaign")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    let got: std::collections::BTreeMap<String, i64> = body["buckets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| {
+            (
+                b["label"].as_str().unwrap().to_string(),
+                b["count"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        std::collections::BTreeMap::from([
+            ("success".to_string(), 1),
+            ("build-failed".to_string(), 1),
+        ])
+    );
+
+    // With include_never_processed=1: gamma shows up.
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(
+            "/runs/current/stats?group_by=result_code&campaign=test-campaign\
+             &include_never_processed=true",
+        )
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    let got: std::collections::BTreeMap<String, i64> = body["buckets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| {
+            (
+                b["label"].as_str().unwrap().to_string(),
+                b["count"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        std::collections::BTreeMap::from([
+            ("success".to_string(), 1),
+            ("build-failed".to_string(), 1),
+            ("never-processed".to_string(), 1),
+        ])
+    );
+}
+
+/// `GET /runs/current/stats?group_by=failure_stage` groups by failure
+/// stage (NULL for runs that didn't fail).
+#[tokio::test]
+async fn list_current_run_stats_group_by_failure_stage() {
+    use chrono::{TimeZone, Utc};
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let pool = state.database.pool().clone();
+
+    insert_codebase(&pool, "alpha").await;
+    insert_codebase(&pool, "beta").await;
+    sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs-stages', 'test-campaign')")
+        .execute(&pool)
+        .await
+        .expect("insert change_set");
+    insert_candidate(&pool, "alpha", "test-campaign").await;
+    insert_candidate(&pool, "beta", "test-campaign").await;
+    let ts = Utc.with_ymd_and_hms(2026, 2, 1, 12, 0, 0).unwrap();
+    // Two runs failed at the same stage.
+    sqlx::query(
+        "INSERT INTO run (
+             id, suite, codebase, result_code,
+             start_time, finish_time, logfilenames,
+             change_set, failure_stage
+         )
+         VALUES ($1, 'test-campaign'::suite_name, $2, 'build-failed',
+                 $3 - INTERVAL '30 seconds', $3, '{}', 'cs-stages', $4)",
+    )
+    .bind("r-alpha")
+    .bind("alpha")
+    .bind(ts)
+    .bind("build")
+    .execute(&pool)
+    .await
+    .expect("insert run");
+    sqlx::query(
+        "INSERT INTO run (
+             id, suite, codebase, result_code,
+             start_time, finish_time, logfilenames,
+             change_set, failure_stage
+         )
+         VALUES ($1, 'test-campaign'::suite_name, $2, 'build-failed',
+                 $3 - INTERVAL '30 seconds', $3, '{}', 'cs-stages', $4)",
+    )
+    .bind("r-beta")
+    .bind("beta")
+    .bind(ts)
+    .bind("build")
+    .execute(&pool)
+    .await
+    .expect("insert run");
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/runs/current/stats?group_by=failure_stage&campaign=test-campaign")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    let got: std::collections::BTreeMap<String, i64> = body["buckets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| {
+            (
+                b["label"].as_str().unwrap().to_string(),
+                b["count"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        std::collections::BTreeMap::from([("build".to_string(), 2),])
+    );
+}
+
 /// `GET /status` returns the three fields the Python handler emits:
 /// `processing`, `avoid_hosts`, `rate_limit_hosts`. With an empty
 /// active-runs set and no env overrides, all three come back empty.
