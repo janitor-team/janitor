@@ -38,14 +38,21 @@ def _user_middleware(user):
 
 
 async def create_client(
-    aiohttp_client, db, *, runner_url=None, publisher_url=None, user=None, config=""
+    aiohttp_client,
+    db,
+    *,
+    runner_url=None,
+    publisher_url=None,
+    differ_url=None,
+    user=None,
+    config="",
 ):
     config = read_config_string(config)
     app = create_app(
         publisher_url=publisher_url,
         runner_url=runner_url,
         vcs_managers={},
-        differ_url=None,
+        differ_url=differ_url,
         config=config,
         db=db,
     )
@@ -448,4 +455,68 @@ async def test_run_logs(aiohttp_client, db):
             "text/plain",
             "No log file worker.log for run r2",
         ),
+    ]
+
+
+async def test_archive_diff(aiohttp_client, db):
+    seen = []
+
+    async def handle_debdiff(request):
+        run_id = request.match_info["run_id"]
+        seen.append((run_id, dict(request.query)))
+        if run_id == "r1":
+            return web.Response(text="debdiff output", content_type="text/plain")
+        if run_id == "r2":
+            return web.json_response(
+                {
+                    "reason": "unchanged-run-not-found",
+                    "message": "no unchanged run for run r2",
+                },
+                status=404,
+            )
+        if run_id == "r3":
+            return web.json_response(
+                {
+                    "reason": "run-not-successful",
+                    "message": "run r3 was not successful",
+                    "unavailable_run_id": "r3",
+                },
+                status=422,
+                headers={"unavailable_run_id": "r3"},
+            )
+        return web.json_response(
+            {"reason": "database-error", "message": "database error"}, status=500
+        )
+
+    differ_app = web.Application()
+    differ_app.router.add_get("/debdiff/{run_id}", handle_debdiff)
+    differ_client = await aiohttp_client(differ_app)
+    client = await create_client(
+        aiohttp_client, db, differ_url=str(differ_client.make_url("/"))
+    )
+
+    resp = await client.get("/run/r1/debdiff?filter_boring=1")
+    assert (resp.status, resp.headers["Vary"], await resp.text()) == (
+        200,
+        "Accept",
+        "debdiff output",
+    )
+    resp = await client.get("/run/r2/debdiff")
+    assert (resp.status, await resp.json()) == (
+        404,
+        {
+            "reason": "unchanged-run-not-found",
+            "message": "no unchanged run for run r2",
+            "unavailable_run_id": None,
+        },
+    )
+    resp = await client.get("/run/r3/debdiff")
+    assert (resp.status, await resp.text()) == (404, "Build r3 has no artifacts")
+    resp = await client.get("/run/r4/debdiff")
+    assert resp.status == 503
+    assert seen == [
+        ("r1", {"jquery_url": "/_static/jquery.js", "filter_boring": "yes"}),
+        ("r2", {"jquery_url": "/_static/jquery.js"}),
+        ("r3", {"jquery_url": "/_static/jquery.js"}),
+        ("r4", {"jquery_url": "/_static/jquery.js"}),
     ]

@@ -33,6 +33,7 @@ utoipa.workspace = true
 utoipa-axum.workspace = true
 
 [dev-dependencies]
+janitor = { path = "..", features = ["testing"] }
 tower = { workspace = true, features = ["util"] }
 
 [features]
