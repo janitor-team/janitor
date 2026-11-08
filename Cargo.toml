@@ -46,6 +46,9 @@ metrics = { workspace = true }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 redis = { workspace = true }
+axum = { workspace = true }
+tower-http = { version = "0.5", features = ["compression-gzip", "cors", "limit", "timeout", "trace"] }
+base64 = ">=0.22,<0.24"
 pyo3 = { workspace = true, features = ["auto-initialize"] }
 opentelemetry = { version = "0.33", optional = true }
 opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"], optional = true }
@@ -61,6 +64,7 @@ utoipa = { workspace = true, optional = true }
 [dev-dependencies]
 # Self-reference so `cargo test -p janitor` runs the `testing`-gated tests, as in runner/Cargo.toml.
 janitor = { path = ".", features = ["testing"] }
+tower = { workspace = true, features = ["util"] }
 
 [workspace.dependencies]
 rslock = { default-features = false, version = "0.7" }

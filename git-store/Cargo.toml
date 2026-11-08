@@ -12,7 +12,6 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0"
 axum = { version = "0.8", features = ["http2", "json", "query", "macros"] }
-base64 = "0.22"
 bytes = "1"
 clap = { workspace = true, features = ["derive", "env"] }
 futures-util = "0.3"
@@ -34,7 +33,7 @@ utoipa-axum.workspace = true
 thiserror = "1.0"
 tokio = { version = "1.0", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io"] }
-tower-http = { version = "0.5", features = ["compression-gzip", "cors", "fs", "limit", "timeout", "trace"] }
+tower-http = { version = "0.5", features = ["fs"] }
 tracing = "0.1"
 
 [dev-dependencies]
@@ -42,6 +41,7 @@ janitor-service = { workspace = true, features = ["testing"] }
 # Redeclare janitor with the `testing` feature so integration tests can
 # use janitor::schema::CORE_SCHEMA.
 janitor = { path = "..", features = ["testing"] }
+base64 = "0.22"
 select = "0.6"
 serial_test = "3"
 tempfile = "3.19"
