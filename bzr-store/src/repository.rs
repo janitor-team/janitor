@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tracing::{debug, info, warn};
 
+use crate::api_types::RemoteInfo;
 use crate::database::DatabaseManager;
 use crate::error::{BzrError, Result};
 
@@ -124,6 +125,10 @@ pub trait RepositoryManager: Send + Sync {
     /// `<base>/<codebase>/<campaign>` (campaign slot). Matches
     /// Python's `handle_set_bzr_remote`.
     async fn configure_remote(&self, path: &RepositoryPath, remote_url: &str) -> Result<()>;
+
+    /// List the parent locations of the branches directly below
+    /// `<base>/<codebase>`, named after their directory.
+    async fn list_remotes(&self, path: &RepositoryPath) -> Result<Vec<RemoteInfo>>;
 }
 
 /// One row of revision metadata returned by
@@ -390,6 +395,40 @@ impl RepositoryManager for BreezyRepositoryManager {
             remote_url
         );
         Ok(())
+    }
+
+    async fn list_remotes(&self, path: &RepositoryPath) -> Result<Vec<RemoteInfo>> {
+        let repo_path = self.get_repository_path(path);
+        if !repo_path.exists() {
+            return Err(BzrError::PathNotFound {
+                path: path.relative_path(),
+            });
+        }
+
+        run_blocking(move || {
+            let mut remotes = Vec::new();
+            for entry in std::fs::read_dir(&repo_path)? {
+                let entry = entry?;
+                if !entry.file_type()?.is_dir() || entry.file_name() == ".bzr" {
+                    continue;
+                }
+                let Ok(name) = entry.file_name().into_string() else {
+                    warn!("skipping non-UTF-8 branch name {:?}", entry.file_name());
+                    continue;
+                };
+                let branch = match breezyshim::branch::open_as_generic(&file_url(&entry.path())?) {
+                    Ok(branch) => branch,
+                    Err(breezyshim::error::Error::NotBranchError(..)) => continue,
+                    Err(e) => return Err(breezy_error(e, "Branch.open")),
+                };
+                if let Some(url) = branch.get_parent() {
+                    remotes.push(RemoteInfo { name, url });
+                }
+            }
+            remotes.sort_by(|a, b| a.name.cmp(&b.name));
+            Ok(remotes)
+        })
+        .await
     }
 }
 

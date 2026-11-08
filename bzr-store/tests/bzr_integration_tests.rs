@@ -297,6 +297,21 @@ test_with_database! {
         );
         std::mem::drop(env);
 
+        let resp = client
+            .get(format!("http://{}/foo/remotes", addr))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "repository": "foo",
+                "remotes": [{"name": "main", "url": "bzr+ssh://upstream.invalid/foo"}],
+            })
+        );
+
         handle.abort();
     }
 }
