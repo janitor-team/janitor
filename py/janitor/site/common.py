@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 import aiohttp_jinja2
@@ -158,6 +158,43 @@ WHERE id = $1
     return await conn.fetchrow(query, run_id)
 
 
+async def fetch_run_detail(client, runner_url: str, run_id: str):
+    """Fetch a run's detail from the runner, shaped like `get_run`.
+
+    * `suite` is aliased to `campaign` for backward compatibility.
+    * `result_branches` are projected to the 4-tuple shape the template
+      unpacks: `(role, remote_name, base_revision, revision)`.
+    * `result_tags` are projected to `(actual_name, revision)` tuples.
+    * The nested `debian_build` object is flattened into `build_version`,
+      `build_distribution`, `lintian_result`, `binary_packages`.
+    """
+    url = URL(runner_url) / "runs" / run_id
+    async with client.get(url) as resp:
+        if resp.status == 404:
+            return None
+        resp.raise_for_status()
+        data = await resp.json()
+
+    run = dict(data)
+    run["suite"] = run["campaign"]
+    run["start_time"] = datetime.fromisoformat(run["start_time"])
+    run["finish_time"] = datetime.fromisoformat(run["finish_time"])
+    run["result_branches"] = [
+        (b["role"], b["remote_name"], b["base_revision"], b["revision"])
+        for b in run.get("result_branches") or []
+    ]
+    if run.get("result_tags") is not None:
+        run["result_tags"] = [
+            (t["actual_name"], t["revision"]) for t in run["result_tags"]
+        ]
+    debian = run.pop("debian_build", None) or {}
+    run["build_version"] = debian.get("version")
+    run["build_distribution"] = debian.get("distribution")
+    run["lintian_result"] = debian.get("lintian_result")
+    run["binary_packages"] = debian.get("binary_packages")
+    return run
+
+
 async def get_unchanged_run(
     conn: asyncpg.Connection, codebase: str, main_branch_revision: bytes
 ):
@@ -224,8 +261,10 @@ WHERE codebase.name = $1""",
         if codebase is None:
             raise web.HTTPNotFound(text=f"no such codebase: {codebase_name}")
         if run_id is not None:
-            with span.new_child("sql:run"):
-                run = await get_run(conn, run_id)
+            if runner_url is None:
+                raise web.HTTPInternalServerError(text="runner_url not configured")
+            with span.new_child("runner:get-run"):
+                run = await fetch_run_detail(client, runner_url, run_id)
             if not run:
                 raise web.HTTPNotFound(text=f"no such run: {run_id}")
             merge_proposals = []
