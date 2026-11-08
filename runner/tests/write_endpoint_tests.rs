@@ -645,6 +645,261 @@ async fn get_run_missing_returns_404() {
     );
 }
 
+/// Seed a run with the extra fields the /runs list surfaces. Also
+/// upserts the `worker-a` row the FK points at.
+#[allow(clippy::too_many_arguments)]
+async fn insert_run(
+    pool: &sqlx::PgPool,
+    id: &str,
+    codebase: &str,
+    campaign: &str,
+    change_set: &str,
+    result_code: &str,
+    finish_time: chrono::DateTime<chrono::Utc>,
+    revision: Option<&str>,
+) {
+    sqlx::query(
+        "INSERT INTO worker (name, password) VALUES ('worker-a', 'x') \
+         ON CONFLICT DO NOTHING",
+    )
+    .execute(pool)
+    .await
+    .expect("insert worker");
+    sqlx::query(
+        "INSERT INTO run (
+             id, suite, codebase, result_code,
+             start_time, finish_time, logfilenames,
+             change_set, revision, main_branch_revision,
+             worker, worker_link, failure_transient, description
+         )
+         VALUES ($1, $2::suite_name, $3, $4,
+                 $5 - INTERVAL '30 seconds', $5, '{}',
+                 $6, $7, 'base-rev',
+                 'worker-a', 'https://worker.invalid/a', false, 'ok')",
+    )
+    .bind(id)
+    .bind(campaign)
+    .bind(codebase)
+    .bind(result_code)
+    .bind(finish_time)
+    .bind(change_set)
+    .bind(revision)
+    .execute(pool)
+    .await
+    .expect("insert run");
+}
+
+/// `GET /runs` filters by codebase+campaign and returns the newest row
+/// first, with the fields the site callers need.
+#[tokio::test]
+async fn list_runs_filters_by_codebase_and_campaign() {
+    use chrono::{TimeZone, Utc};
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let pool = state.database.pool().clone();
+
+    insert_codebase(&pool, "alpha").await;
+    insert_codebase(&pool, "beta").await;
+    sqlx::query(
+        "INSERT INTO change_set (id, campaign) VALUES \
+         ('cs-list-a', 'test-campaign'), ('cs-list-b', 'other-campaign')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert change_sets");
+
+    let older = Utc.with_ymd_and_hms(2026, 1, 10, 12, 0, 0).unwrap();
+    let newer = Utc.with_ymd_and_hms(2026, 2, 10, 12, 0, 0).unwrap();
+
+    insert_run(
+        &pool,
+        "r-alpha-old",
+        "alpha",
+        "test-campaign",
+        "cs-list-a",
+        "success",
+        older,
+        Some("rev-1"),
+    )
+    .await;
+    insert_run(
+        &pool,
+        "r-alpha-new",
+        "alpha",
+        "test-campaign",
+        "cs-list-a",
+        "success",
+        newer,
+        Some("rev-2"),
+    )
+    .await;
+    insert_run(
+        &pool,
+        "r-beta",
+        "beta",
+        "test-campaign",
+        "cs-list-a",
+        "success",
+        newer,
+        Some("rev-3"),
+    )
+    .await;
+    insert_run(
+        &pool,
+        "r-other",
+        "alpha",
+        "other-campaign",
+        "cs-list-b",
+        "success",
+        newer,
+        Some("rev-4"),
+    )
+    .await;
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/runs?codebase=alpha&campaign=test-campaign")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = get_body(response).await;
+    let runs = body["runs"].as_array().expect("runs array");
+    let ids: Vec<&str> = runs.iter().map(|r| r["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, vec!["r-alpha-new", "r-alpha-old"]);
+
+    let newest = &runs[0];
+    assert_eq!(newest["codebase"], "alpha");
+    assert_eq!(newest["campaign"], "test-campaign");
+    assert_eq!(newest["result_code"], "success");
+    assert_eq!(newest["revision"], "rev-2");
+    assert_eq!(newest["main_branch_revision"], "base-rev");
+    assert_eq!(newest["worker_name"], "worker-a");
+    assert_eq!(newest["worker_link"], "https://worker.invalid/a");
+    assert_eq!(newest["failure_transient"], false);
+    assert_eq!(newest["description"], "ok");
+    assert_eq!(newest["duration_seconds"], 30);
+    assert!(newest["start_time"].as_str().is_some());
+    assert!(newest["finish_time"].as_str().is_some());
+}
+
+/// `GET /runs?revision=...&result_code=success&limit=1` finds the
+/// unchanged-baseline run that handle_archive_diff currently looks up
+/// directly against the `run` table.
+#[tokio::test]
+async fn list_runs_finds_unchanged_baseline() {
+    use chrono::{TimeZone, Utc};
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let pool = state.database.pool().clone();
+
+    insert_codebase(&pool, "cb").await;
+    sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs-base', 'test-campaign')")
+        .execute(&pool)
+        .await
+        .expect("insert change_set");
+
+    let earlier = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
+    let later = Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap();
+
+    insert_run(
+        &pool,
+        "r-base-old",
+        "cb",
+        "test-campaign",
+        "cs-base",
+        "success",
+        earlier,
+        Some("tgt-rev"),
+    )
+    .await;
+    insert_run(
+        &pool,
+        "r-base-new",
+        "cb",
+        "test-campaign",
+        "cs-base",
+        "success",
+        later,
+        Some("tgt-rev"),
+    )
+    .await;
+    insert_run(
+        &pool,
+        "r-failed",
+        "cb",
+        "test-campaign",
+        "cs-base",
+        "build-failed",
+        later,
+        Some("tgt-rev"),
+    )
+    .await;
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/runs?codebase=cb&revision=tgt-rev&result_code=success&limit=1")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    let runs = body["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0]["id"], "r-base-new");
+}
+
+/// `GET /runs` with no filters returns every run; `offset` skips
+/// leading rows so paginators can walk history.
+#[tokio::test]
+async fn list_runs_paginates_with_offset() {
+    use chrono::{TimeZone, Utc};
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let pool = state.database.pool().clone();
+
+    insert_codebase(&pool, "cb").await;
+    sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs-page', 'test-campaign')")
+        .execute(&pool)
+        .await
+        .expect("insert change_set");
+    for (i, id) in ["r-1", "r-2", "r-3"].iter().enumerate() {
+        let ft = Utc
+            .with_ymd_and_hms(2026, 1, (i + 1) as u32 * 2, 12, 0, 0)
+            .unwrap();
+        insert_run(
+            &pool,
+            id,
+            "cb",
+            "test-campaign",
+            "cs-page",
+            "success",
+            ft,
+            None,
+        )
+        .await;
+    }
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/runs?codebase=cb&limit=1&offset=1")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    let runs = body["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0]["id"], "r-2");
+}
+
 /// `GET /status` returns the three fields the Python handler emits:
 /// `processing`, `avoid_hosts`, `rate_limit_hosts`. With an empty
 /// active-runs set and no env overrides, all three come back empty.

@@ -6,9 +6,9 @@ use crate::api_types::{
     PublishStatusUpdate, QueueEntry, QueuePositionResponse, QueueStatsResponse,
     RateLimitedResponse, ReasonResponse, ResultBranchEntry, ResumeAssignment, ResumeChainResponse,
     ResumeCheckResponse, ResumeDescendantsResponse, ResumeValidationResponse, RunDetailResponse,
-    RunHealthSummary, ScheduleControlResponse, ScheduleResponse, ScheduledCandidate,
-    StatusResponse, UploadCandidatesResponse, WatchdogHealthResponse, WorkerInfo,
-    WorkerListResponse, WorkerSummary,
+    RunHealthSummary, RunListResponse, RunSummary, ScheduleControlResponse, ScheduleResponse,
+    ScheduledCandidate, StatusResponse, UploadCandidatesResponse, WatchdogHealthResponse,
+    WorkerInfo, WorkerListResponse, WorkerSummary,
 };
 use crate::{
     get_builder, metrics::MetricsCollector, ActiveRun, AppState, Backchannel, BuilderResult,
@@ -1485,6 +1485,119 @@ async fn upload_candidates(
         unknown_publish_policies: unknown_publish_policies.into_iter().collect(),
     })
     .into_response()
+}
+
+/// Query parameters for `GET /runs`.
+#[derive(serde::Deserialize, Default, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct RunListQuery {
+    /// Restrict to runs on this codebase.
+    codebase: Option<CodebaseName>,
+    /// Restrict to runs for this campaign.
+    campaign: Option<Campaign>,
+    /// Restrict to runs whose result branch reached this revision.
+    revision: Option<String>,
+    /// Restrict to runs belonging to this change set.
+    change_set: Option<ChangeSetId>,
+    /// Restrict to runs with this result code.
+    result_code: Option<String>,
+    /// Maximum number of rows to return.
+    limit: Option<i64>,
+    /// How many rows to skip. Applied after `limit` is set.
+    offset: Option<i64>,
+}
+
+/// `GET /runs` -- list runs, newest first, filtered by the supplied
+/// query parameters.
+#[utoipa::path(
+    get,
+    path = "/runs",
+    params(RunListQuery),
+    responses(
+        (status = 200, description = "Matching runs", body = RunListResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
+async fn list_runs(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<RunListQuery>,
+) -> Response {
+    let mut query = String::from(
+        "SELECT id, codebase, suite::text AS campaign, result_code, \
+                (start_time AT TIME ZONE 'UTC') AS start_time, \
+                (finish_time AT TIME ZONE 'UTC') AS finish_time, \
+                EXTRACT(epoch FROM (finish_time - start_time))::bigint AS duration_seconds, \
+                description, \
+                worker AS worker_name, worker_link, \
+                failure_transient, revision, main_branch_revision \
+         FROM run",
+    );
+    let mut conditions: Vec<String> = Vec::new();
+    let mut idx = 0;
+    if params.codebase.is_some() {
+        idx += 1;
+        conditions.push(format!("codebase = ${}", idx));
+    }
+    if params.campaign.is_some() {
+        idx += 1;
+        conditions.push(format!("suite = ${}", idx));
+    }
+    if params.revision.is_some() {
+        idx += 1;
+        conditions.push(format!("revision = ${}", idx));
+    }
+    if params.change_set.is_some() {
+        idx += 1;
+        conditions.push(format!("change_set = ${}", idx));
+    }
+    if params.result_code.is_some() {
+        idx += 1;
+        conditions.push(format!("result_code = ${}", idx));
+    }
+    if !conditions.is_empty() {
+        query.push_str(" WHERE ");
+        query.push_str(&conditions.join(" AND "));
+    }
+    query.push_str(" ORDER BY finish_time DESC");
+    if params.limit.is_some() {
+        idx += 1;
+        query.push_str(&format!(" LIMIT ${}", idx));
+    }
+    if params.offset.is_some() {
+        idx += 1;
+        query.push_str(&format!(" OFFSET ${}", idx));
+    }
+
+    let mut q = sqlx::query_as::<_, RunSummary>(sqlx::AssertSqlSafe(&*query));
+    if let Some(cb) = params.codebase.as_ref() {
+        q = q.bind(cb);
+    }
+    if let Some(c) = params.campaign.as_ref() {
+        q = q.bind(c);
+    }
+    if let Some(r) = params.revision.as_ref() {
+        q = q.bind(r);
+    }
+    if let Some(cs) = params.change_set.as_ref() {
+        q = q.bind(cs);
+    }
+    if let Some(rc) = params.result_code.as_ref() {
+        q = q.bind(rc);
+    }
+    if let Some(limit) = params.limit {
+        q = q.bind(limit);
+    }
+    if let Some(offset) = params.offset {
+        q = q.bind(offset);
+    }
+
+    match q.fetch_all(state.database.pool()).await {
+        Ok(runs) => Json(RunListResponse { runs }).into_response(),
+        Err(e) => {
+            log::error!("Failed to list runs: {}", e);
+            db_error()
+        }
+    }
 }
 
 /// `GET /runs/{run_id}` -- return the run row for callers that need
@@ -4244,6 +4357,7 @@ fn private_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(get_codebase_names))
         .routes(routes!(get_candidates, upload_candidates))
         .routes(routes!(delete_candidate))
+        .routes(routes!(list_runs))
         .routes(routes!(get_run, update_run))
         // The unauthenticated POST is for intra-cluster admin tools
         // (e.g. schedule-codebases CronJob). Body must include
