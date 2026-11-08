@@ -404,34 +404,36 @@ async def handle_diff(request):
 
 async def serve_run_diff(request, run_id):
     role = request.query.get("role", "main")
-    async with request.app["pool"].acquire() as conn:
-        run = await conn.fetchrow(
-            "SELECT id, codebase, vcs_type, "
-            "new_result_branch.base_revision AS base_revision, "
-            "new_result_branch.revision AS revision FROM run "
-            "LEFT JOIN new_result_branch ON new_result_branch.run_id = run.id "
-            "WHERE run.id = $1 AND role = $2",
-            run_id,
-            role,
-        )
     span = aiozipkin.request_span(request)
-    if run is None:
+    url = URL(request.app["runner_url"]) / "runs" / run_id
+    with span.new_child("runner:get-run"):
+        async with request.app["http_client_session"].get(url) as resp:
+            if resp.status == 404:
+                raise web.HTTPNotFound(text=f"no run {run_id}")
+            resp.raise_for_status()
+            run = await resp.json()
+
+    branch = next(
+        (b for b in run["result_branches"] if b["role"] == role),
+        None,
+    )
+    if branch is None:
         raise web.HTTPNotFound(text=f"no run {run_id}")
 
     if run["vcs_type"] is None:
         return web.Response(status=404, text="Not in a VCS")
 
-    if run["revision"] is None:
+    if branch["revision"] is None:
         return web.Response(text="Branch deleted")
     try:
         try:
             with span.new_child("vcs-diff"):
                 diff = await request.app["vcs_managers"][run["vcs_type"]].get_diff(
                     run["codebase"],
-                    run["base_revision"].encode("utf-8")
-                    if run["base_revision"]
+                    branch["base_revision"].encode("utf-8")
+                    if branch["base_revision"]
                     else NULL_REVISION,
-                    run["revision"].encode("utf-8"),
+                    branch["revision"].encode("utf-8"),
                 )
         except ClientResponseError as e:
             return web.Response(status=e.status, text="Unable to retrieve diff")
