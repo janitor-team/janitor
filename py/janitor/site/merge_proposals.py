@@ -3,7 +3,6 @@
 from datetime import datetime
 from typing import Optional
 
-import asyncpg
 from yarl import URL
 
 
@@ -33,24 +32,18 @@ async def write_merge_proposals(client, publisher_url: str, suite: Optional[str]
     }
 
 
-async def get_proposal_with_run(conn: asyncpg.Connection, url: str):
-    query = """
-SELECT
-    run.codebase AS codebase,
-    run.suite AS suite,
-    merge_proposal.url AS url,
-    merge_proposal.status AS status,
-    merge_proposal.merged_at AS merged_at,
-    merge_proposal.merged_by AS merged_by,
-    merge_proposal.last_scanned AS last_scanned,
-    merge_proposal.can_be_merged AS can_be_merged
-FROM
-    merge_proposal
-LEFT JOIN new_result_branch ON new_result_branch.revision = merge_proposal.revision
-LEFT JOIN run ON run.id = new_result_branch.run_id
-WHERE url = $1
-"""
-    return await conn.fetchrow(query, url)
+async def _fetch_proposal_detail(client, publisher_url: str, url: str):
+    api_url = URL(publisher_url) / "merge-proposal"
+    async with client.get(api_url, params={"url": url}) as resp:
+        if resp.status == 404:
+            return None
+        resp.raise_for_status()
+        proposal = await resp.json()
+    for key in ("merged_at", "last_scanned"):
+        value = proposal.get(key)
+        if value is not None:
+            proposal[key] = datetime.fromisoformat(value)
+    return proposal
 
 
 async def _fetch_publishes(client, publisher_url: str, url: str):
@@ -69,10 +62,8 @@ async def _fetch_publishes(client, publisher_url: str, url: str):
     return publishes
 
 
-async def write_merge_proposal(db, client, publisher_url: str, url: str):
-    async with db.acquire() as conn:
-        proposal = await get_proposal_with_run(conn, url)
-
+async def write_merge_proposal(client, publisher_url: str, url: str):
+    proposal = await _fetch_proposal_detail(client, publisher_url, url)
     publishes = await _fetch_publishes(client, publisher_url, url)
 
     return {

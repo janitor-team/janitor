@@ -62,9 +62,9 @@
                     {{ proposal.status }}
                 {% endif %}
             </li>
-            {% if proposal.suite %}
+            {% if proposal.campaign %}
                 <li>
-                    <a href="/{{ proposal.suite }}/c/{{ proposal.codebase }}">Run details</a>
+                    <a href="/{{ proposal.campaign }}/c/{{ proposal.codebase }}">Run details</a>
                 </li>
             {% endif %}
         </ul>

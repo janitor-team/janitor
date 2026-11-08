@@ -140,7 +140,6 @@ async def handle_merge_proposal(request):
         raise web.HTTPBadRequest(text="no url specified") from e
     return {
         **await write_merge_proposal(
-            request.app["pool"],
             request.app["http_client_session"],
             request.app["publisher_url"],
             url,
