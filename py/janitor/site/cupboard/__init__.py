@@ -270,8 +270,11 @@ async def handle_publish(request):
     id = request.match_info["id"]
     from .publish import write_publish
 
-    async with request.app["pool"].acquire() as conn:
-        return await write_publish(conn, id)
+    return await write_publish(
+        request.app["http_client_session"],
+        request.app["publisher_url"],
+        id,
+    )
 
 
 @routes.get("/cupboard/publish/", name="publish-history")
@@ -280,8 +283,11 @@ async def handle_publish_history(request):
     limit = int(request.query.get("limit", "100"))
     from .publish import write_history
 
-    async with request.app["pool"].acquire() as conn:
-        return await write_history(conn, limit=limit)
+    return await write_history(
+        request.app["http_client_session"],
+        request.app["publisher_url"],
+        limit=limit,
+    )
 
 
 @routes.post("/cupboard/review", name="cupboard-review-post")
@@ -536,7 +542,12 @@ async def handle_merge_proposal(request):
         url = request.query["url"]
     except KeyError as e:
         raise web.HTTPBadRequest(text="no url specified") from e
-    return await write_merge_proposal(request.app["pool"], url)
+    return await write_merge_proposal(
+        request.app["pool"],
+        request.app["http_client_session"],
+        request.app["publisher_url"],
+        url,
+    )
 
 
 @routes.get(

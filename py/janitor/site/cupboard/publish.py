@@ -1,48 +1,48 @@
+from datetime import datetime
 from typing import Optional
 
 from aiohttp import web
+from yarl import URL
 
 
-async def iter_publish_history(conn, limit: Optional[int] = None):
-    query = """
-SELECT
-    publish.id, publish.timestamp, publish.branch_name,
-    publish.mode, publish.merge_proposal_url, publish.result_code,
-    publish.description, codebase.web_url, publish.codebase AS codebase
-FROM
-    publish
-LEFT JOIN codebase ON codebase.name = publish.codebase
-ORDER BY timestamp DESC
-LIMIT $1
-"""
-    return await conn.fetch(query, limit)
+def _parse_timestamp(value):
+    return datetime.fromisoformat(value) if value is not None else None
 
 
-async def write_history(conn, limit: Optional[int] = None):
-    return {
-        "count": limit,
-        "history": await iter_publish_history(conn, limit=limit),
-    }
+async def write_history(client, publisher_url: str, limit: Optional[int] = None):
+    url = URL(publisher_url) / "publish"
+    params = {}
+    if limit is not None:
+        params["limit"] = str(limit)
+    async with client.get(url, params=params, raise_for_status=True) as resp:
+        data = await resp.json()
+
+    history = [
+        (
+            entry["id"],
+            _parse_timestamp(entry.get("timestamp")),
+            entry.get("branch_name"),
+            entry["mode"],
+            entry.get("merge_proposal_url"),
+            entry["result_code"],
+            entry.get("description"),
+            entry.get("codebase_web_url"),
+            entry.get("codebase"),
+        )
+        for entry in data["publishes"]
+    ]
+    return {"count": limit, "history": history}
 
 
-async def write_publish(conn, publish_id):
-    query = """
-SELECT
-    publish.id AS id,
-    publish.timestamp AS timestamp,
-    publish.branch_name AS branch_name,
-    publish.mode AS mode,
-    publish.merge_proposal_url AS merge_proposal_url,
-    publish.result_code AS result_code,
-    publish.description AS description,
-    codebase.web_url AS vcs_browse,
-    codebase.name AS codebase
-FROM
-    publish
-LEFT JOIN codebase ON codebase.name = publish.codebase
-WHERE id = $1
-"""
-    publish = await conn.fetchrow(query, publish_id)
-    if publish is None:
-        raise web.HTTPNotFound(text=f"no such publish: {publish_id}")
+async def write_publish(client, publisher_url: str, publish_id: str):
+    url = URL(publisher_url) / "publish" / publish_id
+    async with client.get(url) as resp:
+        if resp.status == 404:
+            raise web.HTTPNotFound(text=f"no such publish: {publish_id}")
+        resp.raise_for_status()
+        publish = await resp.json()
+    # Template reads `publish.vcs_browse` (not codebase_web_url).
+    publish["vcs_browse"] = publish.pop("codebase_web_url", None)
+    publish["id"] = publish_id
+    publish["timestamp"] = _parse_timestamp(publish.get("timestamp"))
     return {"publish": publish}

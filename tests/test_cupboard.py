@@ -18,11 +18,11 @@
 import re
 import sys
 import types
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import aiohttp_jinja2
 import pytest
-from aiohttp import web
+from aiohttp import ClientSession, web
 from aiohttp.test_utils import make_mocked_request
 from jinja2 import Environment
 from yarl import URL
@@ -41,7 +41,6 @@ from janitor.site import (
 from janitor.site.cupboard import create_app, generate_codebase, handle_result_file
 from janitor.site.cupboard.api import create_app as create_api_app
 from janitor.site.cupboard.api import select_runs_to_reprocess
-from janitor.site.cupboard.publish import iter_publish_history
 from janitor.site.pkg import read_log
 
 from .conftest import _insert_codebase, _insert_run
@@ -56,10 +55,16 @@ def _user_middleware(user):
     return middleware
 
 
-async def create_client(aiohttp_client, db, *, user=None, config=""):
+async def create_client(
+    aiohttp_client, db, *, user=None, config="", publisher_url=None
+):
     config = read_config_string(config)
     app = create_app(
-        config=config, publisher_url=None, runner_url=None, differ_url=None, db=db
+        config=config,
+        publisher_url=publisher_url,
+        runner_url=None,
+        differ_url=None,
+        db=db,
     )
     app["external_url"] = URL("http://example.com/")
     # create_app leaves the jinja globals to its caller, and the production
@@ -86,6 +91,25 @@ async def _start_fake_runner(aiohttp_server, *, admin_workers):
 
     app = web.Application()
     app.router.add_get("/admin/workers", handle_admin_workers)
+    server = await aiohttp_server(app)
+    return str(server.make_url("/"))
+
+
+async def _start_fake_publisher(aiohttp_server, *, publishes):
+    """In-process stand-in for the publisher's `/publish` list endpoint."""
+
+    async def handle_publish(request):
+        mp_url = request.query.get("merge_proposal_url")
+        limit = request.query.get("limit")
+        rows = publishes
+        if mp_url is not None:
+            rows = [p for p in rows if p.get("merge_proposal_url") == mp_url]
+        if limit is not None:
+            rows = rows[: int(limit)]
+        return web.json_response({"publishes": rows})
+
+    app = web.Application()
+    app.router.add_get("/publish", handle_publish)
     server = await aiohttp_server(app)
     return str(server.make_url("/"))
 
@@ -150,8 +174,9 @@ async def test_queue(aiohttp_client, db):
     assert resp.status == 200
 
 
-async def test_publish_history(aiohttp_client, db):
-    client = await create_client(aiohttp_client, db)
+async def test_publish_history(aiohttp_client, aiohttp_server, db):
+    publisher_url = await _start_fake_publisher(aiohttp_server, publishes=[])
+    client = await create_client(aiohttp_client, db, publisher_url=publisher_url)
     resp = await client.get("/cupboard/publish")
     assert resp.status == 200
 
@@ -509,20 +534,87 @@ async def test_history_limit_zero_lists_no_runs(aiohttp_client, db):
     assert "somerun" not in await resp.text()
 
 
-async def test_publish_history_limit_zero_lists_nothing(con):
-    await con.execute("INSERT INTO codebase (name) VALUES ('foo')")
-    await con.execute(
-        "INSERT INTO change_set (id, campaign) VALUES ('cs1', 'mycampaign')"
-    )
-    await con.execute(
-        "INSERT INTO publish (id, change_set, target_branch_url, mode, "
-        "result_code, codebase) VALUES "
-        "('p1', 'cs1', 'https://example.com/foo.git', 'propose', 'success', 'foo'), "
-        "('p2', 'cs1', 'https://example.com/foo.git', 'propose', 'success', 'foo')"
-    )
-    assert len(await iter_publish_history(con)) == 2
-    assert len(await iter_publish_history(con, limit=1)) == 1
-    assert await iter_publish_history(con, limit=0) == []
+async def test_write_history_shapes_publisher_rows_for_the_template(aiohttp_server):
+    from janitor.site.cupboard.publish import write_history
+
+    publishes = [
+        {
+            "id": "p-recent",
+            "timestamp": "2026-02-01T12:00:00+00:00",
+            "codebase": "foo",
+            "codebase_web_url": "https://browse.invalid/foo",
+            "branch_name": "fix-1",
+            "mode": "propose",
+            "merge_proposal_url": "https://forge.invalid/foo/pulls/1",
+            "result_code": "success",
+            "description": "ok",
+            "revision": "rev-1",
+            "requester": None,
+        },
+        {
+            "id": "p-older",
+            "timestamp": "2026-01-01T12:00:00+00:00",
+            "codebase": "foo",
+            "codebase_web_url": "https://browse.invalid/foo",
+            "branch_name": None,
+            "mode": "push",
+            "merge_proposal_url": None,
+            "result_code": "publish-failed",
+            "description": None,
+            "revision": "rev-0",
+            "requester": None,
+        },
+    ]
+    publisher_url = await _start_fake_publisher(aiohttp_server, publishes=publishes)
+
+    async with ClientSession() as client:
+        result = await write_history(client, publisher_url, limit=100)
+
+    expected_rows = [
+        (
+            "p-recent",
+            datetime(2026, 2, 1, 12, 0, tzinfo=timezone.utc),
+            "fix-1",
+            "propose",
+            "https://forge.invalid/foo/pulls/1",
+            "success",
+            "ok",
+            "https://browse.invalid/foo",
+            "foo",
+        ),
+        (
+            "p-older",
+            datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+            None,
+            "push",
+            None,
+            "publish-failed",
+            None,
+            "https://browse.invalid/foo",
+            "foo",
+        ),
+    ]
+    assert result == {"count": 100, "history": expected_rows}
+
+
+async def test_write_history_passes_limit_through_to_publisher(aiohttp_server):
+    from janitor.site.cupboard.publish import write_history
+
+    captured = {}
+
+    async def handle_publish(request):
+        captured["limit"] = request.query.get("limit")
+        return web.json_response({"publishes": []})
+
+    app = web.Application()
+    app.router.add_get("/publish", handle_publish)
+    server = await aiohttp_server(app)
+
+    async with ClientSession() as client:
+        result = await write_history(client, str(server.make_url("/")), limit=7)
+
+    assert captured == {"limit": "7"}
+    assert result == {"count": 7, "history": []}
 
 
 @pytest.fixture

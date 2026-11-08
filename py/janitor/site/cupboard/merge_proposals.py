@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 
+from datetime import datetime
 from typing import Optional
 
 import asyncpg
@@ -51,21 +52,27 @@ WHERE url = $1
     return await conn.fetchrow(query, url)
 
 
-async def get_publishes(conn, url):
-    return await conn.fetch(
-        """
-SELECT * FROM publish WHERE merge_proposal_url = $1
-ORDER BY timestamp DESC
-""",
-        url,
-    )
+async def _fetch_publishes(client, publisher_url: str, url: str):
+    api_url = URL(publisher_url) / "publish"
+    async with client.get(
+        api_url, params={"merge_proposal_url": url}, raise_for_status=True
+    ) as resp:
+        data = await resp.json()
+    publishes = []
+    for entry in data["publishes"]:
+        entry = dict(entry)
+        ts = entry.get("timestamp")
+        if ts is not None:
+            entry["timestamp"] = datetime.fromisoformat(ts)
+        publishes.append(entry)
+    return publishes
 
 
-async def write_merge_proposal(db, url):
+async def write_merge_proposal(db, client, publisher_url: str, url: str):
     async with db.acquire() as conn:
         proposal = await get_proposal_with_run(conn, url)
 
-        publishes = await get_publishes(conn, url)
+    publishes = await _fetch_publishes(client, publisher_url, url)
 
     return {
         "proposal": proposal,
