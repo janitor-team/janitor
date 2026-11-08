@@ -293,6 +293,8 @@ pub struct WorkerInfo {
     /// When the worker was last seen.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_seen: Option<DateTime<Utc>>,
+    /// Number of completed runs recorded for this worker.
+    pub run_count: i64,
 }
 
 /// Worker counts in the worker listing.
