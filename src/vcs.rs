@@ -96,30 +96,9 @@ pub fn is_authenticated_url(url: &Url) -> bool {
     ["git+ssh", "bzr+ssh"].contains(&url.scheme())
 }
 
-// Serialize as string ("bzr" or "git")
-impl Serialize for VcsType {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(match self {
-            VcsType::Bzr => "bzr",
-            VcsType::Git => "git",
-        })
-    }
-}
-
-impl<'a> Deserialize<'a> for VcsType {
-    fn deserialize<D>(deserializer: D) -> Result<VcsType, D::Error>
-    where
-        D: serde::Deserializer<'a>,
-    {
-        let s = String::deserialize(deserializer)?;
-        std::str::FromStr::from_str(&s).map_err(serde::de::Error::custom)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Copy, std::hash::Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Copy, std::hash::Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(rename_all = "lowercase")]
 pub enum VcsType {
     Bzr,
     Git,

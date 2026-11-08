@@ -3,10 +3,12 @@ use askama::Template;
 use axum::response::IntoResponse;
 use axum::{
     extract::Path, extract::State, http::HeaderMap, http::StatusCode, response::Json,
-    response::Response, routing::get, routing::post, Router,
+    response::Response, routing::get, Router,
 };
 use janitor::api::worker::{Assignment, Metadata};
 use std::sync::{Arc, RwLock};
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 #[derive(Template)]
 #[template(path = "index.html")]
 pub struct IndexTemplate<'a> {
@@ -27,6 +29,14 @@ pub struct LogIndexTemplate {
     pub names: Vec<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/",
+    responses(
+        (status = 200, description = "Overview of the current run", body = String, content_type = "text/html"),
+        (status = 500, description = "The page could not be rendered", body = String, content_type = "text/plain"),
+    )
+)]
 async fn index(State(state): State<Arc<RwLock<AppState>>>) -> Response {
     let state = state.read().unwrap();
     let lognames: Option<Vec<String>> =
@@ -62,6 +72,14 @@ async fn index(State(state): State<Arc<RwLock<AppState>>>) -> Response {
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/kill",
+    responses(
+        (status = 410, description = "No run in progress", body = String, content_type = "text/plain"),
+        (status = 501, description = "Killing runs is not supported yet", body = String, content_type = "text/plain"),
+    )
+)]
 async fn kill(State(state): State<Arc<RwLock<AppState>>>) -> Response {
     // There is no cancellation handle threaded through run_worker's actual
     // command execution yet, so an in-progress build cannot be forcibly
@@ -77,14 +95,34 @@ async fn kill(State(state): State<Arc<RwLock<AppState>>>) -> Response {
     (StatusCode::NOT_IMPLEMENTED, "kill is not yet supported").into_response()
 }
 
+#[utoipa::path(
+    get,
+    path = "/health",
+    responses((status = 200, description = "Worker is alive", body = String, content_type = "text/plain"))
+)]
 async fn health() -> String {
     "ok".to_string()
 }
 
+#[utoipa::path(
+    get,
+    path = "/assignment",
+    responses((status = 200, description = "The current assignment; null when there is none", body = Option<Assignment>))
+)]
 async fn assignment(State(state): State<Arc<RwLock<AppState>>>) -> Json<Option<Assignment>> {
     Json(state.read().unwrap().assignment.clone())
 }
 
+#[utoipa::path(
+    get,
+    path = "/logs",
+    responses(
+        (status = 200, description = "Names of the log files; JSON when requested with `Accept: application/json`, HTML otherwise",
+         content((Vec<String> = "application/json"), (String = "text/html"))),
+        (status = 404, description = "The output directory does not exist yet", body = String, content_type = "text/plain"),
+        (status = 500, description = "The output directory could not be read", body = String, content_type = "text/plain"),
+    )
+)]
 async fn get_logs(State(state): State<Arc<RwLock<AppState>>>, headers: HeaderMap) -> Response {
     let output_directory = &state.read().unwrap().output_directory;
     if output_directory.is_none() {
@@ -126,6 +164,16 @@ async fn get_logs(State(state): State<Arc<RwLock<AppState>>>, headers: HeaderMap
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/artifacts",
+    responses(
+        (status = 200, description = "Names of the artifacts; JSON when requested with `Accept: application/json`, HTML otherwise",
+         content((Vec<String> = "application/json"), (String = "text/html"))),
+        (status = 404, description = "The output directory does not exist yet", body = String, content_type = "text/plain"),
+        (status = 500, description = "The output directory could not be read", body = String, content_type = "text/plain"),
+    )
+)]
 async fn get_artifacts(State(state): State<Arc<RwLock<AppState>>>, headers: HeaderMap) -> Response {
     let output_directory = &state.read().unwrap().output_directory;
     if output_directory.is_none() {
@@ -167,6 +215,14 @@ async fn get_artifacts(State(state): State<Arc<RwLock<AppState>>>, headers: Head
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/log-id",
+    responses(
+        (status = 200, description = "Id of the current run", body = String, content_type = "text/plain"),
+        (status = 404, description = "No run in progress", body = String, content_type = "text/plain"),
+    )
+)]
 async fn get_log_id(State(state): State<Arc<RwLock<AppState>>>) -> Response {
     match state.read().unwrap().assignment.as_ref() {
         Some(a) => a.id.to_string().into_response(),
@@ -174,6 +230,17 @@ async fn get_log_id(State(state): State<Arc<RwLock<AppState>>>) -> Response {
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/logs/{filename}",
+    params(("filename" = String, Path, description = "File name")),
+    responses(
+        (status = 200, description = "Contents of the log file", body = String, content_type = "text/plain"),
+        (status = 400, description = "Invalid file name", body = String, content_type = "text/plain"),
+        (status = 404, description = "No such log file, or the output directory does not exist yet", body = String, content_type = "text/plain"),
+        (status = 500, description = "The log file could not be opened", body = String, content_type = "text/plain"),
+    )
+)]
 async fn get_log_file(
     State(state): State<Arc<RwLock<AppState>>>,
     Path(filename): Path<String>,
@@ -224,6 +291,17 @@ async fn get_log_file(
     (StatusCode::OK, headers, body).into_response()
 }
 
+#[utoipa::path(
+    get,
+    path = "/artifacts/{filename}",
+    params(("filename" = String, Path, description = "File name")),
+    responses(
+        (status = 200, description = "Contents of the artifact", body = Vec<u8>, content_type = "application/octet-stream"),
+        (status = 400, description = "Invalid file name", body = String, content_type = "text/plain"),
+        (status = 404, description = "No such artifact, or the output directory does not exist yet", body = String, content_type = "text/plain"),
+        (status = 500, description = "The artifact could not be opened", body = String, content_type = "text/plain"),
+    )
+)]
 async fn get_artifact_file(
     State(state): State<Arc<RwLock<AppState>>>,
     Path(filename): Path<String>,
@@ -274,18 +352,37 @@ async fn get_artifact_file(
     (StatusCode::OK, headers, body).into_response()
 }
 
+#[derive(utoipa::OpenApi)]
+struct WorkerApi;
+
+fn routes() -> OpenApiRouter<Arc<RwLock<AppState>>> {
+    OpenApiRouter::with_openapi(<WorkerApi as utoipa::OpenApi>::openapi())
+        .routes(routes!(index))
+        .routes(routes!(health))
+        .routes(routes!(kill))
+        .routes(routes!(assignment))
+        .routes(routes!(get_logs))
+        .routes(routes!(get_log_file))
+        .routes(routes!(get_log_id))
+        .routes(routes!(get_artifacts))
+        .routes(routes!(get_artifact_file))
+}
+
+/// OpenAPI document for the worker's API.
+pub fn openapi() -> utoipa::openapi::OpenApi {
+    routes().into_openapi()
+}
+
 pub fn app(state: Arc<RwLock<AppState>>) -> Router {
-    // build our application with a route
-    Router::new()
-        .route("/", get(index))
-        .route("/health", get(health))
-        .route("/kill", post(kill))
-        .route("/assignment", get(assignment))
-        .route("/logs", get(get_logs))
-        .route("/logs/{filename}", get(get_log_file))
-        .route("/log-id", get(get_log_id))
-        .route("/artifacts", get(get_artifacts))
-        .route("/artifacts/{filename}", get(get_artifact_file))
+    let (router, openapi) = routes().split_for_parts();
+    let spec = openapi
+        .to_json()
+        .expect("OpenAPI document can be serialized");
+    router
+        .route(
+            "/openapi.json",
+            get(move || async move { ([("content-type", "application/json")], spec) }),
+        )
         .with_state(state.clone().clone())
 }
 
@@ -296,6 +393,60 @@ mod tests {
     use axum::http::Request;
     use http_body_util::BodyExt;
     use tower::ServiceExt; // for `collect`
+
+    fn collect_refs<'a>(value: &'a serde_json::Value, refs: &mut Vec<&'a str>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, value) in map {
+                    match value {
+                        serde_json::Value::String(target) if key == "$ref" => refs.push(target),
+                        _ => collect_refs(value, refs),
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    collect_refs(item, refs);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Schemas only end up in the document when utoipa can see them from
+    /// a path or the `OpenApi` derive; a `$ref` to anything else would
+    /// leave clients with a broken document.
+    #[test]
+    fn test_openapi_refs_resolve() {
+        let doc = serde_json::to_value(openapi()).unwrap();
+        let mut refs = vec![];
+        collect_refs(&doc, &mut refs);
+        let missing: Vec<&str> = refs
+            .into_iter()
+            .filter(|r| {
+                let name = r
+                    .strip_prefix("#/components/schemas/")
+                    .unwrap_or_else(|| panic!("unexpected $ref {r}"));
+                doc["components"]["schemas"].get(name).is_none()
+            })
+            .collect();
+        assert_eq!(missing, Vec::<&str>::new());
+    }
+
+    #[tokio::test]
+    async fn test_openapi_json() {
+        let app = app(Arc::new(RwLock::new(AppState::default())));
+        let request = Request::builder()
+            .uri("/openapi.json")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+
+        let body: serde_json::Value = serde_json::from_str(&get_body(response).await).unwrap();
+        assert_eq!(body["info"]["title"], "janitor-worker");
+        assert!(body["paths"]["/assignment"]["get"].is_object(), "{body}");
+    }
 
     async fn get_body(response: Response<Body>) -> String {
         let body = response.into_body().collect().await.unwrap().to_bytes();

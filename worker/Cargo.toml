@@ -19,7 +19,7 @@ log = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { workspace = true, features = ["derive", "env"], optional = true }
-janitor = { path = ".." }
+janitor = { path = "..", features = ["utoipa"] }
 janitor-types = { workspace = true, features = ["pyo3"] }
 janitor-service = { workspace = true }
 breezyshim.workspace = true
@@ -38,6 +38,8 @@ ognibuild = { workspace = true }
 debversion = { workspace = true, optional = true }
 debian-changelog = { workspace = true, optional = true }
 tokio-util = "0.7.14"
+utoipa.workspace = true
+utoipa-axum.workspace = true
 
 [features]
 default = ["debian", "cli"]

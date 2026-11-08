@@ -3286,6 +3286,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "url",
+ "utoipa",
 ]
 
 [[package]]
@@ -3644,6 +3645,8 @@ dependencies = [
  "tokio-util",
  "tower 0.5.3",
  "url",
+ "utoipa",
+ "utoipa-axum",
 ]
 
 [[package]]

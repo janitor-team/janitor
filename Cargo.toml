@@ -61,6 +61,7 @@ opentelemetry-otlp = { version = "0.33", default-features = false, features = ["
 tracing-opentelemetry = { version = "0.34", optional = true }
 object_store = { version = "0.14", features = ["aws", "fs"] }
 tokio-util = { version = "0.7", features = ["io"] }
+utoipa = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Self-reference so `cargo test -p janitor` runs the `testing`-gated tests, as in runner/Cargo.toml.
@@ -131,4 +132,5 @@ gcp = ["stackdriver_logger", "gcs"]
 gcs = ["object_store/gcp"]
 testing = ["sqlx/postgres", "sqlx/runtime-tokio", "sqlx/tls-rustls-aws-lc-rs"]
 otlp = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
+utoipa = ["dep:utoipa", "janitor-types/utoipa"]
 
