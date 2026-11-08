@@ -640,6 +640,176 @@ test_with_database! {
     }
 }
 
+async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
+    let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+/// Seed the full `merge_proposal + run(codebase, campaign)` fixture
+/// used by the merge-proposals list tests.
+#[allow(clippy::too_many_arguments)]
+async fn seed_mp_with_run(
+    pool: &PgPool,
+    codebase: &str,
+    campaign: &str,
+    cs_id: &str,
+    run_id: &str,
+    revision: &str,
+    mp_url: &str,
+    status: &str,
+) {
+    sqlx::query(
+        "INSERT INTO codebase (name, branch_url, url, vcs_type)
+         VALUES ($1, $2, $2, 'git') ON CONFLICT DO NOTHING",
+    )
+    .bind(codebase)
+    .bind(format!("https://example.invalid/{}", codebase))
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO change_set (id, campaign) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+        .bind(cs_id)
+        .bind(campaign)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO run (
+             id, codebase, suite, command, start_time, finish_time, description,
+             result_code, branch_url, main_branch_revision, revision, value,
+             change_set, logfilenames, vcs_type
+         ) VALUES (
+             $1, $2, $3, 'noop', NOW() - INTERVAL '1 minute', NOW(), 'ok',
+             'success', $4, 'rev-base', $5, 100, $6, ARRAY[]::text[], 'git'
+         )",
+    )
+    .bind(run_id)
+    .bind(codebase)
+    .bind(campaign)
+    .bind(format!("https://example.invalid/{}", codebase))
+    .bind(revision)
+    .bind(cs_id)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO merge_proposal (url, status, revision)
+         VALUES ($1, $2::merge_proposal_status, $3)",
+    )
+    .bind(mp_url)
+    .bind(status)
+    .bind(revision)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+test_with_database! {
+    schema = Core;
+    async fn merge_proposals_list_includes_codebase_and_campaign(test_db: TestDatabase) {
+        seed_mp_with_run(
+            test_db.pool(),
+            "alpha",
+            "lintian-fixes",
+            "cs-alpha",
+            "run-alpha",
+            "rev-alpha",
+            "https://forge.invalid/alpha/pulls/1",
+            "open",
+        )
+        .await;
+        seed_mp_with_run(
+            test_db.pool(),
+            "beta",
+            "other-campaign",
+            "cs-beta",
+            "run-beta",
+            "rev-beta",
+            "https://forge.invalid/beta/pulls/2",
+            "merged",
+        )
+        .await;
+
+        let app = build_app(test_db.pool().clone()).await;
+        let (status, body) = get_json(app, "/merge-proposals").await;
+        assert_eq!(status, StatusCode::OK);
+        let mut entries: Vec<(String, String, String, String)> = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e["url"].as_str().unwrap().to_string(),
+                    e["status"].as_str().unwrap().to_string(),
+                    e["codebase"].as_str().unwrap().to_string(),
+                    e["campaign"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        entries.sort();
+        assert_eq!(
+            entries,
+            vec![
+                (
+                    "https://forge.invalid/alpha/pulls/1".to_string(),
+                    "open".to_string(),
+                    "alpha".to_string(),
+                    "lintian-fixes".to_string(),
+                ),
+                (
+                    "https://forge.invalid/beta/pulls/2".to_string(),
+                    "merged".to_string(),
+                    "beta".to_string(),
+                    "other-campaign".to_string(),
+                ),
+            ]
+        );
+    }
+}
+
+test_with_database! {
+    schema = Core;
+    async fn merge_proposals_by_codebase_filters_by_campaign(test_db: TestDatabase) {
+        for (campaign, cs, run, rev, mp) in [
+            ("lintian-fixes", "cs-a", "run-a", "rev-a", "https://forge.invalid/alpha/pulls/1"),
+            ("other-campaign", "cs-b", "run-b", "rev-b", "https://forge.invalid/alpha/pulls/2"),
+        ] {
+            seed_mp_with_run(
+                test_db.pool(),
+                "alpha",
+                campaign,
+                cs,
+                run,
+                rev,
+                mp,
+                "open",
+            )
+            .await;
+        }
+
+        let app = build_app(test_db.pool().clone()).await;
+
+        // No campaign filter: both proposals come back.
+        let (status, body) = get_json(app.clone(), "/c/alpha/merge-proposals").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 2);
+
+        // Campaign filter narrows to one.
+        let (status, body) =
+            get_json(app, "/c/alpha/merge-proposals?campaign=lintian-fixes").await;
+        assert_eq!(status, StatusCode::OK);
+        let arr = body.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["url"], "https://forge.invalid/alpha/pulls/1");
+        assert_eq!(arr[0]["campaign"], "lintian-fixes");
+    }
+}
+
 test_with_database! {
     schema = Core;
     async fn openapi_json_is_served(test_db: TestDatabase) {
