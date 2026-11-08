@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct GitPerson {
     pub name: String,
     pub email: String,
@@ -12,7 +12,7 @@ pub struct GitPerson {
 /// One commit in the `revision-info` response. Uses hyphenated keys
 /// (`commit-id`, `revision-id`) because the cupboard evaluate page
 /// consumes that shape.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct RevisionInfoEntry {
     #[serde(rename = "commit-id")]
     pub commit_id: String,
@@ -22,14 +22,14 @@ pub struct RevisionInfoEntry {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct LogEntry {
     pub sha: String,
     pub author: GitPerson,
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct LogResponse {
     pub commits: Vec<LogEntry>,
 }

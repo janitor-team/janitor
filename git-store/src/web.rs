@@ -4,13 +4,11 @@
 //! app is mounted under `/git/` and requires HTTP Basic worker
 //! credentials for writes.
 
-use crate::web_utils::{
-    apply_standard_middleware, health_handler, metrics_handler, ready_handler, HealthChecker,
-};
+use crate::web_utils::{apply_standard_middleware, HealthChecker};
 use crate::{
     database::DatabaseManager,
     error::{GitStoreError, Result},
-    git_http::{git_backend, git_diff, git_log, revision_info},
+    git_http::git_backend,
     repository::RepositoryManager,
     Config,
 };
@@ -26,6 +24,9 @@ use base64::Engine;
 use janitor_types::CodebaseName;
 use std::sync::Arc;
 use tera::Tera;
+use utoipa::openapi::OpenApi;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 /// Governs write policy: `Admin` always writes, `Public` requires
 /// worker auth.
@@ -47,12 +48,37 @@ pub struct AppState {
 
 /// Sub-router carrying the health / ready / metrics endpoints under
 /// their own `Arc<HealthChecker>` state.
-fn health_router(checker: Arc<HealthChecker>) -> Router {
-    Router::new()
-        .route("/health", get(health_handler))
-        .route("/ready", get(ready_handler))
-        .route("/metrics", get(metrics_handler))
-        .with_state(checker)
+fn health_routes() -> OpenApiRouter<Arc<HealthChecker>> {
+    OpenApiRouter::new()
+        .routes(routes!(crate::web_utils::health_handler))
+        .routes(routes!(crate::web_utils::ready_handler))
+        .routes(routes!(crate::web_utils::metrics_handler))
+}
+
+/// Base of the admin app's OpenAPI document. `CodebaseName` is listed
+/// explicitly because it is only used in path parameters, whose schemas
+/// utoipa does not collect.
+#[derive(utoipa::OpenApi)]
+#[openapi(components(schemas(CodebaseName)))]
+struct AdminApi;
+
+/// REST endpoints of the admin app; the git protocol routes are added
+/// by [`create_admin_app`].
+fn admin_routes() -> OpenApiRouter<AppState> {
+    OpenApiRouter::with_openapi(<AdminApi as utoipa::OpenApi>::openapi())
+        .routes(routes!(list_repositories))
+        .routes(routes!(crate::git_http::git_diff))
+        .routes(routes!(crate::git_http::revision_info))
+        .routes(routes!(crate::git_http::git_log))
+        .routes(routes!(set_remote))
+}
+
+/// OpenAPI document for the admin app. The git protocol routes are not
+/// included.
+pub fn admin_openapi() -> OpenApi {
+    let mut openapi = admin_routes().into_openapi();
+    openapi.merge(health_routes().into_openapi());
+    openapi
 }
 
 /// Decode HTTP Basic auth and check it against the `worker` table.
@@ -93,13 +119,11 @@ pub(crate) async fn is_worker_request(
 /// `client_max_size` bounds request bodies in bytes; 0 means unlimited
 /// (matches Python's `web.Application(client_max_size=...)`).
 pub fn create_admin_app(state: AppState, client_max_size: usize) -> Router {
-    let health = health_router(state.health_checker.clone());
-    let router = Router::new()
-        .route("/", get(list_repositories))
-        .route("/{codebase}/diff", get(git_diff))
-        .route("/{codebase}/revision-info", get(revision_info))
-        .route("/{codebase}/log", get(git_log))
-        .route("/{codebase}/remotes/{name}", post(set_remote))
+    let spec = admin_openapi()
+        .to_json()
+        .expect("OpenAPI document can be serialized");
+    let health = health_routes().with_state(state.health_checker.clone());
+    let (router, _) = admin_routes()
         // Smart-protocol: GET for the handshake, POST for the pack
         // transfer. Dumb-HTTP metadata lives under {*path} with a
         // whitelist enforced in `git_backend`.
@@ -110,6 +134,12 @@ pub fn create_admin_app(state: AppState, client_max_size: usize) -> Router {
         .route("/{codebase}/{*path}", get(git_backend))
         .with_state(state)
         .merge(health)
+        .split_for_parts();
+    let router = router
+        .route(
+            "/openapi.json",
+            get(move || async move { ([("content-type", "application/json")], spec) }),
+        )
         .layer(body_limit_layer(client_max_size));
 
     apply_standard_middleware(router, &web_config(client_max_size))
@@ -275,6 +305,15 @@ async fn klaus_or_git_backend_root(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/",
+    responses(
+        (status = 200, description = "Names of the repositories; the format depends on the Accept header",
+         content((Vec<String> = "application/json"), (String = "text/plain"), (String = "text/html"))),
+        (status = 406, description = "None of the offered content types is acceptable"),
+    )
+)]
 async fn list_repositories(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -307,11 +346,36 @@ async fn list_repositories(
     }
 }
 
+/// Form body of `POST /{codebase}/remotes/{name}`; only used to describe
+/// the request in the OpenAPI document, since the handler checks that
+/// the codebase exists before parsing the body.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)]
+struct SetRemoteForm {
+    /// URL of the remote.
+    url: String,
+}
+
 /// Body is form-encoded with a `url` field.
 ///
 /// Matches Python's `handle_set_git_remote` -> `_git_open_repo`:
 /// unknown codebases must 404 (`no such codebase`) rather than get an
 /// auto-created bare repo. The `url` field is required.
+#[utoipa::path(
+    post,
+    path = "/{codebase}/remotes/{name}",
+    params(
+        ("codebase" = CodebaseName, Path, description = "Codebase name"),
+        ("name" = String, Path, description = "Name of the remote"),
+    ),
+    request_body(content = SetRemoteForm, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 200, description = "The remote was set"),
+        (status = 400, description = "Invalid form body or missing `url`", body = String, content_type = "text/plain", headers(("X-Janitor-Error" = String, description = "Class of the error"))),
+        (status = 404, description = "No such codebase", body = String, content_type = "text/plain", headers(("X-Janitor-Error" = String, description = "Class of the error"))),
+        (status = 500, description = "Internal error", body = String, content_type = "text/plain", headers(("X-Janitor-Error" = String, description = "Class of the error"))),
+    )
+)]
 async fn set_remote(
     State(state): State<AppState>,
     Path((codebase, name)): Path<(CodebaseName, String)>,
@@ -384,6 +448,46 @@ pub fn init_templates(templates_path: Option<&std::path::Path>) -> Result<Tera> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn collect_refs<'a>(value: &'a serde_json::Value, refs: &mut Vec<&'a str>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, value) in map {
+                    match value {
+                        serde_json::Value::String(target) if key == "$ref" => refs.push(target),
+                        _ => collect_refs(value, refs),
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    collect_refs(item, refs);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Schemas only end up in the document when utoipa can see them from
+    /// a path or the `OpenApi` derive; a `$ref` to anything else would
+    /// leave clients with a broken document.
+    #[test]
+    fn test_openapi_refs_resolve() {
+        let doc = serde_json::to_value(admin_openapi()).unwrap();
+        let mut refs = vec![];
+        collect_refs(&doc, &mut refs);
+        assert!(!refs.is_empty());
+        let missing: Vec<&str> = refs
+            .into_iter()
+            .filter(|r| {
+                let name = r
+                    .strip_prefix("#/components/schemas/")
+                    .unwrap_or_else(|| panic!("unexpected $ref {r}"));
+                doc["components"]["schemas"].get(name).is_none()
+            })
+            .collect();
+        assert_eq!(missing, Vec::<&str>::new());
+    }
 
     #[test]
     fn test_init_templates() {

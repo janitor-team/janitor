@@ -19,7 +19,7 @@ futures-util = "0.3"
 git2 = "0.18"
 http = "1.1"
 janitor = { path = "..", features = ["otlp"] }
-janitor-types = { workspace = true, features = ["pyo3", "sqlx"] }
+janitor-types = { workspace = true, features = ["pyo3", "sqlx", "utoipa"] }
 janitor-service = { workspace = true }
 nix = { workspace = true, features = ["signal"] }
 prometheus = { version = "0.14.0", features = ["process"] }
@@ -29,6 +29,8 @@ serde_json = "1.0"
 serde_urlencoded = "0.7"
 sqlx = { version = "0.9", features = ["postgres", "runtime-tokio", "tls-rustls-aws-lc-rs", "chrono", "uuid"] }
 tera = "1.19"
+utoipa.workspace = true
+utoipa-axum.workspace = true
 thiserror = "1.0"
 tokio = { version = "1.0", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io"] }
