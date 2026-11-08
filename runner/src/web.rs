@@ -536,43 +536,88 @@ async fn schedule(
 
 /// `GET /status` -- return the live status of the queue processor as
 /// `{processing: [...], avoid_hosts: [...], rate_limit_hosts: {...}}`.
-///
-/// `processing` is the list of currently-active runs. We don't track per-run keepalive
-/// timestamps, so no keepalive_age / mia / last-keepalive fields are
-/// included.
 #[utoipa::path(
     get,
     path = "/status",
-    responses((status = 200, description = "Queue processor status", body = StatusResponse))
+    responses(
+        (status = 200, description = "Queue processor status", body = StatusResponse),
+        (status = 500, description = "Redis could not be reached", body = ReasonResponse),
+    )
 )]
-async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
-    let processing: Vec<ActiveRunResponse> = state
+async fn status(State(state): State<Arc<AppState>>) -> Response {
+    match status_response(&state).await {
+        Ok(status) => Json(status).into_response(),
+        Err(e) => {
+            log::error!("Failed to gather status: {}", e);
+            reason(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to gather status: {}", e),
+            )
+        }
+    }
+}
+
+/// The live status of the queue processor, as returned by `GET /status`
+/// and published on the `queue` channel. Matches the Python runner's
+/// `QueueProcessor.status_json`.
+async fn status_response(
+    state: &AppState,
+) -> Result<StatusResponse, Box<dyn std::error::Error + Send + Sync>> {
+    let last_keepalives = state.active_runs.last_keepalives().await?;
+    let now = Utc::now();
+    let processing = state
         .active_runs
         .list()
         .await
         .iter()
-        .map(ActiveRun::to_response)
+        .map(|run| {
+            let mut response = run.to_response();
+            let last_keepalive = last_keepalives.get(run.log_id.as_str());
+            let age = last_keepalive.map(|k| (now - *k).as_seconds_f64());
+            response.keepalive_age = Some(age);
+            response.last_keepalive = Some(
+                last_keepalive.map(|k| crate::active_runs::format_python_datetime_seconds(*k)),
+            );
+            response.mia = Some(age.map(|age| age > (state.run_timeout_minutes * 60) as f64));
+            response
+        })
         .collect();
 
-    // Rate-limited hosts come from Redis; emit an ISO-8601 timestamp
-    // per host so downstream tooling can compare to `now()`.
-    let rate_limit_hosts: BTreeMap<String, String> =
-        match state.database.get_rate_limited_hosts().await {
-            Ok(map) => map
-                .into_iter()
-                .map(|(host, until)| (host, until.to_rfc3339()))
-                .collect(),
-            Err(e) => {
-                log::debug!("status: failed to read rate-limited hosts: {}", e);
-                BTreeMap::new()
-            }
-        };
+    let rate_limit_hosts = state
+        .database
+        .get_rate_limited_hosts()
+        .await?
+        .into_iter()
+        .map(|(host, until)| {
+            (
+                host,
+                crate::active_runs::format_python_datetime_seconds(until),
+            )
+        })
+        .collect();
 
-    Json(StatusResponse {
+    Ok(StatusResponse {
         processing,
         avoid_hosts: state.avoid_hosts.clone(),
         rate_limit_hosts,
     })
+}
+
+/// Publish the current queue processor status on the `queue` channel.
+async fn publish_queue_status(state: &AppState) {
+    let result = match status_response(state).await {
+        Ok(status) => {
+            let payload = serde_json::to_value(status).expect("StatusResponse is plain data");
+            state.database.publish("queue", &payload).await
+        }
+        Err(e) => Err(e),
+    };
+    if let Err(e) = result {
+        log::error!("Failed to publish queue status event: {}", e);
+        crate::metrics::REDIS_OPERATIONS_TOTAL
+            .with_label_values(&["publish_queue_status", "error"])
+            .inc();
+    }
 }
 
 /// `GET /log/{run_id}` -- list the log files of a run. For an active
@@ -2784,6 +2829,69 @@ async fn finish_active_run_multipart(
     finish_run_multipart_internal(state, id, multipart, false).await
 }
 
+/// Drop a run from the active runs and release its queue item.
+async fn unclaim_run(
+    state: &AppState,
+    run_id: &RunId,
+    queue_id: i64,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    state.database.unassign_queue_item(queue_id).await?;
+    if let Some(active_run) = state.active_runs.get(run_id).await {
+        state.active_runs.remove(run_id).await;
+        crate::metrics::MetricsCollector::set_active_runs(
+            &active_run.worker_name,
+            state
+                .active_runs
+                .count_for_worker(&active_run.worker_name)
+                .await as i64,
+        );
+    }
+    Ok(())
+}
+
+/// Record `active_run` as failed with `code` and publish the result,
+/// like the Python runner's `QueueProcessor.abort_run`.
+pub(crate) async fn abort_run(
+    state: &Arc<AppState>,
+    active_run: &ActiveRun,
+    code: &str,
+    description: &str,
+    transient: Option<bool>,
+) -> Result<crate::database::FinishOutcome, Box<dyn std::error::Error + Send + Sync>> {
+    let mut result = active_run.create_result(code.to_string(), Some(description.to_string()));
+    // Python's aborted results carry no context, subpath or resume_from.
+    result.context = None;
+    result.subpath = None;
+    result.resume = None;
+    result.remotes = Some(HashMap::new());
+    result.transient = transient;
+    let outcome = state
+        .database
+        .finish_run(
+            &mut result,
+            &active_run.command,
+            active_run.instigated_context.as_ref(),
+            active_run.queue_id,
+        )
+        .await?;
+    match outcome {
+        crate::database::FinishOutcome::Stored => {
+            publish_finish_events(
+                state,
+                &active_run.log_id,
+                &result,
+                active_run.queue_id,
+                active_run.change_set.clone(),
+            )
+            .await
+        }
+        crate::database::FinishOutcome::AlreadyStored => {
+            unclaim_run(state, &active_run.log_id, active_run.queue_id).await?
+        }
+    }
+    Ok(outcome)
+}
+
 /// Publish the side effects that follow a committed `finish_run`:
 /// pub/sub `result`, drop the in-memory active-run entry, drop the
 /// queue-item assignment, pub/sub `queue`, bump the last-success
@@ -2798,6 +2906,7 @@ async fn publish_finish_events(
     run_id: &RunId,
     janitor_result: &crate::JanitorResult,
     queue_id: i64,
+    change_set: Option<ChangeSetId>,
 ) {
     // The DB writes already committed. If any of these Redis side
     // effects fails we can't roll back, so we log at error, bump the
@@ -2817,33 +2926,14 @@ async fn publish_finish_events(
             .inc();
     }
 
-    state.active_runs.remove(run_id).await;
-
-    if let Err(e) = state.database.unassign_queue_item(queue_id).await {
+    if let Err(e) = unclaim_run(state, run_id, queue_id).await {
         log::error!("Failed to unassign queue item from Redis: {}", e);
         crate::metrics::REDIS_OPERATIONS_TOTAL
             .with_label_values(&["unassign_queue_item", "error"])
             .inc();
     }
 
-    let status_payload = serde_json::to_value(StatusResponse {
-        processing: state
-            .active_runs
-            .list()
-            .await
-            .iter()
-            .map(ActiveRun::to_response)
-            .collect(),
-        avoid_hosts: vec![],
-        rate_limit_hosts: BTreeMap::new(),
-    })
-    .expect("StatusResponse is plain data");
-    if let Err(e) = state.database.publish("queue", &status_payload).await {
-        log::error!("Failed to publish queue status event: {}", e);
-        crate::metrics::REDIS_OPERATIONS_TOTAL
-            .with_label_values(&["publish_queue_status", "error"])
-            .inc();
-    }
+    publish_queue_status(state).await;
 
     crate::metrics::LAST_SUCCESS_GAUGE.set(chrono::Utc::now().timestamp() as f64);
 
@@ -2854,7 +2944,6 @@ async fn publish_finish_events(
     let pool = state.database.pool().clone();
     let codebase = janitor_result.codebase.clone();
     let campaign = janitor_result.campaign.clone();
-    let change_set = janitor_result.change_set.clone();
     let context_str = janitor_result
         .context
         .as_ref()
@@ -3157,6 +3246,9 @@ async fn finish_run_multipart_internal(
                 "Run {} already stored; replying 409 so the worker stops retrying",
                 run_id
             );
+            if let Err(e) = unclaim_run(&state, &run_id, active_run.queue_id).await {
+                log::error!("Failed to unclaim run {}: {}", run_id, e);
+            }
             return (
                 StatusCode::CONFLICT,
                 Json(finish_conflict_body(&run_id, &janitor_result, public)),
@@ -3186,14 +3278,15 @@ async fn finish_run_multipart_internal(
 
     // Publish the completed result to subscribers and tear down the
     // active-run state.
-    publish_finish_events(&state, &run_id, &janitor_result, active_run.queue_id).await;
-    crate::metrics::MetricsCollector::set_active_runs(
-        &active_run.worker_name,
-        state
-            .active_runs
-            .count_for_worker(&active_run.worker_name)
-            .await as i64,
-    );
+    // finish_run fills in the result's change_set, so use the run's.
+    publish_finish_events(
+        &state,
+        &run_id,
+        &janitor_result,
+        active_run.queue_id,
+        active_run.change_set.clone(),
+    )
+    .await;
 
     let response = FinishResponse {
         id: run_id,
@@ -3382,6 +3475,9 @@ fn new_run_id() -> RunId {
 /// table (which also removes the row from `queue`) and then go back
 /// to pull the next item.
 ///
+/// Like Python's `abort_run`, the result is published, the queue item
+/// released and the codebase rescheduled.
+///
 /// All errors are swallowed to a `log::warn!`: if we fail to
 /// persist the rejection, the broken queue item may reappear on the
 /// next loop iteration, but we'll still hit the retry cap and bail
@@ -3389,6 +3485,7 @@ fn new_run_id() -> RunId {
 async fn abort_assignment(
     state: &Arc<AppState>,
     assignment: &crate::QueueAssignment,
+    worker_name: &str,
     code: &str,
     description: &str,
 ) {
@@ -3397,9 +3494,10 @@ async fn abort_assignment(
     let mut result = crate::JanitorResult {
         log_id,
         branch_url: assignment.vcs_info.branch_url.clone().unwrap_or_default(),
-        subpath: assignment.vcs_info.subpath.clone(),
+        // Python's aborted results carry no context or subpath.
+        subpath: None,
         code: code.to_string(),
-        transient: Some(false),
+        transient: None,
         codebase: assignment.queue_item.codebase.clone(),
         campaign: assignment.queue_item.campaign.clone(),
         description: Some(description.to_string()),
@@ -3412,19 +3510,20 @@ async fn abort_assignment(
         main_branch_revision: None,
         change_set: assignment.queue_item.change_set.clone(),
         tags: None,
-        remotes: None,
+        remotes: Some(HashMap::new()),
         branches: None,
         failure_details: None,
         failure_stage: None,
         resume: None,
         target: None,
-        worker_name: None,
+        // Like Python, the run is recorded as the requesting worker's.
+        worker_name: Some(worker_name.to_string()),
         vcs_type: assignment.vcs_info.vcs_type.clone(),
         target_branch_url: None,
-        context: assignment.queue_item.context.clone(),
+        context: None,
         builder_result: None,
     };
-    if let Err(e) = state
+    match state
         .database
         .finish_run(
             &mut result,
@@ -3434,12 +3533,30 @@ async fn abort_assignment(
         )
         .await
     {
-        log::warn!(
-            "Failed to record aborted assignment for queue item {} ({}): {}",
-            assignment.queue_item.id,
-            code,
-            e
-        );
+        Ok(crate::database::FinishOutcome::Stored) => {
+            publish_finish_events(
+                state,
+                &result.log_id.clone(),
+                &result,
+                assignment.queue_item.id,
+                assignment.queue_item.change_set.clone(),
+            )
+            .await
+        }
+        Ok(crate::database::FinishOutcome::AlreadyStored) => {
+            log::warn!(
+                "Aborted assignment for queue item {} was already stored",
+                assignment.queue_item.id
+            );
+        }
+        Err(e) => {
+            log::warn!(
+                "Failed to record aborted assignment for queue item {} ({}): {}",
+                assignment.queue_item.id,
+                code,
+                e
+            );
+        }
     }
 }
 
@@ -3788,6 +3905,7 @@ async fn assign_work_internal(
                 abort_assignment(
                     &state,
                     &assignment,
+                    &worker_name,
                     "unknown-campaign",
                     &format!("Campaign {} unknown", assignment.queue_item.campaign),
                 )
@@ -3805,6 +3923,7 @@ async fn assign_work_internal(
                 abort_assignment(
                     &state,
                     &assignment,
+                    &worker_name,
                     "not-in-vcs",
                     "No VCS URL known for codebase.",
                 )
@@ -3920,6 +4039,7 @@ async fn assign_work_internal(
         abort_assignment(
             &state,
             &assignment,
+            &worker_name,
             "resume-rate-limited",
             &format!("Forge {} rate-limited us; retry after {}s", host, wait_secs),
         )
@@ -3965,6 +4085,7 @@ async fn assign_work_internal(
     // Store active run in the in-memory store
     state.active_runs.store(active_run.clone()).await;
     crate::metrics::RUN_COUNT.inc();
+    publish_queue_status(&state).await;
     crate::metrics::MetricsCollector::set_active_runs(
         &active_run.worker_name,
         state

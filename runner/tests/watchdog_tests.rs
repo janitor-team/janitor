@@ -6,14 +6,13 @@ use janitor_runner::{ActiveRun, AppState, Backchannel, VcsInfo};
 use janitor_types::{Campaign, CodebaseName, RunId};
 use std::sync::Arc;
 
-const RUN_TIMEOUT_MINUTES: u64 = 60;
-
 fn rid(s: &str) -> RunId {
     RunId::new(s).unwrap()
 }
 
 /// Register `run` as active with its last keepalive `keepalive_age`
-/// ago. Returns `None` if no database/redis is available.
+/// ago. The test app state uses a 60 minute run timeout. Returns
+/// `None` if no database/redis is available.
 async fn setup(run: &ActiveRun, keepalive_age: Duration) -> Option<Arc<AppState>> {
     janitor_runner::test_utils::ensure_redis().await;
     let state = janitor_runner::test_utils::create_test_app_state_if_available()
@@ -89,12 +88,8 @@ async fn stored_result(state: &AppState, log_id: &str) -> Option<(String, String
         .unwrap()
 }
 
-fn watchdog(state: &AppState) -> Watchdog {
-    Watchdog::new(
-        state.database.clone(),
-        state.active_runs.clone(),
-        RUN_TIMEOUT_MINUTES,
-    )
+fn watchdog(state: &Arc<AppState>) -> Watchdog {
+    Watchdog::new(state.clone())
 }
 
 /// A run that has been going for much longer than the run timeout

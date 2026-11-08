@@ -809,6 +809,9 @@ impl ActiveRun {
             backchannel: self.backchannel.to_json(),
             instigated_context: self.instigated_context.clone(),
             resume_from: self.resume_from.clone(),
+            keepalive_age: None,
+            last_keepalive: None,
+            mia: None,
         }
     }
 
@@ -1652,6 +1655,9 @@ pub struct AppState {
     /// public URL, when it is an http(s) one -- supplied via
     /// `--redirect-artifact-downloads`.
     pub redirect_artifact_downloads: bool,
+    /// Minutes without a keepalive after which a run is considered
+    /// missing -- supplied via `--run-timeout`.
+    pub run_timeout_minutes: u64,
 }
 
 /// Overall health of a component or the runner service as a whole,

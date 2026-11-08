@@ -139,6 +139,35 @@ pub struct ActiveRunResponse {
     pub instigated_context: Option<serde_json::Value>,
     /// Run this run resumes from.
     pub resume_from: Option<RunId>,
+    /// Seconds since the last keepalive; only in `GET /status`, where it
+    /// is null if no keepalive was recorded.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "::serde_with::rust::double_option"
+    )]
+    #[schema(value_type = Option<f64>)]
+    pub keepalive_age: Option<Option<f64>>,
+    /// Time of the last keepalive, as a naive ISO 8601 timestamp in
+    /// UTC; only in `GET /status`, where it is null if no keepalive was
+    /// recorded.
+    #[serde(
+        rename = "last-keepalive",
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "::serde_with::rust::double_option"
+    )]
+    #[schema(value_type = Option<String>)]
+    pub last_keepalive: Option<Option<String>>,
+    /// Whether no keepalive was received within the run timeout; only in
+    /// `GET /status`, where it is null if no keepalive was recorded.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "::serde_with::rust::double_option"
+    )]
+    #[schema(value_type = Option<bool>)]
+    pub mia: Option<Option<bool>>,
 }
 
 /// Response for `GET /status`.
@@ -148,7 +177,8 @@ pub struct StatusResponse {
     pub processing: Vec<ActiveRunResponse>,
     /// Hosts that the runner avoids.
     pub avoid_hosts: Vec<String>,
-    /// Rate-limited hosts, mapped to the RFC 3339 time the limit expires.
+    /// Rate-limited hosts, mapped to the time the limit expires, as a
+    /// naive ISO 8601 timestamp in UTC.
     pub rate_limit_hosts: BTreeMap<String, String>,
 }
 

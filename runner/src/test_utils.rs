@@ -253,7 +253,26 @@ fn assemble_app_state(
         public_dep_server_url: None,
         avoid_hosts: Vec::new(),
         redirect_artifact_downloads,
+        run_timeout_minutes: 60,
     })
+}
+
+/// Copy of `state` whose database publishes to, and records queue
+/// assignments in, the test Redis. Other tests share that Redis, so
+/// callers must keep their queue ids from colliding.
+pub fn with_database_redis(
+    state: &AppState,
+) -> Result<Arc<AppState>, Box<dyn std::error::Error + Send + Sync>> {
+    let redis_url =
+        std::env::var("TEST_REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+    let redis_client = redis::Client::open(redis_url)?;
+    Ok(Arc::new(AppState {
+        database: Arc::new(RunnerDatabase::new_with_redis(
+            state.database.pool().clone(),
+            redis_client,
+        )),
+        ..state.clone()
+    }))
 }
 
 /// Build a test `AppState`, returning `Ok(None)` when the underlying
