@@ -2,19 +2,16 @@
 //!
 //! These are the end-to-end checks for the admin diff /
 //! revision-info / set-remote endpoints. They build a bzr branch
-//! with a couple of commits via the `brz` CLI and then drive the
+//! with a couple of commits via breezyshim and then drive the
 //! admin app via HTTP.
-//!
-//! Each test skips when `brz init` doesn't work on the host (same
-//! policy as the loggerhead tests).
 
 use std::net::SocketAddr;
-use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
 use breezyshim::branch::Branch;
+use breezyshim::tree::{MutableTree, WorkingTree};
 use janitor::{test_utils::TestDatabase, test_with_database};
 use janitor_bzr_store::{
     config::{BzrConfig, BzrStoreConfig, Config},
@@ -81,86 +78,29 @@ async fn seed_codebase(pool: &PgPool, name: &str) {
     .unwrap();
 }
 
-/// Same brz-end-to-end sentinel as `loggerhead_tests.rs`: skip the
-/// test when brz can't actually create a branch (either not on PATH,
-/// or installed-but-broken, e.g. missing vcsgraph).
-fn brz_working() -> bool {
-    let Ok(tmp) = tempfile::tempdir() else {
-        return false;
-    };
-    Command::new("brz")
-        .args(["init", "--format=2a"])
-        .arg(tmp.path())
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Build a bzr branch with two commits at `branch_path`. Returns
-/// `Some((rev1, rev2))` on success; `None` when any brz invocation
-/// fails. The revids are the `bzr revno-info`-style revids, pulled
-/// out of `brz log`.
-fn build_two_commit_branch(branch_path: &std::path::Path) -> Option<(String, String)> {
-    std::fs::create_dir_all(branch_path).ok()?;
+/// Build a bzr branch with two commits at `branch_path` and return
+/// their revision ids.
+fn build_two_commit_branch(branch_path: &std::path::Path) -> (String, String) {
+    std::fs::create_dir_all(branch_path).unwrap();
     let env = breezyshim::testing::TestEnv::new();
-    let run = |args: &[&str]| -> Option<()> {
-        Command::new("brz")
-            .args(args)
-            .current_dir(branch_path)
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|_| ())
-    };
-    run(&["init", "--format=2a"])?;
-
-    // First commit.
-    std::fs::write(branch_path.join("README"), "r1\n").ok()?;
-    run(&["add", "README"])?;
-    run(&["commit", "-m", "first"])?;
-
-    // Second commit.
-    std::fs::write(branch_path.join("README"), "r2\n").ok()?;
-    run(&["commit", "-m", "second"])?;
-
-    // Extract revids via `brz log --show-ids --forward`.
-    let output = Command::new("brz")
-        .args(["log", "--show-ids", "--forward"])
-        .current_dir(branch_path)
-        .output()
-        .ok()?;
+    let wt = breezyshim::controldir::create_standalone_workingtree(branch_path, "2a").unwrap();
+    std::fs::write(branch_path.join("README"), "r1\n").unwrap();
+    wt.add(&[std::path::Path::new("README")]).unwrap();
+    let rev1 = wt.build_commit().message("first").commit().unwrap();
+    std::fs::write(branch_path.join("README"), "r2\n").unwrap();
+    let rev2 = wt.build_commit().message("second").commit().unwrap();
     std::mem::drop(env);
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let mut revids: Vec<String> = Vec::new();
-    for line in text.lines() {
-        if let Some(revid) = line.strip_prefix("revision-id:") {
-            revids.push(revid.trim().to_string());
-        }
-    }
-    if revids.len() < 2 {
-        return None;
-    }
-    Some((revids[0].clone(), revids[1].clone()))
+    (rev1.as_str().to_string(), rev2.as_str().to_string())
 }
 
 test_with_database! {
     schema = Core;
     async fn test_admin_diff_two_revisions(test_db: TestDatabase) {
-        if !brz_working() {
-            eprintln!("skipping: brz not working on this host");
-            return;
-        }
         seed_codebase(test_db.pool(), "foo").await;
 
         let tmp = TempDir::new().unwrap();
         let branch_path = tmp.path().join("foo");
-        let Some((rev1, rev2)) = build_two_commit_branch(&branch_path) else {
-            eprintln!("skipping: could not build a two-commit bzr branch");
-            return;
-        };
+        let (rev1, rev2) = build_two_commit_branch(&branch_path);
 
         let cfg = build_config(tmp.path(), test_db_url(&test_db));
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
@@ -204,18 +144,11 @@ test_with_database! {
 test_with_database! {
     schema = Core;
     async fn test_admin_revision_info_two_revisions(test_db: TestDatabase) {
-        if !brz_working() {
-            eprintln!("skipping: brz not working on this host");
-            return;
-        }
         seed_codebase(test_db.pool(), "foo").await;
 
         let tmp = TempDir::new().unwrap();
         let branch_path = tmp.path().join("foo");
-        let Some((rev1, rev2)) = build_two_commit_branch(&branch_path) else {
-            eprintln!("skipping: could not build a two-commit bzr branch");
-            return;
-        };
+        let (rev1, rev2) = build_two_commit_branch(&branch_path);
 
         let cfg = build_config(tmp.path(), test_db_url(&test_db));
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
@@ -250,21 +183,14 @@ test_with_database! {
     async fn test_admin_set_remote_persists_parent_location(test_db: TestDatabase) {
         // `handle_set_bzr_remote` writes `parent_location` on the
         // branch at <codebase>/<remote>. Verify the value sticks by
-        // asking brz for it afterwards.
-        if !brz_working() {
-            eprintln!("skipping: brz not working on this host");
-            return;
-        }
+        // reading it back afterwards.
         seed_codebase(test_db.pool(), "foo").await;
 
         let tmp = TempDir::new().unwrap();
         // The handler operates on <codebase>/<remote> as a branch,
         // not the shared repo. Make `main` a real branch directly.
         let branch_path = tmp.path().join("foo").join("main");
-        let Some(_) = build_two_commit_branch(&branch_path) else {
-            eprintln!("skipping: could not build the branch");
-            return;
-        };
+        build_two_commit_branch(&branch_path);
 
         let cfg = build_config(tmp.path(), test_db_url(&test_db));
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
@@ -346,18 +272,11 @@ test_with_database! {
     async fn test_admin_repo_info_for_real_branch(test_db: TestDatabase) {
         // When the repo exists on disk, repository_info reports
         // exists=true and its last_revision.
-        if !brz_working() {
-            eprintln!("skipping: brz not working on this host");
-            return;
-        }
         seed_codebase(test_db.pool(), "foo").await;
 
         let tmp = TempDir::new().unwrap();
         let branch_path = tmp.path().join("foo");
-        let Some((_, rev2)) = build_two_commit_branch(&branch_path) else {
-            eprintln!("skipping: brz branch build failed");
-            return;
-        };
+        let (_, rev2) = build_two_commit_branch(&branch_path);
 
         let cfg = build_config(tmp.path(), test_db_url(&test_db));
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
