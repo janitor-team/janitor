@@ -9,11 +9,9 @@ repository = "https://github.com/jelmer/janitor.git"
 homepage = "https://github.com/jelmer/janitor"
 
 [dependencies]
-isahc = "1"
 serde_json = "1"
 select = "0.6"
 mailparse = "0.16"
-async-std = "1"
 log = "0.4"
 clap = { workspace = true, optional = true, features = ["derive"] }
 reqwest = { workspace = true, features = ["blocking", "json"], optional = true }
