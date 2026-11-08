@@ -187,11 +187,15 @@ ORDER BY finish_time DESC
     return await conn.fetchrow(query, main_branch_revision.decode("utf-8"), codebase)
 
 
-async def _fetch_codebase_merge_proposals(client, publisher_url, codebase_name):
+async def _fetch_codebase_merge_proposals(
+    client, publisher_url, codebase_name, campaign
+):
     if not publisher_url:
         return []
     url = URL(publisher_url) / "c" / codebase_name / "merge-proposals"
-    async with client.get(url, raise_for_status=True) as resp:
+    async with client.get(
+        url, params={"campaign": campaign}, raise_for_status=True
+    ) as resp:
         data = await resp.json()
     return [(entry["url"], entry.get("status")) for entry in data]
 
@@ -234,7 +238,7 @@ WHERE codebase.name = $1""",
                 run = await get_last_unabsorbed_run(conn, codebase_name, suite)
             with span.new_child("publisher:merge-proposals"):
                 merge_proposals = await _fetch_codebase_merge_proposals(
-                    client, publisher_url, codebase["name"]
+                    client, publisher_url, codebase["name"], suite
                 )
         if run is None:
             # No runs recorded
