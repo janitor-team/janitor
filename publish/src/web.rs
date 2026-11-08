@@ -741,6 +741,88 @@ async fn put_policies(
     Json(EmptyResponse {}).into_response()
 }
 
+/// Query parameters for `GET /merge-proposal`.
+#[derive(serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+struct GetMergeProposalQuery {
+    /// URL of the merge proposal to look up.
+    url: String,
+}
+
+/// Detail response for `GET /merge-proposal`.
+#[derive(serde::Serialize, sqlx::FromRow, utoipa::ToSchema)]
+struct MergeProposalDetail {
+    /// URL of the merge proposal.
+    url: String,
+    /// Current status.
+    status: Option<String>,
+    /// Codebase of the run that produced the proposal, when a matching
+    /// successful run exists.
+    codebase: Option<CodebaseName>,
+    /// Campaign of the run that produced the proposal, when a matching
+    /// successful run exists.
+    campaign: Option<Campaign>,
+    /// When the proposal was merged, if it has been.
+    merged_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Who merged the proposal, if it has been merged.
+    merged_by: Option<String>,
+    /// When the publisher last re-scanned the proposal on the forge.
+    last_scanned: Option<chrono::DateTime<chrono::Utc>>,
+    /// Forge-reported mergeability, when known.
+    can_be_merged: Option<bool>,
+}
+
+/// `GET /merge-proposal?url=...`: detail record for a single merge
+/// proposal, joined with the latest matching successful run.
+#[utoipa::path(
+    get,
+    path = "/merge-proposal",
+    params(GetMergeProposalQuery),
+    responses(
+        (status = 200, description = "Merge proposal detail", body = MergeProposalDetail),
+        (status = 404, description = "No such merge proposal", body = NotFoundResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
+async fn get_merge_proposal(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<GetMergeProposalQuery>,
+) -> Response {
+    let row: Result<Option<MergeProposalDetail>, _> = sqlx::query_as(
+        "SELECT DISTINCT ON (merge_proposal.url) \
+            merge_proposal.url AS url, \
+            merge_proposal.status::text AS status, \
+            run.codebase AS codebase, \
+            run.suite::text AS campaign, \
+            (merge_proposal.merged_at AT TIME ZONE 'UTC') AS merged_at, \
+            merge_proposal.merged_by AS merged_by, \
+            (merge_proposal.last_scanned AT TIME ZONE 'UTC') AS last_scanned, \
+            merge_proposal.can_be_merged AS can_be_merged \
+         FROM merge_proposal \
+         LEFT JOIN run \
+            ON merge_proposal.revision = run.revision \
+            AND run.result_code = 'success' \
+         WHERE merge_proposal.url = $1 \
+         ORDER BY merge_proposal.url, run.finish_time DESC",
+    )
+    .bind(&params.url)
+    .fetch_optional(&state.conn)
+    .await;
+
+    match row {
+        Ok(Some(detail)) => Json(detail).into_response(),
+        Ok(None) => not_found(NotFoundResponse {
+            reason: "No such merge proposal".to_string(),
+            url: Some(params.url),
+            ..Default::default()
+        }),
+        Err(e) => {
+            log::error!("Failed to fetch merge proposal {}: {}", params.url, e);
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
+        }
+    }
+}
+
 /// Form body for `POST /merge-proposal`. Matches the urlencoded shape
 /// `py/janitor/site/api.py::handle_merge_proposal_change` forwards:
 /// `url=...&status=...` plus an optional `comment`.
@@ -2529,7 +2611,7 @@ fn routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(absorbed))
         .routes(routes!(get_policy, put_policy, delete_policy))
         .routes(routes!(get_policies, put_policies))
-        .routes(routes!(update_merge_proposal))
+        .routes(routes!(get_merge_proposal, update_merge_proposal))
         .routes(routes!(consider))
         .routes(routes!(get_publish_by_id))
         .routes(routes!(list_publishes))

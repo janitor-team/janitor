@@ -939,6 +939,88 @@ test_with_database! {
 
 test_with_database! {
     schema = Core;
+    async fn get_merge_proposal_returns_detail_joined_with_run(test_db: TestDatabase) {
+        use chrono::{TimeZone, Utc};
+        let pool = test_db.pool();
+
+        sqlx::query(
+            "INSERT INTO codebase (name, branch_url, url, vcs_type)
+             VALUES ('alpha', 'https://example.invalid/alpha', 'https://example.invalid/alpha', 'git')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs-detail', 'lintian-fixes')")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO run (
+                 id, codebase, suite, command, start_time, finish_time, description,
+                 result_code, branch_url, main_branch_revision, revision, value,
+                 change_set, logfilenames, vcs_type
+             ) VALUES (
+                 'run-detail', 'alpha', 'lintian-fixes', 'noop',
+                 NOW() - INTERVAL '1 minute', NOW(), 'ok',
+                 'success', 'https://example.invalid/alpha', 'rev-base', 'rev-tip',
+                 100, 'cs-detail', ARRAY[]::text[], 'git'
+             )",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        let merged_at = Utc.with_ymd_and_hms(2026, 3, 1, 12, 0, 0).unwrap();
+        let last_scanned = Utc.with_ymd_and_hms(2026, 3, 2, 9, 30, 0).unwrap();
+        let mp_url = "https://forge.invalid/alpha/pulls/42";
+        sqlx::query(
+            "INSERT INTO merge_proposal \
+             (url, status, revision, merged_at, merged_by, last_scanned, can_be_merged) \
+             VALUES ($1, 'merged', 'rev-tip', $2, 'reviewer@example.invalid', $3, true)",
+        )
+        .bind(mp_url)
+        .bind(merged_at)
+        .bind(last_scanned)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let app = build_app(pool.clone()).await;
+        let (status, body) = get_json(
+            app,
+            &format!(
+                "/merge-proposal?url={}",
+                url::form_urlencoded::byte_serialize(mp_url.as_bytes()).collect::<String>()
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["url"], mp_url);
+        assert_eq!(body["status"], "merged");
+        assert_eq!(body["codebase"], "alpha");
+        assert_eq!(body["campaign"], "lintian-fixes");
+        assert_eq!(body["merged_by"], "reviewer@example.invalid");
+        assert_eq!(body["can_be_merged"], true);
+        assert_eq!(
+            body["merged_at"]
+                .as_str()
+                .unwrap()
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .unwrap(),
+            merged_at
+        );
+        assert_eq!(
+            body["last_scanned"]
+                .as_str()
+                .unwrap()
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .unwrap(),
+            last_scanned
+        );
+    }
+}
+
+test_with_database! {
+    schema = Core;
     async fn merge_proposals_by_codebase_filters_by_campaign(test_db: TestDatabase) {
         for (campaign, cs, run, rev, mp) in [
             ("lintian-fixes", "cs-a", "run-a", "rev-a", "https://forge.invalid/alpha/pulls/1"),
@@ -1117,6 +1199,17 @@ test_with_database! {
         // Newest first.
         assert_eq!(publishes[0]["id"], "p-push");
         assert_eq!(publishes[1]["id"], "p-prop");
+    }
+}
+
+test_with_database! {
+    schema = Core;
+    async fn get_merge_proposal_missing_returns_404(test_db: TestDatabase) {
+        let app = build_app(test_db.pool().clone()).await;
+        let (status, body) = get_json(app, "/merge-proposal?url=https://none.invalid/x").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["reason"], "No such merge proposal");
+        assert_eq!(body["url"], "https://none.invalid/x");
     }
 }
 
