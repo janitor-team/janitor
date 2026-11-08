@@ -4,9 +4,9 @@ use crate::api_types::{
     CleanupRunsResponse, CurrentStageResponse, DebianBuildAssignment, EmptyResponse, ErrorResponse,
     FinishConflictResponse, FinishResponse, GenericBuildAssignment, MessageResponse, PeekResponse,
     PublishStatusUpdate, QueueEntry, QueuePositionResponse, QueueStatsResponse,
-    RateLimitedResponse, ReasonResponse, ResumeAssignment, ResumeChainResponse,
-    ResumeCheckResponse, ResumeDescendantsResponse, ResumeValidationResponse, RunHealthSummary,
-    RunPublishStatusResponse, ScheduleControlResponse, ScheduleResponse, ScheduledCandidate,
+    RateLimitedResponse, ReasonResponse, ResultBranchEntry, ResumeAssignment, ResumeChainResponse,
+    ResumeCheckResponse, ResumeDescendantsResponse, ResumeValidationResponse, RunDetailResponse,
+    RunHealthSummary, ScheduleControlResponse, ScheduleResponse, ScheduledCandidate,
     StatusResponse, UploadCandidatesResponse, WatchdogHealthResponse, WorkerInfo,
     WorkerListResponse, WorkerSummary,
 };
@@ -1487,33 +1487,78 @@ async fn upload_candidates(
     .into_response()
 }
 
-/// `GET /runs/{run_id}` -- return a run's `{codebase, campaign,
-/// publish_status}` triple. Only those three fields are returned,
-/// not the entire run row.
+/// `GET /runs/{run_id}` -- return the run row for callers that need
+/// to resolve its codebase, campaign, result, and result branches
+/// without a direct database connection.
 #[utoipa::path(
     get,
     path = "/runs/{id}",
     params(("id" = RunId, Path, description = "Run id")),
     responses(
-        (status = 200, description = "Publish status of the run", body = RunPublishStatusResponse),
+        (status = 200, description = "Run detail", body = RunDetailResponse),
         (status = 404, description = "No such run", body = ReasonResponse),
         (status = 500, description = "Database error", body = ErrorResponse),
     )
 )]
 async fn get_run(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> Response {
-    let row: Result<Option<(CodebaseName, Campaign, String)>, _> =
-        sqlx::query_as("SELECT codebase, suite, publish_status::text FROM run WHERE id = $1")
-            .bind(&id)
-            .fetch_optional(state.database.pool())
-            .await;
-
-    match row {
-        Ok(Some((codebase, campaign, publish_status))) => Json(RunPublishStatusResponse {
-            codebase,
-            campaign,
-            publish_status,
-        })
-        .into_response(),
+    match state.database.get_run_detail(&id).await {
+        Ok(Some(detail)) => {
+            let crate::database::RunDetail {
+                row,
+                branches,
+                debian_build,
+            } = detail;
+            Json(RunDetailResponse {
+                id: row.id,
+                codebase: row.codebase,
+                campaign: row.campaign,
+                publish_status: row.publish_status,
+                result_code: row.result_code,
+                main_branch_revision: row.main_branch_revision,
+                revision: row.revision,
+                vcs_type: row.vcs_type,
+                branch_url: row.branch_url,
+                target_branch_url: row.target_branch_url,
+                start_time: row.start_time,
+                finish_time: row.finish_time,
+                command: row.command,
+                description: row.description,
+                context: row.context,
+                result: row.result,
+                instigated_context: row.instigated_context,
+                logfilenames: row.logfilenames,
+                worker_name: row.worker_name,
+                worker_link: row.worker_link,
+                change_set: row.change_set,
+                failure_stage: row.failure_stage,
+                failure_transient: row.failure_transient,
+                resume_from: row.resume_from,
+                result_tags: row.result_tags.map(|tags| {
+                    tags.into_iter()
+                        .map(|t| crate::api_types::RunResultTag {
+                            actual_name: t.actual_name,
+                            revision: t.revision,
+                        })
+                        .collect()
+                }),
+                result_branches: branches
+                    .into_iter()
+                    .map(|b| ResultBranchEntry {
+                        role: b.role,
+                        remote_name: b.remote_name,
+                        base_revision: b.base_revision,
+                        revision: b.revision,
+                    })
+                    .collect(),
+                debian_build: debian_build.map(|db| crate::api_types::RunDebianBuild {
+                    version: db.version,
+                    distribution: db.distribution,
+                    lintian_result: db.lintian_result,
+                    binary_packages: db.binary_packages,
+                }),
+            })
+            .into_response()
+        }
         Ok(None) => reason(StatusCode::NOT_FOUND, format!("no such run: {}", id)),
         Err(e) => {
             log::error!("Failed to get run {}: {}", id, e);

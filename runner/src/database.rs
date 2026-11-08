@@ -1,8 +1,11 @@
 //! Database operations for the runner.
 
 use crate::{BuilderResult, JanitorResult};
+use breezyshim::RevisionId;
 use chrono::{DateTime, Duration, Utc};
-use janitor_types::{Campaign, ChangeSetId, CodebaseName, RunId};
+use janitor::state::ResultTag;
+use janitor::vcs::VcsType;
+use janitor_types::{Campaign, ChangeSetId, CodebaseName, LogFilename, Role, RunId};
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::types::PgInterval;
@@ -30,6 +33,88 @@ struct QueueRowJoined {
     vcs_type: Option<String>,
     branch_url: Option<String>,
     subpath: Option<String>,
+}
+
+/// Wire-shape of a `run` row for the detail endpoint. Decoded from
+/// the `SELECT ... FROM run` query in `get_run_detail`. The matching
+/// `new_result_branch` and `debian_build` rows are fetched separately
+/// and combined into a [`RunDetail`].
+#[derive(sqlx::FromRow)]
+pub struct RunDetailRow {
+    /// Run identifier.
+    pub id: RunId,
+    /// Codebase of the run.
+    pub codebase: CodebaseName,
+    /// Campaign the run belongs to.
+    pub campaign: Campaign,
+    /// Publish status of the run.
+    pub publish_status: String,
+    /// Result code of the run.
+    pub result_code: String,
+    /// Main-branch revision the run was based on.
+    pub main_branch_revision: Option<RevisionId>,
+    /// Revision the result branch points to.
+    pub revision: Option<RevisionId>,
+    /// VCS type of the codebase, if known.
+    pub vcs_type: Option<VcsType>,
+    /// Branch URL of the codebase at the time of the run.
+    pub branch_url: Option<String>,
+    /// Target branch URL the run was proposing against, if any.
+    pub target_branch_url: Option<String>,
+    /// When the run started.
+    pub start_time: chrono::DateTime<chrono::Utc>,
+    /// When the run finished.
+    pub finish_time: chrono::DateTime<chrono::Utc>,
+    /// Command that was executed.
+    pub command: Option<String>,
+    /// Human-readable description of the result.
+    pub description: Option<String>,
+    /// Context the run started with, if any.
+    pub context: Option<String>,
+    /// Structured result returned by the codemod.
+    pub result: Option<serde_json::Value>,
+    /// Context the run was scheduled with (i.e. before any resume).
+    pub instigated_context: Option<String>,
+    /// Log files produced by the run.
+    pub logfilenames: Vec<LogFilename>,
+    /// Name of the worker that executed the run.
+    pub worker_name: Option<String>,
+    /// Link to the worker, if recorded on the row.
+    pub worker_link: Option<String>,
+    /// Tags produced by the run, if any.
+    pub result_tags: Option<Vec<ResultTag>>,
+    /// Change set the run belongs to.
+    pub change_set: ChangeSetId,
+    /// Stage at which the run failed, if any.
+    pub failure_stage: Option<String>,
+    /// Whether the failure is believed to be transient.
+    pub failure_transient: Option<bool>,
+    /// Run this one resumed from, if any.
+    pub resume_from: Option<String>,
+}
+
+/// One `new_result_branch` row.
+#[derive(sqlx::FromRow)]
+pub struct ResultBranchRow {
+    /// Role of the branch (e.g. `main`).
+    pub role: Role,
+    /// Remote branch name, if any.
+    pub remote_name: Option<String>,
+    /// Revision the branch started from.
+    pub base_revision: Option<RevisionId>,
+    /// Revision the branch ended at.
+    pub revision: Option<RevisionId>,
+}
+
+/// A `run` row joined with its `new_result_branch` entries and
+/// (optionally) its `debian_build` row.
+pub struct RunDetail {
+    /// The run row itself.
+    pub row: RunDetailRow,
+    /// Result branches produced by the run.
+    pub branches: Vec<ResultBranchRow>,
+    /// Debian-specific build info, if the run produced a Debian build.
+    pub debian_build: Option<DebianBuildRow>,
 }
 
 /// Convert a Postgres interval to a whole-second duration, clamping
@@ -216,6 +301,71 @@ impl RunnerDatabase {
             context: run.context.and_then(|s| serde_json::from_str(&s).ok()),
             builder_result,
         })
+    }
+
+    /// Fetch the fields needed for the `GET /runs/{id}` detail
+    /// response: the run row itself, its `new_result_branch` entries,
+    /// and (if present) its `debian_build` row. Returns `None` when
+    /// there is no such run.
+    ///
+    /// Debian-specific columns are queried separately rather than via
+    /// a `LEFT JOIN debian_build`, because the `debian_build` table is
+    /// optional and only present when the Debian schema is loaded.
+    pub async fn get_run_detail(&self, run_id: &RunId) -> Result<Option<RunDetail>, sqlx::Error> {
+        let row: Option<RunDetailRow> = sqlx::query_as(
+            r#"
+            SELECT id,
+                   codebase,
+                   suite::text AS campaign,
+                   publish_status::text AS publish_status,
+                   result_code,
+                   main_branch_revision,
+                   revision,
+                   vcs_type,
+                   branch_url,
+                   target_branch_url,
+                   (start_time AT TIME ZONE 'UTC') AS start_time,
+                   (finish_time AT TIME ZONE 'UTC') AS finish_time,
+                   command,
+                   description,
+                   context,
+                   result,
+                   instigated_context,
+                   logfilenames,
+                   worker AS worker_name,
+                   worker_link,
+                   result_tags,
+                   change_set,
+                   failure_stage,
+                   failure_transient,
+                   resume_from
+              FROM run WHERE id = $1
+            "#,
+        )
+        .bind(run_id)
+        .fetch_optional(self.pool())
+        .await?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        let branches: Vec<ResultBranchRow> = sqlx::query_as(
+            "SELECT role, remote_name, base_revision, revision \
+             FROM new_result_branch WHERE run_id = $1 \
+             ORDER BY role",
+        )
+        .bind(run_id)
+        .fetch_all(self.pool())
+        .await?;
+
+        let debian_build = self.get_run_debian_build(run_id).await?;
+
+        Ok(Some(RunDetail {
+            row,
+            branches,
+            debian_build,
+        }))
     }
 
     /// Get a run by ID.
@@ -1059,12 +1209,16 @@ INSERT INTO run (
         Ok(resume_run_id.map(|run_id| crate::ResultResume { run_id }))
     }
 
-    /// Get the debian_build row for a run, if any.
+    /// Get the debian_build row for a run, if any. Returns `Ok(None)`
+    /// when the `debian_build` table is absent (i.e. the Debian schema
+    /// extension isn't loaded) as well as when it exists but no row
+    /// matches, so callers can treat Debian-specific data as always
+    /// optional.
     pub async fn get_run_debian_build(
         &self,
         run_id: &RunId,
     ) -> Result<Option<DebianBuildRow>, sqlx::Error> {
-        sqlx::query_as(
+        match sqlx::query_as(
             r#"
             SELECT source, version::text AS version, distribution, binary_packages, lintian_result
             FROM debian_build
@@ -1074,6 +1228,14 @@ INSERT INTO run (
         .bind(run_id)
         .fetch_optional(self.pool())
         .await
+        {
+            Ok(row) => Ok(row),
+            Err(sqlx::Error::Database(db_err)) if db_err.code().as_deref() == Some("42P01") => {
+                // 42P01 = undefined_table; Debian schema isn't loaded.
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 

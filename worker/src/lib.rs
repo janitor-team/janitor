@@ -1304,6 +1304,7 @@ check:
                 let branch_name = "";
                 (b, branch_name)
             }
+            other => unreachable!("test only parameterizes over git/bzr, got {other:?}"),
         };
         assert_eq!(
             metadata,
