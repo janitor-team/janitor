@@ -330,7 +330,7 @@ test_with_database! {
     schema = Core;
     async fn test_admin_repo_info_for_real_branch(test_db: TestDatabase) {
         // When the repo exists on disk, repository_info reports
-        // exists=true and (if PyO3 is working) a last_revision.
+        // exists=true and its last_revision.
         if !brz_working() {
             eprintln!("skipping: brz not working on this host");
             return;
@@ -339,10 +339,10 @@ test_with_database! {
 
         let tmp = TempDir::new().unwrap();
         let branch_path = tmp.path().join("foo");
-        if build_two_commit_branch(&branch_path).is_none() {
+        let Some((_, rev2)) = build_two_commit_branch(&branch_path) else {
             eprintln!("skipping: brz branch build failed");
             return;
-        }
+        };
 
         let cfg = build_config(tmp.path(), test_db_url(&test_db));
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
@@ -361,8 +361,7 @@ test_with_database! {
         assert_eq!(body["path"]["codebase"], "foo");
         assert_eq!(body["exists"], true);
         assert_eq!(body["branch_count"], 1);
-        // last_revision is best-effort: present on hosts where
-        // breezyshim can open the branch, absent otherwise.
+        assert_eq!(body["last_revision"], rev2);
 
         handle.abort();
     }

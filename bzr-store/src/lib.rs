@@ -16,7 +16,6 @@ pub mod bzr_browse;
 pub mod config;
 pub mod database;
 pub mod error;
-pub mod pyo3_bridge;
 pub mod repository;
 pub mod smart_protocol;
 pub mod web;
@@ -24,7 +23,6 @@ pub mod web_utils;
 
 pub use config::Config;
 pub use error::{BzrError, Result};
-pub use pyo3_bridge::BreezyOperations;
 
 /// Version information
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

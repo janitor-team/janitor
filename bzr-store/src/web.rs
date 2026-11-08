@@ -31,7 +31,7 @@ use crate::config::Config;
 use crate::database::DatabaseManager;
 use crate::error::{BzrError, Result};
 use crate::repository::{
-    PyO3RepositoryManager, RepositoryInfo, RepositoryManager, RepositoryPath, RevisionInfo,
+    BreezyRepositoryManager, RepositoryInfo, RepositoryManager, RepositoryPath, RevisionInfo,
 };
 use crate::smart_protocol::{
     smart_protocol_campaign_handler, smart_protocol_codebase_handler, smart_protocol_dispatch,
@@ -162,10 +162,9 @@ pub async fn create_applications(
 ) -> Result<(Router, Router)> {
     let database = DatabaseManager::new(&config).await?;
 
-    let repository_manager: Arc<dyn RepositoryManager> = Arc::new(PyO3RepositoryManager::new(
+    let repository_manager: Arc<dyn RepositoryManager> = Arc::new(BreezyRepositoryManager::new(
         config.repository_path.clone(),
         database.clone(),
-        true,
     ));
 
     let templates = Arc::new(init_templates());
