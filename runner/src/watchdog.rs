@@ -6,9 +6,8 @@
 //! killing the worker) once no keepalive has been received for
 //! `run_timeout` minutes.
 
-use crate::active_runs::ActiveRunStore;
-use crate::database::{FinishOutcome, RunnerDatabase};
-use crate::{ActiveRun, PingError};
+use crate::database::FinishOutcome;
+use crate::{ActiveRun, AppState, PingError};
 use chrono::{Duration, Utc};
 use std::sync::Arc;
 
@@ -19,31 +18,21 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 
 /// Background watchdog task for monitoring active runs.
 pub struct Watchdog {
-    database: Arc<RunnerDatabase>,
-    active_runs: ActiveRunStore,
-    run_timeout_minutes: u64,
+    state: Arc<AppState>,
 }
 
 impl Watchdog {
     /// Create a new watchdog that aborts runs that haven't sent a
-    /// keepalive in `run_timeout_minutes`.
-    pub fn new(
-        database: Arc<RunnerDatabase>,
-        active_runs: ActiveRunStore,
-        run_timeout_minutes: u64,
-    ) -> Self {
-        Self {
-            database,
-            active_runs,
-            run_timeout_minutes,
-        }
+    /// keepalive in `state.run_timeout_minutes`.
+    pub fn new(state: Arc<AppState>) -> Self {
+        Self { state }
     }
 
     /// Run the watchdog loop forever.
     pub async fn start(&self) {
         log::info!(
             "Starting watchdog with run timeout {} minutes",
-            self.run_timeout_minutes
+            self.state.run_timeout_minutes
         );
         loop {
             if let Err(e) = self.check_active_runs().await {
@@ -56,10 +45,11 @@ impl Watchdog {
     /// Health check every active run whose last keepalive is at least a
     /// third of the run timeout old.
     pub async fn check_active_runs(&self) -> Result<(), Error> {
-        let ping_threshold = Duration::minutes((self.run_timeout_minutes / 3) as i64);
+        let ping_threshold = Duration::minutes((self.state.run_timeout_minutes / 3) as i64);
         let mut checks = Vec::new();
-        for run in self.active_runs.list().await {
+        for run in self.state.active_runs.list().await {
             let last_keepalive = self
+                .state
                 .active_runs
                 .last_keepalive(&run.log_id)
                 .await?
@@ -88,7 +78,8 @@ impl Watchdog {
     ) -> Result<(), Error> {
         match run.ping().await {
             Ok(()) => {
-                self.active_runs
+                self.state
+                    .active_runs
                     .record_keepalive(&run.log_id, Utc::now())
                     .await?;
                 keepalive_age = Duration::zero();
@@ -114,7 +105,7 @@ impl Watchdog {
             }
         }
 
-        if keepalive_age > Duration::minutes(self.run_timeout_minutes as i64) {
+        if keepalive_age > Duration::minutes(self.state.run_timeout_minutes as i64) {
             let age = format_timedelta(keepalive_age);
             log::warn!(
                 "No keepalives received from {} for {} in {}, aborting.",
@@ -133,26 +124,11 @@ impl Watchdog {
     }
 
     async fn abort_run(&self, run: &ActiveRun, code: &str, description: &str) -> Result<(), Error> {
-        let mut result = run.create_result(code.to_string(), Some(description.to_string()));
-        result.transient = Some(true);
-        let outcome = self
-            .database
-            .finish_run(
-                &mut result,
-                &run.command,
-                run.instigated_context.as_ref(),
-                run.queue_id,
-            )
-            .await?;
+        let outcome =
+            crate::web::abort_run(&self.state, run, code, description, Some(true)).await?;
         if outcome == FinishOutcome::AlreadyStored {
             log::warn!("Run {} exists. Not properly cleaned up?", run.log_id);
         }
-        self.database.unassign_queue_item(run.queue_id).await?;
-        self.active_runs.remove(&run.log_id).await;
-        crate::metrics::MetricsCollector::set_active_runs(
-            &run.worker_name,
-            self.active_runs.count_for_worker(&run.worker_name).await as i64,
-        );
         Ok(())
     }
 }
