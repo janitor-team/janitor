@@ -777,6 +777,67 @@ async fn seed_absorbed_run(
     .unwrap();
 }
 
+/// Seed a codebase, change_set, and `publish` row with the given
+/// scalar fields. The web_url is derived from the codebase name.
+#[allow(clippy::too_many_arguments)]
+async fn seed_publish(
+    pool: &PgPool,
+    publish_id: &str,
+    codebase: &str,
+    mp_url: Option<&str>,
+    mode: &str,
+    result_code: &str,
+    description: &str,
+    revision: Option<&str>,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) {
+    sqlx::query(
+        "INSERT INTO codebase (name, branch_url, url, vcs_type, web_url)
+         VALUES ($1, $2, $2, 'git', $3) ON CONFLICT DO NOTHING",
+    )
+    .bind(codebase)
+    .bind(format!("https://example.invalid/{}", codebase))
+    .bind(format!("https://browse.invalid/{}", codebase))
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO change_set (id, campaign) VALUES ('cs-publishes', 'lintian-fixes') \
+         ON CONFLICT DO NOTHING",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    if let Some(url) = mp_url {
+        sqlx::query(
+            "INSERT INTO merge_proposal (url, status, revision) \
+             VALUES ($1, 'open', $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(url)
+        .bind(revision)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO publish \
+         (id, codebase, change_set, mode, result_code, description, \
+          merge_proposal_url, revision, timestamp) \
+         VALUES ($1, $2, 'cs-publishes', $3::publish_mode, $4, $5, $6, $7, $8)",
+    )
+    .bind(publish_id)
+    .bind(codebase)
+    .bind(mode)
+    .bind(result_code)
+    .bind(description)
+    .bind(mp_url)
+    .bind(revision)
+    .bind(timestamp)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 test_with_database! {
     schema = Core;
     async fn merge_proposals_list_includes_codebase_and_campaign(test_db: TestDatabase) {
@@ -837,6 +898,42 @@ test_with_database! {
                 ),
             ]
         );
+    }
+}
+
+test_with_database! {
+    schema = Core;
+    async fn list_publishes_returns_newest_first_with_codebase_web_url(test_db: TestDatabase) {
+        use chrono::{TimeZone, Utc};
+        let early = Utc.with_ymd_and_hms(2026, 1, 10, 12, 0, 0).unwrap();
+        let mid = Utc.with_ymd_and_hms(2026, 2, 10, 12, 0, 0).unwrap();
+        let late = Utc.with_ymd_and_hms(2026, 3, 10, 12, 0, 0).unwrap();
+
+        seed_publish(test_db.pool(), "p-early", "alpha", None, "push",
+                     "success", "pushed", Some("rev-1"), early).await;
+        seed_publish(test_db.pool(), "p-mid", "alpha",
+                     Some("https://forge.invalid/alpha/pulls/1"),
+                     "propose", "success", "proposed", Some("rev-2"), mid).await;
+        seed_publish(test_db.pool(), "p-late", "beta", None, "push",
+                     "publish-failed", "retry", Some("rev-3"), late).await;
+
+        let app = build_app(test_db.pool().clone()).await;
+
+        // Unfiltered: three rows, newest first.
+        let (status, body) = get_json(app.clone(), "/publish").await;
+        assert_eq!(status, StatusCode::OK);
+        let publishes = body["publishes"].as_array().unwrap();
+        let ids: Vec<&str> = publishes.iter().map(|p| p["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["p-late", "p-mid", "p-early"]);
+        assert_eq!(publishes[0]["codebase"], "beta");
+        assert_eq!(publishes[0]["codebase_web_url"], "https://browse.invalid/beta");
+        assert_eq!(publishes[0]["result_code"], "publish-failed");
+
+        // limit=1 returns only the newest row.
+        let (status, body) = get_json(app.clone(), "/publish?limit=1").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["publishes"].as_array().unwrap().len(), 1);
+        assert_eq!(body["publishes"][0]["id"], "p-late");
     }
 }
 
@@ -949,6 +1046,43 @@ test_with_database! {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["runs"].as_array().unwrap().len(), 0);
         assert!(body["oldest"].is_null());
+    }
+}
+
+test_with_database! {
+    schema = Core;
+    async fn list_publishes_filters_by_merge_proposal_url(test_db: TestDatabase) {
+        use chrono::{TimeZone, Utc};
+        let t0 = Utc.with_ymd_and_hms(2026, 2, 1, 12, 0, 0).unwrap();
+        let t1 = Utc.with_ymd_and_hms(2026, 2, 2, 12, 0, 0).unwrap();
+
+        let mp = "https://forge.invalid/alpha/pulls/1";
+        seed_publish(test_db.pool(), "p-match-1", "alpha", Some(mp),
+                     "propose", "success", "ok", Some("rev-1"), t0).await;
+        seed_publish(test_db.pool(), "p-match-2", "alpha", Some(mp),
+                     "propose", "success", "ok", Some("rev-2"), t1).await;
+        seed_publish(test_db.pool(), "p-other", "alpha",
+                     Some("https://forge.invalid/alpha/pulls/99"),
+                     "propose", "success", "ok", Some("rev-3"), t0).await;
+
+        let app = build_app(test_db.pool().clone()).await;
+        let (status, body) = get_json(
+            app,
+            &format!(
+                "/publish?merge_proposal_url={}",
+                url::form_urlencoded::byte_serialize(mp.as_bytes()).collect::<String>()
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let publishes = body["publishes"].as_array().unwrap();
+        assert_eq!(publishes.len(), 2);
+        for row in publishes {
+            assert_eq!(row["merge_proposal_url"], mp);
+        }
+        // Newest first.
+        assert_eq!(publishes[0]["id"], "p-match-2");
+        assert_eq!(publishes[1]["id"], "p-match-1");
     }
 }
 

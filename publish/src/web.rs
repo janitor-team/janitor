@@ -1077,7 +1077,12 @@ async fn consider(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> 
 #[derive(serde::Serialize, serde::Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 /// Details about a publish operation.
 pub struct PublishDetails {
+    id: PublishId,
+    timestamp: Option<chrono::DateTime<chrono::Utc>>,
     codebase: Option<CodebaseName>,
+    /// `codebase.web_url` for the codebase, so callers can link to a
+    /// browsable VCS URL without a second query.
+    codebase_web_url: Option<String>,
     target_branch_url: Option<String>,
     branch_name: Option<String>,
     main_branch_revision: Option<String>,
@@ -1086,6 +1091,105 @@ pub struct PublishDetails {
     merge_proposal_url: Option<String>,
     result_code: String,
     description: Option<String>,
+}
+
+/// One row in a `GET /publish` listing.
+#[derive(serde::Serialize, sqlx::FromRow, utoipa::ToSchema)]
+pub struct PublishListEntry {
+    id: PublishId,
+    timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    codebase: Option<CodebaseName>,
+    /// `codebase.web_url` for the codebase the publish was attempted
+    /// against; used by the cupboard history view to link to a
+    /// browsable VCS URL.
+    codebase_web_url: Option<String>,
+    branch_name: Option<String>,
+    mode: String,
+    merge_proposal_url: Option<String>,
+    result_code: String,
+    description: Option<String>,
+    revision: Option<String>,
+    requester: Option<String>,
+}
+
+/// Response for `GET /publish`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct PublishListResponse {
+    /// Matching publish attempts, newest first.
+    publishes: Vec<PublishListEntry>,
+}
+
+/// Query parameters for `GET /publish`.
+#[derive(serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+struct PublishListQuery {
+    /// Restrict to publishes targeting this merge-proposal URL.
+    merge_proposal_url: Option<String>,
+    /// Maximum number of rows to return.
+    limit: Option<i64>,
+}
+
+/// `GET /publish`: list publish attempts. Supports filtering by
+/// merge-proposal URL (for a per-proposal history page) and a `limit`
+/// (for the cupboard history view).
+#[utoipa::path(
+    get,
+    path = "/publish",
+    params(PublishListQuery),
+    responses(
+        (status = 200, description = "Publish attempts", body = PublishListResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
+async fn list_publishes(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PublishListQuery>,
+) -> Response {
+    let mut query = String::from(
+        "SELECT \
+            publish.id AS id, \
+            (publish.timestamp AT TIME ZONE 'UTC') AS timestamp, \
+            publish.codebase AS codebase, \
+            codebase.web_url AS codebase_web_url, \
+            publish.branch_name AS branch_name, \
+            publish.mode::text AS mode, \
+            publish.merge_proposal_url AS merge_proposal_url, \
+            publish.result_code AS result_code, \
+            publish.description AS description, \
+            publish.revision AS revision, \
+            publish.requester AS requester \
+         FROM publish \
+         LEFT JOIN codebase ON codebase.name = publish.codebase",
+    );
+    let mut idx = 0;
+    if params.merge_proposal_url.is_some() {
+        idx += 1;
+        query.push_str(&format!(" WHERE publish.merge_proposal_url = ${}", idx));
+    }
+    query.push_str(" ORDER BY publish.timestamp DESC");
+    if params.limit.is_some() {
+        idx += 1;
+        query.push_str(&format!(" LIMIT ${}", idx));
+    }
+
+    let mut q = sqlx::query_as::<_, PublishListEntry>(sqlx::AssertSqlSafe(&*query));
+    if let Some(mp_url) = params.merge_proposal_url.as_ref() {
+        q = q.bind(mp_url);
+    }
+    if let Some(limit) = params.limit {
+        q = q.bind(limit);
+    }
+
+    match q.fetch_all(&state.conn).await {
+        Ok(publishes) => Json(PublishListResponse { publishes }).into_response(),
+        Err(e) => {
+            log::error!("Failed to list publishes: {}", e);
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to list publishes",
+            )
+        }
+    }
 }
 
 #[utoipa::path(
@@ -1102,19 +1206,22 @@ async fn get_publish_by_id(State(state): State<Arc<AppState>>, Path(id): Path<St
     let publish = match sqlx::query_as::<_, PublishDetails>(
         r#"
 SELECT
-  codebase,
+  publish.id AS id,
+  (publish.timestamp AT TIME ZONE 'UTC') AS timestamp,
+  publish.codebase AS codebase,
+  codebase.web_url AS codebase_web_url,
   branch_name,
   main_branch_revision,
   revision,
-  mode,
+  mode::text AS mode,
   merge_proposal_url,
   target_branch_url,
   result_code,
   description
 FROM publish
 LEFT JOIN codebase
-ON codebase.branch_url = publish.target_branch_url
-WHERE id = $1
+ON codebase.name = publish.codebase
+WHERE publish.id = $1
 "#,
     )
     .bind(&id)
@@ -2410,6 +2517,7 @@ fn routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(update_merge_proposal))
         .routes(routes!(consider))
         .routes(routes!(get_publish_by_id))
+        .routes(routes!(list_publishes))
         .routes(routes!(publish))
         .routes(routes!(get_credentials))
         .routes(routes!(health_check))
