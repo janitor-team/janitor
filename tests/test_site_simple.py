@@ -529,6 +529,55 @@ async def test_result_file_log_from_runner(aiohttp_client, database_location):
     ]
 
 
+async def test_result_file_artifact_from_runner(aiohttp_client, database_location):
+    async def handle_artifact(request):
+        key = (request.match_info["run_id"], request.match_info["filename"])
+        responses = {
+            ("run-id", "foo.deb"): web.Response(
+                body=b"deb contents", content_type="application/octet-stream"
+            ),
+            ("run-id", "public.deb"): web.Response(
+                status=307,
+                headers={"Location": "https://storage.example.com/run-id/public.deb"},
+            ),
+            ("run-id", "broken.deb"): web.Response(status=500, text="storage failed"),
+        }
+        return responses.get(key, web.Response(status=404))
+
+    runner_app = web.Application()
+    runner_app.router.add_get("/runs/{run_id}/artifacts/{filename}", handle_artifact)
+    runner_client = await aiohttp_client(runner_app)
+    _private_app, app = await create_app(
+        config=create_config(database_location),
+        redis=FakeRedis(),
+        runner_url=str(runner_client.make_url("/")),
+    )
+    client = await aiohttp_client(app)
+
+    got = []
+    for name in ["foo.deb", "public.deb", "broken.deb", "missing.deb"]:
+        resp = await client.get(
+            f"/lintian-fixes/pkg/pkg/run-id/{name}", allow_redirects=False
+        )
+        got.append((name, resp.status, resp.headers.get("Location"), await resp.read()))
+    assert got == [
+        ("foo.deb", 200, None, b"deb contents"),
+        (
+            "public.deb",
+            307,
+            "https://storage.example.com/run-id/public.deb",
+            b"307: Temporary Redirect",
+        ),
+        (
+            "broken.deb",
+            502,
+            None,
+            b"Unable to retrieve artifact broken.deb for run run-id",
+        ),
+        ("missing.deb", 404, None, b"No artifact missing.deb for run run-id"),
+    ]
+
+
 async def test_oauth_callback_clears_state_cookie_with_matching_path(
     aiohttp_client, aiohttp_server, database_location
 ):

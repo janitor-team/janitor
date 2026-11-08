@@ -1651,6 +1651,10 @@ pub struct AppState {
     /// Hosts to avoid when assigning work -- supplied via
     /// `--avoid-host`.
     pub avoid_hosts: Vec<String>,
+    /// Whether to redirect artifact downloads to the artifact store's
+    /// public URL, when it is an http(s) one -- supplied via
+    /// `--redirect-artifact-downloads`.
+    pub redirect_artifact_downloads: bool,
 }
 
 /// Overall health of a component or the runner service as a whole,

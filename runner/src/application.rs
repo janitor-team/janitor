@@ -25,6 +25,7 @@ pub struct ApplicationBuilder {
     backup_directory: Option<PathBuf>,
     public_apt_archive_location: Option<String>,
     public_dep_server_url: Option<String>,
+    redirect_artifact_downloads: bool,
 }
 
 impl ApplicationBuilder {
@@ -40,6 +41,7 @@ impl ApplicationBuilder {
             backup_directory: None,
             public_apt_archive_location: None,
             public_dep_server_url: None,
+            redirect_artifact_downloads: true,
         }
     }
 
@@ -98,6 +100,14 @@ impl ApplicationBuilder {
     /// `--avoid-host` CLI flag (repeatable).
     pub fn with_avoid_hosts(mut self, hosts: Vec<String>) -> Self {
         self.avoid_hosts = hosts;
+        self
+    }
+
+    /// Set whether to redirect artifact downloads to the artifact
+    /// store's public URL, when it is an http(s) one. Corresponds to
+    /// the `--redirect-artifact-downloads` CLI flag.
+    pub fn with_redirect_artifact_downloads(mut self, redirect: bool) -> Self {
+        self.redirect_artifact_downloads = redirect;
         self
     }
 
@@ -363,6 +373,7 @@ impl ApplicationBuilder {
             public_vcs_managers: Arc::new(public_vcs_managers),
             public_dep_server_url: self.public_dep_server_url,
             avoid_hosts: self.avoid_hosts,
+            redirect_artifact_downloads: self.redirect_artifact_downloads,
         });
 
         log::info!("Janitor Runner application initialized successfully");
