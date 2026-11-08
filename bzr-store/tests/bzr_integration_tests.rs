@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
+use breezyshim::branch::Branch;
 use janitor::{test_utils::TestDatabase, test_with_database};
 use janitor_bzr_store::{
     config::{BzrConfig, BzrStoreConfig, Config},
@@ -284,14 +285,17 @@ test_with_database! {
         assert_eq!(body["status"], "configured");
         assert_eq!(body["remote_url"], "bzr+ssh://upstream.invalid/foo");
 
-        // Verify brz now reports the parent_location.
-        let out = Command::new("brz")
-            .args(["config", "parent_location"])
-            .current_dir(&branch_path)
-            .output()
-            .unwrap();
-        let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        assert_eq!(value, "bzr+ssh://upstream.invalid/foo");
+        // TestEnv keeps the user's locations.conf out of the config stack.
+        let env = breezyshim::testing::TestEnv::new();
+        let branch = breezyshim::branch::open_as_generic(
+            &url::Url::from_directory_path(&branch_path).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            branch.get_parent(),
+            Some("bzr+ssh://upstream.invalid/foo".to_string())
+        );
+        std::mem::drop(env);
 
         handle.abort();
     }

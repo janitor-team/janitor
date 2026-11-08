@@ -168,6 +168,11 @@ impl PyO3RepositoryManager {
         self.base_path.join(&path.codebase)
     }
 
+    /// On-disk path of the branch at `<codebase>/<campaign>/<role>`.
+    pub fn get_branch_path(&self, path: &RepositoryPath) -> Result<PathBuf> {
+        branch_path(&self.base_path, path)
+    }
+
     /// Create `<base>/<codebase>` and initialize it as a shared bzr
     /// repository if it doesn't already exist.
     async fn ensure_codebase_structure(&self, codebase: &CodebaseName) -> Result<()> {
@@ -191,6 +196,21 @@ impl PyO3RepositoryManager {
 
         create_shared_repository_via_brz(&codebase_path).await
     }
+}
+
+fn branch_path(base_path: &Path, path: &RepositoryPath) -> Result<PathBuf> {
+    let mut p = base_path.join(&path.codebase);
+    for component in [&path.campaign, &path.role].into_iter().flatten() {
+        if component.is_empty() || component == "." || component == ".." || component.contains('/')
+        {
+            return Err(BzrError::invalid_request(format!(
+                "invalid branch name: {:?}",
+                component
+            )));
+        }
+        p.push(component);
+    }
+    Ok(p)
 }
 
 async fn create_shared_repository_via_brz(path: &Path) -> Result<()> {
@@ -362,7 +382,7 @@ impl RepositoryManager for PyO3RepositoryManager {
     }
 
     async fn configure_remote(&self, path: &RepositoryPath, remote_url: &str) -> Result<()> {
-        let repo_path = self.get_repository_path(path);
+        let repo_path = self.get_branch_path(path)?;
         if !repo_path.exists() {
             return Err(BzrError::PathNotFound {
                 path: path.relative_path(),
@@ -370,33 +390,10 @@ impl RepositoryManager for PyO3RepositoryManager {
         }
 
         if self.prefer_pyo3 {
-            if let Err(e) = BreezyOperations::configure_remote(&repo_path, remote_url).await {
-                warn!(
-                    "PyO3 configure_remote failed, falling back to brz config: {}",
-                    e
-                );
-            } else {
-                info!(
-                    "Configured remote {} = {}",
-                    path.relative_path(),
-                    remote_url
-                );
-                return Ok(());
-            }
-        }
-
-        let output = Command::new("brz")
-            .args(["config", &format!("parent_location={}", remote_url)])
-            .current_dir(&repo_path)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await?;
-        if !output.status.success() {
-            return Err(BzrError::subprocess(format!(
-                "brz config failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
+            BreezyOperations::configure_remote(&repo_path, remote_url).await?;
+        } else {
+            // TODO: configure the remote without breezyshim.
+            return Err(BzrError::internal("configure_remote requires breezyshim"));
         }
         info!(
             "Configured remote {} = {}",
@@ -472,6 +469,34 @@ mod tests {
             Some("r".into()),
         );
         assert_eq!(p.relative_path(), "foo/c/r");
+    }
+
+    #[test]
+    fn branch_path_full() {
+        let p = RepositoryPath::new(
+            CodebaseName::new("foo").unwrap(),
+            Some("c".into()),
+            Some("r".into()),
+        );
+        assert_eq!(
+            branch_path(Path::new("/base"), &p).unwrap(),
+            PathBuf::from("/base/foo/c/r")
+        );
+    }
+
+    #[test]
+    fn branch_path_rejects_traversal() {
+        for name in ["", ".", "..", "../bar", "a/b"] {
+            let p = RepositoryPath::new(CodebaseName::new("foo").unwrap(), Some(name.into()), None);
+            assert!(
+                matches!(
+                    branch_path(Path::new("/base"), &p),
+                    Err(BzrError::InvalidRequest { .. })
+                ),
+                "{:?} accepted",
+                name
+            );
+        }
     }
 
     #[test]
