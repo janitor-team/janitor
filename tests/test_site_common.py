@@ -75,10 +75,11 @@ async def test_generate_codebase_context(aiohttp_client, db, con):
     endpoint = aiozipkin.create_endpoint("janitor.site", ipv4="127.0.0.1", port=80)
     tracer = await aiozipkin.create_custom(endpoint)
 
-    seen_queries = []
+    seen_queue_queries = []
+    seen_runs_queries = []
 
     async def handle_queue_position(request):
-        seen_queries.append(dict(request.query))
+        seen_queue_queries.append(dict(request.query))
         return web.json_response(
             {"position": 2, "wait_time": 300.0, "cumulative_wait_time": 600.0}
         )
@@ -119,9 +120,51 @@ async def test_generate_codebase_context(aiohttp_client, db, con):
             }
         )
 
+    async def handle_runs(request):
+        seen_runs_queries.append(dict(request.query))
+        # Hand back the two seeded runs in finish_time-desc order, as
+        # the real runner would.
+        return web.json_response(
+            {
+                "runs": [
+                    {
+                        "id": "run-1",
+                        "codebase": "foo",
+                        "campaign": "mycampaign",
+                        "result_code": "success",
+                        "start_time": (now - timedelta(hours=1)).isoformat(),
+                        "finish_time": now.isoformat(),
+                        "duration_seconds": 3600,
+                        "description": None,
+                        "worker_name": None,
+                        "worker_link": None,
+                        "failure_transient": None,
+                        "revision": None,
+                        "main_branch_revision": None,
+                    },
+                    {
+                        "id": "run-0",
+                        "codebase": "foo",
+                        "campaign": "mycampaign",
+                        "result_code": "success",
+                        "start_time": (now - timedelta(hours=2)).isoformat(),
+                        "finish_time": (now - timedelta(hours=1)).isoformat(),
+                        "duration_seconds": 3600,
+                        "description": None,
+                        "worker_name": None,
+                        "worker_link": None,
+                        "failure_transient": None,
+                        "revision": None,
+                        "main_branch_revision": None,
+                    },
+                ]
+            }
+        )
+
     runner_app = web.Application()
     runner_app.router.add_get("/queue/position", handle_queue_position)
     runner_app.router.add_get("/runs/{run_id}", handle_run)
+    runner_app.router.add_get("/runs", handle_runs)
     runner_client = await aiohttp_client(runner_app)
 
     context = await generate_codebase_context(
@@ -144,4 +187,5 @@ async def test_generate_codebase_context(aiohttp_client, db, con):
     assert context["queue_position"] == 2
     assert context["queue_wait_time"] == timedelta(minutes=5)
     assert [review["comment"] for review in context["reviews"]] == ["fine"]
-    assert seen_queries == [{"codebase": "foo", "campaign": "mycampaign"}]
+    assert seen_queue_queries == [{"codebase": "foo", "campaign": "mycampaign"}]
+    assert seen_runs_queries == [{"codebase": "foo", "campaign": "mycampaign"}]

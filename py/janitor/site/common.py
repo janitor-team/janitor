@@ -22,27 +22,21 @@ from janitor.site import (
 )
 
 
-async def get_previous_runs(conn: asyncpg.Connection, codebase: str, suite: str):
-    return await conn.fetch(
-        """
-SELECT
-  id,
-  start_time,
-  finish_time,
-  finish_time - start_time AS duration,
-  description,
-  codebase,
-  result_code,
-  failure_transient
-FROM
-  run
-WHERE
-  codebase = $1 AND suite = $2
-ORDER BY start_time DESC
-""",
-        codebase,
-        suite,
-    )
+async def get_previous_runs(client, runner_url: str, codebase: str, campaign: str):
+    url = URL(runner_url) / "runs"
+    async with client.get(
+        url,
+        params={"codebase": codebase, "campaign": campaign},
+        raise_for_status=True,
+    ) as resp:
+        data = await resp.json()
+    runs = []
+    for entry in data["runs"]:
+        entry = dict(entry)
+        entry["start_time"] = datetime.fromisoformat(entry["start_time"])
+        entry["finish_time"] = datetime.fromisoformat(entry["finish_time"])
+        runs.append(entry)
+    return runs
 
 
 async def get_candidate(conn: asyncpg.Connection, codebase: str, campaign: str):
@@ -332,9 +326,15 @@ WHERE codebase.name = $1""",
             return (ret["position"], None)
         return (ret["position"], timedelta(seconds=ret["wait_time"]))
 
+    async def previous_runs_via_runner():
+        if runner_url is None:
+            return []
+        with span.new_child("runner:previous-runs"):
+            return await get_previous_runs(client, runner_url, codebase["name"], suite)
+
     candidate, previous_runs, (queue_position, queue_wait_time) = await asyncio.gather(
         fetch("sql:candidate", get_candidate, codebase["name"], suite),
-        fetch("sql:previous-runs", get_previous_runs, codebase["name"], suite),
+        previous_runs_via_runner(),
         queue_position(),
     )
     if candidate is not None:
