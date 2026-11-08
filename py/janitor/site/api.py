@@ -367,14 +367,23 @@ async def handle_queue(request):
 )
 @routes.get("/codebase-names", name="codebase-names")
 async def handle_codebase_names(request):
-    async with request.app["pool"].acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT name FROM codebase WHERE name IS NOT NULL AND NOT inactive "
-            "ORDER BY name"
-        )
-    return web.json_response(
-        [row["name"] for row in rows], headers={"Cache-Control": "max-age=600"}
-    )
+    # TODO(jelmer): Cache the list of active codebase names in the site, rather
+    # than retrieving it from the runner on every request.
+    url = URL(request.app["runner_url"]) / "codebases" / "names"
+    try:
+        async with request.app["http_client_session"].get(url) as resp:
+            if resp.status != 200:
+                logging.warning(
+                    "Unable to retrieve codebase names: runner returned %d: %s",
+                    resp.status,
+                    await resp.text(),
+                )
+                raise web.HTTPBadGateway(text="Unable to retrieve codebase names")
+            names = await resp.json()
+    except ClientConnectorError as e:
+        logging.warning("Unable to contact runner for codebase names: %s", e)
+        raise web.HTTPBadGateway(text="unable to contact runner") from e
+    return web.json_response(names, headers={"Cache-Control": "max-age=600"})
 
 
 class RunDiffQuerySchema(Schema):

@@ -938,6 +938,15 @@ INSERT INTO run (
         .await
     }
 
+    /// Get the names of all active codebases, sorted.
+    pub async fn get_active_codebase_names(&self) -> Result<Vec<CodebaseName>, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT name FROM codebase WHERE name IS NOT NULL AND NOT inactive ORDER BY name",
+        )
+        .fetch_all(self.pool())
+        .await
+    }
+
     /// Upload/update codebases in the database.
     pub async fn upload_codebases(&self, codebases: &[CodebaseUpload]) -> Result<(), sqlx::Error> {
         let mut tx = self.pool().begin().await?;
