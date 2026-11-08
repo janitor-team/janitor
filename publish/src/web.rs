@@ -208,8 +208,6 @@ struct AbsorbedRun {
     id: RunId,
     absorbed_at: Option<chrono::DateTime<chrono::Utc>>,
     merged_by: Option<String>,
-    #[serde(rename = "merged-by-url")]
-    merged_by_url: Option<String>,
     merge_proposal_url: Option<String>,
 }
 
@@ -219,6 +217,20 @@ struct AbsorbedRun {
 struct AbsorbedQuery {
     /// Only include runs absorbed at or after this RFC 3339 time.
     since: Option<String>,
+    /// Only include runs for this campaign.
+    campaign: Option<Campaign>,
+}
+
+/// Response for `GET /absorbed`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+struct AbsorbedResponse {
+    /// Runs absorbed upstream, newest first.
+    runs: Vec<AbsorbedRun>,
+    /// Earliest `absorbed_at` recorded for the queried scope (the
+    /// `campaign` filter is applied; `since` is not), or null when
+    /// there are no absorbed runs for the scope. Callers use this to
+    /// bound a date picker.
+    oldest: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[utoipa::path(
@@ -226,7 +238,7 @@ struct AbsorbedQuery {
     path = "/absorbed",
     params(AbsorbedQuery),
     responses(
-        (status = 200, description = "Runs that were absorbed upstream", body = Vec<AbsorbedRun>),
+        (status = 200, description = "Runs that were absorbed upstream", body = AbsorbedResponse),
         (status = 400, description = "Invalid `since`", body = ErrorResponse),
         (status = 500, description = "Database error", body = ErrorResponse),
     )
@@ -235,100 +247,61 @@ async fn absorbed(
     State(state): State<Arc<AppState>>,
     Query(params): Query<AbsorbedQuery>,
 ) -> Response {
-    let mut query = String::from(
-        r#"
-        SELECT
-            mode,
-            change_set,
-            codebase,
-            EXTRACT(epoch FROM delay) as delay,
-            campaign,
-            result,
-            id,
-            absorbed_at,
-            merged_by,
-            merge_proposal_url
-        FROM absorbed_runs
-        "#,
-    );
-
-    let mut query_params = Vec::new();
-
-    if let Some(since_str) = params.since.as_deref() {
-        match chrono::DateTime::parse_from_rfc3339(since_str) {
-            Ok(since) => {
-                query_params.push(since.with_timezone(&chrono::Utc));
-                query.push_str(&format!(" WHERE absorbed_at >= ${}", query_params.len()));
-            }
+    let since = match params.since.as_deref() {
+        Some(since_str) => match chrono::DateTime::parse_from_rfc3339(since_str) {
+            Ok(since) => Some(since.with_timezone(&chrono::Utc)),
             Err(_) => {
                 return error_response(
                     StatusCode::BAD_REQUEST,
                     "Invalid date format for 'since' parameter",
                 );
             }
-        }
-    }
-
-    query.push_str(" ORDER BY absorbed_at DESC");
-
-    let mut absorbed_runs = Vec::new();
-
-    let query_result = if query_params.is_empty() {
-        sqlx::query_as::<_, AbsorbedRun>(sqlx::AssertSqlSafe(&*query))
-            .fetch_all(&state.conn)
-            .await
-    } else {
-        sqlx::query_as::<_, AbsorbedRun>(sqlx::AssertSqlSafe(&*query))
-            .bind(query_params[0])
-            .fetch_all(&state.conn)
-            .await
+        },
+        None => None,
     };
 
-    match query_result {
-        Ok(rows) => {
-            // Resolve merged-by-url for each row via crate::get_merged_by_user_url.
-            // The helper makes a forge call (get_forge_by_hostname +
-            // get_user_url) on a blocking thread. Different rows hit
-            // different forges, so spawn all lookups up-front and await
-            // them together rather than one at a time. Failures are
-            // non-fatal: the row is still returned with merged_by_url = None.
-            let lookups: Vec<_> = rows
-                .iter()
-                .map(|row| {
-                    let mp_url = row
-                        .merge_proposal_url
-                        .as_deref()
-                        .and_then(|s| s.parse::<url::Url>().ok());
-                    let merged_by = row.merged_by.clone();
-                    match (mp_url, merged_by) {
-                        (Some(mp_url), Some(merged_by)) => {
-                            Some(tokio::task::spawn_blocking(move || {
-                                (
-                                    mp_url.clone(),
-                                    crate::get_merged_by_user_url(&mp_url, &merged_by),
-                                )
-                            }))
-                        }
-                        _ => None,
-                    }
-                })
-                .collect();
+    let mut query = String::from(
+        r#"
+        SELECT
+            mode,
+            change_set,
+            codebase,
+            EXTRACT(epoch FROM delay)::bigint as delay,
+            campaign,
+            result,
+            id,
+            (absorbed_at AT TIME ZONE 'UTC') AS absorbed_at,
+            merged_by,
+            merge_proposal_url
+        FROM absorbed_runs
+        "#,
+    );
 
-            for (mut row, lookup) in rows.into_iter().zip(lookups) {
-                if let Some(handle) = lookup {
-                    row.merged_by_url = match handle.await {
-                        Ok((_, Ok(Some(u)))) => Some(u.to_string()),
-                        Ok((_, Ok(None))) => None,
-                        Ok((mp_url, Err(e))) => {
-                            log::debug!("get_merged_by_user_url failed for {}: {}", mp_url, e);
-                            None
-                        }
-                        Err(_) => None,
-                    };
-                }
-                absorbed_runs.push(row);
-            }
-        }
+    let mut conditions = Vec::new();
+    let mut idx = 0;
+    if since.is_some() {
+        idx += 1;
+        conditions.push(format!("absorbed_at >= ${}", idx));
+    }
+    if params.campaign.is_some() {
+        idx += 1;
+        conditions.push(format!("campaign = ${}", idx));
+    }
+    if !conditions.is_empty() {
+        query.push_str(" WHERE ");
+        query.push_str(&conditions.join(" AND "));
+    }
+    query.push_str(" ORDER BY absorbed_at DESC");
+
+    let mut q = sqlx::query_as::<_, AbsorbedRun>(sqlx::AssertSqlSafe(&*query));
+    if let Some(since) = since {
+        q = q.bind(since);
+    }
+    if let Some(campaign) = params.campaign.as_ref() {
+        q = q.bind(campaign);
+    }
+    let runs = match q.fetch_all(&state.conn).await {
+        Ok(rows) => rows,
         Err(e) => {
             log::error!("Failed to fetch absorbed runs: {}", e);
             return error_response(
@@ -336,9 +309,41 @@ async fn absorbed(
                 "Failed to fetch absorbed runs",
             );
         }
-    }
+    };
 
-    Json(absorbed_runs).into_response()
+    // `oldest` is scoped by campaign only -- a date-picker's min bound
+    // should not move as the user changes `since`. Skip the extra
+    // round-trip when the result set is already empty.
+    let oldest = if runs.is_empty() {
+        None
+    } else {
+        let oldest_result: Result<Option<chrono::DateTime<chrono::Utc>>, _> =
+            if let Some(campaign) = params.campaign.as_ref() {
+                sqlx::query_scalar(
+                    "SELECT MIN(absorbed_at) AT TIME ZONE 'UTC' \
+                     FROM absorbed_runs WHERE campaign = $1",
+                )
+                .bind(campaign)
+                .fetch_one(&state.conn)
+                .await
+            } else {
+                sqlx::query_scalar("SELECT MIN(absorbed_at) AT TIME ZONE 'UTC' FROM absorbed_runs")
+                    .fetch_one(&state.conn)
+                    .await
+            };
+        match oldest_result {
+            Ok(oldest) => oldest,
+            Err(e) => {
+                log::error!("Failed to fetch oldest absorbed_at: {}", e);
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to fetch absorbed runs",
+                );
+            }
+        }
+    };
+
+    Json(AbsorbedResponse { runs, oldest }).into_response()
 }
 
 /// Per-role branch policy entry as it appears on the wire. Matches
