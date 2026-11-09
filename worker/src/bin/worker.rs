@@ -2,7 +2,6 @@ use clap::Parser;
 use janitor_worker::AppState;
 use serde::Deserialize;
 use std::fs::File;
-use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 
 #[derive(Parser, Debug)]
@@ -40,8 +39,8 @@ struct Args {
     campaign: Option<janitor_types::Campaign>,
 
     /// Address to listen on
-    #[clap(long, default_value = "0.0.0.0")]
-    listen_address: std::net::IpAddr,
+    #[clap(long, default_value = "localhost")]
+    listen_address: String,
 
     /// IP / hostname this instance can be reached on by runner
     #[clap(long)]
@@ -72,6 +71,17 @@ fn worker_url(host: &str, port: u16) -> Result<url::Url, url::ParseError> {
         Ok(ip) => url::Url::parse(&format!("http://[{}]:{}", ip, port)),
         Err(_) => url::Url::parse(&format!("http://{}:{}", host, port)),
     }
+}
+
+/// Whether the runner cannot reach `url` because the worker listens on loopback only.
+fn only_local(listen: &[std::net::IpAddr], url: &url::Url) -> bool {
+    let url_is_local = match url.host() {
+        Some(url::Host::Ipv4(ip)) => listen.contains(&ip.into()),
+        Some(url::Host::Ipv6(ip)) => listen.contains(&ip.into()),
+        Some(url::Host::Domain(name)) => name == "localhost",
+        None => true,
+    };
+    listen.iter().all(|ip| ip.is_loopback()) && !url_is_local
 }
 
 #[tokio::main]
@@ -166,13 +176,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .to_owned()
     });
 
-    let addr = SocketAddr::new(args.listen_address, args.port.unwrap_or(0));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    let addr = listener.local_addr()?;
-    log::info!("listening on {}", addr);
+    let listeners = janitor_service::listen::bind_all(format!(
+        "{}:{}",
+        args.listen_address,
+        args.port.unwrap_or(0)
+    ))
+    .await?;
+    let mut listen_ips = Vec::new();
+    for listener in &listeners {
+        let addr = listener.local_addr()?;
+        log::info!("listening on {}", addr);
+        listen_ips.push(addr.ip());
+    }
 
     // Extract actual port
-    let port = addr.port();
+    let port = listeners[0].local_addr()?.port();
 
     let site_port = args.site_port.unwrap_or(port);
 
@@ -228,6 +246,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Show worker URL
     if let Some(my_url) = my_url.as_ref() {
         log::info!("Diagnostics available at {}", my_url);
+        if only_local(&listen_ips, my_url) {
+            log::warn!(
+                "Listening on loopback only, so the runner cannot reach {}. Pass --listen-address.",
+                my_url
+            );
+        }
     }
 
     // Run worker loop in background
@@ -283,8 +307,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Start the server
-    axum::serve(listener, app.into_make_service()).await?;
+    // Start the servers
+    let mut servers = tokio::task::JoinSet::new();
+    for listener in listeners {
+        let app = app.clone();
+        servers.spawn(async move { axum::serve(listener, app.into_make_service()).await });
+    }
+    while let Some(res) = servers.join_next().await {
+        res??;
+    }
     Ok(())
 }
 

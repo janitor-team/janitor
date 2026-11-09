@@ -3,7 +3,6 @@ use janitor_publish::rate_limiter::{
     FixedRateLimiter, NonRateLimiter, RateLimiter, SlowStartRateLimiter,
 };
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use url::Url;
@@ -23,8 +22,8 @@ struct Args {
     once: bool,
 
     /// Listen address
-    #[clap(long, default_value = "0.0.0.0")]
-    listen_address: std::net::IpAddr,
+    #[clap(long, default_value = "localhost")]
+    listen_address: String,
 
     /// Listen port
     #[clap(long, default_value = "9912")]
@@ -295,19 +294,31 @@ async fn main() -> Result<(), i32> {
         let app = janitor_publish::web::app(state.clone());
 
         // run it
-        let addr = SocketAddr::new(args.listen_address, args.port);
-        log::info!("listening on {}", addr);
-
-        let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
-            log::error!("Failed to bind listener: {}", e);
-            1
-        })?;
-        axum::serve(listener, app.into_make_service())
-            .await
-            .map_err(|e| {
-                log::error!("Server error: {}", e);
+        let listeners =
+            janitor_service::listen::bind_all(format!("{}:{}", args.listen_address, args.port))
+                .await
+                .map_err(|e| {
+                    log::error!("Failed to bind listener: {}", e);
+                    1
+                })?;
+        let mut servers = tokio::task::JoinSet::new();
+        for listener in listeners {
+            let addr = listener.local_addr().map_err(|e| {
+                log::error!("Failed to bind listener: {}", e);
                 1
             })?;
+            log::info!("listening on {}", addr);
+            let app = app.clone();
+            servers.spawn(async move { axum::serve(listener, app.into_make_service()).await });
+        }
+        while let Some(res) = servers.join_next().await {
+            res.map_err(std::io::Error::other)
+                .and_then(|res| res)
+                .map_err(|e| {
+                    log::error!("Server error: {}", e);
+                    1
+                })?;
+        }
     }
 
     Ok(())
