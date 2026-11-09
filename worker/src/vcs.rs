@@ -305,6 +305,9 @@ pub fn import_branches(
     let import = match vcs_type {
         janitor::vcs::VcsType::Git => import_branches_git,
         janitor::vcs::VcsType::Bzr => import_branches_bzr,
+        other => {
+            return Err(BrzError::UnsupportedVcs(other.to_string()));
+        }
     };
     import(
         repo_url,

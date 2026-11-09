@@ -1,7 +1,8 @@
 //! Request and response bodies of the runner's HTTP API.
 
 use chrono::{DateTime, Utc};
-use janitor_types::{Campaign, ChangeSetId, CodebaseName, RunId};
+use janitor::vcs::VcsType;
+use janitor_types::{Campaign, ChangeSetId, CodebaseName, LogFilename, RevisionId, Role, RunId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use utoipa::ToSchema;
@@ -200,15 +201,107 @@ pub struct UploadCandidatesResponse {
     pub unknown_publish_policies: Vec<String>,
 }
 
+/// One entry in a run's `result_branches`, mirroring the
+/// `new_result_branch` row for a given role.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ResultBranchEntry {
+    /// Role of the branch (e.g. `main`, `pristine-tar`).
+    pub role: Role,
+    /// Name of the branch on the remote, if known.
+    pub remote_name: Option<String>,
+    /// Revision the branch was based on before the run modified it.
+    #[schema(value_type = Option<String>)]
+    pub base_revision: Option<RevisionId>,
+    /// Revision the branch pointed to after the run.
+    #[schema(value_type = Option<String>)]
+    pub revision: Option<RevisionId>,
+}
+
+/// One tag a run produced, mirroring the `result_tag` composite type
+/// stored in `run.result_tags`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RunResultTag {
+    /// Actual tag name created in the VCS.
+    pub actual_name: String,
+    /// Revision the tag points at.
+    #[schema(value_type = String)]
+    pub revision: RevisionId,
+}
+
+/// Debian-specific fields for a run, from the `debian_build` table.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RunDebianBuild {
+    /// Debian version text of the built package.
+    pub version: String,
+    /// Distribution the package was built for.
+    pub distribution: String,
+    /// Raw lintian output, if recorded.
+    #[schema(value_type = Option<Object>)]
+    pub lintian_result: Option<serde_json::Value>,
+    /// Binary packages produced, if recorded.
+    pub binary_packages: Option<Vec<String>>,
+}
+
 /// Response for `GET /runs/{id}`.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct RunPublishStatusResponse {
+pub struct RunDetailResponse {
+    /// Run identifier.
+    pub id: RunId,
     /// Codebase of the run.
     pub codebase: CodebaseName,
     /// Campaign of the run.
     pub campaign: Campaign,
     /// Publish status of the run.
     pub publish_status: String,
+    /// Result code (e.g. `success`, `missing-upstream-tarball`).
+    pub result_code: String,
+    /// Revision the main branch pointed to at the start of the run.
+    #[schema(value_type = Option<String>)]
+    pub main_branch_revision: Option<RevisionId>,
+    /// Revision the result branch points to.
+    #[schema(value_type = Option<String>)]
+    pub revision: Option<RevisionId>,
+    /// VCS type of the codebase, if known.
+    pub vcs_type: Option<VcsType>,
+    /// Branch URL of the codebase at the time of the run.
+    pub branch_url: Option<String>,
+    /// Target branch URL the run was proposing against, if any.
+    pub target_branch_url: Option<String>,
+    /// When the run started.
+    pub start_time: DateTime<Utc>,
+    /// When the run finished.
+    pub finish_time: DateTime<Utc>,
+    /// Command that was executed.
+    pub command: Option<String>,
+    /// Human-readable description of the result.
+    pub description: Option<String>,
+    /// Context the run started with, if any.
+    pub context: Option<String>,
+    /// Structured result returned by the codemod.
+    #[schema(value_type = Option<Object>)]
+    pub result: Option<serde_json::Value>,
+    /// Context the run was scheduled with (i.e. before any resume).
+    pub instigated_context: Option<String>,
+    /// Log files produced by the run.
+    pub logfilenames: Vec<LogFilename>,
+    /// Name of the worker that executed the run.
+    pub worker_name: Option<String>,
+    /// Link to the worker, if recorded on the row.
+    pub worker_link: Option<String>,
+    /// Change set the run belongs to.
+    pub change_set: ChangeSetId,
+    /// Stage at which the run failed, if any.
+    pub failure_stage: Option<String>,
+    /// Whether the failure is believed to be transient.
+    pub failure_transient: Option<bool>,
+    /// Run this one resumed from, if any.
+    pub resume_from: Option<String>,
+    /// Tags produced by the run, if any.
+    pub result_tags: Option<Vec<RunResultTag>>,
+    /// Result branches produced by the run, keyed by role.
+    pub result_branches: Vec<ResultBranchEntry>,
+    /// Debian-specific build info, if the run produced a Debian build.
+    pub debian_build: Option<RunDebianBuild>,
 }
 
 /// Response for `POST /runs/{id}`; also sent on the `publish-status`

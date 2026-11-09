@@ -141,3 +141,66 @@ async fn test_get_run_debian_build() {
         })
     );
 }
+
+/// `get_run_detail` surfaces the run's codebase/campaign metadata,
+/// its `new_result_branch` entries, and the `debian_build` row.
+#[tokio::test]
+async fn test_get_run_detail_combines_run_branches_and_debian_build() {
+    let Some(db) = setup().await else { return };
+    sqlx::raw_sql(
+        "INSERT INTO worker (name, password) VALUES ('worker-a', 'x');
+         INSERT INTO change_set (id, campaign) VALUES ('cs', 'lintian-fixes');
+         INSERT INTO run (id, command, result_code, suite, logfilenames, change_set, codebase, \
+                          vcs_type, branch_url, main_branch_revision, revision, \
+                          worker, worker_link, description, \
+                          start_time, finish_time) \
+         VALUES ('run-1', 'lintian-brush', 'success', 'lintian-fixes', '{}', 'cs', 'foo', \
+                 'git', 'https://example.com/foo', 'base-rev', 'tip-rev', \
+                 'worker-a', 'https://worker.invalid/a', 'ok', \
+                 '2024-01-01 00:00:00', '2024-01-01 00:10:00');
+         INSERT INTO new_result_branch (run_id, role, remote_name, base_revision, revision) \
+         VALUES ('run-1', 'main', 'origin/main', 'base-rev', 'tip-rev');
+         INSERT INTO debian_build (run_id, version, distribution, source, binary_packages) \
+         VALUES ('run-1', '1.0-1', 'unstable', 'foo', '{foo}')",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let runner_db = RunnerDatabase::new(db.pool.clone());
+
+    let detail = runner_db
+        .get_run_detail(&janitor_types::RunId::new("run-1").unwrap())
+        .await
+        .unwrap()
+        .expect("run was just inserted");
+    let base_rev = breezyshim::RevisionId::from(b"base-rev".to_vec());
+    let tip_rev = breezyshim::RevisionId::from(b"tip-rev".to_vec());
+
+    assert_eq!(detail.row.codebase.as_str(), "foo");
+    assert_eq!(detail.row.campaign.as_str(), "lintian-fixes");
+    assert_eq!(detail.row.result_code, "success");
+    assert_eq!(detail.row.main_branch_revision.as_ref(), Some(&base_rev));
+    assert_eq!(detail.row.revision.as_ref(), Some(&tip_rev));
+    assert_eq!(detail.row.vcs_type, Some(janitor::vcs::VcsType::Git));
+    assert_eq!(detail.row.worker_name.as_deref(), Some("worker-a"));
+    assert_eq!(
+        detail.row.worker_link.as_deref(),
+        Some("https://worker.invalid/a")
+    );
+    assert_eq!(detail.row.description.as_deref(), Some("ok"));
+    assert_eq!(detail.row.change_set.as_str(), "cs");
+
+    assert_eq!(detail.branches.len(), 1);
+    assert_eq!(detail.branches[0].role.as_str(), "main");
+    assert_eq!(
+        detail.branches[0].remote_name.as_deref(),
+        Some("origin/main")
+    );
+    assert_eq!(detail.branches[0].base_revision.as_ref(), Some(&base_rev));
+    assert_eq!(detail.branches[0].revision.as_ref(), Some(&tip_rev));
+
+    let debian_build = detail.debian_build.expect("debian_build row exists");
+    assert_eq!(debian_build.version, "1.0-1");
+    assert_eq!(debian_build.distribution, "unstable");
+    assert_eq!(debian_build.binary_packages, Some(vec!["foo".to_string()]));
+}

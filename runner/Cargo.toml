@@ -19,7 +19,7 @@ redis = { workspace = true, features = ["aio", "tokio-comp"] }
 chrono = { workspace = true, features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true
-janitor = { path = "..", default-features = false, features = ["debian", "otlp", "testing"] }
+janitor = { path = "..", default-features = false, features = ["debian", "otlp", "testing", "utoipa"] }
 janitor-types = { workspace = true, features = ["sqlx", "utoipa"] }
 janitor-service = { workspace = true }
 async-trait = "0.1.88"

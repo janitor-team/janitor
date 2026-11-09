@@ -534,6 +534,91 @@ async fn get_run_returns_codebase_campaign_publish_status() {
     );
 }
 
+/// `GET /runs/{id}` returns the run's result code, revisions, VCS
+/// metadata and the `new_result_branch` entries so site callers can
+/// stop reading the `run` table directly.
+#[tokio::test]
+async fn get_run_returns_run_detail_with_result_branches() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let pool = state.database.pool().clone();
+    insert_codebase(&pool, "get-run-detail-cb").await;
+    sqlx::query("INSERT INTO change_set (id, campaign) VALUES ($1, $2)")
+        .bind("cs-detail")
+        .bind("test-campaign")
+        .execute(&pool)
+        .await
+        .expect("insert change_set");
+    sqlx::query(
+        "INSERT INTO run (
+             id, suite, codebase, result_code,
+             main_branch_revision, revision,
+             vcs_type, branch_url,
+             start_time, finish_time, logfilenames, change_set
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7::vcs_type, $8,
+                 NOW() - INTERVAL '1 minute', NOW(), '{}', $9)",
+    )
+    .bind("run-detail-1")
+    .bind("test-campaign")
+    .bind("get-run-detail-cb")
+    .bind("success")
+    .bind("base-rev")
+    .bind("tip-rev")
+    .bind("git")
+    .bind("https://example.invalid/get-run-detail-cb")
+    .bind("cs-detail")
+    .execute(&pool)
+    .await
+    .expect("insert run");
+    sqlx::query(
+        "INSERT INTO new_result_branch (run_id, role, remote_name, base_revision, revision)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind("run-detail-1")
+    .bind("main")
+    .bind("origin/main")
+    .bind("base-rev")
+    .bind("tip-rev")
+    .execute(&pool)
+    .await
+    .expect("insert new_result_branch");
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/runs/run-detail-1")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    assert_eq!(body["id"], "run-detail-1");
+    assert_eq!(body["codebase"], "get-run-detail-cb");
+    assert_eq!(body["campaign"], "test-campaign");
+    assert_eq!(body["result_code"], "success");
+    assert_eq!(body["main_branch_revision"], "base-rev");
+    assert_eq!(body["revision"], "tip-rev");
+    assert_eq!(body["vcs_type"], "git");
+    assert_eq!(
+        body["branch_url"],
+        "https://example.invalid/get-run-detail-cb"
+    );
+    assert_eq!(body["publish_status"], "unknown");
+    assert_eq!(
+        body["result_branches"],
+        json!([{
+            "role": "main",
+            "remote_name": "origin/main",
+            "base_revision": "base-rev",
+            "revision": "tip-rev",
+        }])
+    );
+}
+
 /// `GET /runs/{id}` on an unknown run returns 404 with the
 /// `{reason}` body.
 #[tokio::test]

@@ -96,12 +96,29 @@ pub fn is_authenticated_url(url: &Url) -> bool {
     ["git+ssh", "bzr+ssh"].contains(&url.scheme())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Copy, std::hash::Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Copy, std::hash::Hash, Serialize, Deserialize, sqlx::Type,
+)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[sqlx(type_name = "vcs_type", rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum VcsType {
+    /// Bazaar.
     Bzr,
+    /// Git.
     Git,
+    /// Subversion.
+    Svn,
+    /// Monotone.
+    Mtn,
+    /// Mercurial.
+    Hg,
+    /// GNU Arch.
+    Arch,
+    /// Concurrent Versions System.
+    Cvs,
+    /// Darcs.
+    Darcs,
 }
 
 impl std::fmt::Display for VcsType {
@@ -109,6 +126,12 @@ impl std::fmt::Display for VcsType {
         match self {
             VcsType::Bzr => f.write_str("bzr"),
             VcsType::Git => f.write_str("git"),
+            VcsType::Svn => f.write_str("svn"),
+            VcsType::Mtn => f.write_str("mtn"),
+            VcsType::Hg => f.write_str("hg"),
+            VcsType::Arch => f.write_str("arch"),
+            VcsType::Cvs => f.write_str("cvs"),
+            VcsType::Darcs => f.write_str("darcs"),
         }
     }
 }
@@ -120,6 +143,12 @@ impl std::str::FromStr for VcsType {
         match s {
             "bzr" => Ok(VcsType::Bzr),
             "git" => Ok(VcsType::Git),
+            "svn" => Ok(VcsType::Svn),
+            "mtn" => Ok(VcsType::Mtn),
+            "hg" => Ok(VcsType::Hg),
+            "arch" => Ok(VcsType::Arch),
+            "cvs" => Ok(VcsType::Cvs),
+            "darcs" => Ok(VcsType::Darcs),
             _ => Err(format!("Unknown VCS type: {}", s)),
         }
     }
@@ -216,36 +245,57 @@ mod tests {
 
     #[test]
     fn test_vcs_type_from_str() {
-        assert_eq!("git".parse::<VcsType>().unwrap(), VcsType::Git);
-        assert_eq!("bzr".parse::<VcsType>().unwrap(), VcsType::Bzr);
-        assert!("svn".parse::<VcsType>().is_err());
+        for (s, expected) in [
+            ("git", VcsType::Git),
+            ("bzr", VcsType::Bzr),
+            ("svn", VcsType::Svn),
+            ("mtn", VcsType::Mtn),
+            ("hg", VcsType::Hg),
+            ("arch", VcsType::Arch),
+            ("cvs", VcsType::Cvs),
+            ("darcs", VcsType::Darcs),
+        ] {
+            assert_eq!(s.parse::<VcsType>().unwrap(), expected);
+        }
         assert!("".parse::<VcsType>().is_err());
+        assert!("perforce".parse::<VcsType>().is_err());
     }
 
     #[test]
     fn test_vcs_type_display() {
-        assert_eq!(VcsType::Git.to_string(), "git");
-        assert_eq!(VcsType::Bzr.to_string(), "bzr");
+        for (expected, vt) in [
+            ("git", VcsType::Git),
+            ("bzr", VcsType::Bzr),
+            ("svn", VcsType::Svn),
+            ("mtn", VcsType::Mtn),
+            ("hg", VcsType::Hg),
+            ("arch", VcsType::Arch),
+            ("cvs", VcsType::Cvs),
+            ("darcs", VcsType::Darcs),
+        ] {
+            assert_eq!(vt.to_string(), expected);
+        }
     }
 
     #[test]
     fn test_vcs_type_serde_roundtrip() {
-        let git = VcsType::Git;
-        let json = serde_json::to_string(&git).unwrap();
-        assert_eq!(json, r#""git""#);
-        let roundtripped: VcsType = serde_json::from_str(&json).unwrap();
-        assert_eq!(roundtripped, git);
-
-        let bzr = VcsType::Bzr;
-        let json = serde_json::to_string(&bzr).unwrap();
-        assert_eq!(json, r#""bzr""#);
-        let roundtripped: VcsType = serde_json::from_str(&json).unwrap();
-        assert_eq!(roundtripped, bzr);
+        for (vt, expected_json) in [
+            (VcsType::Git, r#""git""#),
+            (VcsType::Bzr, r#""bzr""#),
+            (VcsType::Svn, r#""svn""#),
+            (VcsType::Hg, r#""hg""#),
+        ] {
+            let json = serde_json::to_string(&vt).unwrap();
+            assert_eq!(json, expected_json);
+            let roundtripped: VcsType = serde_json::from_str(&json).unwrap();
+            assert_eq!(roundtripped, vt);
+        }
     }
 
     #[test]
     fn test_vcs_type_serde_invalid() {
-        assert!(serde_json::from_str::<VcsType>(r#""svn""#).is_err());
+        assert!(serde_json::from_str::<VcsType>(r#""perforce""#).is_err());
+        assert!(serde_json::from_str::<VcsType>(r#""""#).is_err());
     }
 
     #[test]

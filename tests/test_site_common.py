@@ -83,8 +83,45 @@ async def test_generate_codebase_context(aiohttp_client, db, con):
             {"position": 2, "wait_time": 300.0, "cumulative_wait_time": 600.0}
         )
 
+    async def handle_run(request):
+        run_id = request.match_info["run_id"]
+        if run_id != "run-1":
+            return web.json_response({"reason": "no such run"}, status=404)
+        return web.json_response(
+            {
+                "id": "run-1",
+                "codebase": "foo",
+                "campaign": "mycampaign",
+                "publish_status": "unknown",
+                "result_code": "success",
+                "main_branch_revision": None,
+                "revision": None,
+                "vcs_type": "git",
+                "branch_url": "https://example.com/foo.git",
+                "target_branch_url": None,
+                "start_time": (now - timedelta(hours=1)).isoformat(),
+                "finish_time": now.isoformat(),
+                "command": "",
+                "description": None,
+                "context": None,
+                "result": None,
+                "instigated_context": None,
+                "logfilenames": [],
+                "worker_name": None,
+                "worker_link": None,
+                "change_set": "run-1",
+                "failure_stage": None,
+                "failure_transient": None,
+                "resume_from": None,
+                "result_tags": None,
+                "result_branches": [],
+                "debian_build": None,
+            }
+        )
+
     runner_app = web.Application()
     runner_app.router.add_get("/queue/position", handle_queue_position)
+    runner_app.router.add_get("/runs/{run_id}", handle_run)
     runner_client = await aiohttp_client(runner_app)
 
     context = await generate_codebase_context(
