@@ -1233,6 +1233,73 @@ INSERT INTO run (
         .await
     }
 
+    /// Get a single codebase row, optionally joined with the
+    /// per-branch publish policy for a specific campaign. When
+    /// `campaign` is supplied, the policy is read via the codebase's
+    /// candidate on that campaign; a missing candidate or missing
+    /// named policy both yield `publish_policy = None`.
+    pub async fn get_codebase_detail(
+        &self,
+        name: &CodebaseName,
+        campaign: Option<&Campaign>,
+    ) -> Result<Option<CodebaseDetail>, sqlx::Error> {
+        let row: Option<CodebaseRow> = sqlx::query_as(
+            "SELECT name, branch_url, url, branch, subpath, vcs_type::text AS vcs_type, \
+                    web_url, vcs_last_revision, value \
+             FROM codebase WHERE name = $1",
+        )
+        .bind(name)
+        .fetch_optional(self.pool())
+        .await?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        let publish_policy = if let Some(campaign) = campaign {
+            // The composite-array column is not directly decodable
+            // from sqlx, so we explode it into (role, mode,
+            // frequency_days) rows at the SQL level and collect into
+            // a Vec in the order the DB gives us. Same trick the
+            // publisher uses for `named_publish_policy`.
+            let rows: Vec<(String, String, Option<i32>)> = sqlx::query_as(
+                r#"
+                SELECT pp.role, pp.mode::text, pp.frequency_days
+                FROM candidate
+                JOIN named_publish_policy
+                  ON named_publish_policy.name = candidate.publish_policy
+                CROSS JOIN UNNEST(named_publish_policy.per_branch_policy) AS pp
+                WHERE candidate.codebase = $1 AND candidate.suite = $2
+                ORDER BY pp.role
+                "#,
+            )
+            .bind(name)
+            .bind(campaign)
+            .fetch_all(self.pool())
+            .await?;
+            if rows.is_empty() {
+                None
+            } else {
+                Some(
+                    rows.into_iter()
+                        .map(|(role, mode, frequency_days)| BranchPublishPolicyEntry {
+                            role,
+                            mode,
+                            frequency_days,
+                        })
+                        .collect(),
+                )
+            }
+        } else {
+            None
+        };
+
+        Ok(Some(CodebaseDetail {
+            row,
+            publish_policy,
+        }))
+    }
+
     /// Get the names of all active codebases, sorted.
     pub async fn get_active_codebase_names(&self) -> Result<Vec<CodebaseName>, sqlx::Error> {
         sqlx::query_scalar(
@@ -1499,6 +1566,33 @@ async fn schedule_codebase_candidates(
         }
     }
     Ok(())
+}
+
+/// Per-branch publish policy entry, mirroring the
+/// `branch_publish_policy` composite type rows in the
+/// `named_publish_policy.per_branch_policy` array.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct BranchPublishPolicyEntry {
+    /// Role of the branch (e.g. `main`, `pristine-tar`).
+    pub role: String,
+    /// Publish mode for this branch role.
+    pub mode: String,
+    /// Optional max frequency between publish attempts, in days.
+    pub frequency_days: Option<i32>,
+}
+
+/// Response for `GET /codebases/{name}`.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct CodebaseDetail {
+    /// Fields from the `codebase` table.
+    #[serde(flatten)]
+    pub row: CodebaseRow,
+    /// Per-branch publish policy, resolved through the candidate for
+    /// the supplied campaign. `None` when no `campaign` was supplied
+    /// or when there is no candidate for this codebase on that
+    /// campaign, or when the candidate has no named publish policy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publish_policy: Option<Vec<BranchPublishPolicyEntry>>,
 }
 
 /// Entry in a `POST /codebases` request body.
