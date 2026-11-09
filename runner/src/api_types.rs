@@ -304,6 +304,44 @@ pub struct RunDetailResponse {
     pub debian_build: Option<RunDebianBuild>,
 }
 
+/// One entry in a `GET /runs` listing.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, sqlx::FromRow)]
+pub struct RunSummary {
+    /// Run identifier.
+    pub id: RunId,
+    /// Codebase of the run.
+    pub codebase: CodebaseName,
+    /// Campaign the run belongs to.
+    pub campaign: Campaign,
+    /// Result code (`success`, `missing-upstream-tarball`, ...).
+    pub result_code: String,
+    /// When the run started.
+    pub start_time: DateTime<Utc>,
+    /// When the run finished.
+    pub finish_time: DateTime<Utc>,
+    /// `finish_time - start_time`, in whole seconds.
+    pub duration_seconds: i64,
+    /// Human-readable description of the result, if any.
+    pub description: Option<String>,
+    /// Name of the worker that executed the run, if known.
+    pub worker_name: Option<String>,
+    /// Link to the worker, if recorded on the row.
+    pub worker_link: Option<String>,
+    /// Whether the failure (if any) is considered transient.
+    pub failure_transient: Option<bool>,
+    /// Revision the result branch points to, if any.
+    pub revision: Option<String>,
+    /// Revision the main branch was at when the run started, if any.
+    pub main_branch_revision: Option<String>,
+}
+
+/// Response for `GET /runs`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RunListResponse {
+    /// Matching runs, newest first.
+    pub runs: Vec<RunSummary>,
+}
+
 /// Response for `POST /runs/{id}`; also sent on the `publish-status`
 /// pub/sub channel.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
