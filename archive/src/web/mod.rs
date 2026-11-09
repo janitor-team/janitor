@@ -190,6 +190,21 @@ impl ArchiveWebService {
                 "/openapi.json",
                 get(move || async move { ([("content-type", "application/json")], spec) }),
             )
+            .merge(Self::public_routes())
+            // One span per request, exported when zipkin_address is set.
+            .layer(TraceLayer::new_for_http())
+            .with_state(self.state.clone())
+    }
+
+    /// Create the router for the public port: the dists trees.
+    pub fn public_router(&self) -> Router {
+        Self::public_routes()
+            .layer(TraceLayer::new_for_http())
+            .with_state(self.state.clone())
+    }
+
+    fn public_routes() -> Router<AppState> {
+        Router::new()
             // Repository serving endpoints
             .route("/dists/{suite}/Release", get(serve_suite_file))
             .route("/dists/{suite}/Release.gpg", get(serve_suite_file))
@@ -257,32 +272,30 @@ impl ArchiveWebService {
                 "/dists/{kind}/{id}/{component}/source/by-hash/{algo}/{hash}",
                 get(serve_on_demand_file),
             )
-            // One span per request, exported when zipkin_address is set.
-            .layer(TraceLayer::new_for_http())
-            .with_state(self.state.clone())
     }
 
-    /// Start the web service on the specified address.
-    pub async fn serve(&self, bind_address: &str) -> ArchiveResult<()> {
-        let app = self.router();
-
-        let listener = tokio::net::TcpListener::bind(bind_address)
-            .await
-            .map_err(|e| {
-                ArchiveError::InvalidConfiguration(format!(
-                    "Failed to bind to {}: {}",
-                    bind_address, e
-                ))
-            })?;
+    /// Serve all routes on `bind_address` and only the public ones on `public_bind_address`.
+    pub async fn serve(&self, bind_address: &str, public_bind_address: &str) -> ArchiveResult<()> {
+        let listener = bind(bind_address).await?;
+        let public_listener = bind(public_bind_address).await?;
 
         info!("Archive web service listening on {}", bind_address);
+        info!("Public archive listening on {}", public_bind_address);
 
-        axum::serve(listener, app)
-            .await
-            .map_err(|e| ArchiveError::InvalidConfiguration(format!("Server error: {}", e)))?;
+        tokio::try_join!(
+            axum::serve(listener, self.router()),
+            axum::serve(public_listener, self.public_router()),
+        )
+        .map_err(|e| ArchiveError::InvalidConfiguration(format!("Server error: {}", e)))?;
 
         Ok(())
     }
+}
+
+async fn bind(address: &str) -> ArchiveResult<tokio::net::TcpListener> {
+    tokio::net::TcpListener::bind(address).await.map_err(|e| {
+        ArchiveError::InvalidConfiguration(format!("Failed to bind to {}: {}", address, e))
+    })
 }
 
 /// Serve a file from the dists tree of a configured suite. Files that
