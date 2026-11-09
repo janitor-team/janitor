@@ -153,6 +153,8 @@ ALTER TABLE publish ADD COLUMN IF NOT EXISTS run_id text references run(id) on d
 CREATE INDEX ON publish (revision);
 CREATE INDEX ON publish (merge_proposal_url);
 CREATE INDEX ON publish (timestamp);
+-- The publisher used to store these when no detail reached it.
+UPDATE publish SET description = NULL WHERE result_code = 'permission-denied' AND description IN ('Permission denied.', 'Permission denied: ');
 CREATE TYPE queue_bucket AS ENUM(
     'update-existing-mp', 'manual', 'control', 'hook', 'reschedule', 'update-new-mp', 'missing-deps', 'default');
 CREATE TABLE IF NOT EXISTS queue (

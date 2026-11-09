@@ -342,10 +342,9 @@ pub fn publish_one(
                 }
                 Err(BrzError::PermissionDenied(_, e)) => {
                     return Err(PublishError::Failure {
-                        description: if let Some(e) = e {
-                            format!("Permission denied: {}", e)
-                        } else {
-                            "Permission denied.".to_string()
+                        description: match e {
+                            Some(e) if !e.is_empty() => format!("Permission denied: {}", e),
+                            _ => String::new(),
                         },
                         code: "permission-denied".to_string(),
                     });
@@ -674,7 +673,7 @@ pub fn publish(
             code: "forking-disabled".to_string(),
         }),
         Err(SvpPublishError::PermissionDenied) => Err(PublishError::Failure {
-            description: "Permission denied.".to_string(),
+            description: String::new(),
             code: "permission-denied".to_string(),
         }),
         Err(SvpPublishError::Other(BrzError::MergeProposalExists(e, _))) => {

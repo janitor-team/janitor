@@ -68,7 +68,8 @@ pub async fn store_publish(
     .bind(role)
     .bind(mode.to_string())
     .bind(result_code)
-    .bind(description)
+    // An empty description means there is no detail to show.
+    .bind(description.filter(|d| !d.is_empty()))
     .bind(merge_proposal_url.map(|u| u.to_string()))
     .bind(publish_id)
     .bind(requester)
@@ -792,6 +793,7 @@ pub async fn iter_publish_ready(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use janitor::test_with_database;
 
     /// Regression: `run.vcs_type` is a Postgres ENUM
     /// (`vcs_type`). Decoding it as `String` without a `::text`
@@ -942,5 +944,60 @@ mod tests {
         assert!(q
             .candidates
             .contains(&"https://example.com/foo/bar".to_string()));
+    }
+
+    test_with_database! {
+        schema = Core;
+        async fn test_store_publish_description(test_db: TestDatabase) {
+            let pool = test_db.pool();
+            for query in [
+                "INSERT INTO codebase (name, branch_url, url, vcs_type)
+                 VALUES ('cb-1', 'https://example.invalid/cb-1', 'https://example.invalid/cb-1', 'git')",
+                "INSERT INTO change_set (id, campaign) VALUES ('cs-1', 'lintian-fixes')",
+            ] {
+                sqlx::query(query).execute(pool).await.unwrap();
+            }
+            let change_set = ChangeSetId::new("cs-1").unwrap();
+            let codebase = CodebaseName::new("cb-1").unwrap();
+            for (id, code, description) in [
+                ("p1", "branch-unavailable", Some("Branch could not be opened")),
+                ("p2", "permission-denied", Some("")),
+                ("p3", "permission-denied", None),
+            ] {
+                store_publish(
+                    pool,
+                    &change_set,
+                    &codebase,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    "main",
+                    Mode::Propose,
+                    code,
+                    description,
+                    None,
+                    Some(&PublishId::new(id).unwrap()),
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+            }
+            let rows: Vec<(String, Option<String>)> =
+                sqlx::query_as("SELECT id, description FROM publish ORDER BY id")
+                    .fetch_all(pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                rows,
+                vec![
+                    ("p1".to_string(), Some("Branch could not be opened".to_string())),
+                    ("p2".to_string(), None),
+                    ("p3".to_string(), None),
+                ]
+            );
+        }
     }
 }
