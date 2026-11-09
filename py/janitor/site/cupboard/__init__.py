@@ -28,6 +28,7 @@ import asyncpg
 from aiohttp import ClientSession, web
 from aiohttp.web_middlewares import normalize_path_middleware
 from jinja2 import select_autoescape
+from yarl import URL
 
 from janitor.artifacts import ArtifactsMissing
 from janitor.logs import LogRetrievalError
@@ -84,18 +85,22 @@ async def handle_reprocess_logs(request):
 @routes.get("/cupboard/workers", name="workers")
 @html_template("cupboard/workers.html", headers={"Vary": "Cookie"})
 async def handle_workers(request):
-    async with request.app["pool"].acquire() as conn:
-        workers = []
-        for worker in await conn.fetch(
-            "select name, link, count(run.id) as run_count from worker "
-            "left join run on run.worker = worker.name "
-            "group by worker.name, worker.link"
-        ):
-            worker = dict(worker)
-            if not worker_link_is_global(worker["link"]):
-                worker["link"] = None
-            workers.append(worker)
-        return {"workers": workers}
+    url = URL(request.app["runner_url"]) / "admin" / "workers"
+    async with request.app["http_client_session"].get(
+        url, raise_for_status=True
+    ) as resp:
+        data = await resp.json()
+    workers = []
+    for entry in data.get("workers", []):
+        link = entry.get("link")
+        workers.append(
+            {
+                "name": entry["name"],
+                "link": link if worker_link_is_global(link) else None,
+                "run_count": entry["run_count"],
+            }
+        )
+    return {"workers": workers}
 
 
 @routes.get("/cupboard/queue", name="queue")

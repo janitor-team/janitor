@@ -69,11 +69,25 @@ async def create_client(aiohttp_client, db, *, user=None, config=""):
     return await aiohttp_client(app)
 
 
-async def create_api_client(aiohttp_client, db, *, user):
+async def create_api_client(aiohttp_client, db, *, user, runner_url=None):
     config = read_config_string("oauth2_provider {}\n")
-    app = create_api_app(config=config, publisher_url=None, runner_url=None, db=db)
+    app = create_api_app(
+        config=config, publisher_url=None, runner_url=runner_url, db=db
+    )
     app.middlewares.insert(0, _user_middleware(user))
     return await aiohttp_client(app)
+
+
+async def _start_fake_runner(aiohttp_server, *, admin_workers):
+    """In-process stand-in for the runner's `/admin/workers` endpoint."""
+
+    async def handle_admin_workers(request):
+        return web.json_response({"workers": admin_workers})
+
+    app = web.Application()
+    app.router.add_get("/admin/workers", handle_admin_workers)
+    server = await aiohttp_server(app)
+    return str(server.make_url("/"))
 
 
 def test_render_merge_proposal():
@@ -352,24 +366,27 @@ async def test_workers_list_requires_admin(aiohttp_client, db):
     assert resp.status == 401
 
 
-async def test_workers_list_empty(aiohttp_client, db):
-    client = await create_api_client(aiohttp_client, db, user=ADMIN_USER)
+async def test_workers_list_empty(aiohttp_client, aiohttp_server, db):
+    runner_url = await _start_fake_runner(aiohttp_server, admin_workers=[])
+    client = await create_api_client(
+        aiohttp_client, db, user=ADMIN_USER, runner_url=runner_url
+    )
     resp = await client.get("/workers")
     assert resp.status == 200
     assert await resp.json() == []
 
 
-async def test_workers_list(aiohttp_client, db):
-    client = await create_api_client(aiohttp_client, db, user=ADMIN_USER)
-    async with db.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO worker (name, password, link) VALUES "
-            "($1, 'x', $2), ($3, 'x', $4)",
-            "alice",
-            "https://public.example.com/",
-            "bob",
-            "http://10.0.0.1/",
-        )
+async def test_workers_list(aiohttp_client, aiohttp_server, db):
+    runner_url = await _start_fake_runner(
+        aiohttp_server,
+        admin_workers=[
+            {"name": "alice", "link": "https://public.example.com/", "run_count": 0},
+            {"name": "bob", "link": "http://10.0.0.1/", "run_count": 0},
+        ],
+    )
+    client = await create_api_client(
+        aiohttp_client, db, user=ADMIN_USER, runner_url=runner_url
+    )
     resp = await client.get("/workers")
     assert resp.status == 200
     body = await resp.json()
@@ -379,23 +396,14 @@ async def test_workers_list(aiohttp_client, db):
     ]
 
 
-async def test_workers_list_counts_runs(aiohttp_client, db):
-    client = await create_api_client(aiohttp_client, db, user=ADMIN_USER)
-    async with db.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO worker (name, password) VALUES ($1, 'x')", "alice"
-        )
-        await _insert_codebase(conn, "foo")
-        now = utcnow()
-        await _insert_run(
-            conn,
-            run_id="r1",
-            codebase="foo",
-            start_time=now - timedelta(hours=1),
-            finish_time=now,
-        )
-        await conn.execute("UPDATE run SET worker = 'alice' WHERE id = 'r1'")
-
+async def test_workers_list_counts_runs(aiohttp_client, aiohttp_server, db):
+    runner_url = await _start_fake_runner(
+        aiohttp_server,
+        admin_workers=[{"name": "alice", "link": None, "run_count": 1}],
+    )
+    client = await create_api_client(
+        aiohttp_client, db, user=ADMIN_USER, runner_url=runner_url
+    )
     resp = await client.get("/workers")
     assert resp.status == 200
     assert await resp.json() == [{"name": "alice", "link": None, "run_count": 1}]

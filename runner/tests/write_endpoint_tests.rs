@@ -2180,6 +2180,77 @@ async fn get_workers_returns_summary_envelope_when_empty() {
     );
 }
 
+/// `GET /workers` returns `run_count` for each worker, counting rows
+/// in the `run` table attributed to it. Workers that have never
+/// executed a run must still appear with `run_count` set to zero.
+#[tokio::test]
+async fn get_workers_reports_run_count_per_worker() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let pool = state.database.pool().clone();
+    insert_codebase(&pool, "worker-count-cb").await;
+    sqlx::query("INSERT INTO change_set (id, campaign) VALUES ($1, $2)")
+        .bind("cs-worker-count")
+        .bind("test-campaign")
+        .execute(&pool)
+        .await
+        .expect("insert change_set");
+    for name in ["busy-worker", "quiet-worker"] {
+        sqlx::query(
+            "INSERT INTO worker (name, password) \
+             VALUES ($1, crypt('pw', gen_salt('bf')))",
+        )
+        .bind(name)
+        .execute(&pool)
+        .await
+        .expect("insert worker");
+    }
+    for id in ["run-a", "run-b"] {
+        sqlx::query(
+            "INSERT INTO run (
+                 id, suite, codebase, worker, result_code,
+                 start_time, finish_time, logfilenames, change_set
+             )
+             VALUES ($1, 'test-campaign', 'worker-count-cb', 'busy-worker', 'success',
+                     NOW() - INTERVAL '1 minute', NOW(), '{}', 'cs-worker-count')",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .expect("insert run");
+    }
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/workers")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    let workers = body["workers"].as_array().expect("workers array");
+    let mut counts: Vec<(String, i64)> = workers
+        .iter()
+        .map(|w| {
+            (
+                w["name"].as_str().unwrap().to_string(),
+                w["run_count"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    counts.sort();
+    assert_eq!(
+        counts,
+        vec![
+            ("busy-worker".to_string(), 2),
+            ("quiet-worker".to_string(), 0),
+        ]
+    );
+}
+
 /// `POST /resume/check` for a nonexistent (campaign, revision) returns
 /// `{resume_available: false, message: ...}`.
 #[tokio::test]

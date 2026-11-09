@@ -1197,6 +1197,24 @@ impl RunnerDatabase {
         Ok(())
     }
 
+    /// Count completed runs per worker, grouped by `run.worker`.
+    /// Workers with no runs are not in the result; callers should
+    /// default those to zero.
+    pub async fn get_worker_run_counts(&self) -> Result<HashMap<String, i64>, sqlx::Error> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            worker: String,
+            run_count: i64,
+        }
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT worker, COUNT(id) AS run_count FROM run \
+             WHERE worker IS NOT NULL GROUP BY worker",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows.into_iter().map(|r| (r.worker, r.run_count)).collect())
+    }
+
     /// Get last seen times for all workers
     pub async fn get_workers_last_seen(
         &self,

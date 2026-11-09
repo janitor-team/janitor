@@ -515,20 +515,20 @@ class WorkerSchema(Schema):
 @routes.get("/workers", name="admin-workers-list")
 async def handle_workers_list(request):
     check_admin(request)
-    async with request.app["pool"].acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT worker.name, worker.link, "
-            "count(run.id) AS run_count "
-            "FROM worker "
-            "LEFT JOIN run ON run.worker = worker.name "
-            "GROUP BY worker.name, worker.link "
-            "ORDER BY worker.name"
-        )
+    url = URL(request.app["runner_url"]) / "admin" / "workers"
+    async with request.app["http_client_session"].get(
+        url, raise_for_status=True
+    ) as resp:
+        data = await resp.json()
     workers = []
-    for row in rows:
-        link = row["link"] if worker_link_is_global(row["link"]) else None
+    for entry in sorted(data.get("workers", []), key=lambda e: e["name"]):
+        link = entry.get("link")
         workers.append(
-            {"name": row["name"], "link": link, "run_count": row["run_count"]}
+            {
+                "name": entry["name"],
+                "link": link if worker_link_is_global(link) else None,
+                "run_count": entry["run_count"],
+            }
         )
     return web.json_response(workers)
 

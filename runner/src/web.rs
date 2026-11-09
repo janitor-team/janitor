@@ -1781,6 +1781,12 @@ async fn worker_list(state: &AppState, admin: bool) -> Json<WorkerListResponse> 
         .await
         .unwrap_or_default();
 
+    let run_counts = state
+        .database
+        .get_worker_run_counts()
+        .await
+        .unwrap_or_default();
+
     // Workers not seen in the last 30 minutes are considered failed.
     let failed_workers = if admin {
         state
@@ -1811,11 +1817,13 @@ async fn worker_list(state: &AppState, admin: bool) -> Json<WorkerListResponse> 
             } else {
                 (None, last_seen)
             };
+            let run_count = run_counts.get(&worker.name).copied().unwrap_or(0);
             WorkerInfo {
                 name: worker.name.clone(),
                 status: status.to_string(),
                 link,
                 last_seen,
+                run_count,
             }
         })
         .collect();
