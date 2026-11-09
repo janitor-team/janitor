@@ -198,15 +198,7 @@ test_with_database! {
             .send()
             .await
             .unwrap();
-        // Either 404 (branch doesn't exist yet) or 500 (brz subprocess
-        // failed). Should NOT be 400 (bad request) or 405 (method not
-        // allowed).
-        let status = resp.status().as_u16();
-        assert!(
-            status == 404 || status == 500,
-            "expected 404 or 500 for unknown branch, got {}",
-            status
-        );
+        assert_eq!(resp.status(), 404);
 
         handle.abort();
     }

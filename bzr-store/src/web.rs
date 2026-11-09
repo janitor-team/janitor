@@ -23,15 +23,14 @@ use tokio::fs;
 use tracing::warn;
 
 use crate::api_types::{
-    ErrorResponse, RemoteConfiguredResponse, RemoteInfo, RemotesListResponse,
-    RepositoryCreatedResponse,
+    ErrorResponse, RemoteConfiguredResponse, RemotesListResponse, RepositoryCreatedResponse,
 };
 use crate::bzr_browse::BrowseRouters;
 use crate::config::Config;
 use crate::database::DatabaseManager;
 use crate::error::{BzrError, Result};
 use crate::repository::{
-    PyO3RepositoryManager, RepositoryInfo, RepositoryManager, RepositoryPath, RevisionInfo,
+    BreezyRepositoryManager, RepositoryInfo, RepositoryManager, RepositoryPath, RevisionInfo,
 };
 use crate::smart_protocol::{
     smart_protocol_campaign_handler, smart_protocol_codebase_handler, smart_protocol_dispatch,
@@ -162,10 +161,9 @@ pub async fn create_applications(
 ) -> Result<(Router, Router)> {
     let database = DatabaseManager::new(&config).await?;
 
-    let repository_manager: Arc<dyn RepositoryManager> = Arc::new(PyO3RepositoryManager::new(
+    let repository_manager: Arc<dyn RepositoryManager> = Arc::new(BreezyRepositoryManager::new(
         config.repository_path.clone(),
         database.clone(),
-        true,
     ));
 
     let templates = Arc::new(init_templates());
@@ -784,9 +782,8 @@ fn extract_remote_url(headers: &HeaderMap, body: &Bytes) -> Result<String> {
     ))
 }
 
-/// `GET /{codebase}/remotes` — list configured remotes. The current
-/// implementation returns at most one, matching Python's single
-/// `parent_location` config entry per branch.
+/// `GET /{codebase}/remotes` — list the parent locations set through
+/// `POST /{codebase}/remotes/{remote}`.
 #[utoipa::path(
     get,
     path = "/{codebase}/remotes",
@@ -801,35 +798,7 @@ async fn list_remotes_handler(
     Path(codebase): Path<CodebaseName>,
 ) -> Result<Json<RemotesListResponse>> {
     let repo_path = RepositoryPath::codebase_only(codebase);
-    let fs_path = state.config.repository_path.join(&repo_path.codebase);
-
-    if !fs_path.exists() {
-        return Err(BzrError::PathNotFound {
-            path: repo_path.relative_path(),
-        });
-    }
-
-    let output = tokio::process::Command::new("brz")
-        .args(["config", "parent_location"])
-        .current_dir(&fs_path)
-        .output()
-        .await;
-
-    let parent_location = match output {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            stdout.trim().to_string()
-        }
-        _ => String::new(),
-    };
-
-    let mut remotes = Vec::new();
-    if !parent_location.is_empty() {
-        remotes.push(RemoteInfo {
-            name: "parent".to_string(),
-            url: parent_location,
-        });
-    }
+    let remotes = state.repository_manager.list_remotes(&repo_path).await?;
 
     let response = RemotesListResponse {
         repository: repo_path.relative_path(),

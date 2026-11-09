@@ -5,12 +5,8 @@
 //! via PyO3). These tests boot the real app against a throwaway
 //! Postgres and a real on-disk bzr branch created via breezyshim,
 //! then check that the HTML browser answers.
-//!
-//! If `brz` isn't on PATH, the tests are skipped: the integration is
-//! only meaningful when a real breezy install is present.
 
 use std::net::SocketAddr;
-use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,23 +19,6 @@ use janitor_bzr_store::{
 };
 use sqlx::PgPool;
 use tempfile::TempDir;
-
-/// True if `brz` (Breezy) is on PATH and runs end-to-end. Some hosts
-/// have `brz` present but a broken breezy install (e.g. the
-/// `vcsgraph._graph_rs` extension missing). We require a *successful*
-/// `brz init` in a tempdir, not just `brz --version`, because the
-/// init path is what the integration tests actually need.
-fn brz_available() -> bool {
-    let Ok(tmp) = tempfile::tempdir() else {
-        return false;
-    };
-    Command::new("brz")
-        .args(["init", "--format=2a"])
-        .arg(tmp.path())
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
 
 fn test_db_url(test_db: &TestDatabase) -> String {
     let base = std::env::var("TEST_DATABASE_URL")
@@ -160,11 +139,6 @@ fn test_loggerhead_browse_known_codebase_renders() {
             }
         };
 
-        if !brz_available() {
-            eprintln!("skipping: brz not on PATH");
-            return;
-        }
-
         seed_codebase(test_db.pool(), "foo").await;
 
         let tmp = TempDir::new().unwrap();
@@ -241,11 +215,6 @@ fn test_loggerhead_changes_endpoint_reachable() {
                 return;
             }
         };
-
-        if !brz_available() {
-            eprintln!("skipping: brz not on PATH");
-            return;
-        }
         seed_codebase(test_db.pool(), "foo").await;
 
         let tmp = TempDir::new().unwrap();
