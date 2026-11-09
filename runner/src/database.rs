@@ -1152,6 +1152,23 @@ INSERT INTO run (
         .await
     }
 
+    /// Get the candidate for a specific (codebase, campaign), if any.
+    pub async fn get_candidate(
+        &self,
+        codebase: &CodebaseName,
+        campaign: &Campaign,
+    ) -> Result<Option<CandidateRow>, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT id, codebase, suite AS campaign, command, publish_policy, \
+                    change_set, context, value, success_chance \
+             FROM candidate WHERE codebase = $1 AND suite = $2",
+        )
+        .bind(codebase)
+        .bind(campaign)
+        .fetch_optional(self.pool())
+        .await
+    }
+
     /// Delete a candidate by ID.
     pub async fn delete_candidate(&self, candidate_id: i64) -> Result<bool, sqlx::Error> {
         let mut tx = self.pool().begin().await?;

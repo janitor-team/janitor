@@ -988,6 +988,43 @@ async fn get_candidates(State(state): State<Arc<AppState>>) -> Response {
     }
 }
 
+/// `GET /candidates/{codebase}/{campaign}` -- return the candidate
+/// for one (codebase, campaign), or 404 if none.
+#[utoipa::path(
+    get,
+    path = "/candidates/{codebase}/{campaign}",
+    params(
+        ("codebase" = CodebaseName, Path, description = "Codebase name"),
+        ("campaign" = Campaign, Path, description = "Campaign name"),
+    ),
+    responses(
+        (status = 200, description = "Candidate", body = crate::database::CandidateRow),
+        (status = 404, description = "No such candidate", body = ReasonResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
+async fn get_candidate(
+    State(state): State<Arc<AppState>>,
+    Path((codebase, campaign)): Path<(CodebaseName, Campaign)>,
+) -> Response {
+    match state.database.get_candidate(&codebase, &campaign).await {
+        Ok(Some(candidate)) => Json(candidate).into_response(),
+        Ok(None) => reason(
+            StatusCode::NOT_FOUND,
+            format!("no candidate for {}/{}", codebase, campaign),
+        ),
+        Err(e) => {
+            log::error!(
+                "Failed to get candidate for {}/{}: {}",
+                codebase,
+                campaign,
+                e
+            );
+            db_error()
+        }
+    }
+}
+
 /// Outcome of validating a queue assignment in `assign_work_internal`.
 /// Abort branches: unknown campaign -> "unknown-campaign",
 /// non-default_empty campaign with no branch_url -> "not-in-vcs".
@@ -4356,6 +4393,7 @@ fn private_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(get_codebases, update_codebases))
         .routes(routes!(get_codebase_names))
         .routes(routes!(get_candidates, upload_candidates))
+        .routes(routes!(get_candidate))
         .routes(routes!(delete_candidate))
         .routes(routes!(list_runs))
         .routes(routes!(get_run, update_run))
