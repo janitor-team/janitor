@@ -3014,3 +3014,124 @@ async fn get_candidate_returns_row_or_404() {
         "expected codebase+campaign in reason, got {body}"
     );
 }
+
+/// `GET /runs/{id}/followups` returns the candidate pairs scheduled
+/// off the run, in codebase/campaign order. An empty list is returned
+/// for runs with no followups.
+#[tokio::test]
+async fn get_run_followups_returns_candidate_pairs() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let pool = state.database.pool().clone();
+    for cb in ["alpha", "beta", "gamma"] {
+        insert_codebase(&pool, cb).await;
+    }
+    sqlx::query(
+        "INSERT INTO change_set (id, campaign) VALUES \
+         ('cs-followup', 'test-campaign')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert change_set");
+    sqlx::query(
+        "INSERT INTO run (id, suite, codebase, result_code, \
+                          start_time, finish_time, logfilenames, change_set) \
+         VALUES ('run-origin', 'test-campaign', 'alpha', 'success', \
+                 NOW() - INTERVAL '1 minute', NOW(), '{}', 'cs-followup')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert run");
+
+    // Two candidates for alpha and beta are follow-ups of run-origin;
+    // gamma is its own candidate but not a follow-up.
+    let followup_ids: Vec<i32> = Vec::from_iter(
+        futures::future::join_all(
+            [("beta", "test-campaign"), ("alpha", "other-campaign")]
+                .iter()
+                .map(|(cb, campaign)| {
+                    let pool = pool.clone();
+                    async move {
+                        let row: (i32,) = sqlx::query_as(
+                            "INSERT INTO candidate (codebase, suite, command) \
+                         VALUES ($1, $2, 'true') RETURNING id",
+                        )
+                        .bind(cb)
+                        .bind(campaign)
+                        .fetch_one(&pool)
+                        .await
+                        .expect("insert candidate");
+                        row.0
+                    }
+                }),
+        )
+        .await,
+    );
+    sqlx::query(
+        "INSERT INTO candidate (codebase, suite, command) \
+         VALUES ('gamma', 'test-campaign', 'true')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert unrelated candidate");
+    for cid in &followup_ids {
+        sqlx::query("INSERT INTO followup (origin, candidate) VALUES ($1, $2)")
+            .bind("run-origin")
+            .bind(cid)
+            .execute(&pool)
+            .await
+            .expect("insert followup");
+    }
+
+    // Run with followups.
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/runs/run-origin/followups")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    let pairs: Vec<(String, String)> = body["followups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            (
+                f["codebase"].as_str().unwrap().to_string(),
+                f["campaign"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        pairs,
+        vec![
+            ("alpha".to_string(), "other-campaign".to_string()),
+            ("beta".to_string(), "test-campaign".to_string()),
+        ]
+    );
+
+    // Run without followups: empty list, not 404.
+    sqlx::query(
+        "INSERT INTO run (id, suite, codebase, result_code, \
+                          start_time, finish_time, logfilenames, change_set) \
+         VALUES ('run-lonely', 'test-campaign', 'alpha', 'success', \
+                 NOW() - INTERVAL '1 minute', NOW(), '{}', 'cs-followup')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert run");
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/runs/run-lonely/followups")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    assert!(body["followups"].as_array().unwrap().is_empty());
+}
