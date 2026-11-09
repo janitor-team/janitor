@@ -172,6 +172,20 @@ def test_display_publish_blockers():
     </ul>
 """
     )
+    blockers = {
+        "success": {"result": False, "details": {}},
+        "inactive": {"result": True, "details": {}},
+        "publish_status": {"result": False, "details": {"status": "unknown"}},
+        "command": {"result": False, "details": {"actual": "a", "correct": "b"}},
+    }
+    html = str(template.module.display_publish_blockers(blockers))  # type: ignore
+    items = BeautifulSoup(html, "html.parser").find_all("li")
+    assert [li.get("class") for li in items] == [
+        ["blocker-fatal"],
+        None,
+        ["blocker-waiting"],
+        ["blocker-waiting"],
+    ]
 
 
 # What the worker stores for a real lintian 2.141.0 run on a small package.

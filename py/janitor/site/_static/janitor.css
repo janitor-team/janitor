@@ -31,6 +31,15 @@ span.result-code-nothing-to-do, span.publish-missing {
     color: grey;
 }
 
+/* -- publish blockers: only a failed run is fatal */
+li.blocker-waiting {
+    color: #9a6700;
+}
+
+li.blocker-fatal {
+    color: red;
+}
+
 blockquote.result-code-explanation {
     background-color: #FE9;
 }
