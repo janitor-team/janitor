@@ -15,18 +15,24 @@
             <form id="mass_reschedule"
                   method="post"
                   action="/cupboard/api/mass-reschedule">
-                Description regex:
-                <input type="text" name="description_re" />
+                <label for="description-re">
+                    Description regex:
+                    <input type="text" name="description_re" id="description-re" />
+                </label>
                 {% if campaign %}<input type="hidden" name="campaign" value="{{ campaign }}" />{% endif %}
                 <input type="hidden"
                        name="include_transient"
                        value="{{ 'on' if include_transient else 'off' }}" />
-                Min age (days):
-                <select name="min_age">
-                    {% for i in range(90) %}<option>{{ i }}</option>{% endfor %}
-                </select>
-                Refresh:
-                <input type="checkbox" name="refresh" value="1" />
+                <label for="min-age">
+                    Min age (days):
+                    <select name="min_age" id="min-age">
+                        {% for i in range(90) %}<option>{{ i }}</option>{% endfor %}
+                    </select>
+                </label>
+                <label for="refresh">
+                    Refresh:
+                    <input type="checkbox" name="refresh" id="refresh" value="1" />
+                </label>
                 <input type="hidden" name="result_code" value="{{ code }}" />
                 <input type="submit" value="Reschedule matching" />
             </form>
