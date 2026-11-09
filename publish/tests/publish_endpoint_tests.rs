@@ -1088,6 +1088,40 @@ test_with_database! {
 
 test_with_database! {
     schema = Core;
+    async fn list_publishes_filters_by_revision(test_db: TestDatabase) {
+        use chrono::{TimeZone, Utc};
+        let t0 = Utc.with_ymd_and_hms(2026, 2, 1, 12, 0, 0).unwrap();
+        let t1 = Utc.with_ymd_and_hms(2026, 2, 2, 12, 0, 0).unwrap();
+
+        // Two publishes for rev-target (in different modes); one
+        // publish for rev-other.
+        seed_publish(test_db.pool(), "p-prop", "alpha",
+                     Some("https://forge.invalid/alpha/pulls/1"),
+                     "propose", "success", "proposed",
+                     Some("rev-target"), t0).await;
+        seed_publish(test_db.pool(), "p-push", "alpha", None,
+                     "push", "success", "pushed",
+                     Some("rev-target"), t1).await;
+        seed_publish(test_db.pool(), "p-other", "alpha", None,
+                     "push", "success", "pushed",
+                     Some("rev-other"), t0).await;
+
+        let app = build_app(test_db.pool().clone()).await;
+        let (status, body) = get_json(app, "/publish?revision=rev-target").await;
+        assert_eq!(status, StatusCode::OK);
+        let publishes = body["publishes"].as_array().unwrap();
+        assert_eq!(publishes.len(), 2);
+        for row in publishes {
+            assert_eq!(row["revision"], "rev-target");
+        }
+        // Newest first.
+        assert_eq!(publishes[0]["id"], "p-push");
+        assert_eq!(publishes[1]["id"], "p-prop");
+    }
+}
+
+test_with_database! {
+    schema = Core;
     async fn openapi_json_is_served(test_db: TestDatabase) {
         let app = build_app(test_db.pool().clone()).await;
         let req = Request::builder()
