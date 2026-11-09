@@ -309,11 +309,7 @@ impl ApplicationBuilder {
                 upload_storage_dir, e
             ))
         })?;
-        let upload_processor = Arc::new(crate::upload::UploadProcessor::new(
-            upload_storage_dir,
-            100 * 1024 * 1024, // 100MB max file size
-            500 * 1024 * 1024, // 500MB max total size
-        ));
+        let upload_processor = Arc::new(crate::upload::UploadProcessor::new(upload_storage_dir));
 
         // Initialize authentication and security services
         log::info!("Initializing authentication and security services...");
