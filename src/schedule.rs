@@ -507,7 +507,7 @@ pub async fn bulk_add_to_queue(
     refresh: bool,
 ) -> Result<(), Error> {
     let bucket = bucket.unwrap_or("default");
-    let mut codebase_values = sqlx::query_as::<_, (String, f64)>(
+    let codebase_values = sqlx::query_as::<_, (String, f64)>(
         "SELECT name, coalesce(value, 0)::float8 FROM codebase WHERE name IS NOT NULL",
     )
     .fetch_all(conn)
@@ -529,7 +529,11 @@ pub async fn bulk_add_to_queue(
     for req in todo {
         let normalized_codebase_value = if let Some(max_codebase_value) = max_codebase_value {
             std::cmp::min_by(
-                codebase_values.remove(req.codebase.as_str()).unwrap_or(0.0) / max_codebase_value,
+                codebase_values
+                    .get(req.codebase.as_str())
+                    .copied()
+                    .unwrap_or(0.0)
+                    / max_codebase_value,
                 1.0,
                 |a, b| a.partial_cmp(b).unwrap(),
             )
@@ -914,15 +918,18 @@ mod tests {
              ('default', ARRAY[ROW('main', 'propose', NULL)::branch_publish_policy]);
              INSERT INTO candidate (suite, command, codebase, value, context, success_chance,
                                     publish_policy)
-             VALUES ('lintian-fixes', 'lintian-brush', 'cb', 5, 'ctx', 0.5, 'default')",
+             VALUES ('lintian-fixes', 'lintian-brush', 'cb', 5, 'ctx', 0.5, 'default'),
+                    ('fresh-releases', 'lintian-brush', 'cb', 5, 'ctx', 0.5, 'default')",
         )
         .execute(pool)
         .await
         .unwrap();
-        let todo: Vec<ScheduleRequest> = iter_schedule_requests_from_candidates(pool, None, None)
-            .await
-            .unwrap()
-            .collect();
+        let mut todo: Vec<ScheduleRequest> =
+            iter_schedule_requests_from_candidates(pool, None, None)
+                .await
+                .unwrap()
+                .collect();
+        todo.sort_by(|a, b| a.campaign.cmp(&b.campaign));
 
         let mut queues = vec![];
         // No codebase has a value yet, then cb has half the maximum.
@@ -935,14 +942,19 @@ mod tests {
                 .await
                 .unwrap();
             let queue: Vec<(String, String, i64)> =
-                sqlx::query_as("SELECT codebase, suite, priority FROM queue")
+                sqlx::query_as("SELECT codebase, suite, priority FROM queue ORDER BY suite")
                     .fetch_all(pool)
                     .await
                     .unwrap();
             queues.push(queue);
         }
-        let row = |priority| vec![("cb".to_string(), "lintian-fixes".to_string(), priority)];
-        assert_eq!(queues, vec![row(69), row(138)]);
+        let rows = |first, second| {
+            vec![
+                ("cb".to_string(), "fresh-releases".to_string(), first),
+                ("cb".to_string(), "lintian-fixes".to_string(), second),
+            ]
+        };
+        assert_eq!(queues, vec![rows(69, 138), rows(138, 276)]);
     }
 
     #[cfg(feature = "testing")]
