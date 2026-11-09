@@ -4119,9 +4119,8 @@ fn worker_routes() -> OpenApiRouter<Arc<AppState>> {
 /// .buildinfo) -- easily hundreds of MB for any real package. Hitting
 /// the cap lands as a 5ms 400 with "Multipart error: Failed to read
 /// file data: Error parsing `multipart/form-data` request" the moment
-/// axum starts decoding the first file part. The per-file size cap is
-/// enforced by the upload processor itself (`max_file_size`), and the
-/// ingress proxy-body-size is the network-edge ceiling.
+/// axum starts decoding the first file part. The ingress
+/// proxy-body-size is the network-edge ceiling.
 fn without_body_limit(
     (schemas, paths, method_router): UtoipaMethodRouter<Arc<AppState>>,
 ) -> UtoipaMethodRouter<Arc<AppState>> {

@@ -42,20 +42,12 @@ pub struct UploadedWorkerResult {
 pub struct UploadProcessor {
     /// Base directory for storing uploaded files.
     storage_dir: PathBuf,
-    /// Maximum file size allowed (in bytes).
-    max_file_size: u64,
-    /// Maximum total upload size (in bytes).
-    max_total_size: u64,
 }
 
 impl UploadProcessor {
     /// Create a new upload processor.
-    pub fn new(storage_dir: PathBuf, max_file_size: u64, max_total_size: u64) -> Self {
-        Self {
-            storage_dir,
-            max_file_size,
-            max_total_size,
-        }
+    pub fn new(storage_dir: PathBuf) -> Self {
+        Self { storage_dir }
     }
 
     /// Process a multipart upload from a worker.
@@ -78,7 +70,6 @@ impl UploadProcessor {
         let mut artifact_files = Vec::new();
         let mut build_files = Vec::new();
         let mut metadata_files = Vec::new();
-        let mut total_size = 0u64;
 
         // Per-category directory layout. Logs follow the FS log
         // manager layout so `LOG_URL=file://{storage_dir}` on the
@@ -154,56 +145,41 @@ impl UploadProcessor {
                     if is_log {
                         // Logs land in `{storage_dir}/{codebase}/{run_id}/<name>`
                         // -- the layout the FS log manager expects.
-                        let file = self
-                            .save_field_flat(field, &logs_dir, &mut total_size)
-                            .await?;
+                        let file = self.save_field_flat(field, &logs_dir).await?;
                         log_files.push(file);
                     } else {
                         let file = self
-                            .save_field_to_file(field, &run_dir, "artifacts", &mut total_size)
+                            .save_field_to_file(field, &run_dir, "artifacts")
                             .await?;
                         artifact_files.push(file);
                     }
                 }
                 field_name if field_name.starts_with("log_") => {
                     // Process log file
-                    let file = self
-                        .save_field_to_file(field, &run_dir, "logs", &mut total_size)
-                        .await?;
+                    let file = self.save_field_to_file(field, &run_dir, "logs").await?;
                     log_files.push(file);
                 }
                 field_name if field_name.starts_with("artifact_") => {
                     // Process artifact file
                     let file = self
-                        .save_field_to_file(field, &run_dir, "artifacts", &mut total_size)
+                        .save_field_to_file(field, &run_dir, "artifacts")
                         .await?;
                     artifact_files.push(file);
                 }
                 field_name if field_name.starts_with("build_") => {
                     // Process build output file
-                    let file = self
-                        .save_field_to_file(field, &run_dir, "build", &mut total_size)
-                        .await?;
+                    let file = self.save_field_to_file(field, &run_dir, "build").await?;
                     build_files.push(file);
                 }
                 field_name if field_name.starts_with("metadata_") => {
                     // Process metadata file
-                    let file = self
-                        .save_field_to_file(field, &run_dir, "metadata", &mut total_size)
-                        .await?;
+                    let file = self.save_field_to_file(field, &run_dir, "metadata").await?;
                     metadata_files.push(file);
                 }
                 _ => {
                     // Unknown field, skip
                     log::warn!("Skipping unknown field: {}", field_name);
                 }
-            }
-
-            if total_size > self.max_total_size {
-                return Err(UploadError::SizeLimit(format!(
-                    "Total upload size {} exceeds limit {}",
-                    total_size, self.max_total_size
-                )));
             }
         }
 
@@ -226,15 +202,12 @@ impl UploadProcessor {
         &self,
         field: axum::extract::multipart::Field<'a>,
         dir: &PathBuf,
-        total_size: &mut u64,
     ) -> Result<UploadedFile, UploadError> {
         let filename = field.file_name().unwrap_or("unknown").to_string();
         let content_type = field.content_type().map(|ct| ct.to_string());
         let safe_filename = sanitize_filename(&filename);
         let file_path = dir.join(&safe_filename);
-        let file_size =
-            stream_field_to_disk(field, &file_path, self.max_file_size, &filename).await?;
-        *total_size += file_size;
+        let file_size = stream_field_to_disk(field, &file_path, &filename).await?;
         log::info!(
             "Uploaded log: {} ({} bytes) -> {:?}",
             filename,
@@ -256,7 +229,6 @@ impl UploadProcessor {
         field: axum::extract::multipart::Field<'a>,
         run_dir: &PathBuf,
         category: &str,
-        total_size: &mut u64,
     ) -> Result<UploadedFile, UploadError> {
         let filename = field.file_name().unwrap_or("unknown").to_string();
 
@@ -272,10 +244,7 @@ impl UploadProcessor {
         let safe_filename = sanitize_filename(&filename);
         let file_path = category_dir.join(&safe_filename);
 
-        let file_size =
-            stream_field_to_disk(field, &file_path, self.max_file_size, &filename).await?;
-
-        *total_size += file_size;
+        let file_size = stream_field_to_disk(field, &file_path, &filename).await?;
 
         log::info!(
             "Uploaded file: {} ({} bytes) -> {:?}",
@@ -575,10 +544,6 @@ pub enum UploadError {
     #[error("Storage error: {0}")]
     Storage(String),
 
-    /// Size limit exceeded.
-    #[error("Size limit exceeded: {0}")]
-    SizeLimit(String),
-
     /// Validation error.
     #[error("Validation error: {0}")]
     Validation(String),
@@ -590,12 +555,10 @@ pub enum UploadError {
 /// orig.tar.gz balloons RSS by exactly the file size. `Field` itself
 /// implements `Stream<Item=Result<Bytes>>` via `chunk()`, so we pull
 /// chunks as they arrive and write them straight to the destination
-/// file. Enforces `max_file_size` while reading so we abort early on
-/// oversize uploads instead of after holding the whole thing.
+/// file.
 async fn stream_field_to_disk<'a>(
     mut field: axum::extract::multipart::Field<'a>,
     file_path: &std::path::Path,
-    max_file_size: u64,
     display_name: &str,
 ) -> Result<u64, UploadError> {
     let mut file = tokio::fs::File::create(file_path).await.map_err(|e| {
@@ -608,16 +571,6 @@ async fn stream_field_to_disk<'a>(
         .map_err(|e| UploadError::Multipart(format!("Failed to read file data: {}", e)))?
     {
         written += chunk.len() as u64;
-        if written > max_file_size {
-            // Drop the partial file rather than leaving a truncated
-            // artifact on disk that downstream parsers might mistake
-            // for a real one.
-            let _ = tokio::fs::remove_file(file_path).await;
-            return Err(UploadError::SizeLimit(format!(
-                "File {} size {} exceeds limit {}",
-                display_name, written, max_file_size
-            )));
-        }
         file.write_all(&chunk).await.map_err(|e| {
             UploadError::Storage(format!("Failed to write file {}: {}", display_name, e))
         })?;
