@@ -1143,13 +1143,39 @@ INSERT INTO run (
         Ok(())
     }
 
-    /// Get all candidates from the database.
-    pub async fn get_candidates(&self) -> Result<Vec<CandidateRow>, sqlx::Error> {
-        sqlx::query_as(
-            "SELECT id, codebase, suite AS campaign, command, publish_policy, change_set, context, value, success_chance FROM candidate"
-        )
-        .fetch_all(self.pool())
-        .await
+    /// Get candidates from the database, optionally filtered by
+    /// codebases and/or campaigns. Empty filter slices match all.
+    pub async fn get_candidates(
+        &self,
+        codebases: &[CodebaseName],
+        campaigns: &[Campaign],
+    ) -> Result<Vec<CandidateRow>, sqlx::Error> {
+        let mut query = String::from(
+            "SELECT id, codebase, suite AS campaign, command, publish_policy, \
+                    change_set, context, value, success_chance FROM candidate",
+        );
+        let mut conditions = Vec::new();
+        let mut idx = 0;
+        if !codebases.is_empty() {
+            idx += 1;
+            conditions.push(format!("codebase = ANY(${}::text[])", idx));
+        }
+        if !campaigns.is_empty() {
+            idx += 1;
+            conditions.push(format!("suite = ANY(${}::text[])", idx));
+        }
+        if !conditions.is_empty() {
+            query.push_str(" WHERE ");
+            query.push_str(&conditions.join(" AND "));
+        }
+        let mut q = sqlx::query_as::<_, CandidateRow>(sqlx::AssertSqlSafe(&*query));
+        if !codebases.is_empty() {
+            q = q.bind(codebases);
+        }
+        if !campaigns.is_empty() {
+            q = q.bind(campaigns);
+        }
+        q.fetch_all(self.pool()).await
     }
 
     /// Get the candidate for a specific (codebase, campaign), if any.
