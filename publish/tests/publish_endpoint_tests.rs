@@ -650,6 +650,15 @@ async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, serde_json::Valu
     (status, serde_json::from_slice(&bytes).unwrap())
 }
 
+async fn get_absorbed(app: axum::Router, query: &str) -> (StatusCode, serde_json::Value) {
+    let uri = if query.is_empty() {
+        "/absorbed".to_string()
+    } else {
+        format!("/absorbed?{}", query)
+    };
+    get_json(app, &uri).await
+}
+
 /// Seed the full `merge_proposal + run(codebase, campaign)` fixture
 /// used by the merge-proposals list tests.
 #[allow(clippy::too_many_arguments)]
@@ -704,6 +713,65 @@ async fn seed_mp_with_run(
     .bind(mp_url)
     .bind(status)
     .bind(revision)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Seed one absorbed run (via the `absorbed_runs` view's `merge_proposal`
+/// branch) for `(codebase, campaign)`, merged at `merged_at`.
+async fn seed_absorbed_run(
+    pool: &PgPool,
+    run_id: &str,
+    codebase: &str,
+    campaign: &str,
+    revision: &str,
+    merged_at: chrono::DateTime<chrono::Utc>,
+) {
+    sqlx::query(
+        "INSERT INTO codebase (name, branch_url, url, vcs_type)
+         VALUES ($1, $2, $2, 'git') ON CONFLICT DO NOTHING",
+    )
+    .bind(codebase)
+    .bind(format!("https://example.invalid/{}", codebase))
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO change_set (id, campaign) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+        .bind("cs-absorbed")
+        .bind(campaign)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO run (
+             id, codebase, suite, command, start_time, finish_time, description,
+             result_code, branch_url, main_branch_revision, revision, value,
+             change_set, logfilenames, vcs_type
+         ) VALUES (
+             $1, $2, $3, 'noop', NOW() - INTERVAL '1 minute', NOW(), 'ok',
+             'success', $4, 'rev-base', $5, 100,
+             'cs-absorbed', ARRAY[]::text[], 'git'
+         )",
+    )
+    .bind(run_id)
+    .bind(codebase)
+    .bind(campaign)
+    .bind(format!("https://example.invalid/{}", codebase))
+    .bind(revision)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO merge_proposal (url, status, revision, merged_at, merged_by)
+         VALUES ($1, 'merged', $2, $3, 'reviewer@example.invalid')",
+    )
+    .bind(format!(
+        "https://forge.invalid/{}/pulls/{}",
+        codebase, run_id
+    ))
+    .bind(revision)
+    .bind(merged_at)
     .execute(pool)
     .await
     .unwrap();
@@ -807,6 +875,80 @@ test_with_database! {
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["url"], "https://forge.invalid/alpha/pulls/1");
         assert_eq!(arr[0]["campaign"], "lintian-fixes");
+    }
+}
+
+test_with_database! {
+    schema = Core;
+    async fn absorbed_filters_by_campaign_and_returns_oldest(test_db: TestDatabase) {
+        use chrono::{TimeZone, Utc};
+        let early = Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap();
+        let mid = Utc.with_ymd_and_hms(2026, 2, 15, 12, 0, 0).unwrap();
+        let late = Utc.with_ymd_and_hms(2026, 3, 15, 12, 0, 0).unwrap();
+
+        seed_absorbed_run(test_db.pool(), "r-early-lf", "alpha", "lintian-fixes", "rev-early", early).await;
+        seed_absorbed_run(test_db.pool(), "r-mid-lf", "beta", "lintian-fixes", "rev-mid", mid).await;
+        seed_absorbed_run(test_db.pool(), "r-late-other", "gamma", "other-campaign", "rev-late", late).await;
+
+        let app = build_app(test_db.pool().clone()).await;
+
+        // Without a filter: all three rows, oldest from the full set.
+        let (status, body) = get_absorbed(app.clone(), "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["runs"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            body["oldest"]
+                .as_str()
+                .unwrap()
+                .parse::<chrono::DateTime<Utc>>()
+                .unwrap(),
+            early
+        );
+
+        // Filter by campaign: only rows for that campaign, oldest scoped to it.
+        let (status, body) = get_absorbed(app.clone(), "campaign=lintian-fixes").await;
+        assert_eq!(status, StatusCode::OK);
+        let runs = body["runs"].as_array().unwrap();
+        assert_eq!(runs.len(), 2);
+        for run in runs {
+            assert_eq!(run["campaign"], "lintian-fixes");
+        }
+        assert_eq!(
+            body["oldest"]
+                .as_str()
+                .unwrap()
+                .parse::<chrono::DateTime<Utc>>()
+                .unwrap(),
+            early
+        );
+
+        // `since` narrows the runs list, but `oldest` stays scoped by
+        // campaign so the UI's min-date bound doesn't shift.
+        let since_encoded = url::form_urlencoded::byte_serialize(mid.to_rfc3339().as_bytes())
+            .collect::<String>();
+        let (status, body) = get_absorbed(
+            app.clone(),
+            &format!("campaign=lintian-fixes&since={}", since_encoded),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let runs = body["runs"].as_array().unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0]["id"], "r-mid-lf");
+        assert_eq!(
+            body["oldest"]
+                .as_str()
+                .unwrap()
+                .parse::<chrono::DateTime<Utc>>()
+                .unwrap(),
+            early
+        );
+
+        // Campaign with no absorbed runs: empty list, null oldest.
+        let (status, body) = get_absorbed(app, "campaign=no-such-campaign").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["runs"].as_array().unwrap().len(), 0);
+        assert!(body["oldest"].is_null());
     }
 }
 

@@ -332,41 +332,30 @@ WHERE followup.origin = $1""",
 
 
 async def generate_done_list(
-    db, campaign: Optional[str], since: Optional[datetime] = None
+    client,
+    publisher_url: str,
+    campaign: Optional[str],
+    since: Optional[datetime] = None,
 ):
-    async with db.acquire() as conn:
-        oldest = await conn.fetchval(
-            "SELECT MIN(absorbed_at) FROM absorbed_runs WHERE campaign = $1", campaign
-        )
-
-        if since:
-            orig_runs = await conn.fetch(
-                "SELECT * FROM absorbed_runs "
-                "WHERE absorbed_at >= $1 AND campaign = $2 "
-                "ORDER BY absorbed_at DESC NULLS LAST",
-                since,
-                campaign,
-            )
-        else:
-            orig_runs = await conn.fetch(
-                "SELECT * FROM absorbed_runs WHERE campaign = $1 "
-                "ORDER BY absorbed_at DESC NULLS LAST",
-                campaign,
-            )
-
-    mp_user_url_resolver = MergeProposalUserUrlResolver()
+    url = URL(publisher_url) / "absorbed"
+    params = {}
+    if campaign is not None:
+        params["campaign"] = campaign
+    if since is not None:
+        params["since"] = since.isoformat()
+    async with client.get(url, params=params, raise_for_status=True) as resp:
+        data = await resp.json()
 
     runs = []
-    for orig_run in orig_runs:
-        run = dict(orig_run)
-        if not run["merged_by"]:
-            run["merged_by_url"] = None
-        else:
-            run["merged_by_url"] = mp_user_url_resolver.resolve(
-                run["merge_proposal_url"], run["merged_by"]
-            )
+    for entry in data["runs"]:
+        run = dict(entry)
+        absorbed_at = run.get("absorbed_at")
+        if absorbed_at is not None:
+            run["absorbed_at"] = datetime.fromisoformat(absorbed_at)
         runs.append(run)
 
+    oldest_str = data.get("oldest")
+    oldest = datetime.fromisoformat(oldest_str) if oldest_str else None
     return {"oldest": oldest, "runs": runs, "campaign": campaign, "since": since}
 
 

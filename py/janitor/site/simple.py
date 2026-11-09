@@ -338,7 +338,12 @@ async def handle_done_proposals(request):
     else:
         since = None
 
-    return await generate_done_list(request.app["pool"], campaign, since)
+    return await generate_done_list(
+        request.app["http_client_session"],
+        request.app["publisher_url"],
+        campaign,
+        since,
+    )
 
 
 async def handle_generic_codebase_query_redirect(request):
