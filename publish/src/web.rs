@@ -31,10 +31,9 @@ fn not_found(body: NotFoundResponse) -> Response {
     (StatusCode::NOT_FOUND, Json(body)).into_response()
 }
 
-/// Slim merge-proposal listing row. Matches the JSON shape
-/// `py/janitor/publish.py::handle_merge_proposal_list` returns:
-/// `[{url, status}, ...]` with no other fields. Each of the three
-/// list_merge_proposals endpoints emits a list of these.
+/// One entry in a `/merge-proposals` listing. `codebase` and
+/// `campaign` come from the run that produced the proposal; they are
+/// null when no successful run matches the proposal's revision.
 #[derive(serde::Serialize, serde::Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct MergeProposalListEntry {
     /// URL of the merge proposal.
@@ -42,11 +41,15 @@ pub struct MergeProposalListEntry {
     /// Current status of the merge proposal as recorded in
     /// `merge_proposal.status`.
     pub status: Option<String>,
+    /// Codebase of the run that produced the proposal.
+    pub codebase: Option<CodebaseName>,
+    /// Campaign of the run that produced the proposal.
+    pub campaign: Option<Campaign>,
 }
 
 /// Shared helper for the three `/merge-proposals` listing endpoints.
 /// Runs a `SELECT ... FROM merge_proposal LEFT JOIN run` scoped by the
-/// optional codebase and campaign filters, and emits `[{url, status}]`.
+/// optional codebase and campaign filters.
 async fn fetch_merge_proposal_list(
     conn: &sqlx::PgPool,
     codebase: Option<&CodebaseName>,
@@ -56,6 +59,8 @@ async fn fetch_merge_proposal_list(
         "SELECT DISTINCT ON (merge_proposal.url) \
             merge_proposal.url AS url, \
             merge_proposal.status::text AS status, \
+            run.codebase AS codebase, \
+            run.suite::text AS campaign, \
             (run.finish_time AT TIME ZONE 'UTC') AS finish_time \
          FROM merge_proposal \
          LEFT JOIN run \
@@ -83,6 +88,8 @@ async fn fetch_merge_proposal_list(
         (
             String,
             Option<String>,
+            Option<CodebaseName>,
+            Option<Campaign>,
             Option<chrono::DateTime<chrono::Utc>>,
         ),
     >(sqlx::AssertSqlSafe(&*query));
@@ -95,7 +102,14 @@ async fn fetch_merge_proposal_list(
     let rows = q.fetch_all(conn).await?;
     Ok(rows
         .into_iter()
-        .map(|(url, status, _)| MergeProposalListEntry { url, status })
+        .map(
+            |(url, status, codebase, campaign, _)| MergeProposalListEntry {
+                url,
+                status,
+                codebase,
+                campaign,
+            },
+        )
         .collect())
 }
 
@@ -125,10 +139,21 @@ async fn get_merge_proposals_by_campaign(
     }
 }
 
+/// Query parameters for `GET /c/{codebase}/merge-proposals`.
+#[derive(serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+struct CodebaseMergeProposalsQuery {
+    /// Narrow the result to proposals from runs for this campaign.
+    campaign: Option<Campaign>,
+}
+
 #[utoipa::path(
     get,
     path = "/c/{codebase}/merge-proposals",
-    params(("codebase" = CodebaseName, Path, description = "Codebase name")),
+    params(
+        ("codebase" = CodebaseName, Path, description = "Codebase name"),
+        CodebaseMergeProposalsQuery,
+    ),
     responses(
         (status = 200, description = "Merge proposals for runs on the codebase", body = Vec<MergeProposalListEntry>),
         (status = 500, description = "Database error", body = ErrorResponse),
@@ -137,8 +162,9 @@ async fn get_merge_proposals_by_campaign(
 async fn get_merge_proposals_by_codebase(
     State(state): State<Arc<AppState>>,
     Path(codebase): Path<CodebaseName>,
+    Query(params): Query<CodebaseMergeProposalsQuery>,
 ) -> Response {
-    match fetch_merge_proposal_list(&state.conn, Some(&codebase), None).await {
+    match fetch_merge_proposal_list(&state.conn, Some(&codebase), params.campaign.as_ref()).await {
         Ok(rows) => Json(rows).into_response(),
         Err(e) => {
             log::error!(

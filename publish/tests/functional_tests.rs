@@ -31,16 +31,20 @@ fn check_mp_error_no_run_display_includes_url() {
 }
 
 #[test]
-fn merge_proposal_list_entry_serializes_to_url_status_pair() {
+fn merge_proposal_list_entry_serializes_with_codebase_and_campaign() {
     let entry = janitor_publish::web::MergeProposalListEntry {
         url: "https://github.com/owner/repo/pull/1".into(),
         status: Some("open".into()),
+        codebase: Some("owner-repo".parse().unwrap()),
+        campaign: Some("lintian-fixes".parse().unwrap()),
     };
     let json = serde_json::to_value(&entry).unwrap();
     let obj = json.as_object().expect("JSON object");
-    assert_eq!(obj.len(), 2);
+    assert_eq!(obj.len(), 4);
     assert_eq!(json["url"], "https://github.com/owner/repo/pull/1");
     assert_eq!(json["status"], "open");
+    assert_eq!(json["codebase"], "owner-repo");
+    assert_eq!(json["campaign"], "lintian-fixes");
 }
 
 #[test]

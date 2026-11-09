@@ -520,7 +520,11 @@ async def handle_merge_proposals(request):
     from .merge_proposals import write_merge_proposals
 
     suite = request.match_info.get("suite")
-    return await write_merge_proposals(request.app["pool"], suite)
+    return await write_merge_proposals(
+        request.app["http_client_session"],
+        request.app["publisher_url"],
+        suite,
+    )
 
 
 @routes.get("/cupboard/merge-proposal", name="cupboard-merge-proposal")

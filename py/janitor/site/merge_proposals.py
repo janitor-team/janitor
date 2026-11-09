@@ -3,38 +3,20 @@
 from typing import Optional
 
 import asyncpg
+from yarl import URL
 
 
-async def get_proposals_with_run(conn: asyncpg.Connection, suite: Optional[str]):
-    query = """
-SELECT
-    DISTINCT ON (merge_proposal.url)
-    run.codebase AS codebase,
-    run.suite AS suite,
-    merge_proposal.url AS url,
-    merge_proposal.status AS status
-FROM
-    merge_proposal
-LEFT JOIN new_result_branch ON new_result_branch.revision = merge_proposal.revision
-LEFT JOIN run ON run.id = new_result_branch.run_id
-"""
-    args = []
+async def write_merge_proposals(client, publisher_url: str, suite: Optional[str]):
     if suite:
-        args.append(suite)
-        query += """
-WHERE suite = $1
-"""
-    query += """
-ORDER BY merge_proposal.url, run.finish_time DESC
-"""
-    return await conn.fetch(query, *args)
+        url = URL(publisher_url) / suite / "merge-proposals"
+    else:
+        url = URL(publisher_url) / "merge-proposals"
+    async with client.get(url, raise_for_status=True) as resp:
+        proposals = await resp.json()
 
-
-async def write_merge_proposals(db, suite):
-    async with db.acquire() as conn:
-        proposals_by_status: dict[str, list[asyncpg.Record]] = {}
-        for row in await get_proposals_with_run(conn, suite=suite):
-            proposals_by_status.setdefault(row["status"], []).append(row)
+    proposals_by_status: dict[str, list[dict]] = {}
+    for proposal in proposals:
+        proposals_by_status.setdefault(proposal["status"], []).append(proposal)
 
     merged = proposals_by_status.get("merged", []) + proposals_by_status.get(
         "applied", []
