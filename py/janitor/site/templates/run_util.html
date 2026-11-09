@@ -103,6 +103,11 @@ cd {{ codebase }}
         <!-- unknown bugtracker kind {{ bugtracker.kind }} -->
     {% endif %}
 {% endmacro %}
+{% macro login_on_401() -%}
+    {%- if openid_configured and not user -%}
+        if (response.status == 401) return window.location.replace("/login?url=" + encodeURIComponent(window.location.href));
+    {%- endif -%}
+{%- endmacro %}
 {% macro reschedule_button(campaign, codebase, title="Reschedule", id="reschedule", data={}, accesskey="s") %}
     <button id="{{ id }}"
             {% if accesskey %}accesskey="{{ accesskey }}"{% endif %}>{{ title }}</button>
@@ -116,6 +121,7 @@ cd {{ codebase }}
                         $('.queue-position.{{ codebase }}').attr('style', '')
                     }, 'json')
                     .fail(function(response) {
+                        {{ login_on_401() }}
                         $("#{{ id }}").replaceWith("<span>Failed to schedule new run: " + response.responseText + "</span>");
                     });
             });
@@ -131,6 +137,7 @@ cd {{ codebase }}
                         $("#{{ id }}").replaceWith("<span>Scheduled control run at position " + data.queue_position + ".</span>");
                     }, 'json')
                     .fail(function(response) {
+                        {{ login_on_401() }}
                         $("#{{ id }}").replaceWith("<span>Failed to schedule control run: " + response.responseText + "</span>");
                     });
             });
@@ -158,6 +165,7 @@ cd {{ codebase }}
                         }
                     }, 'json')
                     .fail(function(response) {
+                        {{ login_on_401() }}
                         $("#{{ publish_id }}").replaceWith("<span>Failed to publish: " + response.responseText + "</span>");
                     });
             });
