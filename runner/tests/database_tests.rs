@@ -204,3 +204,63 @@ async fn test_get_run_detail_combines_run_branches_and_debian_build() {
     assert_eq!(debian_build.distribution, "unstable");
     assert_eq!(debian_build.binary_packages, Some(vec!["foo".to_string()]));
 }
+
+/// `get_last_unabsorbed_run_detail` returns the latest run for
+/// (codebase, campaign) whose result branches are not yet absorbed.
+#[tokio::test]
+async fn test_get_last_unabsorbed_run_detail() {
+    let Some(db) = setup().await else { return };
+    sqlx::raw_sql(
+        "INSERT INTO change_set (id, campaign) VALUES ('cs', 'lintian-fixes');
+         INSERT INTO run (id, command, result_code, suite, logfilenames, change_set, \
+                          codebase, vcs_type, branch_url, start_time, finish_time) \
+         VALUES ('run-older', 'true', 'success', 'lintian-fixes', '{}', 'cs', \
+                 'foo', 'git', 'https://example.com/foo', \
+                 '2024-01-01 00:00:00', '2024-01-01 00:10:00'),
+                ('run-newer', 'true', 'success', 'lintian-fixes', '{}', 'cs', \
+                 'foo', 'git', 'https://example.com/foo', \
+                 '2024-02-01 00:00:00', '2024-02-01 00:10:00');
+         INSERT INTO new_result_branch (run_id, role, remote_name, base_revision, revision, absorbed) \
+         VALUES ('run-older', 'main', 'origin/main', 'base-rev', 'tip-rev-older', false),
+                ('run-newer', 'main', 'origin/main', 'base-rev', 'tip-rev-newer', false);
+         SELECT refresh_last_run('foo', 'lintian-fixes');",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let runner_db = RunnerDatabase::new(db.pool.clone());
+
+    let detail = runner_db
+        .get_last_unabsorbed_run_detail(&"foo".parse().unwrap(), &"lintian-fixes".parse().unwrap())
+        .await
+        .unwrap()
+        .expect("unabsorbed run present");
+    assert_eq!(detail.row.id.as_str(), "run-newer");
+    assert_eq!(detail.row.codebase.as_str(), "foo");
+    assert_eq!(detail.row.campaign.as_str(), "lintian-fixes");
+    assert_eq!(detail.branches.len(), 1);
+    assert_eq!(
+        detail.branches[0].revision.as_ref().map(|r| r.as_str()),
+        Some("tip-rev-newer")
+    );
+
+    // Marking the newest run's branches as absorbed clears the
+    // unabsorbed slot for this (codebase, campaign). The view is
+    // scoped to `last_run`, so older runs are not revisited.
+    sqlx::query("UPDATE new_result_branch SET absorbed = true WHERE run_id = 'run-newer'")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let detail = runner_db
+        .get_last_unabsorbed_run_detail(&"foo".parse().unwrap(), &"lintian-fixes".parse().unwrap())
+        .await
+        .unwrap();
+    assert!(detail.is_none());
+
+    // Unknown (codebase, campaign) returns None.
+    let missing = runner_db
+        .get_last_unabsorbed_run_detail(&"nope".parse().unwrap(), &"lintian-fixes".parse().unwrap())
+        .await
+        .unwrap();
+    assert!(missing.is_none());
+}
