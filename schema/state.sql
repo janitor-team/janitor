@@ -150,6 +150,8 @@ CREATE TABLE IF NOT EXISTS publish (
 );
 -- CREATE TABLE above is skipped on an existing database, so upgrades need this.
 ALTER TABLE publish ADD COLUMN IF NOT EXISTS run_id text references run(id) on delete set null;
+-- The publisher used to store "Success" as the description of a plain success.
+UPDATE publish SET description = NULL WHERE result_code = 'success' AND description = 'Success';
 CREATE INDEX ON publish (revision);
 CREATE INDEX ON publish (merge_proposal_url);
 CREATE INDEX ON publish (timestamp);
