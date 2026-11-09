@@ -1,0 +1,5 @@
+#!/bin/sh
+# Example codemod for a generic campaign: strip trailing whitespace from text files.
+set -e
+find . -name .git -prune -o -name .bzr -prune -o -type f -exec perl -pi -e 's/[ \t]+$// if -T $ARGV' {} +
+echo "Strip trailing whitespace."

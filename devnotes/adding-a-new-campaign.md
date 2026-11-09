@@ -10,26 +10,38 @@ a source codebase, and can make changes to the codebase as it sees fit.
 See [this blog post](https://www.jelmer.uk/silver-platter-intro.html) for more
 information about creating codemod scripts.
 
+The silver-platter
+[codemod protocol](https://github.com/jelmer/silver-platter/blob/master/codemod-protocol.md)
+describes how to write a codemod, and the
+[example recipes](https://github.com/jelmer/silver-platter/tree/master/examples/recipes)
+show some real ones.
+
+[`examples/strip-trailing-whitespace`](../examples/strip-trailing-whitespace)
+is a small codemod for a generic campaign.
+
 You can test the script on its own with silver-platter. In a checkout of a
 codebase, run:
 
-    debian-svp apply --diff /path/to/myscript
+    svp apply --diff /path/to/janitor/examples/strip-trailing-whitespace
 
-This commits the change to that checkout, so use a copy you can throw away.
+For a Debian package, run `debian-svp apply` instead. Either command commits
+the change to that checkout.
 
 ## Add configuration for the campaign
 
 In janitor.conf, add a section for the campaign. E.g.:
 
     campaign {
-      name: "some-name"
-      command: "myscript"
-      branch_name: "some-name"
-      debian_build {
-        base_distribution: "unstable"
-        build_suffix: "suf"
-      }
+      name: "strip-trailing-whitespace"
+      command: "strip-trailing-whitespace"
+      branch_name: "strip-trailing-whitespace"
+      generic_build {}
     }
+
+The command runs on the worker, so the script must be on the worker's
+`PATH`; see [Custom worker tooling](../docs/containers.md#custom-worker-tooling).
+A Debian campaign uses a `debian_build` section instead.
+[`janitor.conf.example`](../janitor.conf.example) has both kinds.
 
 ## Add script for finding candidates
 
