@@ -10,6 +10,12 @@ a source codebase, and can make changes to the codebase as it sees fit.
 See [this blog post](https://www.jelmer.uk/silver-platter-intro.html) for more
 information about creating codemod scripts.
 
+The silver-platter
+[codemod protocol](https://github.com/jelmer/silver-platter/blob/master/codemod-protocol.md)
+describes how to write a codemod, and the
+[example recipes](https://github.com/jelmer/silver-platter/tree/master/examples/recipes)
+show some real ones.
+
 You can test the script on its own with silver-platter. In a checkout of a
 codebase, run:
 
