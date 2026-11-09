@@ -1,0 +1,6 @@
+{# The same for plain-text forges; without a campaign title, the first line is the title. #}
+Strip trailing whitespace
+{% if external_url %}
+
+Build and test logs: {{ external_url }}/cupboard/run/{{ log_id }}/
+{% endif %}
