@@ -1529,9 +1529,12 @@ fn armor_public_key(data: &[u8]) -> std::io::Result<String> {
 #[utoipa::path(
     get,
     path = "/credentials",
-    responses((status = 200, description = "Keys and forge accounts used for publishing", body = Credentials))
+    responses(
+        (status = 200, description = "Keys and forge accounts used for publishing", body = Credentials),
+        (status = 500, description = "Listing the keys or forges failed", body = ErrorResponse),
+    )
 )]
-async fn get_credentials(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn get_credentials(State(state): State<Arc<AppState>>) -> Response {
     // SSH public keys: scan ~/.ssh for *.pub. Use dirs::home_dir
     // semantics (HOME on Unix) but fall back to /root on
     // containers where HOME is unset rather than silently
@@ -1590,7 +1593,10 @@ async fn get_credentials(State(state): State<Arc<AppState>>) -> impl IntoRespons
             Ok(keys) => keys,
             Err(e) => {
                 log::error!("PGP keylist task panicked: {}", e);
-                Vec::new()
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "PGP keylist task panicked",
+                );
             }
         }
     };
@@ -1643,7 +1649,10 @@ async fn get_credentials(State(state): State<Arc<AppState>>) -> impl IntoRespons
         Ok(hosting) => hosting,
         Err(e) => {
             log::error!("Forge enumeration task panicked: {}", e);
-            Vec::new()
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Forge enumeration task panicked",
+            );
         }
     };
 
@@ -1655,6 +1664,7 @@ async fn get_credentials(State(state): State<Arc<AppState>>) -> impl IntoRespons
             hosting,
         }),
     )
+        .into_response()
 }
 
 // Health and ready handlers are now provided by shared_web module
