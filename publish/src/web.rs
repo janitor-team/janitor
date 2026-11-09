@@ -1125,13 +1125,16 @@ pub struct PublishListResponse {
 struct PublishListQuery {
     /// Restrict to publishes targeting this merge-proposal URL.
     merge_proposal_url: Option<String>,
+    /// Restrict to publishes that pushed/proposed this revision.
+    revision: Option<String>,
     /// Maximum number of rows to return.
     limit: Option<i64>,
 }
 
 /// `GET /publish`: list publish attempts. Supports filtering by
-/// merge-proposal URL (for a per-proposal history page) and a `limit`
-/// (for the cupboard history view).
+/// merge-proposal URL (for a per-proposal history page), revision
+/// (for the run-detail publish history block), and a `limit` (for the
+/// cupboard history view).
 #[utoipa::path(
     get,
     path = "/publish",
@@ -1161,10 +1164,19 @@ async fn list_publishes(
          FROM publish \
          LEFT JOIN codebase ON codebase.name = publish.codebase",
     );
+    let mut conditions = Vec::new();
     let mut idx = 0;
     if params.merge_proposal_url.is_some() {
         idx += 1;
-        query.push_str(&format!(" WHERE publish.merge_proposal_url = ${}", idx));
+        conditions.push(format!("publish.merge_proposal_url = ${}", idx));
+    }
+    if params.revision.is_some() {
+        idx += 1;
+        conditions.push(format!("publish.revision = ${}", idx));
+    }
+    if !conditions.is_empty() {
+        query.push_str(" WHERE ");
+        query.push_str(&conditions.join(" AND "));
     }
     query.push_str(" ORDER BY publish.timestamp DESC");
     if params.limit.is_some() {
@@ -1175,6 +1187,9 @@ async fn list_publishes(
     let mut q = sqlx::query_as::<_, PublishListEntry>(sqlx::AssertSqlSafe(&*query));
     if let Some(mp_url) = params.merge_proposal_url.as_ref() {
         q = q.bind(mp_url);
+    }
+    if let Some(revision) = params.revision.as_ref() {
+        q = q.bind(revision);
     }
     if let Some(limit) = params.limit {
         q = q.bind(limit);
