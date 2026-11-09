@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use url::Url;
 
 /// Build metadata as produced by the worker.
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq, Eq)]
 pub struct Metadata {
     /// The ID of the item in the runner's queue.
@@ -46,12 +47,15 @@ pub struct Metadata {
     pub subpath: Option<String>,
 
     /// Revision ID of the base branch.
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<String>))]
     pub main_branch_revision: Option<RevisionId>,
 
     /// Revision ID of the resulting branch.
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<String>))]
     pub revision: Option<RevisionId>,
 
     /// Codemod result.
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<Object>))]
     pub codemod: Option<serde_json::Value>,
 
     /// Remotes.
@@ -67,6 +71,7 @@ pub struct Metadata {
     pub target_branch_url: Option<Url>,
 
     /// Branches that were created.
+    #[cfg_attr(feature = "utoipa", schema(value_type = Vec<Vec<Option<String>>>))]
     pub branches: Vec<(
         String,
         Option<String>,
@@ -75,12 +80,14 @@ pub struct Metadata {
     )>,
 
     /// Tags that were created.
+    #[cfg_attr(feature = "utoipa", schema(value_type = Vec<Vec<String>>))]
     pub tags: Vec<(String, RevisionId)>,
     #[serde(skip_serializing_if = "Option::is_none")]
 
     /// Details about the target.
     pub target: Option<TargetDetails>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "details")]
+    #[cfg_attr(feature = "utoipa", schema(value_type = Option<Object>))]
     pub failure_details: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
@@ -117,6 +124,7 @@ impl Metadata {
     }
 }
 
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct Remote {
     pub url: Url,
@@ -168,9 +176,11 @@ impl std::fmt::Display for WorkerFailure {
 
 impl std::error::Error for WorkerFailure {}
 
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct TargetDetails {
     pub name: String,
+    #[cfg_attr(feature = "utoipa", schema(value_type = Object))]
     pub details: serde_json::Value,
 }
 
