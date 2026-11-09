@@ -342,6 +342,22 @@ pub struct RunListResponse {
     pub runs: Vec<RunSummary>,
 }
 
+/// One follow-up candidate of a run, keyed by (codebase, campaign).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, sqlx::FromRow)]
+pub struct RunFollowup {
+    /// Codebase of the follow-up candidate.
+    pub codebase: CodebaseName,
+    /// Campaign the follow-up candidate targets.
+    pub campaign: Campaign,
+}
+
+/// Response for `GET /runs/{id}/followups`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RunFollowupsResponse {
+    /// Follow-up candidates scheduled off this run.
+    pub followups: Vec<RunFollowup>,
+}
+
 /// Response for `POST /runs/{id}`; also sent on the `publish-status`
 /// pub/sub channel.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

@@ -6,9 +6,10 @@ use crate::api_types::{
     PublishStatusUpdate, QueueEntry, QueuePositionResponse, QueueStatsResponse,
     RateLimitedResponse, ReasonResponse, ResultBranchEntry, ResumeAssignment, ResumeChainResponse,
     ResumeCheckResponse, ResumeDescendantsResponse, ResumeValidationResponse, RunDetailResponse,
-    RunHealthSummary, RunListResponse, RunSummary, ScheduleControlResponse, ScheduleResponse,
-    ScheduledCandidate, StatusResponse, UploadCandidatesResponse, WatchdogHealthResponse,
-    WorkerInfo, WorkerListResponse, WorkerSummary,
+    RunFollowup, RunFollowupsResponse, RunHealthSummary, RunListResponse, RunSummary,
+    ScheduleControlResponse, ScheduleResponse, ScheduledCandidate, StatusResponse,
+    UploadCandidatesResponse, WatchdogHealthResponse, WorkerInfo, WorkerListResponse,
+    WorkerSummary,
 };
 use crate::{
     get_builder, metrics::MetricsCollector, ActiveRun, AppState, Backchannel, BuilderResult,
@@ -1712,6 +1713,42 @@ async fn get_run(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> R
         Ok(None) => reason(StatusCode::NOT_FOUND, format!("no such run: {}", id)),
         Err(e) => {
             log::error!("Failed to get run {}: {}", id, e);
+            db_error()
+        }
+    }
+}
+
+/// `GET /runs/{id}/followups` -- list the follow-up candidates that
+/// were scheduled off this run (one `(codebase, campaign)` pair per
+/// row). Returns an empty list when the run has no follow-ups.
+#[utoipa::path(
+    get,
+    path = "/runs/{id}/followups",
+    params(("id" = RunId, Path, description = "Run id")),
+    responses(
+        (status = 200, description = "Follow-ups for the run", body = RunFollowupsResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
+async fn get_run_followups(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> Response {
+    // Use an INNER JOIN so follow-ups whose candidate has been
+    // deleted don't surface as rows with null codebase/campaign; the
+    // UI has no useful way to display those.
+    let rows: Result<Vec<RunFollowup>, _> = sqlx::query_as(
+        "SELECT candidate.codebase AS codebase, candidate.suite AS campaign \
+         FROM followup \
+         JOIN candidate ON candidate.id = followup.candidate \
+         WHERE followup.origin = $1 \
+         ORDER BY candidate.codebase, candidate.suite",
+    )
+    .bind(&id)
+    .fetch_all(state.database.pool())
+    .await;
+
+    match rows {
+        Ok(followups) => Json(RunFollowupsResponse { followups }).into_response(),
+        Err(e) => {
+            log::error!("Failed to list followups for {}: {}", id, e);
             db_error()
         }
     }
@@ -4397,6 +4434,7 @@ fn private_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(delete_candidate))
         .routes(routes!(list_runs))
         .routes(routes!(get_run, update_run))
+        .routes(routes!(get_run_followups))
         // The unauthenticated POST is for intra-cluster admin tools
         // (e.g. schedule-codebases CronJob). Body must include
         // `worker`/`node`. Workers themselves should hit
