@@ -866,23 +866,27 @@ async def main_async(argv=None):
         port=args.port,
     )
 
-    private_runner = web.AppRunner(private_app)
+    private_runner = web.AppRunner(private_app, handle_signals=True)
     public_runner = web.AppRunner(public_app)
     await private_runner.setup()
     await public_runner.setup()
 
-    site = web.TCPSite(private_runner, args.host, port=args.port)
-    await site.start()
-    logging.info("Admin API listening on %s:%s", args.host, args.port)
+    try:
+        site = web.TCPSite(private_runner, args.host, port=args.port)
+        await site.start()
+        logging.info("Admin API listening on %s:%s", args.host, args.port)
 
-    site = web.TCPSite(public_runner, args.host, port=args.public_port)
-    await site.start()
-    logging.info(
-        "Public website and API listening on %s:%s", args.host, args.public_port
-    )
+        site = web.TCPSite(public_runner, args.host, port=args.public_port)
+        await site.start()
+        logging.info(
+            "Public website and API listening on %s:%s", args.host, args.public_port
+        )
 
-    while True:
-        await asyncio.sleep(3600)
+        while True:
+            await asyncio.sleep(3600)
+    finally:
+        await public_runner.cleanup()
+        await private_runner.cleanup()
 
 
 def main():
