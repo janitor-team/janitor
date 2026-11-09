@@ -24,6 +24,7 @@ import aiohttp_jinja2
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from bs4 import BeautifulSoup
 from jinja2 import Environment
 from yarl import URL
 
@@ -110,12 +111,14 @@ campaign {
 }
 """)
     campaign = config.campaign[0]
-    template.render(
+    html = template.render(
         worker_link_is_global=worker_link_is_global,
         run={
             "start_time": utcnow(),
             "finish_time": utcnow(),
         },
+        suite="some-fixes",
+        revision="rev",
         success_probability=0.2,
         classify_result_code=classify_result_code,
         show_debdiff=lambda: "",
@@ -125,6 +128,12 @@ campaign {
         format_timestamp=format_timestamp,
         format_duration=format_duration,
     )
+    buttons = BeautifulSoup(html, "html.parser").find_all("button")
+    assert [(b["id"], b.get("accesskey")) for b in buttons] == [
+        ("schedule-control", ["c"]),
+        ("schedule-control-diff", None),
+        ("reprocess-logs", ["l"]),
+    ]
 
 
 def test_classify_result_code_debian_validate():
