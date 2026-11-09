@@ -2701,3 +2701,61 @@ async fn public_openapi_json_is_served_without_auth() {
     assert_eq!(body["paths"]["/health"]["get"].get("security"), None);
     assert_eq!(body["paths"].get("/schedule"), None);
 }
+
+/// `GET /candidates/{codebase}/{campaign}` returns the matching row
+/// or 404 if there's no candidate.
+#[tokio::test]
+async fn get_candidate_returns_row_or_404() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let pool = state.database.pool().clone();
+    insert_codebase(&pool, "cand-cb").await;
+    sqlx::query(
+        "INSERT INTO candidate (codebase, suite, command, context, value, success_chance)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind("cand-cb")
+    .bind("test-campaign")
+    .bind("true")
+    .bind("some context")
+    .bind(42)
+    .bind(0.5_f64)
+    .execute(&pool)
+    .await
+    .expect("insert candidate");
+
+    // Hit: returns the candidate.
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/candidates/cand-cb/test-campaign")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    assert_eq!(body["codebase"], "cand-cb");
+    assert_eq!(body["campaign"], "test-campaign");
+    assert_eq!(body["command"], "true");
+    assert_eq!(body["context"], "some context");
+    assert_eq!(body["value"], 42);
+    assert_eq!(body["success_chance"], 0.5);
+
+    // Miss: 404.
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/candidates/cand-cb/other-campaign")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = get_body(response).await;
+    assert!(
+        body["reason"]
+            .as_str()
+            .is_some_and(|s| s.contains("cand-cb/other-campaign")),
+        "expected codebase+campaign in reason, got {body}"
+    );
+}
