@@ -20,7 +20,7 @@
             }
 
             function allowReview(codebase, run_id) {
-                $('#full-run-link').attr('href', "/cupboard/c/" + codebase + "/" + run_id);
+                $('#full-run-link').attr('href', "/cupboard/c/" + codebase + "/" + run_id + "/");
                 $('#run-id').attr('value', run_id);
                 $('#codebase').attr('value', codebase);
                 $('.review-button').disabled = "enabled";
