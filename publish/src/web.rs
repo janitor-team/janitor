@@ -1293,7 +1293,7 @@ async fn publish(
                     return;
                 }
             };
-            if let Err(e) = crate::publish_and_store(
+            let publish = crate::publish_and_store(
                 &state.conn,
                 state.redis_manager.as_ref(),
                 campaign_config,
@@ -1308,16 +1308,28 @@ async fn publish(
                 Some(true), // allow_create_proposal
                 false,      // require_binary_diff
                 requester.as_deref(),
+            );
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(crate::queue::PER_RUN_PUBLISH_TIMEOUT_SECS),
+                publish,
             )
             .await
             {
-                log::warn!(
+                Err(_elapsed) => log::error!(
+                    "Timed out after {}s publishing {}/{}/{}",
+                    crate::queue::PER_RUN_PUBLISH_TIMEOUT_SECS,
+                    run.codebase,
+                    run.suite,
+                    role_owned
+                ),
+                Ok(Err(e)) => log::warn!(
                     "publish_and_store failed for {}/{}/{}: {}",
                     run.codebase,
                     run.suite,
                     role_owned,
                     e
-                );
+                ),
+                Ok(Ok(())) => {}
             }
         });
     }
