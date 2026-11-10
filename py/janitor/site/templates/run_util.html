@@ -116,13 +116,13 @@ cd {{ codebase }}
             $("#{{ id }}").click(function() {
                 $.post('/api/{{ campaign }}/c/{{ codebase }}/schedule', {{ data | tojson }}, function(data) {
                         console.log('Scheduled: ' + data.offset);
-                        $("#{{ id }}").replaceWith("<span>Scheduled new run at position " + data.queue_position + ".</span>");
+                        replaceWithStatus("#{{ id }}", "Scheduled new run at position " + data.queue_position + ".");
                         $('.queue-position.{{ codebase }}').replaceWith('<a href="/cupboard/queue">Queue</a> position: ' + data.queue_position);
                         $('.queue-position.{{ codebase }}').attr('style', '')
                     }, 'json')
                     .fail(function(response) {
                         {{ login_on_401() }}
-                        $("#{{ id }}").replaceWith("<span>Failed to schedule new run: " + response.responseText + "</span>");
+                        replaceWithStatus("#{{ id }}", "Failed to schedule new run: " + response.responseText);
                     });
             });
         });
@@ -134,11 +134,11 @@ cd {{ codebase }}
             $("#{{ id }}").click(function() {
                 $.post('/api/run/{{ run_id }}/schedule-control', {{ data | tojson }}, function(data) {
                         console.log('Scheduled: ' + data.offset);
-                        $("#{{ id }}").replaceWith("<span>Scheduled control run at position " + data.queue_position + ".</span>");
+                        replaceWithStatus("#{{ id }}", "Scheduled control run at position " + data.queue_position + ".");
                     }, 'json')
                     .fail(function(response) {
                         {{ login_on_401() }}
-                        $("#{{ id }}").replaceWith("<span>Failed to schedule control run: " + response.responseText + "</span>");
+                        replaceWithStatus("#{{ id }}", "Failed to schedule control run: " + response.responseText);
                     });
             });
         });
@@ -161,12 +161,12 @@ cd {{ codebase }}
             $("#{{ publish_id }}").click(function() {
                 $.post('/api/{{ campaign }}/c/{{ codebase }}/publish', {}, function(data) {
                         if (data) {
-                            $("#{{ publish_id }}").replaceWith("<span>Publishing...</span>");
+                            replaceWithStatus("#{{ publish_id }}", "Publishing...");
                         }
                     }, 'json')
                     .fail(function(response) {
                         {{ login_on_401() }}
-                        $("#{{ publish_id }}").replaceWith("<span>Failed to publish: " + response.responseText + "</span>");
+                        replaceWithStatus("#{{ publish_id }}", "Failed to publish: " + response.responseText);
                     });
             });
         
@@ -176,11 +176,11 @@ cd {{ codebase }}
                         'mode': 'propose'
                     }, function(data) {
                         if (data) {
-                            $("#{{ propose_id }}").replaceWith("<span>Publishing merge proposal...</span>");
+                            replaceWithStatus("#{{ propose_id }}", "Publishing merge proposal...");
                         }
                     }, 'json')
                     .fail(function(response) {
-                        $("#{{ propose_id }}").replaceWith("<span>Failed to publish: " + response.responseText + "</span>");
+                        replaceWithStatus("#{{ propose_id }}", "Failed to publish: " + response.responseText);
                     });
             });
         
@@ -188,10 +188,10 @@ cd {{ codebase }}
                 $.post('/api/{{ campaign }}/c/{{ codebase }}/publish', {
                         'mode': 'push-derived'
                     }, function(data) {
-                        $("#{{ fork_id }}").replaceWith("<span>Creating fork.</span>");
+                        replaceWithStatus("#{{ fork_id }}", "Creating fork.");
                     }, 'json')
                     .fail(function(response) {
-                        $("#{{ fork_id }}").replaceWith("<span>Failed: " + response.responseText + "</span>");
+                        replaceWithStatus("#{{ fork_id }}", "Failed: " + response.responseText);
                     });
             });
         
@@ -199,10 +199,10 @@ cd {{ codebase }}
                 $.post('/api/{{ campaign }}/c/{{ codebase }}/publish', {
                         'mode': 'push'
                     }, function(data) {
-                        $("#{{ push_id }}").replaceWith("<span>Pushing.</span>");
+                        replaceWithStatus("#{{ push_id }}", "Pushing.");
                     }, 'json')
                     .fail(function(response) {
-                        $("#{{ push_id }}").replaceWith("<span>Failed: " + response.responseText + "</span>");
+                        replaceWithStatus("#{{ push_id }}", "Failed: " + response.responseText);
                     });
             }); {% endif %}
         });
