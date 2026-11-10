@@ -1,0 +1,40 @@
+{% set layout = "plain" %}
+{% extends "layout.html" %}
+{% block page_title %}
+    {{ filename }} for run {{ run_id }}
+{% endblock page_title %}
+{% block body %}
+    <div class="section" id="log">
+        <h1>{{ filename }}</h1>
+        <p>
+            Log of <a href="{{ run_url }}">run {{ run_id }}</a>.
+            <span id="log-links" {% if not line_count %}hidden{% endif %}>Open the <a href="/api/run/{{ run_id }}/logs/{{ filename }}">raw log</a> or <a href="?start={{ [line_count - page_lines + 1, 1] | max }}#log-end">jump to the end</a>.</span>
+        </p>
+        <div id="log-tools">
+            <form id="log-find" {% if not line_count %}hidden{% endif %}>
+                <input type="search"
+                       name="find"
+                       value="{{ find }}"
+                       aria-label="Find in the log"
+                       placeholder="Find in the log" />
+                <input type="hidden" name="start" value="{{ start }}" />
+                <input type="hidden" name="after" value="{{ selected or start - 1 }}" />
+                <button aria-describedby="log-status" {% if find %}autofocus{% endif %}>Find next</button>
+            </form>
+            <p id="log-status" role="status" {% if page_range %}data-page-range{% endif %}>{{ status }}</p>
+        </div>
+        {% if start > 1 and line_count %}
+            <p class="log-nav">
+                <a href="?start={{ [[start - page_lines, line_count - page_lines + 1] | min, 1] | max }}">Earlier lines</a>
+            </p>
+        {% endif %}
+        <pre class="log" id="log-lines" data-start="{{ start }}" data-selected="{{ selected or '' }}" data-page-lines="{{ page_lines }}" style="--digits: {{ [4, line_count | string | length] | max }}ch">{% if lines %}<span>{% for n, line in lines %}<span id="L{{ n }}" {% if n == selected %}class="selected"{% endif %}><a href="?start={{ (n - 1) // page_lines * page_lines + 1 }}#L{{ n }}" tabindex="-1">{{ n }} </a>{{ line }}{{ "\n" }}</span>{% endfor %}</span>{% endif %}</pre>
+        {% if start - 1 + page_lines < line_count %}
+            <p class="log-nav">
+                <a href="?start={{ start + page_lines }}">Later lines</a>
+            </p>
+        {% endif %}
+        <div id="log-end"></div>
+    </div>
+    <script src="/_static/log.js"></script>
+{% endblock body %}

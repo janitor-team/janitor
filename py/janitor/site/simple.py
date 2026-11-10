@@ -43,10 +43,16 @@ from ..vcs import VcsManager, get_vcs_managers_from_config
 from . import (
     TEMPLATE_ENV,
     hide_private_worker_links,
+    read_run_log,
     serve_run_log,
     template_loader,
 )
-from .common import html_template, render_template_for_request
+from .common import (
+    html_template,
+    log_page,
+    render_template_for_request,
+    wants_log_page,
+)
 from .openid import setup_openid
 from .pubsub import Topic, pubsub_handler
 from .setup import (
@@ -273,7 +279,15 @@ async def handle_result_file(request):
         if not re.match("^[+a-z0-9\\.]+$", filename) or len(filename) < 3:
             raise web.HTTPNotFound(text=f"No log file {filename} for run {run_id}")
 
-        return await serve_run_log(request, run_id, filename)
+        if wants_log_page(request):
+            run_url = request.app.router["generic-run"].url_for(
+                campaign=request.match_info["suite"], codebase=pkg, run_id=run_id
+            )
+            logfile = await read_run_log(request, run_id, filename)
+            return await log_page(request, run_id, filename, run_url, logfile)
+        resp = await serve_run_log(request, run_id, filename)
+        resp.headers["Vary"] = "Accept"
+        return resp
     else:
         return await serve_artifact(request, run_id, filename)
 

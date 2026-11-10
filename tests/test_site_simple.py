@@ -517,6 +517,12 @@ async def test_result_file_log_from_runner(aiohttp_client, database_location):
         key = (request.match_info["run_id"], request.match_info["filename"])
         responses = {
             ("run-id", "build.log"): web.Response(text="log"),
+            ("run-id", "long.log"): web.Response(
+                text="".join(
+                    "Error: here\n" if n == 1203 else f"line {n}\n"
+                    for n in range(1, 1501)
+                )
+            ),
             ("run-id", "worker.log"): web.Response(
                 status=500, text="storage unavailable"
             ),
@@ -541,6 +547,86 @@ async def test_result_file_log_from_runner(aiohttp_client, database_location):
         ("build.log", 200, "log"),
         ("worker.log", 502, "Unable to read log file worker.log for run run-id"),
         ("dist.log", 404, "No log file dist.log for run run-id"),
+    ]
+
+    # A browser gets a page that shows the log; log.js turns it into the log viewer.
+    html = {"Accept": "text/html,application/xhtml+xml,*/*;q=0.8"}
+    resp = await client.get("/lintian-fixes/pkg/pkg/run-id/build.log", headers=html)
+    soup = BeautifulSoup(await resp.text(), "html.parser")
+    json_resp = await client.get(
+        "/lintian-fixes/pkg/pkg/run-id/build.log",
+        headers={"Accept": "application/json"},
+    )
+    assert (
+        resp.content_type,
+        [h1.get_text() for h1 in soup.select("#log h1")],
+        [a["href"] for a in soup.select("#log a")],
+        [line.get_text() for line in soup.select("#log-lines > span > span")],
+        json_resp.status,
+    ) == (
+        "text/html",
+        ["build.log"],
+        [
+            "/lintian-fixes/c/pkg/run-id",
+            "/api/run/run-id/logs/build.log",
+            "?start=1#log-end",
+            "?start=1#L1",
+        ],
+        ["1 log\n"],
+        406,
+    )
+
+    # Longer logs are shown 1000 lines at a time, and the find box finds lines.
+    pages = []
+    for query in [
+        "",
+        "?start=1001",
+        "?find=ERROR&after=0",
+        "?find=error&after=1203",
+        "?start=1001&find=nothing&after=1000",
+        "?start=2000",
+        "?start=0",
+    ]:
+        resp = await client.get(
+            f"/lintian-fixes/pkg/pkg/run-id/long.log{query}", headers=html
+        )
+        soup = BeautifulSoup(await resp.text(), "html.parser")
+        lines = soup.select("#log-lines > span > span")
+        pages.append(
+            (
+                resp.status,
+                [lines[0]["id"], lines[-1]["id"]] if lines else [],
+                [span["id"] for span in soup.select("#log-lines .selected")],
+                [a["href"] for a in soup.select(".log-nav a")],
+                [p.get_text() for p in soup.select("#log-status")],
+            )
+        )
+    assert pages == [
+        (200, ["L1", "L1000"], [], ["?start=1001"], ["Lines 1 to 1000 of 1500."]),
+        (200, ["L1001", "L1500"], [], ["?start=1"], ["Lines 1001 to 1500 of 1500."]),
+        (200, ["L1193", "L1500"], ["L1203"], ["?start=193"], ["Found on line 1203."]),
+        (
+            200,
+            ["L1193", "L1500"],
+            ["L1203"],
+            ["?start=193"],
+            ["Found on line 1203 (searched again from the top)."],
+        ),
+        (
+            200,
+            ["L1001", "L1500"],
+            [],
+            ["?start=1"],
+            ['"nothing" is not in the log.'],
+        ),
+        (
+            200,
+            [],
+            [],
+            ["?start=501"],
+            ["There is no line 2000. The log has 1500 lines."],
+        ),
+        (400, [], [], [], []),
     ]
 
 

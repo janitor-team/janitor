@@ -3,10 +3,12 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from itertools import chain
 from typing import Any, Optional
 
 import aiohttp_jinja2
 import asyncpg
+import mimeparse
 from aiohttp import ClientConnectorError, ClientResponseError, web
 from breezy.revision import NULL_REVISION
 from yarl import URL
@@ -460,3 +462,86 @@ def html_template(template_name, headers={}):  # noqa: B006
 async def render_template_for_request(templatename, request, vs: dict[str, Any]):
     update_vars_from_request(vs, request)
     return await aiohttp_jinja2.render_string_async(templatename, request, vs)
+
+
+def wants_log_page(request: web.Request) -> bool:
+    """Whether to show a run log as a page rather than as plain text."""
+    best_match = mimeparse.best_match(
+        ["text/html", "text/plain"], request.headers.get("Accept", "*/*")
+    )
+    if not best_match:
+        raise web.HTTPNotAcceptable(
+            text="Acceptable content types: text/html, text/plain"
+        )
+    return best_match == "text/html"
+
+
+LOG_PAGE_LINES = 1000
+# Lines shown above a line that the find box found.
+LOG_FIND_CONTEXT = 10
+
+
+def _line_number(request: web.Request, name: str, default: int, lowest: int) -> int:
+    # A missing parameter means the default view.
+    value = request.query.get(name, str(default))
+    if not (value.isascii() and value.isdigit()) or int(value) < lowest:
+        raise web.HTTPBadRequest(text=f"{name} must be a line number")
+    return int(value)
+
+
+async def log_page(
+    request: web.Request, run_id: str, filename: str, run_url: URL, logfile: bytes
+) -> web.Response:
+    """Show part of a run log as a page; log.js shows all of it in a browser."""
+    # Like the plain text log in a browser, bytes that are not UTF-8 show as U+FFFD.
+    lines = logfile.decode("utf-8", "replace").split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    start = _line_number(request, "start", 1, 1)
+    find = request.query.get("find", "")
+    selected = None
+    status = ""
+    page_range = False
+    if find:
+        after = _line_number(request, "after", 0, 0)
+        needle = find.lower()
+        order = chain(range(after, len(lines)), range(min(after, len(lines))))
+        found = next((i for i in order if needle in lines[i].lower()), None)
+        if found is None:
+            status = f'"{find}" is not in the log.'
+        else:
+            selected = found + 1
+            start = max(selected - LOG_FIND_CONTEXT, 1)
+            status = f"Found on line {selected}."
+            if selected <= after:
+                status = f"Found on line {selected} (searched again from the top)."
+    if not lines:
+        status = "The log is empty."
+    elif start > len(lines):
+        count = f"{len(lines)} line" if len(lines) == 1 else f"{len(lines)} lines"
+        status = f"There is no line {start}. The log has {count}."
+    elif not status and len(lines) > LOG_PAGE_LINES:
+        page_range = True
+        end = min(start - 1 + LOG_PAGE_LINES, len(lines))
+        status = f"Lines {start} to {end} of {len(lines)}."
+        if start == end:
+            status = f"Line {start} of {len(lines)}."
+    window = lines[start - 1 : start - 1 + LOG_PAGE_LINES]
+    text = await render_template_for_request(
+        "log.html",
+        request,
+        {
+            "run_id": run_id,
+            "filename": filename,
+            "run_url": run_url,
+            "lines": list(enumerate(window, start)),
+            "line_count": len(lines),
+            "start": start,
+            "page_lines": LOG_PAGE_LINES,
+            "selected": selected,
+            "find": find,
+            "status": status,
+            "page_range": page_range,
+        },
+    )
+    return web.Response(text=text, content_type="text/html", headers={"Vary": "Accept"})

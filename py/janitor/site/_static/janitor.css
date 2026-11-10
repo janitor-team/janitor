@@ -119,3 +119,65 @@ ul.empty-state {
     list-style: none;
     padding-left: 0;
 }
+
+/* Run log viewer */
+#log-tools {
+    position: sticky;
+    top: 0;
+    padding: 4px 0;
+    border-bottom: 1px solid #CCC;
+    background-color: #FFF;
+}
+
+#log-find input, #log-find button {
+    font-size: 16px;
+}
+
+#log-tools:has(> #log-find[hidden]) {
+    padding: 0;
+    border-bottom: none;
+}
+
+#log-status {
+    margin: 4px 0 0;
+}
+
+#log-status:empty {
+    margin: 0;
+}
+
+pre.log {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    padding-left: 7px;
+}
+
+pre.log > span {
+    display: block;
+}
+
+pre.log > span > span {
+    scroll-margin-top: 4em;
+    display: grid;
+    grid-template-columns: var(--digits, 4ch) minmax(0, 1fr);
+    column-gap: 1.5ch;
+}
+
+pre.log:empty {
+    display: none;
+}
+
+pre.log > span > span.selected, pre.log:not(.viewer) > span > span:target {
+    background-color: #FFC;
+}
+
+pre.log a {
+    color: #666;
+    text-align: right;
+    text-decoration: none;
+    user-select: none;
+}
+
+pre.log a:hover {
+    text-decoration: underline;
+}

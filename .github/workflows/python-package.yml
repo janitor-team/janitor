@@ -53,6 +53,12 @@ jobs:
             ruff
           make ruff check-ruff-format
 
+      - name: JavaScript tests (node)
+        if: always()
+        run: |
+          set -x
+          make test-js
+
   build:
     name: Build - Ubuntu LTS
     runs-on: ubuntu-latest
