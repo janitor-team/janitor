@@ -57,4 +57,4 @@ EXPOSE 9923
 
 EXPOSE 9924
 
-ENTRYPOINT ["janitor-git-store", "--port=9923", "--public-port=9924", "--listen-address=0.0.0.0"]
+ENTRYPOINT ["janitor-git-store", "--port=9923", "--public-port=9924", "--listen-address=::"]

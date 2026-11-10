@@ -76,4 +76,4 @@ COPY --from=build /code/target/release/dep-server /usr/local/bin/dep-server
 EXPOSE 9934
 
 # $ janitor-ognibuild
-ENTRYPOINT ["dep-server", "--port=9934", "--listen-address=0.0.0.0"]
+ENTRYPOINT ["dep-server", "--port=9934", "--listen-address=::"]

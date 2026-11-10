@@ -56,4 +56,4 @@ EXPOSE 9911
 
 EXPOSE 9919
 
-ENTRYPOINT ["janitor-runner", "--port=9911",  "--public-port=9919", "--listen-address=0.0.0.0"]
+ENTRYPOINT ["janitor-runner", "--port=9911",  "--public-port=9919", "--listen-address=::"]
