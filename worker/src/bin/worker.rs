@@ -199,7 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err(Box::new(e) as Box<dyn std::error::Error>);
             }
         }
-    } else if janitor_worker::is_gce_instance().await {
+    } else if janitor_worker::is_gce_instance().await? {
         match janitor_worker::gce_external_ip().await {
             Ok(Some(external_ip)) => match worker_url(&external_ip, site_port) {
                 Ok(url) => Some(url),
