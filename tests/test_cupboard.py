@@ -366,10 +366,19 @@ async def test_codebase(aiohttp_client, db):
     resp = await client.get("/cupboard/c/foo/", allow_redirects=False)
     assert resp.status == 200
 
+    resp = await client.get(
+        "/cupboard/c/", params={"codebase": "foo"}, allow_redirects=False
+    )
+    assert resp.status == 302
+    assert resp.headers["Location"] == "/cupboard/c/foo/"
+
 
 async def test_codebase_unknown_returns_404(aiohttp_client, db):
     client = await create_client(aiohttp_client, db)
     resp = await client.get("/cupboard/c/nonexistent/", allow_redirects=False)
+    assert resp.status == 404
+
+    resp = await client.get("/cupboard/c/", allow_redirects=False)
     assert resp.status == 404
 
 

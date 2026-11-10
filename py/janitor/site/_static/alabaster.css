@@ -320,6 +320,20 @@ div.sphinxsidebar input {
     font-size: 1em;
 }
 
+div.sidebar-packages .typeahead__container {
+    width: 200px;
+    font: inherit;
+}
+
+div.sidebar-packages input:focus {
+    outline: auto;
+}
+
+.visually-hidden {
+    position: absolute;
+    left: -10000px;
+}
+
 div.sphinxsidebar hr {
     border: none;
     height: 1px;
@@ -512,6 +526,14 @@ div.sphinxsidebar {
     div.document {
         width: 100%;
         margin: 0;
+    }
+
+    div.sidebar-packages .typeahead__container {
+        width: auto;
+    }
+
+    div.sidebar-packages .typeahead__field input {
+        min-height: 40px;
     }
 
     div.footer {

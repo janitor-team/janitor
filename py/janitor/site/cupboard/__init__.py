@@ -518,6 +518,16 @@ async def generate_codebase(conn, codebase):
     return {"codebase": row, "candidates": candidates, "runs": runs}
 
 
+@routes.get("/cupboard/c/", name="cupboard-codebase-query-redirect")
+async def handle_codebase_query_redirect(request):
+    codebase = request.query.get("codebase")
+    if not codebase:
+        raise web.HTTPNotFound(text="no codebase specified")
+    raise web.HTTPFound(
+        request.app.router["cupboard-codebase"].url_for(codebase=codebase)
+    )
+
+
 @routes.get("/cupboard/c/{codebase}/", name="cupboard-codebase")
 @html_template("cupboard/codebase.html", headers={"Vary": "Cookie"})
 async def handle_codebase(request):

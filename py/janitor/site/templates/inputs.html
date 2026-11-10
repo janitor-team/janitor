@@ -1,4 +1,5 @@
 {% macro codebase_input(name) %}
+    <div class="typeahead__container"><div class="typeahead__field"><div class="typeahead__query">
     <input id="sidebar-codebase"
            type="text"
            name="codebase"
@@ -8,16 +9,48 @@
            spellcheck="false"
            enterkeyhint="go"
            placeholder="Codebase" />
+    </div></div></div>
+    <span id="sidebar-codebase-status" role="status"></span>
+    <span id="sidebar-codebase-count" class="visually-hidden" role="status"></span>
     <script>
+        var codebaseNames;
+        function loadCodebaseNames() {
+            var request = codebaseNames;
+            if (!request) {
+                $("#sidebar-codebase-status").text("");
+                request = codebaseNames = $.getJSON("/api/codebase-names");
+                request.fail(function (xhr) {
+                    codebaseNames = null;
+                    $("#sidebar-codebase").closest(".typeahead__container").removeClass("loading");
+                    $("#sidebar-codebase-status").text("Could not load codebase names: " + xhr.status + " " + xhr.statusText);
+                });
+            }
+            // Each group gets its own copy, as the plugin changes the items.
+            return request.then(function (names) { return names.slice(); });
+        }
         $.typeahead({
             input: "#sidebar-codebase",
             order: "asc",
             source: {
+                // Names that start with the typed text come first.
+                start: {
+                    data: loadCodebaseNames,
+                    matcher: function (item, name) { return name.toLowerCase().startsWith(this.query.toLowerCase()); }
+                },
                 codebases: {
-                    ajax: {
-                        url: '/api/codebase-names',
-                        path: ''
-                    },
+                    data: loadCodebaseNames,
+                    matcher: function (item, name) { return !name.toLowerCase().startsWith(this.query.toLowerCase()); }
+                }
+            },
+            callback: {
+                onClickAfter: function (node) {
+                    node.closest("form").trigger("submit");
+                },
+                onLayoutBuiltAfter: function (node, query, result) {
+                    $("#sidebar-codebase-count").text(result.length ? result.length + (result.length == 1 ? " suggestion" : " suggestions") : "");
+                },
+                onHideLayout: function () {
+                    $("#sidebar-codebase-count").text("");
                 }
             }
         });
