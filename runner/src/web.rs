@@ -970,17 +970,69 @@ async fn delete_candidate(State(state): State<Arc<AppState>>, Path(id): Path<Str
     }
 }
 
-/// `GET /candidates` -- return the candidate table as a JSON list.
+/// Query parameters for `GET /candidates`. Only used for OpenAPI
+/// documentation; the handler parses the raw query string itself so
+/// that repeated keys (`?codebase=a&codebase=b`) are supported --
+/// `serde_urlencoded`, which axum's `Query` extractor uses, drops all
+/// but the last repeat.
+#[derive(serde::Deserialize, Default, IntoParams)]
+#[into_params(parameter_in = Query)]
+#[allow(dead_code)]
+struct GetCandidatesQuery {
+    /// Restrict to candidates on this codebase. Repeat the parameter
+    /// (`?codebase=a&codebase=b`) to pass multiple codebases.
+    codebase: Option<String>,
+    /// Restrict to candidates targeting this campaign. Repeat the
+    /// parameter to pass multiple campaigns.
+    campaign: Option<String>,
+}
+
+fn parse_identifier_list<T: std::str::FromStr>(
+    raw_query: Option<&str>,
+    key: &str,
+) -> Result<Vec<T>, T::Err> {
+    let Some(raw) = raw_query else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for (k, v) in url::form_urlencoded::parse(raw.as_bytes()) {
+        if k == key {
+            out.push(v.parse::<T>()?);
+        }
+    }
+    Ok(out)
+}
+
+/// `GET /candidates` -- return the candidate table as a JSON list,
+/// optionally filtered by codebase and/or campaign.
 #[utoipa::path(
     get,
     path = "/candidates",
+    params(GetCandidatesQuery),
     responses(
-        (status = 200, description = "All candidates", body = Vec<crate::database::CandidateRow>),
+        (status = 200, description = "Matching candidates", body = Vec<crate::database::CandidateRow>),
+        (status = 400, description = "Invalid filter value", body = ErrorResponse),
         (status = 500, description = "Database error", body = ErrorResponse),
     )
 )]
-async fn get_candidates(State(state): State<Arc<AppState>>) -> Response {
-    match state.database.get_candidates().await {
+async fn get_candidates(
+    State(state): State<Arc<AppState>>,
+    request: axum::extract::Request,
+) -> Response {
+    let raw_query = request.uri().query();
+    let codebases: Vec<CodebaseName> = match parse_identifier_list(raw_query, "codebase") {
+        Ok(v) => v,
+        Err(_) => {
+            return reason(StatusCode::BAD_REQUEST, "invalid codebase filter");
+        }
+    };
+    let campaigns: Vec<Campaign> = match parse_identifier_list(raw_query, "campaign") {
+        Ok(v) => v,
+        Err(_) => {
+            return reason(StatusCode::BAD_REQUEST, "invalid campaign filter");
+        }
+    };
+    match state.database.get_candidates(&codebases, &campaigns).await {
         Ok(candidates) => Json(candidates).into_response(),
         Err(e) => {
             log::error!("Failed to get candidates: {}", e);

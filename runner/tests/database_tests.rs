@@ -53,7 +53,8 @@ async fn test_get_candidates() {
     .unwrap();
     let runner_db = RunnerDatabase::new(db.pool.clone());
 
-    let candidates = serde_json::to_value(runner_db.get_candidates().await.unwrap()).unwrap();
+    let candidates =
+        serde_json::to_value(runner_db.get_candidates(&[], &[]).await.unwrap()).unwrap();
     assert_eq!(
         candidates,
         json!([{

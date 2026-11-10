@@ -3135,3 +3135,101 @@ async fn get_run_followups_returns_candidate_pairs() {
     let body = get_body(response).await;
     assert!(body["followups"].as_array().unwrap().is_empty());
 }
+
+/// `GET /candidates` accepts repeatable `codebase` and `campaign`
+/// filters and intersects them.
+#[tokio::test]
+async fn get_candidates_filters_by_codebase_and_campaign() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let pool = state.database.pool().clone();
+    for cb in ["alpha", "beta", "gamma"] {
+        insert_codebase(&pool, cb).await;
+    }
+    for (cb, campaign) in [
+        ("alpha", "test-campaign"),
+        ("alpha", "other-campaign"),
+        ("beta", "test-campaign"),
+        ("gamma", "test-campaign"),
+    ] {
+        sqlx::query(
+            "INSERT INTO candidate (codebase, suite, command)
+             VALUES ($1, $2, 'true')",
+        )
+        .bind(cb)
+        .bind(campaign)
+        .execute(&pool)
+        .await
+        .expect("insert candidate");
+    }
+
+    // No filter: all four.
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/candidates")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    assert_eq!(body.as_array().unwrap().len(), 4);
+
+    // Codebase filter alone.
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/candidates?codebase=alpha")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    let body = get_body(response).await;
+    let mut pairs: Vec<(String, String)> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["codebase"].as_str().unwrap().to_string(),
+                c["campaign"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    pairs.sort();
+    assert_eq!(
+        pairs,
+        vec![
+            ("alpha".to_string(), "other-campaign".to_string()),
+            ("alpha".to_string(), "test-campaign".to_string()),
+        ]
+    );
+
+    // Campaign + multiple codebase filters.
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/candidates?codebase=alpha&codebase=beta&campaign=test-campaign")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    let body = get_body(response).await;
+    let mut pairs: Vec<(String, String)> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["codebase"].as_str().unwrap().to_string(),
+                c["campaign"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    pairs.sort();
+    assert_eq!(
+        pairs,
+        vec![
+            ("alpha".to_string(), "test-campaign".to_string()),
+            ("beta".to_string(), "test-campaign".to_string()),
+        ]
+    );
+}
