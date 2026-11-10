@@ -384,9 +384,9 @@ impl RepositoryManager for BreezyRepositoryManager {
         run_blocking(move || {
             let mut branch = breezyshim::branch::open_as_generic(&file_url(&branch_path)?)
                 .map_err(|e| breezy_error(e, "Branch.open"))?;
-            // TODO: propagate errors once breezyshim's set_parent returns a Result.
-            branch.set_parent(&url);
-            Ok(())
+            branch
+                .set_parent(&url)
+                .map_err(|e| breezy_error(e, "Branch.set_parent"))
         })
         .await?;
         info!(

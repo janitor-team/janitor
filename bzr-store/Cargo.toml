@@ -43,8 +43,7 @@ utoipa-axum.workspace = true
 # Bazaar branch web browser (replaces Python loggerhead)
 loggerhead = "3"
 
-# Breezy PyO3 shim: initialize on startup so loggerhead's branch access
-# works. Pinned to the same version loggerhead=3 uses.
+# Breezy PyO3 shim: initialize on startup so loggerhead's branch access works.
 breezyshim = { workspace = true }
 
 # URL-encoded form bodies for POST /{codebase}/remotes/{remote}
