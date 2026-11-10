@@ -12,8 +12,8 @@
                 <td class="code">
                     <div class="highlight">
                         <pre {% if id %} id="{{ id }}"{% endif %}>
-{% for i, line in enumerate(lines, 1) %}{% if in_line_boundaries(i, include_lines) %}<span class="go{{ 'hll' if highlight_lines and i in highlight_lines else '' }}">{{ line.rstrip('\n') }}</span>
-{% endif %}{% endfor %}</pre>
+{% for i, line in enumerate(lines, 1) %}{% if in_line_boundaries(i, include_lines) %}<span class="go{{ ' hll' if highlight_lines and i in highlight_lines else '' }}">{{ line.rstrip('\n') }}
+</span>{% endif %}{% endfor %}</pre>
                     </div>
                 </td>
             </tr>
