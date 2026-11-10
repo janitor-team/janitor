@@ -455,6 +455,47 @@ pub fn publish_one(
     Ok(result)
 }
 
+/// Variables for the proposal description, commit message and title templates.
+fn template_context(
+    log_id: &str,
+    campaign: &str,
+    role: &str,
+    extra_context: Option<&serde_json::Value>,
+    codemod_result: &serde_json::Value,
+    debdiff: Option<&[u8]>,
+) -> serde_json::Value {
+    let mut vs = serde_json::json!({
+        "log_id":  log_id,
+        "campaign": campaign,
+        "role": role,
+    });
+    if let Some(extra_context) = extra_context {
+        if let (Some(vs_obj), Some(extra_obj)) = (vs.as_object_mut(), extra_context.as_object()) {
+            vs_obj.extend(extra_obj.clone());
+        } else {
+            log::warn!("Failed to merge extra_context: not an object");
+        }
+    }
+    if let (Some(vs_obj), Some(codemod_obj)) = (vs.as_object_mut(), codemod_result.as_object()) {
+        vs_obj.extend(codemod_obj.clone());
+    } else {
+        log::warn!("Failed to merge codemod_result: not an object");
+    }
+    vs["codemod"] = codemod_result.clone();
+    if let Some(debdiff) = debdiff {
+        match std::str::from_utf8(debdiff) {
+            Ok(debdiff_str) => {
+                vs["debdiff"] = debdiff_str.into();
+            }
+            Err(e) => {
+                log::warn!("Debdiff contains invalid UTF-8: {}", e);
+                vs["debdiff"] = format!("(Binary diff - {} bytes)", debdiff.len()).into();
+            }
+        }
+    }
+    vs
+}
+
 /// Publish changes from a source branch to a target branch for the
 /// given mode (propose, push, etc.), generating descriptions and commit
 /// messages from the campaign templates.
@@ -482,40 +523,17 @@ pub fn publish(
     derived_owner: Option<String>,
     auto_merge: Option<bool>,
 ) -> Result<(PublishOneResult, String), PublishError> {
+    let vs = template_context(
+        log_id,
+        campaign,
+        role,
+        extra_context.as_ref(),
+        codemod_result,
+        debdiff.as_deref(),
+    );
     let get_proposal_description = |description_format: DescriptionFormat,
                                     _existing_proposal: Option<&MergeProposal>|
      -> String {
-        let mut vs = serde_json::json!({
-            "log_id":  log_id,
-            "campaign": campaign,
-            "role": role,
-        });
-        if let Some(extra_context) = extra_context.as_ref() {
-            if let (Some(vs_obj), Some(extra_obj)) = (vs.as_object_mut(), extra_context.as_object())
-            {
-                vs_obj.extend(extra_obj.clone());
-            } else {
-                log::warn!("Failed to merge extra_context: not an object");
-            }
-        }
-        if let (Some(vs_obj), Some(codemod_obj)) = (vs.as_object_mut(), codemod_result.as_object())
-        {
-            vs_obj.extend(codemod_obj.clone());
-        } else {
-            log::warn!("Failed to merge codemod_result: not an object");
-        }
-        vs["codemod"] = codemod_result.clone();
-        if let Some(debdiff) = debdiff.as_ref() {
-            match std::str::from_utf8(debdiff) {
-                Ok(debdiff_str) => {
-                    vs["debdiff"] = debdiff_str.into();
-                }
-                Err(e) => {
-                    log::warn!("Debdiff contains invalid UTF-8: {}", e);
-                    vs["debdiff"] = format!("(Binary diff - {} bytes)", debdiff.len()).into();
-                }
-            }
-        }
         let template_name = if description_format == DescriptionFormat::Markdown {
             format!("{}.md", campaign)
         } else {
@@ -529,7 +547,7 @@ pub fn publish(
                 return format!("Changes for {} ({})", campaign, log_id);
             }
         };
-        match template.render(vs) {
+        match template.render(&vs) {
             Ok(rendered) => rendered,
             Err(e) => {
                 log::warn!("Template rendering failed: {}, using default", e);
@@ -541,11 +559,8 @@ pub fn publish(
     let get_proposal_commit_message =
         |_existing_proposal: Option<&MergeProposal>| -> Option<String> {
             commit_message_template.and_then(|commit_message_template| {
-                match template_env.render_named_str(
-                    "commit_message",
-                    commit_message_template,
-                    codemod_result,
-                ) {
+                match template_env.render_named_str("commit_message", commit_message_template, &vs)
+                {
                     Ok(rendered) => Some(rendered),
                     Err(e) => {
                         log::warn!("Commit message template rendering failed: {}", e);
@@ -557,7 +572,7 @@ pub fn publish(
 
     let get_proposal_title = |existing_proposal: Option<&MergeProposal>| -> Option<String> {
         if let Some(title_template) = title_template.as_ref() {
-            match template_env.render_named_str("title", title_template, codemod_result) {
+            match template_env.render_named_str("title", title_template, &vs) {
                 Ok(rendered) => Some(rendered),
                 Err(e) => {
                     log::warn!("Title template rendering failed: {}", e);

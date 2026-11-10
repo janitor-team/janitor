@@ -869,7 +869,7 @@ impl PublishWorker {
         title_template: Option<&str>,
         codemod_result: &serde_json::Value,
         existing_mp_url: Option<&url::Url>,
-        extra_context: Option<&serde_json::Value>,
+        _extra_context: Option<&serde_json::Value>,
         derived_owner: Option<&str>,
         auto_merge: Option<bool>,
     ) -> Result<PublishOneResult, PublishError> {
@@ -896,7 +896,7 @@ impl PublishWorker {
             reviewers: reviewers.map(|r| r.iter().map(|s| s.to_string()).collect()),
             commit_message_template: commit_message_template.map(|s| s.to_string()),
             title_template: title_template.map(|s| s.to_string()),
-            extra_context: extra_context.cloned(),
+            extra_context: Some(serde_json::json!({"codebase": codebase})),
             tags: tags.map(|t| t.into_iter().collect()),
             derived_owner: derived_owner.map(|s| s.to_string()),
             auto_merge,
