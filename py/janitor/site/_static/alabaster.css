@@ -243,13 +243,28 @@ div.sphinxsidebarwrapper {
     /*! padding: 18px 10px; */
 }
 
+a.skip-link {
+    position: absolute;
+    left: -10000px;
+}
+
+a.skip-link:focus {
+    left: 10px;
+    top: 10px;
+    z-index: 1000;
+    padding: 7px 10px;
+    background: #fff;
+}
+
 div.sphinxsidebarwrapper p.logo {
     padding: 0;
     margin: -10px 0 0 0px;
     text-align: center;
 }
 
-div.sphinxsidebarwrapper h1.logo {
+div.sphinxsidebarwrapper div.logo {
+    font-size: 2em;
+    font-weight: bold;
     margin-top: -10px;
     text-align: center;
     margin-bottom: 5px;

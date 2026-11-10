@@ -16,6 +16,7 @@
               content="width=device-width, initial-scale=0.9, maximum-scale=0.9" />
     </head>
     <body>
+        <a class="skip-link" href="#content">Skip to content</a>
         <script src="/_static/jquery.js"></script>
         <script src="/_static/jquery.typeahead.js"></script>
         <script src="/_static/jquery.datatables.js"></script>
@@ -31,7 +32,7 @@
                     <div class="bodywrapper">
                     {% endif %}
                     <div class="body">
-                        <main>
+                        <main id="content">
                             {% block body %}
                             {% endblock body %}
                         </main>
