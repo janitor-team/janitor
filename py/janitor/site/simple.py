@@ -97,6 +97,34 @@ async def handle_simple(templatename, request):
     )
 
 
+@web.middleware
+async def not_found_page_middleware(request, handler):
+    try:
+        return await handler(request)
+    except web.HTTPNotFound as e:
+        e.headers["Vary"] = "Accept"
+        try:
+            best = mimeparse.best_match(
+                ["text/html", "text/plain"], request.headers.get("Accept", "*/*")
+            )
+        except mimeparse.MimeTypeParseException:
+            raise e from None
+        if best != "text/html":
+            raise
+        vs = {
+            "message": e.text,
+            "cupboard": request.path.startswith("/cupboard/"),
+            "campaign": request.match_info.get("campaign")
+            or request.match_info.get("suite"),
+        }
+        return web.Response(
+            status=404,
+            content_type="text/html",
+            text=await render_template_for_request("not-found.html", request, vs),
+            headers={"Vary": "Accept, Cookie"},
+        )
+
+
 @html_template("generic/start.html")
 async def handle_generic_start(request):
     from ..config import get_campaign_config
@@ -497,6 +525,7 @@ async def create_app(
         middlewares=[
             metrics_middleware,
             trailing_slash_redirect,
+            not_found_page_middleware,
             state.asyncpg_error_middleware,
         ]
     )

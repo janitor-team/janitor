@@ -1,0 +1,23 @@
+{% if not cupboard and not campaign %}
+    {% set layout = "plain" %}
+{% endif %}
+{% extends "layout.html" %}
+{% block sidebar %}
+    {% if cupboard %}
+        {% include "cupboard/sidebar.html" %}
+    {% elif campaign %}
+        {% include [campaign + "/sidebar.html", "generic/sidebar.html"] %}
+    {% endif %}
+{% endblock sidebar %}
+{% block page_title %}
+    Not found
+{% endblock page_title %}
+{% block body %}
+    <div class="section" id="not-found">
+        <h1>Not found</h1>
+        <p>{{ message }}</p>
+        <p>
+            <a href="/">Go to the start page</a>
+        </p>
+    </div>
+{% endblock body %}
