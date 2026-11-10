@@ -41,6 +41,33 @@ Janitor needs a running Redis server. Set `redis_location` in
 redis_location: "redis://localhost"
 ```
 
+## Logs and artifacts
+
+In `janitor.conf`, set where Janitor keeps the logs of each run and the files
+the runs build, such as Debian packages:
+
+```
+logs_location: "/srv/janitor/logs"
+artifact_location: "/srv/janitor/artifacts"
+```
+
+Each can be:
+
+- a local directory (with containers, mount it at the same path in each one);
+- a Google Cloud Storage bucket, `gs://<bucket>`;
+- an S3 bucket, `s3://<bucket>` or `s3://<bucket>/<prefix>`. The services
+  take the endpoint, region and credentials from the `AWS_ENDPOINT_URL`,
+  `AWS_REGION`, `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` environment
+  variables.
+
+To move the logs to a new location, change `logs_location` and restart the
+services. Then, from a checkout set up as in
+[CONTRIBUTING.md](../CONTRIBUTING.md), run:
+
+```console
+$ cargo run --bin janitor-migrate-logs -- --config janitor.conf <old location> <new location>
+```
+
 ## Forge credentials
 
 Publishing merge proposals requires a forge API token (GitHub/GitLab/etc),
