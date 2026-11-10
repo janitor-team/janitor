@@ -36,7 +36,8 @@ merge proposals for them, within the rate limits. It also keeps the status of
 those merge proposals up to date.
 
 - *run*: One attempt at processing a candidate, from cloning the
-codebase through building the result.
+codebase through building the result. See
+[The lifetime of a run](debian.md#the-lifetime-of-a-run) for a Debian run.
 
 - *runner*: The permanently running job that processes the queue and
 hands work to workers.
