@@ -20,6 +20,7 @@ from jinja2 import Environment, select_autoescape
 
 from janitor.config import read_string
 from janitor.site import template_loader
+from janitor.site.pkg import in_line_boundaries
 from janitor.vcs import RemoteBzrVcsManager, RemoteGitVcsManager
 
 env = Environment(loader=template_loader, autoescape=select_autoescape(["html", "xml"]))
@@ -108,6 +109,29 @@ def test_display_reviews_table():
         ["third@example.com", "approved", ""],
         ["Your review", ["rejected"], ("too big", "too big")],
     ]
+
+
+def test_include_console_log():
+    src = (
+        '{% from "codeblock.html" import include_console_log with context %}'
+        '{{ include_console_log(f, (2, 4), [3], id="log") }}'
+    )
+    soup = BeautifulSoup(
+        env.from_string(src).render(
+            f=["one\n", "two\n", "three\n", "four\n", "five\n"],
+            read_file=list,
+            enumerate=enumerate,
+            in_line_boundaries=in_line_boundaries,
+        ),
+        "html.parser",
+    )
+    log = soup.find("pre", id="log")
+    assert log is not None
+    assert log.decode_contents() == (
+        '\n<span class="go">two\n</span>'
+        '<span class="go hll">three\n</span>'
+        '<span class="go">four\n</span>'
+    )
 
 
 def _render_local_command(vcs, **context):
