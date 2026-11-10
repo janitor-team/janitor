@@ -352,13 +352,13 @@ async def handle_done_proposals(request):
 
 
 async def handle_generic_codebase_query_redirect(request):
-    # Bare /{campaign}/c?codebase=X (or the older ?package=X) has no route
+    # Bare /{campaign}/c?codebase=X has no route
     # of its own - the real page lives at /{campaign}/c/{codebase}/. Anyone
     # typing or bookmarking the query-string form should land on the real
     # page rather than a 404.
-    codebase = request.query.get("codebase") or request.query.get("package")
+    codebase = request.query.get("codebase")
     if not codebase:
-        raise web.HTTPNotFound(text="no codebase specified")
+        raise web.HTTPBadRequest(text="no codebase specified")
     raise web.HTTPFound(
         request.app.router["generic-codebase"].url_for(
             campaign=request.match_info["campaign"], codebase=codebase
