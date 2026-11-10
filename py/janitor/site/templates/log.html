@@ -1,0 +1,15 @@
+{% set layout = "plain" %}
+{% extends "layout.html" %}
+{% block page_title %}
+    {{ filename }} for run {{ run_id }}
+{% endblock page_title %}
+{% block body %}
+    <div class="section" id="log">
+        <h1>{{ filename }}</h1>
+        <p>
+            Log of <a href="{{ run_url }}">run {{ run_id }}</a>. Open the <a href="/api/run/{{ run_id }}/logs/{{ filename }}">raw log</a> or <a href="#log-end">jump to the end</a>.
+        </p>
+        <pre class="log">{{ log }}</pre>
+        <div id="log-end"></div>
+    </div>
+{% endblock body %}

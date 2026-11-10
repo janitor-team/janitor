@@ -889,6 +889,29 @@ async def test_result_file_unreadable_log_returns_502(tmp_path):
     assert str(e.value.__cause__) == "Unable to read build.log"
 
 
+async def test_result_file_log_page(aiohttp_client, db, tmp_path):
+    log = tmp_path / "pkg" / "run-id" / "build.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("first\nsecond\n")
+    client = await create_client(
+        aiohttp_client, db, logfile_manager=get_log_manager(str(tmp_path))
+    )
+    resp = await client.get(
+        "/cupboard/c/pkg/run-id/build.log", headers={"Accept": "text/html"}
+    )
+    assert resp.status == 200
+    assert resp.content_type == "text/html"
+    soup = BeautifulSoup(await resp.text(), "html.parser")
+    assert [pre.get_text() for pre in soup.select("#log pre")] == ["first\nsecond\n"]
+    assert soup.select("#log a")[0]["href"] == "/cupboard/c/pkg/run-id/"
+    resp = await client.get(
+        "/cupboard/c/pkg/run-id/build.log", headers={"Accept": "text/plain"}
+    )
+    assert resp.status == 200
+    assert resp.content_type == "text/plain"
+    assert await resp.text() == "first\nsecond\n"
+
+
 async def test_api_swagger_documents_all_routes(aiohttp_client, db):
     client = await create_api_client(aiohttp_client, db, user=None)
     resp = await client.get("/swagger.json")

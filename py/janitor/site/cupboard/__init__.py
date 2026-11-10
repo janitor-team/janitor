@@ -45,7 +45,7 @@ from .. import (
     is_qa_reviewer,
     worker_link_is_global,
 )
-from ..common import html_template
+from ..common import html_template, log_response
 from ..pkg import MergeProposalUserUrlResolver
 from ..setup import setup_postgres
 
@@ -604,6 +604,7 @@ async def handle_result_file(request):
             logfile = await request.app["logfile_manager"].get_log(
                 codebase, run_id, filename
             )
+            log = await logfile.read()
         except FileNotFoundError as e:
             raise web.HTTPNotFound(
                 text=f"No log file {filename} for run {run_id}"
@@ -613,11 +614,10 @@ async def handle_result_file(request):
             raise web.HTTPBadGateway(
                 text=f"Unable to read log file {filename} for run {run_id}"
             ) from e
-        return web.Response(
-            content_type="text/plain",
-            charset="utf-8",
-            body=logfile,
+        run_url = request.app.router["cupboard-run"].url_for(
+            codebase=codebase, run_id=run_id
         )
+        return await log_response(request, log, run_id, filename, run_url)
     else:
         try:
             f = await request.app["artifact_manager"].get_artifact(run_id, filename)
