@@ -154,6 +154,9 @@ async def test_active_runs_and_runner_status(aiohttp_client, db):
                 "processing": [
                     entry("public", "https://worker.example.com/"),
                     entry("private", "http://192.168.1.5:8080/"),
+                    entry("localhost", "http://localhost:9821/"),
+                    entry("single-label", "http://worker1:9821/"),
+                    entry("internal", "http://worker1.internal:9821/"),
                     no_backchannel,
                 ],
                 "avoid_hosts": ["example.org"],
@@ -171,6 +174,9 @@ async def test_active_runs_and_runner_status(aiohttp_client, db):
     processing = [
         entry("public", "https://worker.example.com/"),
         entry("private", None),
+        entry("localhost", None),
+        entry("single-label", None),
+        entry("internal", None),
         no_backchannel,
     ]
 
