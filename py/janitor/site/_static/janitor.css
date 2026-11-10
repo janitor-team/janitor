@@ -73,6 +73,15 @@ tr.row-disabled, td.old-version {
   color: lightgrey;
 }
 
+/* Wrapped diff lines are indented, so the +/- column stays clear */
+@media screen and (max-width: 875px) {
+    div.diff div.highlight > pre {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        text-indent: 2ch hanging each-line;
+    }
+}
+
 span.tinycode {
     font-family: monospace;
     font-weight: bold;

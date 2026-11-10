@@ -304,7 +304,7 @@ cd {{ codebase }}
             {% endif %}
             {% set diff = show_diff(role) %}
             {% if diff.split('\n')|length < 200 %}
-                {{ highlight_diff(diff) |safe }}
+                <div class="diff">{{ highlight_diff(diff) |safe }}</div>
             {% else %}
                 <p>
                     Diff is too long (more than 200 lines). Download the <a href="/api/run/{{ run_id }}/diff?role={{ role }}">raw diff</a>.
