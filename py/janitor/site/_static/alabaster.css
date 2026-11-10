@@ -135,7 +135,7 @@ td.linenos pre {
     padding: 5px 0px;
     border: 0;
     background-color: transparent;
-    color: #aaa;
+    color: #757575;
 }
 
 table.highlighttable {
@@ -220,13 +220,13 @@ div.footer {
     width: 940px;
     margin: 20px auto 30px auto;
     font-size: 14px;
-    color: #888;
+    color: #757575;
     text-align: right;
     clear: both;
 }
 
 div.footer a {
-    color: #888;
+    color: #757575;
 }
 
 div.sphinxsidebar a {
@@ -310,7 +310,7 @@ div.sphinxsidebar ul li.toctree-l2 > a {
 }
 
 div.sphinxsidebar input {
-    border: 1px solid #CCC;
+    border: 1px solid #949494;
     font-family: 'goudy old style', 'minion pro', 'bell mt', Georgia, 'Hiragino Mincho Pro', serif;
     font-size: 1em;
 }
