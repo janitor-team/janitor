@@ -103,6 +103,9 @@
                 var comment = undefined;
                 if (verdict == 'rejected') {
                     comment = window.prompt('Please specify a comment for the rejection');
+                    if (comment === null) {
+                        return;
+                    }
                 }
                 var run_id = $('#run-id').val();
                 var codebase = $('#codebase').val();
