@@ -31,9 +31,9 @@ struct Cli {
     #[arg(long, default_value_t = 9915)]
     public_port: u16,
 
-    /// Listen address.
+    /// Address to listen on; repeat for more.
     #[arg(long, default_value = "localhost")]
-    listen_address: String,
+    listen_address: Vec<String>,
 
     /// Path to configuration file.
     #[arg(short, long, default_value = "janitor.conf")]
@@ -244,12 +244,18 @@ async fn start_web_server(
     // Compose the bind address from --listen-address and --port;
     // `--bind` is accepted as an override for deployments that pass
     // a single socket string.
-    let bind_address = cli
-        .bind
-        .clone()
-        .unwrap_or_else(|| format!("{}:{}", cli.listen_address, cli.port));
-    let public_bind_address = format!("{}:{}", cli.listen_address, cli.public_port);
-    info!("Starting web server on: {}", bind_address);
+    let at_port = |port| -> Vec<String> {
+        cli.listen_address
+            .iter()
+            .map(|a| format!("{}:{}", a, port))
+            .collect()
+    };
+    let bind_addrs = match &cli.bind {
+        Some(bind) => vec![bind.clone()],
+        None => at_port(cli.port),
+    };
+    let public_bind_addrs = at_port(cli.public_port);
+    info!("Starting web server on: {}", bind_addrs.join(", "));
 
     let db_pool = locations.connect_database().await?;
 
@@ -348,7 +354,7 @@ async fn start_web_server(
     )
     .await?;
 
-    web_service.serve(&bind_address, &public_bind_address).await
+    web_service.serve(&bind_addrs, &public_bind_addrs).await
 }
 
 /// Clean up old repository files.

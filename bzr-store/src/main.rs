@@ -14,7 +14,7 @@ use janitor_bzr_store::{
     config::{BzrConfig, BzrStoreConfig, Config},
     web::create_applications,
 };
-use janitor_service::listen::bind_all;
+use janitor_service::listen::bind_hosts;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
@@ -33,9 +33,9 @@ struct Cli {
     #[arg(long, default_value_t = 9930)]
     public_port: u16,
 
-    /// Listen address bound by both admin and public servers.
+    /// Address to listen on; repeat for more.
     #[arg(long, default_value = "localhost")]
-    listen_address: String,
+    listen_address: Vec<String>,
 
     /// Path to the janitor configuration file. Must parse with the
     /// same protobuf-text format `janitor::config::read_file` expects.
@@ -86,10 +86,10 @@ async fn main() -> Result<()> {
         .await
         .unwrap_or_else(|_| BzrStoreConfig::default());
 
-    let admin_listeners = bind_all(format!("{}:{}", cli.listen_address, cli.port))
+    let admin_listeners = bind_hosts(&cli.listen_address, cli.port)
         .await
         .map_err(|e| anyhow!("invalid admin bind: {}", e))?;
-    let public_listeners = bind_all(format!("{}:{}", cli.listen_address, cli.public_port))
+    let public_listeners = bind_hosts(&cli.listen_address, cli.public_port)
         .await
         .map_err(|e| anyhow!("invalid public bind: {}", e))?;
 
@@ -114,11 +114,6 @@ async fn main() -> Result<()> {
     }
 
     info!("Starting BZR Store service");
-    info!("Admin interface:  {}:{}", cli.listen_address, cli.port);
-    info!(
-        "Public interface: {}:{}",
-        cli.listen_address, cli.public_port
-    );
     info!("Repository path:  {}", config.repository_path.display());
     info!(
         "Client max size:  {} bytes",

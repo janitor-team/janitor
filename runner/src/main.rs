@@ -4,8 +4,9 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 struct Args {
+    /// Address to listen on; repeat for more.
     #[clap(long, default_value = "localhost")]
-    listen_address: String,
+    listen_address: Vec<String>,
 
     #[clap(long, default_value = "9911")]
     port: u16,
@@ -144,9 +145,7 @@ async fn main() -> Result<(), i32> {
             ("Private (admin)", port, private_router),
             ("Public (worker)", public_port, public_router),
         ] {
-            for listener in
-                janitor_service::listen::bind_all(format!("{}:{}", listen_address, port)).await?
-            {
+            for listener in janitor_service::listen::bind_hosts(&listen_address, port).await? {
                 log::info!("{} listener on {}", name, listener.local_addr()?);
                 let router = router.clone();
                 servers

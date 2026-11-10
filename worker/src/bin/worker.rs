@@ -38,9 +38,9 @@ struct Args {
     #[clap(long)]
     campaign: Option<janitor_types::Campaign>,
 
-    /// Address to listen on
+    /// Address to listen on; repeat for more.
     #[clap(long, default_value = "localhost")]
-    listen_address: String,
+    listen_address: Vec<String>,
 
     /// IP / hostname this instance can be reached on by runner
     #[clap(long)]
@@ -176,12 +176,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .to_owned()
     });
 
-    let listeners = janitor_service::listen::bind_all(format!(
-        "{}:{}",
-        args.listen_address,
-        args.port.unwrap_or(0)
-    ))
-    .await?;
+    let listeners =
+        janitor_service::listen::bind_hosts(&args.listen_address, args.port.unwrap_or(0)).await?;
     let mut listen_ips = Vec::new();
     for listener in &listeners {
         let addr = listener.local_addr()?;

@@ -72,9 +72,9 @@ async fn metrics_handler() -> Response {
 /// Serve `app` at `port` on every address `listen_addr` resolves to,
 /// until a server stops, so callers can select on it alongside other
 /// tasks.
-pub async fn run_web_server(app: Router, listen_addr: &str, port: u16) -> Result<()> {
+pub async fn run_web_server(app: Router, listen_addr: &[String], port: u16) -> Result<()> {
     let mut servers = tokio::task::JoinSet::new();
-    for listener in janitor_service::listen::bind_all(format!("{}:{}", listen_addr, port)).await? {
+    for listener in janitor_service::listen::bind_hosts(listen_addr, port).await? {
         info!("Web server listening on {}", listener.local_addr()?);
         let app = app.clone();
         servers.spawn(async move { axum::serve(listener, app).await });

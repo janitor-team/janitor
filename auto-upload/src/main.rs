@@ -12,9 +12,9 @@ struct Args {
     #[arg(long, default_value = "9933", env = "AUTO_UPLOAD_PORT")]
     port: u16,
 
-    /// Address to listen on for HTTP server.
+    /// Address to listen on; repeat for more.
     #[arg(long, default_value = "localhost", env = "AUTO_UPLOAD_LISTEN_ADDRESS")]
-    listen_address: String,
+    listen_address: Vec<String>,
 
     /// Path to configuration file.
     #[arg(long, default_value = "janitor.conf", env = "JANITOR_CONFIG")]
@@ -62,7 +62,6 @@ async fn main() -> Result<(), UploadError> {
     let config = Config::from_file(&args.config)?;
 
     info!("Starting Janitor auto-upload service");
-    info!("Listen address: {}:{}", args.listen_address, args.port);
     if let Some(host) = &args.dput_host {
         info!("dput host: {}", host);
     }

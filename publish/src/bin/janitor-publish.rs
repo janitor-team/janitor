@@ -21,9 +21,9 @@ struct Args {
     #[clap(long, conflicts_with = "no_auto_publish")]
     once: bool,
 
-    /// Listen address
+    /// Address to listen on; repeat for more.
     #[clap(long, default_value = "localhost")]
-    listen_address: String,
+    listen_address: Vec<String>,
 
     /// Listen port
     #[clap(long, default_value = "9912")]
@@ -294,13 +294,12 @@ async fn main() -> Result<(), i32> {
         let app = janitor_publish::web::app(state.clone());
 
         // run it
-        let listeners =
-            janitor_service::listen::bind_all(format!("{}:{}", args.listen_address, args.port))
-                .await
-                .map_err(|e| {
-                    log::error!("Failed to bind listener: {}", e);
-                    1
-                })?;
+        let listeners = janitor_service::listen::bind_hosts(&args.listen_address, args.port)
+            .await
+            .map_err(|e| {
+                log::error!("Failed to bind listener: {}", e);
+                1
+            })?;
         let mut servers = tokio::task::JoinSet::new();
         for listener in listeners {
             let addr = listener.local_addr().map_err(|e| {

@@ -2,15 +2,21 @@
 
 use tokio::net::{lookup_host, TcpListener, ToSocketAddrs};
 
-/// Bind a listener on every address `addr` resolves to, so `localhost`
+/// Bind a listener on every address `addrs` resolve to, so `localhost`
 /// covers both `::1` and `127.0.0.1`. With port 0 the others get the
 /// port the first one got, so one URL reaches each of them.
-pub async fn bind_all(addr: impl ToSocketAddrs) -> std::io::Result<Vec<TcpListener>> {
+pub async fn bind_all<A: ToSocketAddrs>(
+    addrs: impl IntoIterator<Item = A>,
+) -> std::io::Result<Vec<TcpListener>> {
+    let mut resolved = Vec::new();
+    for addr in addrs {
+        resolved.extend(lookup_host(addr).await?);
+    }
     let mut listeners: Vec<TcpListener> = Vec::new();
     let mut unavailable = None;
     let mut ipv6_any = None;
     let mut seen = std::collections::HashSet::new();
-    for mut addr in lookup_host(addr).await? {
+    for mut addr in resolved {
         if !seen.insert(addr) {
             continue;
         }
@@ -55,12 +61,21 @@ pub async fn bind_all(addr: impl ToSocketAddrs) -> std::io::Result<Vec<TcpListen
     Ok(listeners)
 }
 
+/// [`bind_all`] for each of `hosts` (names or addresses) at `port`.
+pub async fn bind_hosts(hosts: &[String], port: u16) -> std::io::Result<Vec<TcpListener>> {
+    let addrs: Vec<String> = hosts
+        .iter()
+        .map(|host| format!("{}:{}", host, port))
+        .collect();
+    bind_all(addrs).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     async fn bound_ips(addr: &str) -> Vec<std::net::IpAddr> {
-        let mut ips: Vec<_> = bind_all(addr)
+        let mut ips: Vec<_> = bind_all([addr])
             .await
             .unwrap()
             .iter()
@@ -111,7 +126,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_bind_all_port_zero_gives_every_address_the_same_port() {
-        let ports: std::collections::HashSet<_> = bind_all("localhost:0")
+        let ports: std::collections::HashSet<_> = bind_all(["localhost:0"])
             .await
             .unwrap()
             .iter()
@@ -132,6 +147,28 @@ mod tests {
         assert_eq!(
             ips,
             vec![std::net::IpAddr::from(std::net::Ipv4Addr::LOCALHOST)]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_bind_hosts_listens_on_each_host() {
+        if std::net::TcpListener::bind("[::1]:0").is_err() {
+            return;
+        }
+        let hosts = ["127.0.0.1".to_string(), "::1".to_string()];
+        let addrs: Vec<_> = bind_hosts(&hosts, 0)
+            .await
+            .unwrap()
+            .iter()
+            .map(|listener| listener.local_addr().unwrap())
+            .collect();
+        let port = addrs[0].port();
+        assert_eq!(
+            addrs,
+            vec![
+                std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port)),
+                std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port)),
+            ]
         );
     }
 

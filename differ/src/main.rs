@@ -156,8 +156,9 @@ impl Drop for GenerateGuard<'_> {
 
 #[derive(Parser)]
 struct Args {
+    /// Address to listen on; repeat for more.
     #[clap(long, default_value = "localhost")]
-    listen_address: String,
+    listen_address: Vec<String>,
 
     #[clap(long, default_value_t = 9920)]
     port: u16,
@@ -1623,12 +1624,12 @@ async fn run() -> std::result::Result<(), StartupError> {
 
     let app = build_router(state);
 
-    let address = format!("{}:{}", args.listen_address, args.port);
+    let address = args.listen_address.join(", ");
     let bind_error = |source| StartupError::Bind {
         address: address.clone(),
         source,
     };
-    let listeners = janitor_service::listen::bind_all(&address)
+    let listeners = janitor_service::listen::bind_hosts(&args.listen_address, args.port)
         .await
         .map_err(bind_error)?;
 

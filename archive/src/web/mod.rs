@@ -274,11 +274,15 @@ impl ArchiveWebService {
             )
     }
 
-    /// Serve all routes on `bind_address` and only the public ones on `public_bind_address`,
-    /// each on every address it resolves to.
-    pub async fn serve(&self, bind_address: &str, public_bind_address: &str) -> ArchiveResult<()> {
-        let listeners = bind(bind_address).await?;
-        let public_listeners = bind(public_bind_address).await?;
+    /// Serve all routes on `bind_addresses` and only the public ones on
+    /// `public_bind_addresses`, each on every address they resolve to.
+    pub async fn serve(
+        &self,
+        bind_addresses: &[String],
+        public_bind_addresses: &[String],
+    ) -> ArchiveResult<()> {
+        let listeners = bind(bind_addresses).await?;
+        let public_listeners = bind(public_bind_addresses).await?;
 
         let mut servers = tokio::task::JoinSet::new();
         for (name, listeners, app) in [
@@ -300,11 +304,12 @@ impl ArchiveWebService {
     }
 }
 
-async fn bind(address: &str) -> ArchiveResult<Vec<tokio::net::TcpListener>> {
-    janitor_service::listen::bind_all(address)
+async fn bind(addresses: &[String]) -> ArchiveResult<Vec<tokio::net::TcpListener>> {
+    janitor_service::listen::bind_all(addresses)
         .await
         .map_err(|e| {
-            ArchiveError::InvalidConfiguration(format!("Failed to bind to {}: {}", address, e))
+            let addresses = addresses.join(", ");
+            ArchiveError::InvalidConfiguration(format!("Failed to bind to {}: {}", addresses, e))
         })
 }
 

@@ -24,8 +24,9 @@ struct Cli {
     #[arg(long, default_value_t = 9924)]
     public_port: u16,
 
+    /// Address to listen on; repeat for more.
     #[arg(long, default_value = "localhost")]
-    listen_address: String,
+    listen_address: Vec<String>,
 
     #[arg(long, default_value = "janitor.conf")]
     config: PathBuf,
@@ -78,7 +79,6 @@ async fn main() -> Result<()> {
     // is the last-resort fallback.
     let mut config = Config::from_env().unwrap_or_else(|_| Config::default());
     config.git.local_path = vcs_path;
-    config.git.host = cli.listen_address.clone();
     config.git.admin_port = cli.port;
     config.git.public_port = cli.public_port;
 
@@ -93,14 +93,6 @@ async fn main() -> Result<()> {
 
     let config = Arc::new(config);
     info!("Starting Git Store service");
-    info!(
-        "Admin interface:  {}:{}",
-        config.git.host, config.git.admin_port
-    );
-    info!(
-        "Public interface: {}:{}",
-        config.git.host, config.git.public_port
-    );
     info!("Repository path:  {:?}", config.git.local_path);
     info!(
         "Client max size:  {} bytes",
@@ -159,9 +151,7 @@ async fn main() -> Result<()> {
         ("Admin", config.git.admin_port, admin_app),
         ("Public", config.git.public_port, public_app),
     ] {
-        for listener in
-            janitor_service::listen::bind_all(format!("{}:{}", config.git.host, port)).await?
-        {
+        for listener in janitor_service::listen::bind_hosts(&cli.listen_address, port).await? {
             info!("{} server listening on {}", name, listener.local_addr()?);
             let app = app.clone();
             servers.spawn(async move { axum::serve(listener, app).await });

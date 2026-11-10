@@ -62,7 +62,7 @@ pub static RESULT_HANDLING_FAILED_COUNT: LazyLock<Counter> = LazyLock::new(|| {
 #[allow(clippy::too_many_arguments)]
 pub async fn run_service(
     config: Config,
-    listen_addr: &str,
+    listen_addr: &[String],
     port: u16,
     dput_host: Option<&str>,
     debsign_keyid: Option<&str>,
