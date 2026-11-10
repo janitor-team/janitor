@@ -10,6 +10,7 @@
         <h1>Review</h1>
         <p>
             <a href="/cupboard/c/{{ codebase }}/{{ run_id }}/" id="full-run-link">Full run</a>
+            <span id="run-of">of <span id="run-campaign">{{ campaign }}</span> for <a href="/cupboard/c/{{ codebase }}/" id="run-codebase">{{ codebase }}</a>.</span>
             {% if review_instructions_url %}<a href="{{ review_instructions_url }}">Review instructions</a>{% endif %}
         </p>
         <div id="evaluate">{{ evaluate|safe }}</div>
@@ -19,21 +20,23 @@
                 $('.review-button').disabled = "disabled";
             }
 
-            function allowReview(codebase, run_id) {
+            function allowReview(codebase, run_id, campaign) {
                 $('#full-run-link').attr('href', "/cupboard/c/" + codebase + "/" + run_id + "/");
+                $('#run-campaign').text(campaign);
+                $('#run-codebase').attr('href', "/cupboard/c/" + codebase + "/").text(codebase);
                 $('#run-id').attr('value', run_id);
                 $('#codebase').attr('value', codebase);
                 $('.review-button').disabled = "enabled";
             }
 
-            function loadRun(codebase, run_id) {
+            function loadRun(codebase, run_id, campaign) {
                 disallowReview();
                 if (run_id in preloaded) {
                     $('#evaluate').html(preloaded[run_id]);
                     delete preloaded[run_id];
-                    allowReview(codebase, run_id);
+                    allowReview(codebase, run_id, campaign);
                 } else {
-                    $('#evaluate').load("{{ evaluate_url }}".replace('RUN_ID', run_id), function() { allowReview(codebase, run_id); });
+                    $('#evaluate').load("{{ evaluate_url }}".replace('RUN_ID', run_id), function() { allowReview(codebase, run_id, campaign); });
                 }
                 preloadSome();
             }
@@ -69,7 +72,7 @@
 
             function loadNewJob() {
                 if ((newJob = todo.shift()) !== undefined) {
-                    loadRun(newJob.codebase, newJob.id);
+                    loadRun(newJob.codebase, newJob.id, newJob.campaign);
                 } else {
                     {% if not publishable_only %}
                         $('.branch').replaceWith('All done!');
@@ -79,6 +82,7 @@
                     $('#evaluate').replaceWith('');
                     $('#options').remove();
                     $('#full-run-link').remove();
+                    $('#run-of').remove();
                 }
             }
 
