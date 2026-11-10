@@ -11,9 +11,9 @@
     <div class="section" id="result-codes">
         <h1>Result codes</h1>
         <p><em>Runs grouped by their result code.</em></p>
-        Select campaign to display:
+        <label for="filter-campaign">Select campaign to display:</label>
         <form method="get" id="filter">
-            <select name="campaign" onchange="$('#filter').submit()">
+            <select name="campaign" id="filter-campaign" onchange="$('#filter').submit()">
                 <option name="_all" value="_all">All</option>
                 {% for s in all_campaigns %}
                     <option value="{{ s }}"
@@ -21,24 +21,30 @@
                             {% if s == campaign %}selected{% endif %}>{{ s }}</option>
                 {% endfor %}
             </select>
-            <input type="checkbox"
-                   name="exclude_never_processed"
-                   id="never-processed"
-                   {% if exclude_never_processed %}checked{% endif %}
-                   onchange="$('#filter').submit()" />
-            <label for="never-processed">Exclude never processed</label>
-            <input type="checkbox"
-                   name="include_transient"
-                   id="transient"
-                   {% if include_transient %}checked{% endif %}
-                   onchange="$('#filter').submit()" />
-            <label for="transient">Include transient</label>
-            <input type="checkbox"
-                   name="include_historical"
-                   id="historical"
-                   {% if include_historical %}checked{% endif %}
-                   onchange="$('#filter').submit()" />
-            <label for="historical">Include historical</label>
+            <label for="never-processed">
+                <input type="checkbox"
+                       name="exclude_never_processed"
+                       id="never-processed"
+                       {% if exclude_never_processed %}checked{% endif %}
+                       onchange="$('#filter').submit()" />
+                Exclude never processed
+            </label>
+            <label for="transient">
+                <input type="checkbox"
+                       name="include_transient"
+                       id="transient"
+                       {% if include_transient %}checked{% endif %}
+                       onchange="$('#filter').submit()" />
+                Include transient
+            </label>
+            <label for="historical">
+                <input type="checkbox"
+                       name="include_historical"
+                       id="historical"
+                       {% if include_historical %}checked{% endif %}
+                       onchange="$('#filter').submit()" />
+                Include historical
+            </label>
         </form>
         {%- macro random_colors(n) -%}
             [

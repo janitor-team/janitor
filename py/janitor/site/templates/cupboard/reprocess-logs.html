@@ -10,10 +10,14 @@
     <form id="mass_reschedule"
           method="post"
           action="/cupboard/api/reprocess-logs">
-        Dry run:
-        <input type="checkbox" name="dry_run" value="1" />
-        Reschedule:
-        <input type="checkbox" name="reschedule" value="1" />
+        <label for="dry-run">
+            Dry run:
+            <input type="checkbox" name="dry_run" id="dry-run" value="1" />
+        </label>
+        <label for="reschedule">
+            Reschedule:
+            <input type="checkbox" name="reschedule" id="reschedule" value="1" />
+        </label>
         <input type="submit" value="Reprocess logs" />
     </form>
 {% endblock body %}

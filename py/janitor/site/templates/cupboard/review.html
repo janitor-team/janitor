@@ -166,13 +166,15 @@
                    value="Abstain"
                    accesskey="n"
                    onclick="submitReview(this, 'abstained')" />
-            <input type="checkbox"
-                   value="true"
-                   name="publishable_only"
-                   id="publishable-only"
-                   {% if publishable_only %}checked{% endif %}
-                   onchange="$('#options').submit()" />
-            <label for="publishable-only">Publishable only</label>
+            <label for="publishable-only">
+                <input type="checkbox"
+                       value="true"
+                       name="publishable_only"
+                       id="publishable-only"
+                       {% if publishable_only %}checked{% endif %}
+                       onchange="$('#options').submit()" />
+                Publishable only
+            </label>
         </form>
     </div>
 {% endblock body %}
