@@ -14,13 +14,7 @@
         <h1>Merge proposals</h1>
         <p><em>Status of merge proposals opened for this campaign.</em></p>
         {% macro display_merge_proposal(proposal) %}
-            <a class="reference external" href="{{ proposal.url }}">
-                {% if proposal.codebase %}
-                    {{ proposal.codebase }}
-                {% else %}
-                    {{ proposal.url }}
-                {% endif %}
-            </a>
+            <a class="reference external" href="{{ proposal.url }}">{{ proposal.codebase or proposal.url }}</a>
             {% if proposal.campaign %}(<a href="{{ url_for('generic-codebase', campaign=proposal.campaign, codebase=proposal.codebase) }}">Details</a>){% endif %}
             (<a href="{{ url_for('campaign-merge-proposal', campaign=campaign) }}?url={{ proposal.url|urlencode }}">Info</a>)
         {% endmacro %}
