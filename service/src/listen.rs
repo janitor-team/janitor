@@ -8,6 +8,7 @@ use tokio::net::{lookup_host, TcpListener, ToSocketAddrs};
 pub async fn bind_all(addr: impl ToSocketAddrs) -> std::io::Result<Vec<TcpListener>> {
     let mut listeners: Vec<TcpListener> = Vec::new();
     let mut unavailable = None;
+    let mut ipv6_any = None;
     let mut seen = std::collections::HashSet::new();
     for mut addr in lookup_host(addr).await? {
         if !seen.insert(addr) {
@@ -24,10 +25,24 @@ pub async fn bind_all(addr: impl ToSocketAddrs) -> std::io::Result<Vec<TcpListen
                     || e.raw_os_error() == Some(libc::EAFNOSUPPORT) =>
             {
                 log::warn!("Not listening on {}: {}", addr, e);
+                if addr.ip() == std::net::Ipv6Addr::UNSPECIFIED
+                    && e.raw_os_error() == Some(libc::EAFNOSUPPORT)
+                {
+                    ipv6_any = Some(addr);
+                }
                 unavailable = Some(std::io::Error::new(e.kind(), format!("{}: {}", addr, e)));
             }
             Err(e) => return Err(std::io::Error::new(e.kind(), format!("{}: {}", addr, e))),
         }
+    }
+    // With IPv6 switched off in the kernel, :: falls back to 0.0.0.0 if nothing else binds.
+    if let (true, Some(addr)) = (listeners.is_empty(), ipv6_any) {
+        let fallback = std::net::SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, addr.port()));
+        log::warn!("Listening on {} instead of {}", fallback, addr);
+        let listener = TcpListener::bind(fallback)
+            .await
+            .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {}", fallback, e)))?;
+        listeners.push(listener);
     }
     if listeners.is_empty() {
         return Err(unavailable.unwrap_or_else(|| {
@@ -125,6 +140,38 @@ mod tests {
         assert_eq!(
             bound_ips("127.0.0.1:0").await,
             vec![std::net::IpAddr::from(std::net::Ipv4Addr::LOCALHOST)]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_bind_all_any_address_without_ipv6() {
+        match std::net::TcpListener::bind("[::]:0") {
+            Err(e) if e.raw_os_error() == Some(libc::EAFNOSUPPORT) => {}
+            _ => return,
+        }
+        let ipv6_any: std::net::SocketAddr = "[::]:0".parse().unwrap();
+        let ipv4_any: std::net::SocketAddr = "0.0.0.0:0".parse().unwrap();
+        let ipv4_loopback: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        for (addrs, ip) in [
+            (vec![ipv6_any], ipv4_any.ip()),
+            (vec![ipv6_any, ipv4_any], ipv4_any.ip()),
+            (vec![ipv4_any, ipv6_any], ipv4_any.ip()),
+            (vec![ipv6_any, ipv4_loopback], ipv4_loopback.ip()),
+            (vec![ipv4_loopback, ipv6_any], ipv4_loopback.ip()),
+        ] {
+            let ips: Vec<_> = bind_all(&addrs[..])
+                .await
+                .unwrap()
+                .iter()
+                .map(|listener| listener.local_addr().unwrap().ip())
+                .collect();
+            assert_eq!(ips, vec![ip]);
+        }
+        let ipv6_loopback: std::net::SocketAddr = "[::1]:0".parse().unwrap();
+        let err = bind_all(&[ipv6_loopback][..]).await.unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "[::1]:0: Address family not supported by protocol (os error 97)"
         );
     }
 }
