@@ -690,6 +690,26 @@ async def test_result_file_log_from_runner(aiohttp_client, database_location):
         ("/cupboard/c/,,", 404, "404: Not Found"),
     ]
 
+    # A browser gets the log as a page, with links to the run, the raw log and its end.
+    resp = await client.get(
+        "/lintian-fixes/pkg/pkg/run-id/build.log",
+        headers={"Accept": "text/html,application/xhtml+xml,*/*;q=0.8"},
+    )
+    assert resp.content_type == "text/html"
+    soup = BeautifulSoup(await resp.text(), "html.parser")
+    assert [h1.get_text() for h1 in soup.select("#log h1")] == ["build.log"]
+    assert [a["href"] for a in soup.select("#log a")] == [
+        "/lintian-fixes/c/pkg/run-id",
+        "/api/run/run-id/logs/build.log",
+        "#log-end",
+    ]
+    assert [pre.get_text() for pre in soup.select("#log pre")] == ["log"]
+    resp = await client.get(
+        "/lintian-fixes/pkg/pkg/run-id/build.log",
+        headers={"Accept": "application/json"},
+    )
+    assert resp.status == 406
+
 
 async def test_result_file_artifact_from_runner(aiohttp_client, database_location):
     async def handle_artifact(request):
