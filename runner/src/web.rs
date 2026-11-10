@@ -1638,6 +1638,63 @@ async fn list_runs(
     }
 }
 
+fn run_detail_to_response(detail: crate::database::RunDetail) -> RunDetailResponse {
+    let crate::database::RunDetail {
+        row,
+        branches,
+        debian_build,
+    } = detail;
+    RunDetailResponse {
+        id: row.id,
+        codebase: row.codebase,
+        campaign: row.campaign,
+        publish_status: row.publish_status,
+        result_code: row.result_code,
+        main_branch_revision: row.main_branch_revision,
+        revision: row.revision,
+        vcs_type: row.vcs_type,
+        branch_url: row.branch_url,
+        target_branch_url: row.target_branch_url,
+        start_time: row.start_time,
+        finish_time: row.finish_time,
+        command: row.command,
+        description: row.description,
+        context: row.context,
+        result: row.result,
+        instigated_context: row.instigated_context,
+        logfilenames: row.logfilenames,
+        worker_name: row.worker_name,
+        worker_link: row.worker_link,
+        change_set: row.change_set,
+        failure_stage: row.failure_stage,
+        failure_transient: row.failure_transient,
+        resume_from: row.resume_from,
+        result_tags: row.result_tags.map(|tags| {
+            tags.into_iter()
+                .map(|t| crate::api_types::RunResultTag {
+                    actual_name: t.actual_name,
+                    revision: t.revision,
+                })
+                .collect()
+        }),
+        result_branches: branches
+            .into_iter()
+            .map(|b| ResultBranchEntry {
+                role: b.role,
+                remote_name: b.remote_name,
+                base_revision: b.base_revision,
+                revision: b.revision,
+            })
+            .collect(),
+        debian_build: debian_build.map(|db| crate::api_types::RunDebianBuild {
+            version: db.version,
+            distribution: db.distribution,
+            lintian_result: db.lintian_result,
+            binary_packages: db.binary_packages,
+        }),
+    }
+}
+
 /// `GET /runs/{run_id}` -- return the run row for callers that need
 /// to resolve its codebase, campaign, result, and result branches
 /// without a direct database connection.
@@ -1653,63 +1710,7 @@ async fn list_runs(
 )]
 async fn get_run(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> Response {
     match state.database.get_run_detail(&id).await {
-        Ok(Some(detail)) => {
-            let crate::database::RunDetail {
-                row,
-                branches,
-                debian_build,
-            } = detail;
-            Json(RunDetailResponse {
-                id: row.id,
-                codebase: row.codebase,
-                campaign: row.campaign,
-                publish_status: row.publish_status,
-                result_code: row.result_code,
-                main_branch_revision: row.main_branch_revision,
-                revision: row.revision,
-                vcs_type: row.vcs_type,
-                branch_url: row.branch_url,
-                target_branch_url: row.target_branch_url,
-                start_time: row.start_time,
-                finish_time: row.finish_time,
-                command: row.command,
-                description: row.description,
-                context: row.context,
-                result: row.result,
-                instigated_context: row.instigated_context,
-                logfilenames: row.logfilenames,
-                worker_name: row.worker_name,
-                worker_link: row.worker_link,
-                change_set: row.change_set,
-                failure_stage: row.failure_stage,
-                failure_transient: row.failure_transient,
-                resume_from: row.resume_from,
-                result_tags: row.result_tags.map(|tags| {
-                    tags.into_iter()
-                        .map(|t| crate::api_types::RunResultTag {
-                            actual_name: t.actual_name,
-                            revision: t.revision,
-                        })
-                        .collect()
-                }),
-                result_branches: branches
-                    .into_iter()
-                    .map(|b| ResultBranchEntry {
-                        role: b.role,
-                        remote_name: b.remote_name,
-                        base_revision: b.base_revision,
-                        revision: b.revision,
-                    })
-                    .collect(),
-                debian_build: debian_build.map(|db| crate::api_types::RunDebianBuild {
-                    version: db.version,
-                    distribution: db.distribution,
-                    lintian_result: db.lintian_result,
-                    binary_packages: db.binary_packages,
-                }),
-            })
-            .into_response()
-        }
+        Ok(Some(detail)) => Json(run_detail_to_response(detail)).into_response(),
         Ok(None) => reason(StatusCode::NOT_FOUND, format!("no such run: {}", id)),
         Err(e) => {
             log::error!("Failed to get run {}: {}", id, e);
@@ -1749,6 +1750,59 @@ async fn get_run_followups(State(state): State<Arc<AppState>>, Path(id): Path<Ru
         Ok(followups) => Json(RunFollowupsResponse { followups }).into_response(),
         Err(e) => {
             log::error!("Failed to list followups for {}: {}", id, e);
+            db_error()
+        }
+    }
+}
+
+/// Query parameters for `GET /runs/unabsorbed`.
+#[derive(serde::Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct UnabsorbedRunQuery {
+    /// Codebase to look up.
+    codebase: CodebaseName,
+    /// Campaign to look up.
+    campaign: Campaign,
+}
+
+/// `GET /runs/unabsorbed?codebase=X&campaign=Y` -- the most recent
+/// run for `(codebase, campaign)` whose result branches have not yet
+/// been merged or pushed. Returns the same detail shape as
+/// `/runs/{id}`.
+#[utoipa::path(
+    get,
+    path = "/runs/unabsorbed",
+    params(UnabsorbedRunQuery),
+    responses(
+        (status = 200, description = "The last unabsorbed run", body = RunDetailResponse),
+        (status = 404, description = "No unabsorbed run for this (codebase, campaign)", body = ReasonResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
+async fn get_last_unabsorbed_run(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<UnabsorbedRunQuery>,
+) -> Response {
+    match state
+        .database
+        .get_last_unabsorbed_run_detail(&params.codebase, &params.campaign)
+        .await
+    {
+        Ok(Some(detail)) => Json(run_detail_to_response(detail)).into_response(),
+        Ok(None) => reason(
+            StatusCode::NOT_FOUND,
+            format!(
+                "no unabsorbed run for {}/{}",
+                params.codebase, params.campaign
+            ),
+        ),
+        Err(e) => {
+            log::error!(
+                "Failed to get last unabsorbed run for {}/{}: {}",
+                params.codebase,
+                params.campaign,
+                e
+            );
             db_error()
         }
     }
@@ -4435,6 +4489,7 @@ fn private_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(list_runs))
         .routes(routes!(get_run, update_run))
         .routes(routes!(get_run_followups))
+        .routes(routes!(get_last_unabsorbed_run))
         // The unauthenticated POST is for intra-cluster admin tools
         // (e.g. schedule-codebases CronJob). Body must include
         // `worker`/`node`. Workers themselves should hit

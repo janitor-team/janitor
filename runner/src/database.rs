@@ -368,6 +368,73 @@ impl RunnerDatabase {
         }))
     }
 
+    /// Fetch the detail for the most recent unabsorbed run for
+    /// `(codebase, campaign)`, if any. An "unabsorbed" run is one
+    /// whose result branches have not yet been merged or pushed,
+    /// surfaced by the `last_unabsorbed_runs` view.
+    pub async fn get_last_unabsorbed_run_detail(
+        &self,
+        codebase: &CodebaseName,
+        campaign: &Campaign,
+    ) -> Result<Option<RunDetail>, sqlx::Error> {
+        let row: Option<RunDetailRow> = sqlx::query_as(
+            r#"
+            SELECT id,
+                   codebase,
+                   suite::text AS campaign,
+                   publish_status::text AS publish_status,
+                   result_code,
+                   main_branch_revision,
+                   revision,
+                   vcs_type,
+                   branch_url,
+                   target_branch_url,
+                   (start_time AT TIME ZONE 'UTC') AS start_time,
+                   (finish_time AT TIME ZONE 'UTC') AS finish_time,
+                   command,
+                   description,
+                   context,
+                   result,
+                   instigated_context,
+                   logfilenames,
+                   worker AS worker_name,
+                   worker_link,
+                   result_tags,
+                   change_set,
+                   failure_stage,
+                   failure_transient,
+                   resume_from
+              FROM last_unabsorbed_runs
+             WHERE codebase = $1 AND suite = $2
+            "#,
+        )
+        .bind(codebase)
+        .bind(campaign)
+        .fetch_optional(self.pool())
+        .await?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        let branches: Vec<ResultBranchRow> = sqlx::query_as(
+            "SELECT role, remote_name, base_revision, revision \
+             FROM new_result_branch WHERE run_id = $1 \
+             ORDER BY role",
+        )
+        .bind(&row.id)
+        .fetch_all(self.pool())
+        .await?;
+
+        let debian_build = self.get_run_debian_build(&row.id).await?;
+
+        Ok(Some(RunDetail {
+            row,
+            branches,
+            debian_build,
+        }))
+    }
+
     /// Get a run by ID.
     pub async fn get_run(&self, run_id: &RunId) -> Result<Option<JanitorResult>, sqlx::Error> {
         // run.vcs_type and run.suite are postgres enums; cast both to
