@@ -15,6 +15,7 @@
         {% else %}
             {% include "login.html" %}
         {% endif %}
+        <details class="sidebar-menu" open><summary>Menu</summary>
         <ul class="current">
             <li class="toctree-l1">
                 <a class="reference internal" href="/cupboard/queue">Queue</a>
@@ -66,6 +67,8 @@
                 </li>
             {% endfor %}
         </ul>
+        </details>
+        <script>foldOnNarrowScreens(document.currentScript.previousElementSibling);</script>
         <p>
             <label for="sidebar-codebase">See the status for a specific codebase:</label>
             <div class="sidebar-packages" style="width:300px;">
