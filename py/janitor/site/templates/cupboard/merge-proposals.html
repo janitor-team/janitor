@@ -15,11 +15,11 @@
         <p><em>Status of merge proposals the Janitor has opened, across all campaigns.</em></p>
         {% macro display_merge_proposal(proposal) %}
             <a class="reference external" href="{{ proposal.url }}">
-                {% if proposal.codebase %}
+                {%- if proposal.codebase -%}
                     {{ proposal.codebase }}
-                {% else %}
+                {%- else -%}
                     {{ proposal.url }}
-                {% endif %}
+                {%- endif -%}
             </a>
             {% if proposal.campaign %}(<a href="/{{ proposal.campaign }}/c/{{ proposal.codebase }}/">Details</a>){% endif %}
             {% if not campaign %}(<a href="/cupboard/merge-proposal?url={{ proposal.url|urlencode }}">Info</a>){% endif %}
