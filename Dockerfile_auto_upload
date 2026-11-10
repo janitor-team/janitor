@@ -55,4 +55,4 @@ COPY --from=build /code/target/release/janitor-auto-upload /usr/local/bin/janito
 
 EXPOSE 9933
 
-ENTRYPOINT ["janitor-auto-upload", "--port=9933", "--listen-address=0.0.0.0"]
+ENTRYPOINT ["janitor-auto-upload", "--port=9933", "--listen-address=::"]

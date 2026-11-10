@@ -55,4 +55,4 @@ COPY --from=build /code/target/release/janitor-publish-one /usr/local/bin/janito
 
 EXPOSE 9912
 
-ENTRYPOINT ["janitor-publish", "--port=9912", "--listen-address=0.0.0.0"]
+ENTRYPOINT ["janitor-publish", "--port=9912", "--listen-address=::"]
