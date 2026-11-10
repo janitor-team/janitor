@@ -116,6 +116,13 @@ td.version {
     text-align: center;
 }
 
+/* Room under the verdict buttons, so a thumb does not hit the filter below */
+@media screen and (max-width: 875px) {
+    #options .review-button {
+        margin-bottom: 16px;
+    }
+}
+
 /* Queue active lines */
 tr.active {
     background-color: bisque;
