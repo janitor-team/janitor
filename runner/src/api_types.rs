@@ -462,9 +462,6 @@ pub struct WorkerSummary {
 /// Response for `GET /workers` and `GET /admin/workers`.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct WorkerListResponse {
-    /// Set when the workers could not be listed.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
     /// The workers.
     pub workers: Vec<WorkerInfo>,
     /// Number of registered workers.
@@ -474,11 +471,9 @@ pub struct WorkerListResponse {
     /// Number of idle workers.
     pub idle_workers: usize,
     /// Worker counts.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub summary: Option<WorkerSummary>,
+    pub summary: WorkerSummary,
     /// When the listing was generated.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub timestamp: Option<DateTime<Utc>>,
+    pub timestamp: DateTime<Utc>,
 }
 
 /// Response for `POST /admin/runs/cleanup`.
