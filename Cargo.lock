@@ -928,9 +928,9 @@ checksum = "36f64beae40a84da1b4b26ff2761a5b895c12adc41dc25aaee1c4f2bbfe97a6e"
 
 [[package]]
 name = "breezyshim"
-version = "0.7.31"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2e741209ad8a1e9bf79995496a7e557a6ece771c6fa2ab0e8ad0640cbd85a60"
+checksum = "e81a65cf11ef065794bdada1cd5f0fe042057bf7a94a6558ef750d009ce99eca"
 dependencies = [
  "bazaar",
  "chrono",
@@ -1588,9 +1588,9 @@ dependencies = [
 
 [[package]]
 name = "debian-analyzer"
-version = "0.160.22"
+version = "0.160.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07e4810b272bdbbd3074270cf4a9de71723f8429da950b9fa71ec509b5ca7af8"
+checksum = "6171e65feff0b9cc2b9c79e43249dd552dae9ab5223e636258203d1af944d610"
 dependencies = [
  "breezyshim",
  "chrono",
@@ -3954,9 +3954,9 @@ dependencies = [
 
 [[package]]
 name = "loggerhead"
-version = "3.0.1"
+version = "3.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b62bd8cf0884e752a03f3d9cc93bfaabccfc8f858f8c4ea06758fc1c9f99ac5"
+checksum = "fe3119818d0ffe2af4f61e133d7a1360654ab35786793e56e44424555c94f92a"
 dependencies = [
  "anyhow",
  "askama 0.12.1",
@@ -4573,9 +4573,9 @@ dependencies = [
 
 [[package]]
 name = "ognibuild"
-version = "0.2.21"
+version = "0.2.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "975fbc3cd2b1a4580afeda0399a699af6d6fbe1cfa7acaf35422d5fd15f89b65"
+checksum = "d8f600ae365a73c584711cb3f88c1aa50a40139545270f3f51555621f86a8008"
 dependencies = [
  "apt-sources",
  "breezyshim",
@@ -6537,9 +6537,9 @@ dependencies = [
 
 [[package]]
 name = "silver-platter"
-version = "0.8.6"
+version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cda14648d32c73fcc59ae9a064c7825934a65ab6a41ddb1296ba98764be8b42"
+checksum = "3e96fa4d9742ce66f630a5624f8b4a7eb5fe2ea653fb7efc9aaef6647533d59f"
 dependencies = [
  "breezyshim",
  "chrono",
