@@ -17,7 +17,9 @@
 
 import asyncio
 import base64
+import errno
 import json
+import socket
 import tempfile
 from datetime import timedelta
 
@@ -31,7 +33,7 @@ from fakeredis.aioredis import FakeRedis
 
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
-from janitor.site.simple import create_app
+from janitor.site.simple import create_app, listen_sockets
 
 from .conftest import _insert_run
 
@@ -55,6 +57,17 @@ artifact_location: "{tempfile.mkdtemp()}"
 
 async def test_create_app():
     await create_app(config=create_config(), redis=FakeRedis())
+
+
+def test_listen_sockets():
+    sockets = listen_sockets(["0.0.0.0", "::", "0.0.0.0", "192.0.2.1"], 0)
+    assert [sock.getsockname()[0] for sock in sockets] == ["0.0.0.0", "::"]
+    assert sockets[1].getsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY) == 1
+    for sock in sockets:
+        sock.close()
+    with pytest.raises(OSError) as e:
+        listen_sockets(["192.0.2.1"], 0)
+    assert e.value.errno == errno.EADDRNOTAVAIL
 
 
 async def test_codebase_query_redirect(aiohttp_client, database_location):

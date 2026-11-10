@@ -18,11 +18,13 @@
 """Serve the Janitor site."""
 
 import asyncio
+import errno
 import functools
 import json
 import logging
 import os
 import re
+import socket
 import sys
 import time
 from datetime import datetime
@@ -472,6 +474,34 @@ async def handle_webhook(request):
     return await process_webhook(request, request.app.database)
 
 
+def listen_sockets(hosts: list[str], port: int) -> list[socket.socket]:
+    """Listen on every address the hosts resolve to; IPv6 sockets are IPv6-only."""
+    sockets: dict[Any, socket.socket] = {}
+    unavailable: list[OSError] = []
+    for host in hosts:
+        # An empty host means every address, as with asyncio.
+        for family, _, _, _, addr in socket.getaddrinfo(
+            host or None, port, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
+        ):
+            if addr in sockets:
+                continue
+            try:
+                sockets[addr] = socket.create_server(addr, family=family)
+            except OSError as e:
+                if e.errno not in (errno.EADDRNOTAVAIL, errno.EAFNOSUPPORT):
+                    raise
+                logging.warning(
+                    "Not listening on %s port %d: %s",
+                    addr[0],
+                    port,
+                    os.strerror(e.errno),
+                )
+                unavailable.append(e)
+    if not sockets:
+        raise unavailable[-1]
+    return list(sockets.values())
+
+
 async def create_app(
     config: Config,
     *,
@@ -789,7 +819,19 @@ async def main_async(argv=None):
         help="Public listen port for a reverse proxy",
         default=8090,
     )
-    parser.add_argument("--host", type=str, help="Listen address", default="localhost")
+    parser.add_argument(
+        "--host",
+        action="append",
+        default=argparse.SUPPRESS,
+        help="Listen address, can be given more than once (default: localhost)",
+    )
+    parser.add_argument(
+        "--public-host",
+        action="append",
+        default=argparse.SUPPRESS,
+        help="Listen address for the public port, can be given more than once "
+        "(default: the --host values)",
+    )
     parser.add_argument(
         "--config", type=str, default="janitor.conf", help="Path to configuration"
     )
@@ -834,6 +876,8 @@ async def main_async(argv=None):
     )
 
     args = parser.parse_args()
+    hosts = getattr(args, "host", ["localhost"])
+    public_hosts = getattr(args, "public_host", hosts)
 
     if args.gcp_logging:
         import google.cloud.logging
@@ -862,7 +906,7 @@ async def main_async(argv=None):
         publisher_url=args.publisher_url,
         vcs_managers=get_vcs_managers_from_config(config),
         differ_url=args.differ_url,
-        listen_address=args.host,
+        listen_address=hosts[0],
         port=args.port,
     )
 
@@ -872,15 +916,15 @@ async def main_async(argv=None):
     await public_runner.setup()
 
     try:
-        site = web.TCPSite(private_runner, args.host, port=args.port)
-        await site.start()
-        logging.info("Admin API listening on %s:%s", args.host, args.port)
+        for sock in listen_sockets(hosts, args.port):
+            site = web.SockSite(private_runner, sock)
+            await site.start()
+            logging.info("Admin API listening on %s", site.name)
 
-        site = web.TCPSite(public_runner, args.host, port=args.public_port)
-        await site.start()
-        logging.info(
-            "Public website and API listening on %s:%s", args.host, args.public_port
-        )
+        for sock in listen_sockets(public_hosts, args.public_port):
+            site = web.SockSite(public_runner, sock)
+            await site.start()
+            logging.info("Public website and API listening on %s", site.name)
 
         while True:
             await asyncio.sleep(3600)
