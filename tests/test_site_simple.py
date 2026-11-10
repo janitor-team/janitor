@@ -153,6 +153,41 @@ async def test_codebase_query_redirect_empty_param_returns_404(
     assert resp.status == 404
 
 
+@pytest.mark.parametrize(
+    "path,sidebar,message",
+    [
+        ("/nope", None, "404: Not Found"),
+        ("/lintian-fixes/c", "lintian-fixes", "no codebase specified"),
+        ("/lintian-fixes/c/foo/", "lintian-fixes", "no such codebase: foo"),
+        ("/cupboard/nope", "Cupboard", "404: Not Found"),
+    ],
+)
+async def test_not_found_page(
+    aiohttp_client, database_location, path, sidebar, message
+):
+    _private_app, app = await create_app(
+        config=create_config(database_location), redis=FakeRedis()
+    )
+    client = await aiohttp_client(app)
+    resp = await client.get(
+        path, headers={"Accept": "text/html,application/xhtml+xml,*/*;q=0.8"}
+    )
+    soup = BeautifulSoup(await resp.text(), "html.parser")
+    heading = soup.select_one("div.sphinxsidebar h3")
+    assert (
+        resp.status,
+        resp.content_type,
+        heading.get_text(strip=True) if heading else None,
+        [p.get_text(strip=True) for p in soup.select("div#not-found p")],
+    ) == (404, "text/html", sidebar, [message, "Go to the start page"])
+    resp = await client.get(path)
+    assert (resp.status, resp.content_type, await resp.text()) == (
+        404,
+        "text/plain",
+        message,
+    )
+
+
 @pytest.mark.parametrize("encoding", ["json", "form"])
 async def test_webhook_github_push_reschedules_without_crashing(
     aiohttp_client, database_location, encoding
