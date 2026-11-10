@@ -1,6 +1,6 @@
 //! Listening sockets for the services' web servers.
 
-use tokio::net::{lookup_host, TcpListener, ToSocketAddrs};
+use tokio::net::{lookup_host, TcpListener, TcpSocket, ToSocketAddrs};
 
 /// Bind a listener on every address `addrs` resolve to, so `localhost`
 /// covers both `::1` and `127.0.0.1`. With port 0 the others get the
@@ -17,13 +17,14 @@ pub async fn bind_all<A: ToSocketAddrs>(
     let mut ipv6_any = None;
     let mut seen = std::collections::HashSet::new();
     for mut addr in resolved {
+        addr.set_ip(addr.ip().to_canonical());
         if !seen.insert(addr) {
             continue;
         }
         if let (0, Some(first)) = (addr.port(), listeners.first()) {
             addr.set_port(first.local_addr()?.port());
         }
-        match TcpListener::bind(addr).await {
+        match bind(addr) {
             Ok(listener) => listeners.push(listener),
             // Skip an address this host does not have, such as ::1 with IPv6 off.
             Err(e)
@@ -68,6 +69,20 @@ pub async fn bind_hosts(hosts: &[String], port: u16) -> std::io::Result<Vec<TcpL
         .map(|host| format!("{}:{}", host, port))
         .collect();
     bind_all(addrs).await
+}
+
+/// Bind `addr`; an IPv6 socket takes IPv6 only, so `::` leaves IPv4 to `0.0.0.0`.
+fn bind(addr: std::net::SocketAddr) -> std::io::Result<TcpListener> {
+    let socket = if addr.is_ipv6() {
+        let socket = TcpSocket::new_v6()?;
+        socket2::SockRef::from(&socket).set_only_v6(true)?;
+        socket
+    } else {
+        TcpSocket::new_v4()?
+    };
+    socket.set_reuseaddr(true)?;
+    socket.bind(addr)?;
+    socket.listen(1024)
 }
 
 #[cfg(test)]
@@ -169,6 +184,35 @@ mod tests {
                 std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port)),
                 std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port)),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_bind_all_ipv4_and_ipv6_any_address() {
+        if std::net::TcpListener::bind("[::1]:0").is_err() {
+            return;
+        }
+        let addrs: Vec<_> = bind_all(["0.0.0.0:0", "[::]:0"])
+            .await
+            .unwrap()
+            .iter()
+            .map(|listener| listener.local_addr().unwrap())
+            .collect();
+        let port = addrs[0].port();
+        assert_eq!(
+            addrs,
+            vec![
+                std::net::SocketAddr::from(([0, 0, 0, 0], port)),
+                std::net::SocketAddr::from(([0u16; 8], port)),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_bind_all_ipv4_mapped_address() {
+        assert_eq!(
+            bound_ips("[::ffff:127.0.0.1]:0").await,
+            vec![std::net::IpAddr::from(std::net::Ipv4Addr::LOCALHOST)]
         );
     }
 

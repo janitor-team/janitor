@@ -12,7 +12,7 @@ struct Args {
     #[arg(long, default_value = "9933", env = "AUTO_UPLOAD_PORT")]
     port: u16,
 
-    /// Address to listen on; repeat for more.
+    /// Address to listen on; repeat for more. 0.0.0.0 is IPv4 only, :: is IPv6 only.
     #[arg(long, default_value = "localhost", env = "AUTO_UPLOAD_LISTEN_ADDRESS")]
     listen_address: Vec<String>,
 

@@ -24,7 +24,7 @@ struct Cli {
     #[arg(long, default_value_t = 9924)]
     public_port: u16,
 
-    /// Address to listen on; repeat for more.
+    /// Address to listen on; repeat for more. 0.0.0.0 is IPv4 only, :: is IPv6 only.
     #[arg(long, default_value = "localhost")]
     listen_address: Vec<String>,
 

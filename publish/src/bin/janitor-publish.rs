@@ -21,7 +21,7 @@ struct Args {
     #[clap(long, conflicts_with = "no_auto_publish")]
     once: bool,
 
-    /// Address to listen on; repeat for more.
+    /// Address to listen on; repeat for more. 0.0.0.0 is IPv4 only, :: is IPv6 only.
     #[clap(long, default_value = "localhost")]
     listen_address: Vec<String>,
 
