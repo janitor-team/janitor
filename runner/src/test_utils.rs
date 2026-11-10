@@ -43,6 +43,7 @@ fn into_janitor_database(test_db: TestDatabase) -> Database {
 #[derive(Default)]
 pub struct TestConfigBuilder {
     campaigns: Vec<janitor::config::Campaign>,
+    log_manager: Option<Arc<janitor::logs::LogFileManager>>,
     artifact_manager: Option<Arc<janitor::artifacts::ArtifactManager>>,
     backup_artifact_manager: Option<Arc<janitor::artifacts::ArtifactManager>>,
     redirect_artifact_downloads: Option<bool>,
@@ -68,6 +69,12 @@ impl TestConfigBuilder {
     /// Register an arbitrary campaign.
     pub fn with_campaign_config(mut self, campaign: janitor::config::Campaign) -> Self {
         self.campaigns.push(campaign);
+        self
+    }
+
+    /// Use `manager` as the log manager.
+    pub fn with_log_manager(mut self, manager: Arc<janitor::logs::LogFileManager>) -> Self {
+        self.log_manager = Some(manager);
         self
     }
 
@@ -204,7 +211,10 @@ fn assemble_app_state(
     redis_client: redis::Client,
     mut config_builder: TestConfigBuilder,
 ) -> Arc<AppState> {
-    let log_manager = Arc::new(janitor::logs::LogFileManager::in_memory());
+    let log_manager: Arc<janitor::logs::LogFileManager> = config_builder
+        .log_manager
+        .take()
+        .unwrap_or_else(|| Arc::new(janitor::logs::LogFileManager::in_memory()));
     let artifact_manager: Arc<janitor::artifacts::ArtifactManager> = config_builder
         .artifact_manager
         .take()

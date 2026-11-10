@@ -23,7 +23,26 @@ pub enum Error {
 
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Self {
-        Error::Io(err.to_string())
+        // Writers into an object store report the store's errors as I/O
+        // errors; keep them distinguishable.
+        if err
+            .get_ref()
+            .is_some_and(|inner| inner.is::<object_store::Error>())
+        {
+            let inner = err
+                .into_inner()
+                .expect("checked above")
+                .downcast::<object_store::Error>()
+                .expect("checked above");
+            return (*inner).into();
+        }
+        // Python's managers raised PermissionError for these, which
+        // import_log handles separately.
+        if err.kind() == io::ErrorKind::PermissionDenied {
+            Error::PermissionDenied
+        } else {
+            Error::Io(err.to_string())
+        }
     }
 }
 
@@ -144,9 +163,9 @@ pub fn create_log_manager(location: Option<&str>) -> Result<LogFileManager, Erro
 
 /// Import a log with primary and backup log managers
 ///
-/// This function provides sophisticated error handling and fallback mechanisms
-/// matching the Python implementation. It will attempt to use the primary manager
-/// first, then fall back to the backup manager on service unavailability.
+/// Like the Python implementation, a permission error is retried under a
+/// different name and then falls back to the backup manager; any other
+/// error is returned as is.
 pub async fn import_log(
     primary_log_manager: &LogFileManager,
     backup_log_manager: Option<&LogFileManager>,
@@ -155,93 +174,51 @@ pub async fn import_log(
     path: &str,
     basename: Option<&LogFilename>,
 ) -> Result<(), Error> {
-    // Attempt with primary log manager
     match primary_log_manager
         .import_log(codebase, run_id, path, basename)
         .await
     {
         Ok(()) => {
-            log::info!("Successfully imported log {} to primary manager", path);
             increment_upload_success();
             return Ok(());
         }
-        Err(Error::ServiceUnavailable) => {
-            log::warn!("Unable to upload logfile {}: service unavailable", path);
-            increment_upload_failed();
-            if let Some(backup) = backup_log_manager {
-                match backup.import_log(codebase, run_id, path, basename).await {
-                    Ok(()) => {
-                        increment_upload_success();
-                        return Ok(());
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-        }
-        Err(Error::Timeout) => {
-            log::warn!("Timeout uploading logfile {}", path);
-            increment_upload_failed();
-            if let Some(backup) = backup_log_manager {
-                match backup.import_log(codebase, run_id, path, basename).await {
-                    Ok(()) => {
-                        increment_upload_success();
-                        return Ok(());
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-        }
-        Err(Error::PermissionDenied) => {
-            log::warn!("Permission denied error while uploading logfile {}", path);
-            // Try with timestamp-based alternative basename
-            let suffix = chrono::Utc::now().format("%Y%m%dT%H%M%S").to_string();
-            let alt_basename = basename.map(|b| {
-                LogFilename::new(format!("{}.{}", b, suffix))
-                    .expect("a log filename plus a suffix is valid")
-            });
-
-            match primary_log_manager
-                .import_log(codebase, run_id, path, alt_basename.as_ref())
-                .await
-            {
-                Ok(()) => {
-                    increment_upload_success();
-                    return Ok(());
-                }
-                Err(_) => {
-                    increment_upload_failed();
-                    // If alternative basename fails, try backup manager
-                    if let Some(backup) = backup_log_manager {
-                        match backup.import_log(codebase, run_id, path, basename).await {
-                            Ok(()) => {
-                                increment_upload_success();
-                                return Ok(());
-                            }
-                            Err(e) => return Err(e),
-                        }
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            log::error!("Primary log manager failed: {}", e);
-            increment_upload_failed();
-            // For other errors, try backup if available
-            if let Some(backup) = backup_log_manager {
-                log::info!("Trying backup log manager");
-                match backup.import_log(codebase, run_id, path, basename).await {
-                    Ok(()) => {
-                        increment_upload_success();
-                        return Ok(());
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-            return Err(e);
-        }
+        Err(Error::PermissionDenied) => {}
+        Err(e) => return Err(e),
     }
 
-    Err(Error::Other("All log managers failed".to_string()))
+    log::warn!("Permission denied error while uploading logfile {}", path);
+    // It may just be that the file already exists.
+    let name = match basename {
+        Some(basename) => basename.to_string(),
+        None => std::path::Path::new(path)
+            .file_name()
+            .ok_or_else(|| Error::InvalidName(path.to_string()))?
+            .to_string_lossy()
+            .into_owned(),
+    };
+    let alternative_basename = LogFilename::new(format!(
+        "{}.{}",
+        name,
+        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S")
+    ))
+    .map_err(|_| Error::InvalidName(name.clone()))?;
+    match primary_log_manager
+        .import_log(codebase, run_id, path, Some(&alternative_basename))
+        .await
+    {
+        Ok(()) => {
+            increment_upload_success();
+            return Ok(());
+        }
+        Err(Error::PermissionDenied) => increment_upload_failed(),
+        Err(e) => return Err(e),
+    }
+
+    // Without a backup manager Python only logged the failure above.
+    if let Some(backup) = backup_log_manager {
+        backup.import_log(codebase, run_id, path, basename).await?;
+    }
+    Ok(())
 }
 
 /// Import multiple logs concurrently
@@ -307,6 +284,228 @@ pub async fn import_logs_from_entries(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::stream::BoxStream;
+    use object_store::path::Path as ObjectPath;
+    use object_store::{
+        CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
+        PutMultipartOptions, PutOptions, PutPayload, PutResult,
+    };
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Debug, Clone, Copy)]
+    enum Failure {
+        PermissionDenied,
+        Generic,
+    }
+
+    impl Failure {
+        fn error(self, location: &ObjectPath) -> object_store::Error {
+            match self {
+                Failure::PermissionDenied => object_store::Error::PermissionDenied {
+                    path: location.to_string(),
+                    source: "denied".into(),
+                },
+                Failure::Generic => object_store::Error::Generic {
+                    store: "failing",
+                    source: "disk full".into(),
+                },
+            }
+        }
+    }
+
+    /// In-memory store whose writes fail with queued errors.
+    #[derive(Debug, Default)]
+    struct FailingStore {
+        inner: object_store::memory::InMemory,
+        failures: Mutex<Vec<Failure>>,
+    }
+
+    impl FailingStore {
+        fn failing(failures: Vec<Failure>) -> Self {
+            Self {
+                inner: object_store::memory::InMemory::new(),
+                failures: Mutex::new(failures),
+            }
+        }
+
+        fn next_failure(&self, location: &ObjectPath) -> object_store::Result<()> {
+            let mut failures = self.failures.lock().unwrap();
+            if failures.is_empty() {
+                Ok(())
+            } else {
+                Err(failures.remove(0).error(location))
+            }
+        }
+    }
+
+    impl std::fmt::Display for FailingStore {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "FailingStore")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for FailingStore {
+        async fn put_opts(
+            &self,
+            location: &ObjectPath,
+            payload: PutPayload,
+            opts: PutOptions,
+        ) -> object_store::Result<PutResult> {
+            self.next_failure(location)?;
+            self.inner.put_opts(location, payload, opts).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &ObjectPath,
+            opts: PutMultipartOptions,
+        ) -> object_store::Result<Box<dyn MultipartUpload>> {
+            self.next_failure(location)?;
+            self.inner.put_multipart_opts(location, opts).await
+        }
+
+        async fn get_opts(
+            &self,
+            location: &ObjectPath,
+            options: GetOptions,
+        ) -> object_store::Result<GetResult> {
+            self.inner.get_opts(location, options).await
+        }
+
+        fn delete_stream(
+            &self,
+            locations: BoxStream<'static, object_store::Result<ObjectPath>>,
+        ) -> BoxStream<'static, object_store::Result<ObjectPath>> {
+            self.inner.delete_stream(locations)
+        }
+
+        fn list(
+            &self,
+            prefix: Option<&ObjectPath>,
+        ) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
+            self.inner.list(prefix)
+        }
+
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&ObjectPath>,
+        ) -> object_store::Result<ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+
+        async fn copy_opts(
+            &self,
+            from: &ObjectPath,
+            to: &ObjectPath,
+            options: CopyOptions,
+        ) -> object_store::Result<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
+    }
+
+    /// A log manager over a store failing with `failures`, and the store
+    /// itself to inspect what was written.
+    fn failing_manager(failures: Vec<Failure>) -> (LogFileManager, Arc<FailingStore>) {
+        let store = Arc::new(FailingStore::failing(failures));
+        (LogFileManager::new(store.clone()), store)
+    }
+
+    async fn stored(store: &FailingStore) -> Vec<String> {
+        use futures::TryStreamExt;
+        let mut paths: Vec<String> = store
+            .list(None)
+            .map_ok(|meta| meta.location.to_string())
+            .try_collect()
+            .await
+            .unwrap();
+        paths.sort();
+        paths
+    }
+
+    async fn run_import(
+        primary: &LogFileManager,
+        backup: Option<&LogFileManager>,
+    ) -> Result<(), Error> {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("build.log");
+        std::fs::write(&path, b"log contents").unwrap();
+        import_log(
+            primary,
+            backup,
+            &CodebaseName::new("codebase").unwrap(),
+            &RunId::new("run-id").unwrap(),
+            path.to_str().unwrap(),
+            Some(&LogFilename::new("build.log").unwrap()),
+        )
+        .await
+    }
+
+    #[test]
+    fn test_io_error_conversion() {
+        let err = Error::from(io::Error::from(io::ErrorKind::PermissionDenied));
+        assert!(matches!(err, Error::PermissionDenied), "got {err:?}");
+        let err = Error::from(io::Error::other("disk full"));
+        assert_eq!(err.to_string(), "I/O error: disk full");
+        let err = Error::from(io::Error::from(
+            Failure::PermissionDenied.error(&ObjectPath::from("x")),
+        ));
+        assert!(matches!(err, Error::PermissionDenied), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn test_import_log_unexpected_error_does_not_use_backup() {
+        let (primary, _) = failing_manager(vec![Failure::Generic]);
+        let (backup, backup_store) = failing_manager(vec![]);
+        let err = run_import(&primary, Some(&backup)).await.unwrap_err();
+        assert!(matches!(err, Error::Other(_)), "got {err:?}");
+        assert_eq!(stored(&backup_store).await, Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn test_import_log_permission_denied_retries_with_new_name() {
+        let (primary, primary_store) = failing_manager(vec![Failure::PermissionDenied]);
+        let (backup, backup_store) = failing_manager(vec![]);
+        run_import(&primary, Some(&backup)).await.unwrap();
+        let stored_paths = stored(&primary_store).await;
+        assert_eq!(stored_paths.len(), 1);
+        let suffix = stored_paths[0]
+            .strip_prefix("codebase/run-id/build.log.")
+            .and_then(|rest| rest.strip_suffix(".gz"))
+            .unwrap();
+        chrono::NaiveDateTime::parse_from_str(suffix, "%Y-%m-%dT%H:%M:%S").unwrap();
+        assert_eq!(stored(&backup_store).await, Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn test_import_log_permission_denied_retry_unexpected_error() {
+        let (primary, _) = failing_manager(vec![Failure::PermissionDenied, Failure::Generic]);
+        let (backup, backup_store) = failing_manager(vec![]);
+        let err = run_import(&primary, Some(&backup)).await.unwrap_err();
+        assert!(matches!(err, Error::Other(_)), "got {err:?}");
+        assert_eq!(stored(&backup_store).await, Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn test_import_log_permission_denied_twice_uses_backup() {
+        let (primary, _) =
+            failing_manager(vec![Failure::PermissionDenied, Failure::PermissionDenied]);
+        let (backup, backup_store) = failing_manager(vec![]);
+        run_import(&primary, Some(&backup)).await.unwrap();
+        assert_eq!(
+            stored(&backup_store).await,
+            vec!["codebase/run-id/build.log.gz".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_import_log_permission_denied_twice_without_backup() {
+        // Python only logged a warning in this case.
+        let (primary, primary_store) =
+            failing_manager(vec![Failure::PermissionDenied, Failure::PermissionDenied]);
+        run_import(&primary, None).await.unwrap();
+        assert_eq!(stored(&primary_store).await, Vec::<String>::new());
+    }
 
     #[test]
     fn test_create_log_manager_s3() {
