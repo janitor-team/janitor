@@ -1,7 +1,7 @@
 CREATE TYPE vcs_type AS ENUM('bzr', 'git', 'svn', 'mtn', 'hg', 'arch', 'cvs', 'darcs');
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
-CREATE DOMAIN codebase_name AS TEXT check (value similar to '[a-z0-9][a-z0-9+-.]+');
+CREATE DOMAIN codebase_name AS TEXT check (value similar to '[a-z0-9][a-z0-9+.-]+');
 CREATE TABLE IF NOT EXISTS codebase (
    -- Name is intentionally optional
    name codebase_name,
@@ -49,8 +49,8 @@ CREATE INDEX ON merge_proposal (revision);
 CREATE INDEX ON merge_proposal (url);
 CREATE INDEX ON merge_proposal (status);
 CREATE INDEX ON merge_proposal (status, rate_limit_bucket);
-CREATE DOMAIN suite_name AS TEXT check (value similar to '[a-z0-9][a-z0-9+-.]+');
-CREATE DOMAIN campaign_name AS TEXT check (value similar to '[a-z0-9][a-z0-9+-.]+');
+CREATE DOMAIN suite_name AS TEXT check (value similar to '[a-z0-9][a-z0-9+.-]+');
+CREATE DOMAIN campaign_name AS TEXT check (value similar to '[a-z0-9][a-z0-9+.-]+');
 CREATE TYPE verdict AS ENUM('approved', 'rejected', 'abstained');
 CREATE TABLE result_tag (
  actual_name text,
