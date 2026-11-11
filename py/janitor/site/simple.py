@@ -424,9 +424,9 @@ async def handle_health(request):
 async def process_webhook(request, db):
     urls = []
     codebases: dict[str, str] = {}
-    async for codebase, branch_url in parse_webhook(request, db):
+    async for codebase, branch_url, known in parse_webhook(request, db):
         urls.append(branch_url)
-        if codebase is not None:
+        if codebase is not None and not known:
             codebases[codebase] = branch_url
 
     async with db.acquire() as conn:
