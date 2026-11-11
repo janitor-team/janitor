@@ -1222,24 +1222,30 @@ INSERT INTO run (
         codebases: &[CodebaseName],
         campaigns: &[Campaign],
     ) -> Result<Vec<CandidateRow>, sqlx::Error> {
+        // Number the queue from its (bucket, priority, id) index alone, without reading its rows.
         let mut query = String::from(
-            "SELECT id, codebase, campaign, command, publish_policy, \
-                    change_set, context, value, success_chance FROM candidate",
+            "SELECT c.id, c.codebase, c.campaign, c.command, c.publish_policy, c.change_set, \
+                    c.context, c.value, c.success_chance, min(n.position) AS queue_position \
+             FROM candidate c \
+             LEFT JOIN queue q ON q.codebase = c.codebase AND q.campaign = c.campaign \
+             LEFT JOIN (SELECT id, row_number() OVER (ORDER BY bucket, priority, id) AS position \
+                        FROM queue) n ON n.id = q.id",
         );
         let mut conditions = Vec::new();
         let mut idx = 0;
         if !codebases.is_empty() {
             idx += 1;
-            conditions.push(format!("codebase = ANY(${}::text[])", idx));
+            conditions.push(format!("c.codebase = ANY(${}::text[])", idx));
         }
         if !campaigns.is_empty() {
             idx += 1;
-            conditions.push(format!("campaign = ANY(${}::text[])", idx));
+            conditions.push(format!("c.campaign = ANY(${}::text[])", idx));
         }
         if !conditions.is_empty() {
             query.push_str(" WHERE ");
             query.push_str(&conditions.join(" AND "));
         }
+        query.push_str(" GROUP BY c.id");
         let mut q = sqlx::query_as::<_, CandidateRow>(sqlx::AssertSqlSafe(&*query));
         if !codebases.is_empty() {
             q = q.bind(codebases);
@@ -1257,9 +1263,13 @@ INSERT INTO run (
         campaign: &Campaign,
     ) -> Result<Option<CandidateRow>, sqlx::Error> {
         sqlx::query_as(
-            "SELECT id, codebase, campaign, command, publish_policy, \
-                    change_set, context, value, success_chance \
-             FROM candidate WHERE codebase = $1 AND campaign = $2",
+            "SELECT c.id, c.codebase, c.campaign, c.command, c.publish_policy, c.change_set, \
+                    c.context, c.value, c.success_chance, min(n.position) AS queue_position \
+             FROM candidate c \
+             LEFT JOIN queue q ON q.codebase = c.codebase AND q.campaign = c.campaign \
+             LEFT JOIN (SELECT id, row_number() OVER (ORDER BY bucket, priority, id) AS position \
+                        FROM queue) n ON n.id = q.id \
+             WHERE c.codebase = $1 AND c.campaign = $2 GROUP BY c.id",
         )
         .bind(codebase)
         .bind(campaign)
@@ -1422,6 +1432,8 @@ pub struct CandidateRow {
     pub value: Option<i32>,
     /// Estimated chance of success.
     pub success_chance: Option<f64>,
+    /// Position in the queue, if the candidate is queued.
+    pub queue_position: Option<i64>,
 }
 
 /// Row of the debian_build table.
