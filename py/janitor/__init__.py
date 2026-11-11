@@ -56,6 +56,7 @@ def set_user_agent(user_agent):
 
 
 CAMPAIGN_REGEX = "[a-z0-9-]+"
+CODEBASE_REGEX = "[a-z0-9][a-z0-9+.-]+"
 
 
 def splitout_env(command):

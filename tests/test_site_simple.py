@@ -536,10 +536,15 @@ async def test_result_file_log_from_runner(aiohttp_client, database_location):
     for name in ["build.log", "worker.log", "dist.log"]:
         resp = await client.get(f"/lintian-fixes/pkg/pkg/run-id/{name}")
         got.append((name, resp.status, await resp.text()))
+    for path in ["/lintian-fixes/pkg/,,", "/cupboard/c/,,"]:
+        resp = await client.get(f"{path}/run-id/build.log")
+        got.append((path, resp.status, await resp.text()))
     assert got == [
         ("build.log", 200, "log"),
         ("worker.log", 502, "Unable to read log file worker.log for run run-id"),
         ("dist.log", 404, "No log file dist.log for run run-id"),
+        ("/lintian-fixes/pkg/,,", 404, "404: Not Found"),
+        ("/cupboard/c/,,", 404, "404: Not Found"),
     ]
 
 
