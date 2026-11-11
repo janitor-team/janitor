@@ -40,10 +40,10 @@
                     <tr class="row-even">
                         <td>{{ format_timestamp(run.finish_time) }}</td>
                         <td>
-                            <a class="reference external" href="c/{{ run.codebase }}">{{ run.codebase }}</a>
+                            <a class="reference external" href="c/{{ run.codebase }}/">{{ run.codebase }}</a>
                         </td>
                         <td>
-                            <a href="/{{ run.suite }}">{{ run.suite }}</a>
+                            <a href="/{{ run.suite }}/">{{ run.suite }}</a>
                         </td>
                         <td>
                             {% if worker_link_is_global(run.worker_link) %}
@@ -54,7 +54,7 @@
                         </td>
                         <td>{{ format_duration(run.duration) }}</td>
                         <td>
-                            <a class="reference external" href="c/{{ run.codebase }}/{{ run.id }}">{{ display_result_code(run.result_code, run.failure_transient) |safe }}</a>
+                            <a class="reference external" href="c/{{ run.codebase }}/{{ run.id }}/">{{ display_result_code(run.result_code, run.failure_transient) |safe }}</a>
                         </td>
                         <td>
                             {% if run.result_code != 'success' %}{{ run.description }}{% endif %}

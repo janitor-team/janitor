@@ -37,7 +37,7 @@
                 <ul>
                 {% endif %}
                 <li>
-                    <a href="c/{{ run.codebase }}/{{ run.id }}">{{ run.codebase }}</a>
+                    <a href="c/{{ run.codebase }}/{{ run.id }}/">{{ run.codebase }}</a>
                     {% if run.merged_by %}
                         <em>(<a href="{{ run.merge_proposal_url }}">merged</a> by
                             {% if run.merged_by_url %}

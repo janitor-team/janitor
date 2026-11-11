@@ -80,7 +80,7 @@
                         <td>{{ format_duration(run.finish_time - run.start_time) }}</td>
                         <td>
                             <a class="reference external"
-                               href="../c/{{ run.codebase }}/{{ run.id }}">{% if run.description %}{{ run.description }}{% else %}<span class="missing-description">no description</span>{% endif %}</a>
+                               href="../c/{{ run.codebase }}/{{ run.id }}/">{% if run.description %}{{ run.description }}{% else %}<span class="missing-description">no description</span>{% endif %}</a>
                         </td>
                     </tr>
                 {% endfor %}
