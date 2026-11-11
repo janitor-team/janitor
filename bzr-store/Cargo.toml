@@ -41,7 +41,7 @@ utoipa.workspace = true
 utoipa-axum.workspace = true
 
 # Bazaar branch web browser (replaces Python loggerhead)
-loggerhead = "3"
+loggerhead = "3.0.2"
 
 # Breezy PyO3 shim: initialize on startup so loggerhead's branch access
 # works. Pinned to the same version loggerhead=3 uses.

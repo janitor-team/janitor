@@ -409,7 +409,7 @@ mod tests {
             &mut None,
         )
         .unwrap();
-        let target_branch_foo = breezyshim::branch::open(
+        let target_branch_foo = breezyshim::branch::open_as_generic(
             &Url::from_directory_path(target_path.join("campaign")).unwrap(),
         )
         .unwrap();
