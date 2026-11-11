@@ -23,7 +23,7 @@ async-stream = "0.3"
 async-trait = "0.1"
 num_cpus = "1.0"
 sqlx = { workspace = true, features = ["postgres", "chrono", "uuid", "migrate", "macros", "runtime-tokio", "tls-native-tls"] }
-janitor = { path = ".." }
+janitor = { path = "..", features = ["otlp"] }
 janitor-types = { workspace = true, features = ["sqlx", "utoipa"] }
 janitor-service = { workspace = true }
 # Reading .deb file trees in-process (for Contents-<arch>): outer
@@ -43,13 +43,7 @@ utoipa-axum.workspace = true
 hyper = "1.0"
 tokio-util = "0.7"
 redis = { workspace = true, features = ["tokio-comp", "connection-manager"] }
-uuid = { version = "1.6", features = ["v4", "serde"] }
 clap = { version = "4.4", features = ["derive", "env"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-tracing-opentelemetry = "0.34"
-opentelemetry = "0.33"
-opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace"] }
 
 [dev-dependencies]
 janitor = { path = "..", features = ["testing"] }
