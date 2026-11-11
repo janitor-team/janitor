@@ -1697,7 +1697,7 @@ async fn end_to_end_assignment_lifecycle() {
     assert_eq!(campaign, "test-campaign");
     assert_eq!(logfilenames, vec!["worker.log", "build.log"]);
 
-    // The logs are in the log store, and not also left in the upload directory.
+    // The logs are in the log store.
     let mut logs = Vec::new();
     for name in ["worker.log", "build.log"] {
         let log = state
@@ -1718,15 +1718,6 @@ async fn end_to_end_assignment_lifecycle() {
     assert_eq!(
         logs,
         vec![b"worker output\n".to_vec(), b"build output\n".to_vec()]
-    );
-    let uploads = std::env::temp_dir().join("janitor_test_uploads");
-    assert_eq!(
-        [
-            uploads.join(run_id).exists(),
-            uploads.join("e2e-cb").join(run_id).exists(),
-            uploads.join(run_id).join("logs").exists(),
-        ],
-        [true, false, false]
     );
 
     // ActiveRun should be gone from Redis after finish -- the run is

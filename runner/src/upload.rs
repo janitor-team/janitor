@@ -41,7 +41,7 @@ pub struct UploadedWorkerResult {
 
 /// Processor for multipart uploads from workers.
 pub struct UploadProcessor {
-    /// Base directory for storing uploaded files.
+    /// Directory to make each upload's temporary directory in.
     storage_dir: PathBuf,
 }
 
@@ -54,23 +54,30 @@ impl UploadProcessor {
     /// Process a multipart upload from a worker.
     ///
     /// Logs are streamed compressed into `log_manager` as they arrive.
-    /// Other categories (artifacts/build/metadata) keep the
-    /// `{storage_dir}/{run_id}/{category}/{filename}` layout.
+    /// Other categories (artifacts/build/metadata) go into a new
+    /// temporary directory under `storage_dir`, as
+    /// `{run_id}/{category}/{filename}`; it is returned with the result
+    /// and removed when dropped.
     pub async fn process_upload(
         &self,
         mut multipart: Multipart,
         run_id: &janitor_types::RunId,
         codebase: &janitor_types::CodebaseName,
         log_manager: &janitor::logs::LogFileManager,
-    ) -> Result<UploadedWorkerResult, UploadError> {
+    ) -> Result<(UploadedWorkerResult, tempfile::TempDir), UploadError> {
         let mut worker_result: Option<WorkerResult> = None;
         let mut log_files = Vec::new();
         let mut artifact_files = Vec::new();
         let mut build_files = Vec::new();
         let mut metadata_files = Vec::new();
 
-        // Per-category directory layout.
-        let run_dir = self.storage_dir.join(run_id);
+        let staging = tempfile::Builder::new()
+            .prefix("janitor-upload-")
+            .tempdir_in(&self.storage_dir)
+            .map_err(|e| {
+                UploadError::Storage(format!("Failed to create temporary directory: {}", e))
+            })?;
+        let run_dir = staging.path().join(run_id);
         tokio::fs::create_dir_all(&run_dir)
             .await
             .map_err(|e| UploadError::Storage(format!("Failed to create directory: {}", e)))?;
@@ -180,13 +187,16 @@ impl UploadProcessor {
         let worker_result = worker_result
             .ok_or_else(|| UploadError::Validation("Missing worker_result field".to_string()))?;
 
-        Ok(UploadedWorkerResult {
-            worker_result,
-            log_files,
-            artifact_files,
-            build_files,
-            metadata_files,
-        })
+        Ok((
+            UploadedWorkerResult {
+                worker_result,
+                log_files,
+                artifact_files,
+                build_files,
+                metadata_files,
+            },
+            staging,
+        ))
     }
 
     /// Stream a log field compressed into `log_manager` and return its name.

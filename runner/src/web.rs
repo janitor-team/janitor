@@ -2990,7 +2990,8 @@ async fn finish_run_multipart_internal(
     };
 
     // Process multipart upload, streaming the logs into the log store.
-    let uploaded_result = match state
+    // The other uploaded files stay in `_staging` until this returns.
+    let (uploaded_result, _staging) = match state
         .upload_processor
         .process_upload(
             multipart,
