@@ -82,6 +82,11 @@ tr.row-disabled, td.old-version {
     }
 }
 
+div.revisions pre {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
 span.tinycode {
     font-family: monospace;
     font-weight: bold;
