@@ -78,8 +78,8 @@ pub struct ScheduleControlResponse {
     pub codebase: CodebaseName,
     /// Id of the queue item.
     pub queue_id: i32,
-    /// Estimated duration of the run, in seconds.
-    pub estimated_duration_seconds: f64,
+    /// Estimated duration of the run, in seconds; null when it is zero.
+    pub estimated_duration_seconds: Option<f64>,
 }
 
 /// Response for `POST /schedule`.
@@ -95,8 +95,8 @@ pub struct ScheduleResponse {
     pub codebase: CodebaseName,
     /// Id of the queue item.
     pub queue_id: i32,
-    /// Estimated duration of the run, in seconds.
-    pub estimated_duration_seconds: f64,
+    /// Estimated duration of the run, in seconds; null when it is zero.
+    pub estimated_duration_seconds: Option<f64>,
     /// Position of the new item in the queue, if known.
     pub queue_position: Option<i32>,
     /// Estimated wait before the item is processed, in seconds.
