@@ -10,7 +10,8 @@ use axum::http::{Method, Request, StatusCode};
 use chrono::Utc;
 use futures::TryStreamExt;
 use janitor::queue::VcsInfo;
-use janitor_runner::{test_utils, ActiveRun, AppState, Backchannel};
+use janitor_runner::test_utils::{self, insert_codebase};
+use janitor_runner::{ActiveRun, AppState, Backchannel};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -206,7 +207,7 @@ async fn post_update_run_persists_publish_status() {
     let pool = state.database.pool().clone();
 
     // Seed: one codebase, one change_set, one run row.
-    test_utils::insert_codebase(&pool, "update-run-codebase").await;
+    insert_codebase(&pool, "update-run-codebase").await;
     sqlx::query("INSERT INTO change_set (id, campaign) VALUES ($1, $2)")
         .bind("cs-upd")
         .bind("test-campaign")
@@ -335,7 +336,7 @@ async fn post_candidates_records_unknown_campaign() {
     let (app, state) = require_setup!(setup());
 
     let pool = state.database.pool().clone();
-    test_utils::insert_codebase(&pool, "cand-unk-campaign-cb").await;
+    insert_codebase(&pool, "cand-unk-campaign-cb").await;
 
     let body = json!([{
         "codebase": "cand-unk-campaign-cb",
@@ -379,7 +380,7 @@ async fn post_candidates_wrong_field_type_is_unprocessable() {
     let (app, state) = require_setup!(setup_with_campaign());
 
     let pool = state.database.pool().clone();
-    test_utils::insert_codebase(&pool, "cand-type-cb").await;
+    insert_codebase(&pool, "cand-type-cb").await;
 
     let body = json!([
         {"codebase": "cand-type-cb", "campaign": "test-campaign"},
@@ -403,7 +404,7 @@ async fn get_run_returns_codebase_campaign_publish_status() {
     let (app, state) = require_setup!(setup());
 
     let pool = state.database.pool().clone();
-    test_utils::insert_codebase(&pool, "get-run-cb").await;
+    insert_codebase(&pool, "get-run-cb").await;
     sqlx::query("INSERT INTO change_set (id, campaign) VALUES ($1, $2)")
         .bind("cs-get")
         .bind("test-campaign")
@@ -453,7 +454,7 @@ async fn get_run_returns_run_detail_with_result_branches() {
     };
 
     let pool = state.database.pool().clone();
-    test_utils::insert_codebase(&pool, "get-run-detail-cb").await;
+    insert_codebase(&pool, "get-run-detail-cb").await;
     sqlx::query("INSERT INTO change_set (id, campaign) VALUES ($1, $2)")
         .bind("cs-detail")
         .bind("test-campaign")
@@ -600,8 +601,8 @@ async fn list_runs_filters_by_codebase_and_campaign() {
     };
     let pool = state.database.pool().clone();
 
-    test_utils::insert_codebase(&pool, "alpha").await;
-    test_utils::insert_codebase(&pool, "beta").await;
+    insert_codebase(&pool, "alpha").await;
+    insert_codebase(&pool, "beta").await;
     sqlx::query(
         "INSERT INTO change_set (id, campaign) VALUES \
          ('cs-list-a', 'test-campaign'), ('cs-list-b', 'other-campaign')",
@@ -698,7 +699,7 @@ async fn list_runs_finds_unchanged_baseline() {
     };
     let pool = state.database.pool().clone();
 
-    test_utils::insert_codebase(&pool, "cb").await;
+    insert_codebase(&pool, "cb").await;
     sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs-base', 'test-campaign')")
         .execute(&pool)
         .await
@@ -765,7 +766,7 @@ async fn list_runs_paginates_with_offset() {
     };
     let pool = state.database.pool().clone();
 
-    test_utils::insert_codebase(&pool, "cb").await;
+    insert_codebase(&pool, "cb").await;
     sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs-page', 'test-campaign')")
         .execute(&pool)
         .await
@@ -828,7 +829,7 @@ async fn get_queue_returns_scheduled_entries() {
     let (app, state) = require_setup!(setup());
 
     let pool = state.database.pool().clone();
-    test_utils::insert_codebase(&pool, "queue-listing-cb").await;
+    insert_codebase(&pool, "queue-listing-cb").await;
     sqlx::query(
         "INSERT INTO queue (codebase, suite, command, context)
          VALUES ($1, $2, $3, $4)",
@@ -923,7 +924,7 @@ async fn post_schedule_returns_queue_position() {
     let (app, state) = require_setup!(setup());
 
     let pool = state.database.pool().clone();
-    test_utils::insert_codebase(&pool, "sched-pos-cb").await;
+    insert_codebase(&pool, "sched-pos-cb").await;
     sqlx::query(
         "INSERT INTO candidate (codebase, suite, command)
          VALUES ($1, $2, $3)",
@@ -967,7 +968,7 @@ async fn post_candidates_success_path_writes_queue_row() {
     let (app, state) = require_setup!(setup_with_campaign());
 
     let pool = state.database.pool().clone();
-    test_utils::insert_codebase(&pool, "cand-ok-cb").await;
+    insert_codebase(&pool, "cand-ok-cb").await;
 
     let body = json!([{
         "codebase": "cand-ok-cb",
@@ -1012,7 +1013,7 @@ async fn post_candidates_records_invalid_value() {
     let (app, state) = require_setup!(setup_with_campaign());
 
     let pool = state.database.pool().clone();
-    test_utils::insert_codebase(&pool, "cand-invalid-cb").await;
+    insert_codebase(&pool, "cand-invalid-cb").await;
 
     let body = json!([{
         "codebase": "cand-invalid-cb",
@@ -1047,7 +1048,7 @@ async fn post_candidates_records_unknown_publish_policy() {
     let (app, state) = require_setup!(setup_with_campaign());
 
     let pool = state.database.pool().clone();
-    test_utils::insert_codebase(&pool, "cand-unk-pp-cb").await;
+    insert_codebase(&pool, "cand-unk-pp-cb").await;
 
     let body = json!([{
         "codebase": "cand-unk-pp-cb",
@@ -1325,7 +1326,7 @@ async fn end_to_end_assignment_lifecycle() {
     let (app, state) = require_setup!(setup_with_campaign());
 
     let pool = state.database.pool().clone();
-    test_utils::insert_codebase(&pool, "e2e-cb").await;
+    insert_codebase(&pool, "e2e-cb").await;
     state
         .auth_service
         .create_worker("e2e-worker", "e2e-pw", None)
@@ -1445,7 +1446,7 @@ async fn end_to_end_assignment_lifecycle() {
 /// shape of the assign response without caring about the finish half.
 async fn assign_one(app: axum::Router, state: &Arc<AppState>, codebase: &str) -> Value {
     let pool = state.database.pool().clone();
-    test_utils::insert_codebase(&pool, codebase).await;
+    insert_codebase(&pool, codebase).await;
     state
         .auth_service
         .create_worker("envelope-worker", "envelope-pw", None)
@@ -1646,7 +1647,7 @@ async fn peek_returns_queue_item_shape_when_available() {
     let (app, state) = require_setup!(setup_with_campaign());
 
     let pool = state.database.pool().clone();
-    test_utils::insert_codebase(&pool, "peek-cb").await;
+    insert_codebase(&pool, "peek-cb").await;
     // Enqueue via POST /candidates so the queue row + campaign
     // config are wired the same way an assign would see them.
     let body = json!([{ "codebase": "peek-cb", "campaign": "test-campaign" }]);
@@ -1723,7 +1724,7 @@ async fn seed_active_run_for_finish(state: &Arc<AppState>, log_id: &str) {
 async fn finish_multipart_without_metadata_returns_400() {
     let (app, state) = require_setup!(setup());
     let pool = state.database.pool().clone();
-    test_utils::insert_codebase(&pool, "finish-neg-cb").await;
+    insert_codebase(&pool, "finish-neg-cb").await;
     seed_active_run_for_finish(&state, "run-no-metadata").await;
 
     // Multipart with a single unrelated `file` part -- no `metadata`
@@ -1768,7 +1769,7 @@ async fn finish_multipart_without_metadata_returns_400() {
 async fn finish_malformed_multipart_returns_400() {
     let (app, state) = require_setup!(setup());
     let pool = state.database.pool().clone();
-    test_utils::insert_codebase(&pool, "finish-neg-cb").await;
+    insert_codebase(&pool, "finish-neg-cb").await;
     seed_active_run_for_finish(&state, "run-malformed").await;
 
     // Boundary declared but body doesn't contain it -- axum's
@@ -1800,7 +1801,7 @@ async fn finish_malformed_multipart_returns_400() {
 async fn finish_multipart_field_without_name_returns_400() {
     let (app, state) = require_setup!(setup());
     let pool = state.database.pool().clone();
-    test_utils::insert_codebase(&pool, "finish-neg-cb").await;
+    insert_codebase(&pool, "finish-neg-cb").await;
     seed_active_run_for_finish(&state, "run-no-field-name").await;
 
     // Content-Disposition without a `name=` attribute -- axum returns
@@ -1840,9 +1841,9 @@ async fn assign_picks_lowest_priority_first() {
     let (app, state) = require_setup!(setup_with_campaign());
 
     let pool = state.database.pool().clone();
-    test_utils::insert_codebase(&pool, "prio-a").await;
-    test_utils::insert_codebase(&pool, "prio-b").await;
-    test_utils::insert_codebase(&pool, "prio-c").await;
+    insert_codebase(&pool, "prio-a").await;
+    insert_codebase(&pool, "prio-b").await;
+    insert_codebase(&pool, "prio-c").await;
     state
         .auth_service
         .create_worker("prio-worker", "pw", None)
@@ -1883,7 +1884,7 @@ async fn assign_prefers_higher_success_chance_within_same_priority() {
 
     let pool = state.database.pool().clone();
     for cb in ["score-a", "score-b", "score-c"] {
-        test_utils::insert_codebase(&pool, cb).await;
+        insert_codebase(&pool, cb).await;
     }
     state
         .auth_service
@@ -2015,7 +2016,7 @@ async fn post_update_run_publishes_publish_status_event() {
     let (app, state) = require_setup!(setup());
 
     let pool = state.database.pool().clone();
-    test_utils::insert_codebase(&pool, "pubsub-cb").await;
+    insert_codebase(&pool, "pubsub-cb").await;
     sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs-pubsub', 'test-campaign')")
         .execute(&pool)
         .await
@@ -2127,7 +2128,7 @@ async fn current_stage_returns_404_for_unknown_id() {
 async fn current_stage_returns_null_for_none_backchannel() {
     let (app, state) = require_setup!(setup());
     let pool = state.database.pool().clone();
-    test_utils::insert_codebase(&pool, "finish-neg-cb").await;
+    insert_codebase(&pool, "finish-neg-cb").await;
     seed_active_run_for_finish(&state, "run-current-stage").await;
 
     let response = send(
@@ -2179,7 +2180,7 @@ async fn get_workers_reports_run_count_per_worker() {
     };
 
     let pool = state.database.pool().clone();
-    test_utils::insert_codebase(&pool, "worker-count-cb").await;
+    insert_codebase(&pool, "worker-count-cb").await;
     sqlx::query("INSERT INTO change_set (id, campaign) VALUES ($1, $2)")
         .bind("cs-worker-count")
         .bind("test-campaign")
@@ -2299,7 +2300,7 @@ async fn post_active_runs_honours_client_exclude_hosts() {
     let (app, state) = require_setup!(setup_with_campaign());
 
     let pool = state.database.pool().clone();
-    test_utils::insert_codebase(&pool, "excl-host-cb").await;
+    insert_codebase(&pool, "excl-host-cb").await;
     state
         .auth_service
         .create_worker("excl-worker", "excl-pw", None)
@@ -2343,7 +2344,7 @@ async fn finish_with_artifact(
     worker: &str,
 ) -> (StatusCode, Value) {
     let pool = state.database.pool().clone();
-    test_utils::insert_codebase(&pool, codebase).await;
+    insert_codebase(&pool, codebase).await;
     state
         .auth_service
         .create_worker(worker, "pw", None)
@@ -2538,7 +2539,7 @@ async fn get_candidate_returns_row_or_404() {
     };
 
     let pool = state.database.pool().clone();
-    test_utils::insert_codebase(&pool, "cand-cb").await;
+    insert_codebase(&pool, "cand-cb").await;
     sqlx::query(
         "INSERT INTO candidate (codebase, suite, command, context, value, success_chance)
          VALUES ($1, $2, $3, $4, $5, $6)",
@@ -2598,7 +2599,7 @@ async fn get_run_followups_returns_candidate_pairs() {
 
     let pool = state.database.pool().clone();
     for cb in ["alpha", "beta", "gamma"] {
-        test_utils::insert_codebase(&pool, cb).await;
+        insert_codebase(&pool, cb).await;
     }
     sqlx::query(
         "INSERT INTO change_set (id, campaign) VALUES \
