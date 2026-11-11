@@ -219,9 +219,9 @@ pub fn publish_one(
                 });
             }
         },
-        Err(_) => {
+        Err(e) => {
             return Err(PublishError::Failure {
-                description: "Unexpected error.".to_string(),
+                description: format!("Forge lookup failed: {}", e),
                 code: "unexpected-error".to_string(),
             });
         }
