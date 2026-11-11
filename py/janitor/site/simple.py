@@ -788,7 +788,7 @@ async def main_async(argv=None):
         help="Public listen port for a reverse proxy",
         default=8090,
     )
-    parser.add_argument("--host", type=str, help="Listen address", default="localhost")
+    parser.add_argument("--host", type=str, help="Listen address", default="127.0.0.1")
     parser.add_argument(
         "--config", type=str, default="janitor.conf", help="Path to configuration"
     )
