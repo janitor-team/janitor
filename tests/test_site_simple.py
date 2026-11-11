@@ -28,6 +28,7 @@ import pytest_asyncio
 from aiohttp import web
 from bs4 import BeautifulSoup
 from fakeredis.aioredis import FakeRedis
+from yarl import URL
 
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
@@ -398,7 +399,13 @@ async def _start_provider(aiohttp_server, *, discovery=None, userinfo=None):
     return await aiohttp_server(provider_app)
 
 
-async def _openid_site(aiohttp_client, database_location, provider=None, groups=""):
+async def _openid_site(
+    aiohttp_client,
+    database_location,
+    provider=None,
+    groups="",
+    external_url="https://example.com/",
+):
     base_url = f'base_url: "{provider.make_url("/")}"' if provider else ""
     oauth2_provider = f"""oauth2_provider {{
   client_id: "test-client"
@@ -408,7 +415,7 @@ async def _openid_site(aiohttp_client, database_location, provider=None, groups=
 }}"""
     _private_app, app = await create_app(
         config=create_config(database_location, oauth2_provider),
-        external_url="https://example.com/",
+        external_url=external_url,
         redis=FakeRedis(),
     )
     return await aiohttp_client(app)
@@ -439,6 +446,29 @@ async def test_login_link_with_provider(
     client = await _openid_site(aiohttp_client, database_location, provider)
     resp = await client.get("/lintian-fixes/candidates")
     assert (resp.status, _login_links(await resp.text())) == (200, links)
+
+
+@pytest.mark.parametrize("external_url", ["https://example.com/", None])
+async def test_login_redirects_to_provider(
+    aiohttp_client, aiohttp_server, database_location, external_url
+):
+    provider = await _start_provider(aiohttp_server)
+    client = await _openid_site(
+        aiohttp_client, database_location, provider, external_url=external_url
+    )
+    resp = await client.get("/login", allow_redirects=False)
+    assert resp.status == 302
+    location = URL(resp.headers["Location"])
+    assert location.with_query(None) == provider.make_url("/authorize")
+    assert dict(location.query) == {
+        "client_id": "test-client",
+        "redirect_uri": "https://example.com/oauth/callback"
+        if external_url
+        else str(client.make_url("/oauth/callback")),
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": resp.cookies["state"].value,
+    }
 
 
 async def test_login_link_hidden_without_provider(aiohttp_client, database_location):
