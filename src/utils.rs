@@ -36,20 +36,17 @@ pub fn splitout_env(command: &str) -> (HashMap<String, String>, String) {
         }
     };
 
-    let mut env = HashMap::new();
-    let mut remaining_args = args;
-
-    // Process arguments from the beginning, collecting environment variables
-    while !remaining_args.is_empty() && remaining_args[0].contains('=') {
-        let arg = remaining_args.remove(0);
-        if let Some((key, value)) = arg.split_once('=') {
-            env.insert(key.to_string(), value.to_string());
-        } else {
-            // If split failed, this isn't a valid env var, put it back and break
-            remaining_args.insert(0, arg);
-            break;
-        }
-    }
+    let split = args
+        .iter()
+        .position(|arg| !arg.contains('='))
+        .unwrap_or(args.len());
+    let mut env_args = args;
+    let remaining_args = env_args.split_off(split);
+    let env = env_args
+        .iter()
+        .filter_map(|arg| arg.split_once('='))
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect::<HashMap<_, _>>();
 
     // Reconstruct the remaining command
     let remaining_command = if remaining_args.is_empty() {
