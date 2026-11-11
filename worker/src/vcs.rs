@@ -36,7 +36,15 @@ pub fn push_branch(
     let target = match breezyshim::controldir::open(&url, possible_transports.as_mut()) {
         Ok(cd) => cd,
         Err(BrzError::NotBranchError(..)) => {
-            breezyshim::controldir::create(&url, &vcs_type, possible_transports.as_mut())?
+            let transport =
+                breezyshim::transport::get_transport(&url, possible_transports.as_mut())?;
+            match breezyshim::controldir::create_on_transport(&transport, &vcs_type) {
+                Err(BrzError::NoSuchFile(..)) => {
+                    transport.create_prefix()?;
+                    breezyshim::controldir::create_on_transport(&transport, &vcs_type)?
+                }
+                r => r?,
+            }
         }
         Err(e) => {
             return Err(e);
@@ -349,7 +357,7 @@ mod tests {
             None,
         )
         .unwrap();
-        target.create_repository(None).unwrap();
+        target.create_repository(Some(true)).unwrap();
         super::push_branch(
             &source_tree.branch(),
             &url::Url::parse(&format!("{},branch=foo", target_url)).unwrap(),
@@ -362,6 +370,23 @@ mod tests {
         .unwrap();
         assert_eq!(
             target.open_branch(Some("foo")).unwrap().last_revision(),
+            revid1
+        );
+        let nested_url = target_url.join("debian/latest").unwrap();
+        super::push_branch(
+            &source_tree.branch(),
+            &nested_url,
+            None,
+            false,
+            None,
+            None,
+            &mut None,
+        )
+        .unwrap();
+        assert_eq!(
+            breezyshim::branch::open_as_generic(&nested_url)
+                .unwrap()
+                .last_revision(),
             revid1
         );
         std::mem::drop(env);
