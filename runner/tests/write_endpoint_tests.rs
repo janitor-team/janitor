@@ -2159,9 +2159,6 @@ async fn assign_rate_limited(
 /// `Retry-After`, and the run is recorded as `pull-rate-limited` --
 /// also for refresh items, since Python always opened the main branch.
 #[tokio::test]
-// TODO: Enable once silver-platter classifies breezy's
-// UnexpectedHttpStatus 429 as BranchOpenError::RateLimited.
-#[ignore = "silver-platter 0.8.4 does not detect 429 from UnexpectedHttpStatus"]
 async fn assign_returns_429_when_main_branch_is_rate_limited() {
     let url = serve_rate_limited(Some("30")).await;
     let Some(result) = assign_rate_limited(&url, "assign-rate-limited-cb", true).await else {
@@ -2181,9 +2178,6 @@ async fn assign_returns_429_when_main_branch_is_rate_limited() {
 /// Without a `Retry-After` from the forge, Python told the worker to
 /// retry after 120 seconds.
 #[tokio::test]
-// TODO: Enable once silver-platter classifies breezy's
-// UnexpectedHttpStatus 429 as BranchOpenError::RateLimited.
-#[ignore = "silver-platter 0.8.4 does not detect 429 from UnexpectedHttpStatus"]
 async fn assign_rate_limited_defaults_retry_after() {
     let url = serve_rate_limited(None).await;
     let Some(result) = assign_rate_limited(&url, "assign-rate-limited-default-cb", false).await
