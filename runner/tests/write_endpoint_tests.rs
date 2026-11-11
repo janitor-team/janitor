@@ -1945,6 +1945,7 @@ async fn assign_picks_existing_colocated_branches() {
     let revid = wt
         .build_commit()
         .message("initial")
+        .committer("Test <test@example.com>")
         .allow_pointless(true)
         .commit()
         .unwrap();
@@ -2027,6 +2028,7 @@ async fn assign_keeps_colocated_branches_when_vcs_manager_has_no_resume() {
     let revid = wt
         .build_commit()
         .message("initial")
+        .committer("Test <test@example.com>")
         .allow_pointless(true)
         .commit()
         .unwrap();

@@ -560,6 +560,7 @@ mod tests {
         let revid = wt
             .build_commit()
             .message("initial")
+            .committer("Test <test@example.com>")
             .allow_pointless(true)
             .commit()
             .unwrap();
