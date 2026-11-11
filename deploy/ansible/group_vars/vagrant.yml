@@ -39,3 +39,10 @@ enable_auto_upload: true
 enable_auto_upload_target: true
 auto_upload_dput_host: janitor-test
 auto_upload_distributions: ["{{ janitor_lintian_fixes_build_distribution }}"]
+
+# Gitea mails the bot's address on control, where Postfix pipes it into
+# the mail filter.
+enable_mail_filter: true
+enable_mta: true
+mta_domains: ["{{ gitea_domain }}"]
+mta_mail_filter_recipients: ["{{ gitea_bot_user }}"]
