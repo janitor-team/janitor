@@ -98,6 +98,7 @@
     - redis
     - caddy
     - { role: archive_signing_key, when: "'archive' in janitor_services" }
+    - { role: gitea, when: enable_gitea | bool }
     - janitor_config
     - janitor_quadlet
 

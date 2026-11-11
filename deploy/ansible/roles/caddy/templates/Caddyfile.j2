@@ -49,6 +49,18 @@
 {{ security_headers(true) }}
 	log
 {{ janitor_routes() }}}
+{% if enable_gitea | bool %}
+
+{{ gitea_domain }} {
+{% if caddy_self_signed | default(false) | bool %}
+	tls /etc/caddy/janitor.crt /etc/caddy/janitor.key
+{% endif %}
+	# Gitea's PDF viewer frames the file from Gitea itself.
+{{ security_headers(true, 'SAMEORIGIN', "frame-ancestors 'self'") }}
+	log
+	reverse_proxy {{ janitor_loopback }}:{{ gitea_http_port }}
+}
+{% endif %}
 
 # Plain HTTP serves only the apt repository (janitor_apt_archive_url) and
 # sends everything else, worker logins included, to HTTPS.
@@ -64,6 +76,12 @@
 	handle @apt_pool {
 		reverse_proxy {{ janitor_loopback }}:8090
 	}
+{% if enable_gitea | bool and caddy_self_signed | default(false) | bool %}
+	@gitea host {{ gitea_domain }}
+	handle @gitea {
+		redir https://{{ gitea_domain }}{uri} permanent
+	}
+{% endif %}
 	# The configured name, never the client's Host header.
 	handle {
 		redir https://{{ janitor_url_host }}{uri} permanent

@@ -2,7 +2,7 @@
 # Only for the local test VMs (../Vagrantfile, ../Vagrantfile.multi-host).
 # Every secret here is a fake, local-only value. The Vagrantfiles pass
 # janitor_domain and the worker addresses as extra vars.
-# HTTPS with a self-signed certificate, which each worker host trusts.
+# HTTPS with a self-signed certificate, which every host trusts.
 caddy_self_signed: true
 janitor_github_org: vagrant-test
 
@@ -17,3 +17,18 @@ worker_name: "{{ inventory_hostname }}"
 
 # The lintian-fixes campaign needs lintian-brush on the worker.
 janitor_worker_extra_packages: [lintian-brush]
+
+# Gitea on control, with test accounts and repositories. The site login uses it.
+enable_gitea: true
+gitea_domain: gitea.janitor.test
+janitor_extra_hosts: "{{ {gitea_domain: janitor_domain} }}"
+gitea_test_users: [maintainer, contributor]
+gitea_test_org: packages
+gitea_test_repos:
+  - {name: sl, clone_url: "https://salsa.debian.org/debian/sl.git"}
+  - {name: cmatrix, clone_url: "https://salsa.debian.org/debian/cmatrix.git"}
+  - {name: xjump, clone_url: "https://salsa.debian.org/games-team/xjump.git"}
+gitea_site_login: true
+# Gitea's OpenID groups: members of the org review, its owners are admins.
+oauth_qa_reviewer_group: "{{ gitea_test_org }}"
+oauth_admin_group: "{{ gitea_test_org }}:owners"
