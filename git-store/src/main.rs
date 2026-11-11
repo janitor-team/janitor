@@ -28,6 +28,10 @@ struct Cli {
     #[arg(long, default_value = "127.0.0.1")]
     listen_address: std::net::IpAddr,
 
+    /// Listen address of the public port; defaults to --listen-address.
+    #[arg(long)]
+    public_listen_address: Option<std::net::IpAddr>,
+
     #[arg(long, default_value = "janitor.conf")]
     config: PathBuf,
 
@@ -80,6 +84,7 @@ async fn main() -> Result<()> {
     let mut config = Config::from_env().unwrap_or_else(|_| Config::default());
     config.git.local_path = vcs_path;
     config.git.host = cli.listen_address.to_string();
+    let public_listen_address = cli.public_listen_address.unwrap_or(cli.listen_address);
     config.git.admin_port = cli.port;
     config.git.public_port = cli.public_port;
 
@@ -100,7 +105,7 @@ async fn main() -> Result<()> {
     );
     info!(
         "Public interface: {}:{}",
-        config.git.host, config.git.public_port
+        public_listen_address, config.git.public_port
     );
     info!("Repository path:  {:?}", config.git.local_path);
     info!(
@@ -156,7 +161,7 @@ async fn main() -> Result<()> {
     let public_app = web::create_public_app(public_state, client_max_size);
 
     let admin_addr = std::net::SocketAddr::new(cli.listen_address, config.git.admin_port);
-    let public_addr = std::net::SocketAddr::new(cli.listen_address, config.git.public_port);
+    let public_addr = std::net::SocketAddr::new(public_listen_address, config.git.public_port);
 
     let admin_listener = TcpListener::bind(&admin_addr).await?;
     info!("Admin server listening on {}", admin_addr);
