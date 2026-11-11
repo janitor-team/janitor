@@ -981,63 +981,23 @@ async fn update_merge_proposal(
                 }
             };
 
-            if let Some(comment) = form.comment.as_deref() {
-                log::info!("{}: {}", mp_url, comment);
-                let post_result = tokio::task::spawn_blocking({
-                    let mp = mp.clone();
-                    let comment = comment.to_string();
-                    move || mp.post_comment(&comment)
-                })
-                .await;
-                match post_result {
-                    Ok(Ok(())) => {}
-                    Ok(Err(breezyshim::error::Error::PermissionDenied(_, msg))) => {
-                        log::warn!(
-                            "Permission denied posting comment to {}: {}",
-                            mp_url,
-                            msg.unwrap_or_default()
-                        );
-                    }
-                    Ok(Err(e)) => {
-                        log::warn!("Failed to post comment to {}: {}", mp_url, e);
-                    }
-                    Err(_) => {
-                        return error_response(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "Task join error",
-                        );
-                    }
-                }
-            }
-
-            let close_result = tokio::task::spawn_blocking({
-                let mp = mp.clone();
-                move || mp.close()
-            })
-            .await;
-            match close_result {
-                Ok(Ok(())) => {}
-                Ok(Err(breezyshim::error::Error::PermissionDenied(_, msg))) => {
-                    let msg = msg.unwrap_or_default();
-                    log::warn!(
-                        "Permission denied closing merge request {}: {}",
-                        mp_url,
-                        msg
-                    );
+            match crate::post_comment_and_close(&mp, &mp_url, form.comment.as_deref()).await {
+                Ok(()) => {}
+                Err(breezyshim::error::Error::PermissionDenied(_, msg)) => {
                     return error_response(
                         StatusCode::FORBIDDEN,
-                        format!("Permission denied closing merge request: {}", msg),
+                        format!(
+                            "Permission denied closing merge request: {}",
+                            msg.unwrap_or_default()
+                        ),
                     );
                 }
-                Ok(Err(e)) => {
+                Err(e) => {
                     log::warn!("Failed to close merge request {}: {}", mp_url, e);
                     return error_response(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "Failed to close merge request",
                     );
-                }
-                Err(_) => {
-                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Task join error");
                 }
             }
         }
@@ -1133,18 +1093,12 @@ async fn consider(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> 
         // push_limit so operators can bypass the global push budget.
         // The bulk /autopublish path still respects it.
         if let Err(e) = crate::consider_publish_run(
-            &state.conn,
-            state.redis.clone(),
-            state.config,
-            &state.publish_worker,
-            &state.vcs_managers,
-            &state.bucket_rate_limiter,
+            &state,
             &run,
             &rate_limit_bucket,
             unpublished_branches.as_slice(),
             &command,
             None,
-            state.require_binary_diff,
         )
         .await
         {
@@ -1517,8 +1471,7 @@ async fn publish(
         let role_owned = role.clone();
         let publish_id_owned = publish_id.clone();
         tokio::spawn(async move {
-            let campaign_config = match state.config.campaign.iter().find(|c| c.name() == run.suite)
-            {
+            let campaign_config = match state.config.get_campaign(&run.suite) {
                 Some(c) => c,
                 None => {
                     log::warn!(
@@ -1843,18 +1796,7 @@ async fn check_stragglers(
 )]
 async fn scan(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     async fn scan(state: Arc<AppState>) {
-        crate::check_existing(
-            state.conn.clone(),
-            state.redis.clone(),
-            state.config,
-            &state.publish_worker,
-            &state.bucket_rate_limiter,
-            state.forge_rate_limiter.clone(),
-            &state.vcs_managers,
-            state.modify_mp_limit,
-            state.unexpected_mp_limit,
-        )
-        .await;
+        crate::check_existing(&state).await;
     }
 
     tokio::spawn(scan(state));
@@ -2009,12 +1951,9 @@ async fn autopublish(
     axum::extract::Query(query): axum::extract::Query<AutopublishQuery>,
 ) -> impl IntoResponse {
     let push_limit = query.push_limit.or(state.push_limit);
-    let require_binary_diff = state.require_binary_diff;
     let state_for_task = state.clone();
     tokio::spawn(async move {
-        if let Err(e) =
-            crate::publish_pending_ready(state_for_task, push_limit, require_binary_diff).await
-        {
+        if let Err(e) = crate::publish_pending_ready(state_for_task, push_limit).await {
             log::warn!("publish_pending_ready failed: {}", e);
         }
     });
