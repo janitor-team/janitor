@@ -639,7 +639,7 @@ async fn get_run_returns_run_detail_with_result_branches() {
     };
 
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "get-run-detail-cb").await;
+    test_utils::insert_codebase(&pool, "get-run-detail-cb").await;
     sqlx::query("INSERT INTO change_set (id, campaign) VALUES ($1, $2)")
         .bind("cs-detail")
         .bind("test-campaign")
@@ -786,8 +786,8 @@ async fn list_runs_filters_by_codebase_and_campaign() {
     };
     let pool = state.database.pool().clone();
 
-    insert_codebase(&pool, "alpha").await;
-    insert_codebase(&pool, "beta").await;
+    test_utils::insert_codebase(&pool, "alpha").await;
+    test_utils::insert_codebase(&pool, "beta").await;
     sqlx::query(
         "INSERT INTO change_set (id, campaign) VALUES \
          ('cs-list-a', 'test-campaign'), ('cs-list-b', 'other-campaign')",
@@ -884,7 +884,7 @@ async fn list_runs_finds_unchanged_baseline() {
     };
     let pool = state.database.pool().clone();
 
-    insert_codebase(&pool, "cb").await;
+    test_utils::insert_codebase(&pool, "cb").await;
     sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs-base', 'test-campaign')")
         .execute(&pool)
         .await
@@ -951,7 +951,7 @@ async fn list_runs_paginates_with_offset() {
     };
     let pool = state.database.pool().clone();
 
-    insert_codebase(&pool, "cb").await;
+    test_utils::insert_codebase(&pool, "cb").await;
     sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs-page', 'test-campaign')")
         .execute(&pool)
         .await
@@ -2621,7 +2621,7 @@ async fn get_workers_reports_run_count_per_worker() {
     };
 
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "worker-count-cb").await;
+    test_utils::insert_codebase(&pool, "worker-count-cb").await;
     sqlx::query("INSERT INTO change_set (id, campaign) VALUES ($1, $2)")
         .bind("cs-worker-count")
         .bind("test-campaign")
@@ -2980,7 +2980,7 @@ async fn get_candidate_returns_row_or_404() {
     };
 
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "cand-cb").await;
+    test_utils::insert_codebase(&pool, "cand-cb").await;
     sqlx::query(
         "INSERT INTO candidate (codebase, campaign, command, context, value, success_chance)
          VALUES ($1, $2, $3, $4, $5, $6)",
@@ -3040,7 +3040,7 @@ async fn get_run_followups_returns_candidate_pairs() {
 
     let pool = state.database.pool().clone();
     for cb in ["alpha", "beta", "gamma"] {
-        insert_codebase(&pool, cb).await;
+        test_utils::insert_codebase(&pool, cb).await;
     }
     sqlx::query(
         "INSERT INTO change_set (id, campaign) VALUES \
