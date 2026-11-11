@@ -270,6 +270,8 @@ cd {{ codebase }}
         {% else %}
             Failed to create merge proposal: <span class="publish-failure">{{ code }}</span>
         {% endif %}
+    {% else %}
+        {{ mode }}: {{ display_publish_result_code(code) }}
     {% endif %}
     {% if description %}
         (
