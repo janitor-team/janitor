@@ -1,4 +1,4 @@
-//! Integration tests for `DatabaseManager::is_worker`.
+//! Integration tests for `janitor::web::authenticated_worker`.
 //!
 //! These load the production `schema/state.sql` schema via the
 //! `test_with_database! { schema = Core; ... }` fast path so pgcrypto
@@ -8,9 +8,23 @@
 //! pgcrypto path as `py/janitor/worker_creds.py::is_worker`, which was
 //! the divergence that motivated rewriting this module.
 
+use axum::http::{header, HeaderMap};
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use janitor::test_with_database;
-use janitor_bzr_store::database::DatabaseManager;
 use sqlx::PgPool;
+
+async fn is_worker(pool: &PgPool, username: &str, password: &str) -> Option<String> {
+    let mut headers = HeaderMap::new();
+    let credentials = BASE64.encode(format!("{}:{}", username, password));
+    headers.insert(
+        header::AUTHORIZATION,
+        format!("Basic {}", credentials).parse().unwrap(),
+    );
+    janitor::web::authenticated_worker(pool, &headers)
+        .await
+        .unwrap()
+}
 
 /// Insert a worker row with a pgcrypto-hashed password, matching the way
 /// Python/pgcrypto-based deployments store credentials.
@@ -31,8 +45,7 @@ test_with_database! {
     async fn test_is_worker_accepts_correct_password(test_db: TestDatabase) {
         seed_worker(test_db.pool(), "alice", "s3cret").await;
 
-        let dbm = DatabaseManager::from_pool(test_db.pool().clone());
-        let result = dbm.is_worker("alice", "s3cret").await.unwrap();
+        let result = is_worker(test_db.pool(), "alice", "s3cret").await;
         assert_eq!(result, Some("alice".to_string()));
     }
 }
@@ -42,8 +55,7 @@ test_with_database! {
     async fn test_is_worker_rejects_wrong_password(test_db: TestDatabase) {
         seed_worker(test_db.pool(), "alice", "s3cret").await;
 
-        let dbm = DatabaseManager::from_pool(test_db.pool().clone());
-        let result = dbm.is_worker("alice", "wrong").await.unwrap();
+        let result = is_worker(test_db.pool(), "alice", "wrong").await;
         assert_eq!(result, None);
     }
 }
@@ -51,8 +63,7 @@ test_with_database! {
 test_with_database! {
     schema = Core;
     async fn test_is_worker_rejects_unknown_user(test_db: TestDatabase) {
-        let dbm = DatabaseManager::from_pool(test_db.pool().clone());
-        let result = dbm.is_worker("mallory", "anything").await.unwrap();
+        let result = is_worker(test_db.pool(), "mallory", "anything").await;
         assert_eq!(result, None);
     }
 }

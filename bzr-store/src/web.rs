@@ -14,8 +14,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine;
 use janitor_types::{Campaign, CodebaseName, Role};
 use serde::{Deserialize, Serialize};
 use tera::{Context, Tera};
@@ -36,7 +34,8 @@ use crate::smart_protocol::{
     smart_protocol_campaign_handler, smart_protocol_codebase_handler, smart_protocol_dispatch,
     smart_protocol_role_handler,
 };
-use crate::web_utils::{apply_standard_middleware, HealthChecker};
+use crate::web_utils::HealthChecker;
+use janitor::web::apply_standard_middleware;
 use utoipa::openapi::OpenApi;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -86,43 +85,14 @@ impl AppState {
     pub async fn resolve_allow_writes(&self, headers: &HeaderMap) -> Result<bool> {
         match self.role {
             AppRole::Admin => Ok(true),
-            AppRole::Public => Ok(is_worker_request(&self.database, headers).await?.is_some()),
+            AppRole::Public => Ok(janitor::web::authenticated_worker(
+                self.database.pool(),
+                headers,
+            )
+            .await?
+            .is_some()),
         }
     }
-}
-
-/// Decode the HTTP Basic `Authorization` header and, if present, call
-/// `DatabaseManager::is_worker`. Returns the worker name on success.
-/// Mirrors `py/janitor/worker_creds.py::is_worker`.
-pub(crate) async fn is_worker_request(
-    database: &DatabaseManager,
-    headers: &HeaderMap,
-) -> Result<Option<String>> {
-    let auth_header = match headers.get(header::AUTHORIZATION) {
-        Some(h) => h,
-        None => return Ok(None),
-    };
-    let auth_str = match auth_header.to_str() {
-        Ok(s) => s,
-        Err(_) => return Ok(None),
-    };
-    let encoded = match auth_str.strip_prefix("Basic ") {
-        Some(e) => e,
-        None => return Ok(None),
-    };
-    let decoded = match BASE64.decode(encoded) {
-        Ok(d) => d,
-        Err(_) => return Ok(None),
-    };
-    let creds = match std::str::from_utf8(&decoded) {
-        Ok(s) => s,
-        Err(_) => return Ok(None),
-    };
-    let (username, password) = match creds.split_once(':') {
-        Some(pair) => pair,
-        None => return Ok(None),
-    };
-    database.is_worker(username, password).await
 }
 
 /// Query parameters for the diff endpoint.
