@@ -4,12 +4,16 @@ The janitor can manage automated changes to a set of
 projects in version control.
 
 It does this through a number of interconnected
-services, each of which provides some basic features:
+services, most of which provide some basic features:
 
  * a rest service
  * /metrics target for use with prometheus
  * /ready and /health targets for use with kubernetes or other
    health-checking services
+
+The site has no /ready. The worker has only /health, and pushes its metrics
+to the Prometheus push gateway given with `--prometheus`. The auto-uploader
+has only /metrics.
 
 Access to the rest services is unauthenticated and is meant to be restricted
 to the other services and administrators.
