@@ -2,7 +2,7 @@
 
 - *archiver*: The job that builds and serves the signed apt repository
 indexes for the Debian packages of runs. The site serves the package files
-themselves.
+themselves. See [The apt archive](debian.md#the-apt-archive).
 
 - *auto-upload*: The job that signs the `.changes` files of successful Debian
 builds with `debsign` and uploads them to an archive with `dput`.
