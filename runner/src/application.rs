@@ -254,14 +254,13 @@ impl ApplicationBuilder {
         // Initialize log management from textproto logs_location (e.g. gs:// or /path).
         log::info!("Initializing log management...");
         let log_manager = Arc::new(
-            janitor::logs::create_log_manager(janitor_config.logs_location.as_deref()).map_err(
-                |e| {
-                    ApplicationError::LogManagement(format!(
-                        "Failed to initialize log manager: {}",
-                        e
-                    ))
-                },
-            )?,
+            match janitor_config.logs_location.as_deref() {
+                Some(location) => janitor::logs::create_log_manager(location),
+                None => janitor::logs::temp_log_manager(),
+            }
+            .map_err(|e| {
+                ApplicationError::LogManagement(format!("Failed to initialize log manager: {}", e))
+            })?,
         );
 
         // Initialize artifact management from textproto artifact_location.
