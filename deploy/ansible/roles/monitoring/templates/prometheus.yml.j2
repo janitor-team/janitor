@@ -18,6 +18,9 @@ rule_files:
 {% if enable_ognibuild_dep | bool %}
 {% set _ = probes.update({'ognibuild_dep': [janitor_health_urls.ognibuild_dep]}) %}
 {% endif %}
+{% if enable_apt_cacher_ng | bool %}
+{% set _ = probes.update({'apt_cacher_ng': [apt_cacher_ng_url + 'acng-report.html']}) %}
+{% endif %}
 scrape_configs:
 {% for job in prometheus_jobs %}
   - job_name: {{ job }}
@@ -72,7 +75,7 @@ scrape_configs:
 {% endfor %}
 {% if enable_blackbox_exporter | bool %}
 {% for job, urls in probes.items() if urls %}
-  # {{ job }} has no /metrics: the blackbox exporter checks its /health.
+  # {{ job }} has no /metrics: the blackbox exporter probes it.
   - job_name: {{ job }}
     metrics_path: /probe
     params:

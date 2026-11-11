@@ -294,6 +294,28 @@ janitor_worker_pushgateway_url: >-
      if enable_monitoring | bool and enable_pushgateway | bool and 'control' in group_names else '' }}
 # Jaeger's own metrics, with enable_tracing.
 jaeger_metrics_port: 8888
+# Optional: apt-cacher-ng on the control host, a cache for the apt
+# downloads of the sbuild chroot tarballs and of the builds in them.
+# http sources go through it. https sources go direct, or through it
+# uncached for apt_cacher_ng_pass_through_hosts.
+enable_apt_cacher_ng: false
+apt_cacher_ng_port: 3142
+# Loopback, or the control host's internal addresses as well for
+# workers on other hosts. An nftables table lets only loopback and
+# apt_cacher_ng_clients reach the port.
+apt_cacher_ng_listen_addresses: "{{ janitor_loopback_addresses }}"
+# Names or addresses, resolved on the control host.
+apt_cacher_ng_clients: >-
+  {{ groups['worker'] | difference(groups['control'])
+     | map('extract', hostvars) | map(attribute='ansible_host', default='') | list }}
+# What the sbuild chroot uses. A worker on another host needs an address
+# in apt_cacher_ng_listen_addresses.
+apt_cacher_ng_url: "http://{{ janitor_loopback }}:{{ apt_cacher_ng_port }}/"
+# http hosts apt reaches without the cache: janitor's own archive.
+apt_cacher_ng_direct_hosts:
+  - "{{ janitor_apt_archive_url | urlsplit('hostname') }}"
+# https hosts apt reaches through the cache (CONNECT, not cached).
+apt_cacher_ng_pass_through_hosts: []
 # Optional: janitor-mail-filter reads a forge's notification mail on
 # stdin and has publish refresh that proposal's status at once.
 # roles/mail_filter installs mail_filter_command for an MTA to pipe mail

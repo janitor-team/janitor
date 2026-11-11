@@ -191,7 +191,7 @@
   ansible.builtin.meta: flush_handlers
 
 # Kept until a remake succeeds, so a failed one is tried again on the next run.
-- name: Mark the sbuild chroot tarballs for remaking when their commands or apt sources changed
+- name: Mark the sbuild chroot tarballs for remaking when their commands, apt sources or apt cache settings changed
   ansible.builtin.file:
     path: "{{ janitor_home }}/sbuild-chroot.remake"
     state: touch
@@ -202,6 +202,7 @@
     - >-
       janitor_sbuild_keys is changed or janitor_sbuild_sources is changed
       or janitor_sbuild_apt_removed is changed
+      or janitor_sbuild_proxy is changed or janitor_sbuild_proxy_removed is changed
       or janitor_sbuild_chroot_units.results | selectattr('item', 'equalto', 'janitor-sbuild-chroot.service')
          | selectattr('changed') | list | length > 0
 

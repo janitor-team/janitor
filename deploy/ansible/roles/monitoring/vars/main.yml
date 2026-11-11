@@ -32,4 +32,6 @@ monitoring_exporters: >-
 monitoring_dashboards: >-
   {{ ['overview', 'services', 'host', 'database', 'forge-and-storage']
      + (['mail'] if enable_mail_filter | bool
-        or (enable_mta | bool and (enable_postfix_exporter | bool or enable_node_exporter | bool)) else []) }}
+        or (enable_mta | bool and (enable_postfix_exporter | bool or enable_node_exporter | bool)) else [])
+     + (['apt-cache'] if enable_apt_cacher_ng | bool
+        and (enable_blackbox_exporter | bool or enable_node_exporter | bool) else []) }}

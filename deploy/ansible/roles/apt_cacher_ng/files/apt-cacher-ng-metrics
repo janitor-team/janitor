@@ -1,0 +1,45 @@
+#!/bin/sh
+# Managed by ansible (roles/apt_cacher_ng). Writes apt-cacher-ng's
+# transfer counts and cache size for the node exporter's textfile
+# collector.
+set -eu
+log=/var/log/apt-cacher-ng/apt-cacher.log
+out=/var/lib/janitor-apt-cacher-ng-metrics/apt_cacher_ng.prom
+tmp=$(mktemp "$out.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+{
+	# Each line: time|I or O|bytes|client|path. I is a download from
+	# upstream (a miss), O a file sent to a client.
+	[ -r "$log" ] && cat "$log"
+	true
+} | awk -F'|' '
+	$2 == "I" { fetches++; fetched += $3 }
+	$2 == "O" { sent_n++; sent += $3; client[$4] += $3; client_n[$4]++ }
+	END {
+		print "# HELP apt_cacher_ng_requests_total Files sent to clients, since the log was rotated."
+		print "# TYPE apt_cacher_ng_requests_total counter"
+		printf "apt_cacher_ng_requests_total %d\n", sent_n
+		print "# HELP apt_cacher_ng_sent_bytes_total Bytes sent to clients, since the log was rotated."
+		print "# TYPE apt_cacher_ng_sent_bytes_total counter"
+		printf "apt_cacher_ng_sent_bytes_total %.0f\n", sent
+		print "# HELP apt_cacher_ng_fetches_total Files downloaded from upstream (misses), since the log was rotated."
+		print "# TYPE apt_cacher_ng_fetches_total counter"
+		printf "apt_cacher_ng_fetches_total %d\n", fetches
+		print "# HELP apt_cacher_ng_fetched_bytes_total Bytes downloaded from upstream, since the log was rotated."
+		print "# TYPE apt_cacher_ng_fetched_bytes_total counter"
+		printf "apt_cacher_ng_fetched_bytes_total %.0f\n", fetched
+		print "# HELP apt_cacher_ng_client_requests_total Files sent to each client, since the log was rotated."
+		print "# TYPE apt_cacher_ng_client_requests_total counter"
+		for (c in client_n) printf "apt_cacher_ng_client_requests_total{client=\"%s\"} %d\n", c, client_n[c]
+		print "# HELP apt_cacher_ng_client_sent_bytes_total Bytes sent to each client, since the log was rotated."
+		print "# TYPE apt_cacher_ng_client_sent_bytes_total counter"
+		for (c in client) printf "apt_cacher_ng_client_sent_bytes_total{client=\"%s\"} %.0f\n", c, client[c]
+	}' > "$tmp"
+{
+	echo "# HELP apt_cacher_ng_cache_bytes Disk space the cache uses."
+	echo "# TYPE apt_cacher_ng_cache_bytes gauge"
+	echo "apt_cacher_ng_cache_bytes $(du -sb /var/cache/apt-cacher-ng | cut -f1)"
+} >> "$tmp"
+chmod 0644 "$tmp"
+mv "$tmp" "$out"
+trap - EXIT

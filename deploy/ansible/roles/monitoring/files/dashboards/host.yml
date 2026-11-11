@@ -141,7 +141,7 @@ panels:
       textMode: name
     targets:
       - expr: >-
-          janitor_unit_state{unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service"}
+          janitor_unit_state{unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|apt-cacher-ng)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service"}
           == 1
         legend: "{{host}} {{unit}} {{state}}"
   - title: Caddy requests per second by status

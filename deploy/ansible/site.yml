@@ -111,6 +111,26 @@
         quiet: true
       when: enable_mta | bool
 
+    - name: Check the apt-cacher-ng host lists
+      ansible.builtin.assert:
+        that:
+          - apt_cacher_ng_clients | select('equalto', '') | list | length == 0
+          - apt_cacher_ng_clients | select('match', '^(127[.]|::1$|localhost$)') | list | length == 0
+          - (apt_cacher_ng_direct_hosts + apt_cacher_ng_pass_through_hosts) | select('search', '[^A-Za-z0-9.-]') | list | length == 0
+          - >-
+            'control' in group_names
+            or apt_cacher_ng_url | urlsplit('hostname') is not match('^(127[.]|::1$|localhost$)')
+        fail_msg: >-
+          apt_cacher_ng_clients needs a name or address for each entry
+          (each [worker] host needs ansible_host), and not a loopback
+          one. apt_cacher_ng_direct_hosts and
+          apt_cacher_ng_pass_through_hosts take host names or IPv4
+          addresses only, so janitor_domain must be one too. A worker on
+          a host that is not in [control] needs an apt_cacher_ng_url
+          that is not loopback.
+        quiet: true
+      when: enable_apt_cacher_ng | bool
+
     - name: Check monitoring has a Grafana admin password
       ansible.builtin.assert:
         that:
@@ -138,6 +158,8 @@
     - { role: garage, when: enable_garage | bool }
     - { role: jaeger, when: enable_tracing | bool }
     - { role: auto_upload_target, when: enable_auto_upload | bool and enable_auto_upload_target | bool }
+    # Before janitor_quadlet, which makes the sbuild chroot through it.
+    - { role: apt_cacher_ng, when: enable_apt_cacher_ng | bool }
     - janitor_config
     - janitor_quadlet
     - { role: mail_filter, when: enable_mail_filter | bool }

@@ -25,7 +25,7 @@ groups:
       - alert: UnitNotActive
         expr: >-
           janitor_unit_state{state!="active",
-            unit=~"(janitor-(git_store|bzr_store|differ|archive|runner|publish|site|auto_upload|ognibuild_dep|worker(-[0-9]+)?)|gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|postgresql@.+|postfix|janitor-worker-firewall)[.]service"} == 1
+            unit=~"(janitor-(git_store|bzr_store|differ|archive|runner|publish|site|auto_upload|ognibuild_dep|worker(-[0-9]+)?)|gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|postgresql@.+|postfix|janitor-worker-firewall|apt-cacher-ng|janitor-apt-cacher-ng-firewall)[.]service"} == 1
         for: 5m
         annotations:
           summary: {% raw %}"{{ $labels.unit }} is {{ $labels.state }} on {{ $labels.host }}"{% endraw %}
@@ -36,7 +36,7 @@ groups:
           or node_textfile_scrape_error == 1
           or (up{job="node"} == 1 unless on (instance) node_textfile_mtime_seconds{file=~".*units[.]prom"})
         annotations:
-          summary: {% raw %}"The unit states on {{ $labels.host }} are older than 5 minutes or cannot be read"{% endraw %}
+          summary: {% raw %}"The unit states on {{ $labels.host }} are older than 5 minutes, or a textfile cannot be read"{% endraw %}
 
       - alert: SbuildChrootStuck
         expr: janitor_unit_state{unit="janitor-sbuild-chroot.service",state="activating"} == 1
