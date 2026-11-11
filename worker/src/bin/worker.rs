@@ -40,7 +40,7 @@ struct Args {
     campaign: Option<janitor_types::Campaign>,
 
     /// Address to listen on
-    #[clap(long, default_value = "0.0.0.0")]
+    #[clap(long, default_value = "127.0.0.1")]
     listen_address: std::net::IpAddr,
 
     /// IP / hostname this instance can be reached on by runner
