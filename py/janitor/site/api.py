@@ -58,7 +58,7 @@ from . import (
     is_qa_reviewer,
     serve_run_log,
 )
-from .common import render_template_for_request
+from .common import fetch_run_detail, render_template_for_request
 from .setup import setup_postgres
 
 routes = web.RouteTableDef()
@@ -620,6 +620,59 @@ async def handle_run_post(request):
 @routes.post("/c/{codebase}/run/{run_id}", name="codebase-run-update")
 async def handle_codebase_run_post(request):
     return await handle_run_post(request)
+
+
+class BuildInfoSchema(Schema):
+    version = fields.Str(metadata={"description": "build version"})
+    distribution = fields.Str(metadata={"description": "build distribution name"})
+
+
+class RunSchema(Schema):
+    run_id = fields.Str(metadata={"description": "Run identifier"})
+    codebase = fields.Str(metadata={"description": "Codebase name"})
+    campaign = fields.Str(metadata={"description": "Campaign name"})
+    start_time = fields.DateTime(metadata={"description": "Run start time"})
+    finish_time = fields.DateTime(metadata={"description": "Run finish time"})
+    command = fields.Str(metadata={"description": "Command to run"})
+    description = fields.Str(metadata={"description": "Build result description"})
+    build_info = fields.Nested(BuildInfoSchema, allow_none=True)
+    result_code = fields.Str(metadata={"description": "Result code"})
+    publish_status = fields.Str(metadata={"description": "Publish status"})
+
+
+@docs()
+@response_schema(RunSchema())
+@routes.get("/run/{run_id}", name="run")
+async def handle_run(request):
+    run_id = request.match_info["run_id"]
+    span = aiozipkin.request_span(request)
+    with span.new_child("runner:get-run"):
+        run = await fetch_run_detail(
+            request.app["http_client_session"], request.app["runner_url"], run_id
+        )
+    if run is None:
+        raise web.HTTPNotFound(text=f"No such run: {run_id}")
+    if run["build_version"]:
+        build_info = {
+            "version": run["build_version"],
+            "distribution": run["build_distribution"],
+        }
+    else:
+        build_info = None
+    return web.json_response(
+        {
+            "run_id": run["id"],
+            "codebase": run["codebase"],
+            "campaign": run["campaign"],
+            "start_time": run["start_time"].isoformat(),
+            "finish_time": run["finish_time"].isoformat(),
+            "command": run["command"],
+            "description": run["description"],
+            "build_info": build_info,
+            "result_code": run["result_code"],
+            "publish_status": run["publish_status"],
+        }
+    )
 
 
 class ActiveRunSchema(Schema):
