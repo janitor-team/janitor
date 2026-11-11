@@ -141,6 +141,26 @@ def test_local_command_bzr_url():
     )
 
 
+@pytest.mark.parametrize(
+    "mode, code, description, expected",
+    [
+        ("push", "success", None, "Successfully pushed"),
+        ("push-derived", "success", None, "push-derived: success"),
+        (
+            "attempt-push",
+            "permission-denied",
+            "Permission denied.",
+            "attempt-push: permission-denied (permission denied)",
+        ),
+    ],
+)
+def test_display_publish_result(mode, code, description, expected):
+    template = env.get_template("run_util.html")
+    html = template.module.display_publish_result(mode, code, description, None)  # type: ignore
+    soup = BeautifulSoup(str(html), "html.parser")
+    assert " ".join(soup.get_text().split()) == expected
+
+
 def test_display_publish_blockers():
     template = env.get_template("run_util.html")
     assert (
