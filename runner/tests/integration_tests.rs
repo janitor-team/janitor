@@ -5,12 +5,15 @@ use serial_test::serial;
 
 /// Test configuration for integration tests.
 fn test_config() -> janitor::config::Config {
-    janitor::config::read_string(
+    let artifacts = std::env::temp_dir().join("janitor-runner-integration-artifacts");
+    janitor::config::read_string(&format!(
         r#"
 database_location: "postgresql://localhost/janitor_test"
 redis_location: "redis://localhost"
+artifact_location: "{}"
 "#,
-    )
+        artifacts.display()
+    ))
     .unwrap()
 }
 

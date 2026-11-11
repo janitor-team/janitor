@@ -2989,12 +2989,25 @@ async fn finish_run_multipart_internal(
         }
     };
 
-    // Process multipart upload. Pass the codebase so logs land in
-    // the `{root}/{codebase}/{run_id}/<name>` layout the site's
-    // FileSystemLogFileManager expects.
+    // Like Python, keep the uploaded files in a temporary directory
+    // that is removed once the run has been processed.
+    let upload_dir = match tempfile::tempdir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            log::error!(
+                "Failed to create upload directory for run {}: {}",
+                run_id,
+                e
+            );
+            return reason(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to create upload directory: {}", e),
+            );
+        }
+    };
     let uploaded_result = match state
         .upload_processor
-        .process_upload(multipart, &run_id, &active_run.codebase)
+        .process_upload(multipart, upload_dir.path(), &run_id, &active_run.codebase)
         .await
     {
         Ok(result) => result,
@@ -3705,6 +3718,12 @@ async fn compute_resume_from(
     }
 }
 
+/// The committer from the configuration; like Python, an empty one
+/// counts as unset.
+fn configured_committer(config: &janitor::config::Config) -> Option<&str> {
+    config.committer.as_deref().filter(|c| !c.is_empty())
+}
+
 /// `active_runs_path` is the path of the active runs collection, used
 /// for the `Location` header of the new run.
 async fn assign_work_internal(
@@ -4041,9 +4060,10 @@ async fn assign_work_internal(
     // (DEB_UPDATE_CHANGELOG=auto ...). Copy into both codemod and
     // build environments so each execution context has a consistent
     // view.
-    let mut env: BTreeMap<String, String> = crate::committer_env(Some(state.config.committer()))
-        .into_iter()
-        .collect();
+    let mut env: BTreeMap<String, String> =
+        crate::committer_env(configured_committer(&state.config))
+            .into_iter()
+            .collect();
     env.extend(extra_env);
 
     // The worker's `DebianBuildConfig` reads these hyphen-cased keys,

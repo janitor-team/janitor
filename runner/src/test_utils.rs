@@ -32,6 +32,7 @@ pub struct TestConfigBuilder {
     artifact_manager: Option<Arc<janitor::artifacts::ArtifactManager>>,
     backup_artifact_manager: Option<Arc<janitor::artifacts::ArtifactManager>>,
     redirect_artifact_downloads: Option<bool>,
+    without_committer: bool,
 }
 
 impl TestConfigBuilder {
@@ -81,6 +82,12 @@ impl TestConfigBuilder {
         self
     }
 
+    /// Leave `committer` unset in the config.
+    pub fn without_committer(mut self) -> Self {
+        self.without_committer = true;
+        self
+    }
+
     /// Build a janitor `Config` for tests.
     pub fn build_janitor_config(self) -> janitor::config::Config {
         let mut config = janitor::config::Config::new();
@@ -100,7 +107,9 @@ impl TestConfigBuilder {
                 .to_string_lossy()
                 .to_string(),
         );
-        config.committer = Some("Test Runner <test@example.com>".to_string());
+        if !self.without_committer {
+            config.committer = Some("Test Runner <test@example.com>".to_string());
+        }
         config.campaign = self.campaigns;
         config
     }
@@ -205,8 +214,7 @@ fn assemble_app_state(
     ));
     let metrics = Arc::new(MetricsCollector);
 
-    let temp_dir = std::env::temp_dir().join("janitor_test_uploads");
-    let upload_processor = Arc::new(UploadProcessor::new(temp_dir));
+    let upload_processor = Arc::new(UploadProcessor::new());
 
     let auth_service = Arc::new(WorkerAuthService::new(runner_db_arc.clone()));
 
