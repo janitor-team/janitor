@@ -14,7 +14,7 @@ distribution {
   component: "main"
   chroot: "unshare:{{ janitor_worker_session_suite }}"
   lintian_profile: "debian"
-  build_command: "sbuild -Asv --no-clean-source"
+  build_command: "{{ janitor_sbuild_build_command }}"
   vendor: "debian"
 }
 
@@ -26,7 +26,7 @@ campaign {
     build_distribution: "{{ janitor_lintian_fixes_build_distribution }}"
     build_suffix: "jan+lint"
     base_distribution: "unstable"
-    build_command: "sbuild -Asv --no-clean-source"
+    build_command: "{{ janitor_sbuild_build_command }}"
   }
 }
 

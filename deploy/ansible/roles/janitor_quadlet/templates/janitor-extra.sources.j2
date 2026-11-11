@@ -1,0 +1,6 @@
+# Managed by ansible (roles/janitor_quadlet): one extra sbuild apt source.
+Types: deb
+URIs: {{ [source.uris] | flatten | join(' ') }}
+Suites: {{ [source.suites] | flatten | join(' ') }}
+Components: {{ [source.components] | flatten | join(' ') }}
+Signed-By: /etc/apt/keyrings/janitor-{{ source.name }}{{ source.key | splitext | last }}

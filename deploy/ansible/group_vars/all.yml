@@ -123,10 +123,25 @@ use_prebuilt_images: false
 janitor_worker_session_suite: sid
 # sbuild's own unshare-mode tarball. Keep it in step with janitor.conf's distribution.
 janitor_sbuild_chroot: unstable-amd64-sbuild
-# sbuild finds a campaign's chroot by <build_distribution>-amd64-sbuild.
-janitor_sbuild_chroot_aliases:
-  - "{{ janitor_lintian_fixes_build_distribution }}-amd64-sbuild"
-  - unchanged-amd64-sbuild
+# The janitor.conf campaigns that build with sbuild, each with its
+# build distribution. sbuild finds a campaign's chroot by
+# <build_distribution>-amd64-sbuild.
+janitor_sbuild_campaigns:
+  lintian-fixes: "{{ janitor_lintian_fixes_build_distribution }}"
+  control: unchanged
+janitor_sbuild_chroot_aliases: "{{ janitor_sbuild_campaigns.values() | map('regex_replace', '$', '-amd64-sbuild') | list }}"
+# Extra apt sources in every sbuild chroot: {name, uris, suites,
+# components, key}. key is an OpenPGP key file (.asc or .gpg) on the
+# Ansible controller. Changing these remakes the chroots. See
+# deploy/README.md.
+janitor_sbuild_extra_sources: []
+# Campaigns with a chroot of their own: {campaign: [sources]}, entries
+# as in janitor_sbuild_extra_sources. Their chroot has both lists. Other
+# campaigns use the shared chroot.
+janitor_sbuild_campaign_extra_sources: {}
+# The build command of janitor.conf's distribution and the lintian-fixes
+# campaign. See deploy/README.md.
+janitor_sbuild_build_command: sbuild -Asv --no-clean-source
 # The published worker image has no codemods (docs/production.md, "Worker
 # images"). List the packages your campaigns need and the playbook builds
 # a derived image with them.

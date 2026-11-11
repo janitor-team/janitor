@@ -18,6 +18,10 @@
   no_log: true
   when: "'worker' in janitor_services"
 
+- name: Deploy the sbuild chroot's extra apt sources
+  ansible.builtin.import_tasks: sbuild_apt.yml
+  when: "'worker' in janitor_services"
+
 - name: Deploy the quadlet units
   # The file name sets the unit name.
   ansible.builtin.template:
@@ -158,34 +162,8 @@
   changed_when: "'Successfully cached' in ogni_cache_env.stderr"
   when: "'worker' in janitor_services"
 
-# sbuild's unshare-mode tarball (janitor_quadlet_sbuild_chroot_build).
-- name: Check whether the sbuild chroot tarball exists
-  ansible.builtin.stat:
-    path: "{{ janitor_home }}/data/sbuild/{{ janitor_sbuild_chroot }}.tar.xz"
-  register: chroot_tarball
-  when: "'worker' in janitor_services"
-
-- name: Build the sbuild chroot tarball (mmdebstrap, a few minutes)
-  become: true
-  become_user: "{{ ansible_user }}"
-  environment:
-    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
-  ansible.builtin.command: podman exec janitor-worker sh -c "{{ janitor_quadlet_sbuild_chroot_build }}"
-  changed_when: true
-  when: "'worker' in janitor_services and not chroot_tarball.stat.exists"
-
-- name: Link the chroot tarball under each campaign build distribution's name
-  ansible.builtin.file:
-    src: "{{ janitor_sbuild_chroot }}.tar.xz"
-    dest: "{{ janitor_home }}/data/sbuild/{{ item }}.tar.xz"
-    state: link
-    follow: false
-    owner: "{{ ansible_user }}"
-    group: "{{ ansible_user }}"
-  loop: "{{ janitor_sbuild_chroot_aliases }}"
-  when: "'worker' in janitor_services"
-
-# Remade twice a week by janitor-sbuild-chroot.timer.
+# sbuild's unshare-mode tarballs, made by janitor-sbuild-chroot.service
+# and remade twice a week by janitor-sbuild-chroot.timer.
 - name: Create the systemd user unit directory
   ansible.builtin.file:
     path: "/home/{{ ansible_user }}/.config/systemd/user"
@@ -194,7 +172,7 @@
     mode: "0755"
   when: "'worker' in janitor_services"
 
-- name: Deploy the timer that remakes the sbuild chroot tarball
+- name: Deploy the unit and timer that remake the sbuild chroot tarballs
   ansible.builtin.template:
     src: "{{ item }}.j2"
     dest: "/home/{{ ansible_user }}/.config/systemd/user/{{ item }}"
@@ -203,13 +181,74 @@
   loop:
     - janitor-sbuild-chroot.service
     - janitor-sbuild-chroot.timer
+  register: janitor_sbuild_chroot_units
   notify: Reload user systemd
   when: "'worker' in janitor_services"
 
 - name: Flush handlers
   ansible.builtin.meta: flush_handlers
 
-- name: Enable the timer that remakes the sbuild chroot tarball
+# Kept until a remake succeeds, so a failed one is tried again on the next run.
+- name: Mark the sbuild chroot tarballs for remaking when their commands or apt sources changed
+  ansible.builtin.file:
+    path: "{{ janitor_home }}/sbuild-chroot.remake"
+    state: touch
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  when:
+    - "'worker' in janitor_services"
+    - >-
+      janitor_sbuild_keys is changed or janitor_sbuild_sources is changed
+      or janitor_sbuild_apt_removed is changed
+      or janitor_sbuild_chroot_units.results | selectattr('item', 'equalto', 'janitor-sbuild-chroot.service')
+         | selectattr('changed') | list | length > 0
+
+- name: Check whether the sbuild chroot tarballs exist and whether they are marked for remaking
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: >-
+    {{ ([janitor_sbuild_chroot] + janitor_quadlet_sbuild_campaign_chroots)
+       | map('regex_replace', '^', janitor_home + '/data/sbuild/') | map('regex_replace', '$', '.tar.xz') | list
+       + [janitor_home + '/sbuild-chroot.remake'] }}
+  register: chroot_tarball
+  when: "'worker' in janitor_services"
+
+- name: Make the sbuild chroot tarballs (mmdebstrap, a few minutes each)
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  # A oneshot unit: this waits until every tarball is made.
+  ansible.builtin.systemd:
+    name: janitor-sbuild-chroot.service
+    scope: user
+    state: restarted
+  when:
+    - "'worker' in janitor_services"
+    - >-
+      chroot_tarball.results[:-1] | rejectattr('stat.exists') | list | length > 0
+      or chroot_tarball.results[-1].stat.exists
+
+- name: Clear the remake mark after the remake
+  ansible.builtin.file:
+    path: "{{ janitor_home }}/sbuild-chroot.remake"
+    state: absent
+  when: "'worker' in janitor_services and chroot_tarball.results[-1].stat.exists"
+
+- name: Link the shared tarball under each other campaign build distribution's name
+  ansible.builtin.file:
+    src: "{{ janitor_sbuild_chroot }}.tar.xz"
+    dest: "{{ janitor_home }}/data/sbuild/{{ item }}.tar.xz"
+    state: link
+    follow: false
+    # Replaces the tarball of a campaign no longer in janitor_sbuild_campaign_extra_sources.
+    force: true
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+  loop: "{{ janitor_sbuild_chroot_aliases | difference(janitor_quadlet_sbuild_campaign_chroots) }}"
+  when: "'worker' in janitor_services"
+
+- name: Enable the timer that remakes the sbuild chroot tarballs
   become: true
   become_user: "{{ ansible_user }}"
   environment:

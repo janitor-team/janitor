@@ -27,6 +27,8 @@ Volume=/etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro
 # The build images survive a container restart.
 Volume={{ janitor_home }}/data/sbuild:/root/.cache/sbuild:rw
 Volume={{ janitor_home }}/data/ognibuild:/root/.cache/ognibuild:rw
+# Copied into the sbuild chroot tarball when it is made.
+Volume={{ janitor_home }}/sbuild-apt:/etc/janitor/sbuild-apt:ro
 # The whole command line is given here. tini-static is PID 1 and reaps
 # what janitor-worker's children leave behind.
 {% set has_init = true %}
