@@ -51,11 +51,6 @@ impl ArchiveConfig {
             runtime_config: Some(Arc::new(cfg)),
         })
     }
-
-    /// Get a repository configuration by name
-    pub fn get_repository(&self, name: &str) -> Option<&AptRepositoryConfig> {
-        self.repositories.get(name)
-    }
 }
 
 // TODO(jelmer): Don't hardcode this
@@ -109,7 +104,6 @@ pub(crate) fn apt_repository_config_from_proto(
         architectures: architectures.to_vec(),
         components: components.to_vec(),
         base_path: archive_path.join(&name),
-        by_hash: true,
     }
 }
 
@@ -128,7 +122,6 @@ pub struct AptRepositoryConfig {
     pub architectures: Vec<String>,
     pub components: Vec<String>,
     pub base_path: PathBuf,
-    pub by_hash: bool,
 }
 
 impl AptRepositoryConfig {
@@ -149,48 +142,7 @@ impl AptRepositoryConfig {
             architectures,
             components: vec!["main".to_string()],
             base_path,
-            by_hash: false,
         }
-    }
-    /// Directory that contains the generated repository files for
-    /// this suite. Equivalent to `<dists_directory>/<name>`.
-    ///
-    /// `base_path` is already the per-suite directory (set by
-    /// `apt_repository_config_from_proto` to `archive_path/name`,
-    /// which is `<dists_directory>/<name>` when `archive_path`
-    /// points at the dists tree). Callers use this method rather
-    /// than `base_path` directly so the layout stays a single
-    /// source of truth.
-    pub fn suite_path(&self) -> PathBuf {
-        self.base_path.clone()
-    }
-
-    /// Get the component path for a specific architecture. Path is
-    /// `<suite_path>/<component>/binary-<arch>`.
-    pub fn component_arch_path(&self, component: &str, arch: &str) -> PathBuf {
-        self.suite_path()
-            .join(component)
-            .join(format!("binary-{}", arch))
-    }
-
-    /// Get the source path for a component:
-    /// `<suite_path>/<component>/source`.
-    pub fn source_path(&self, component: &str) -> PathBuf {
-        self.suite_path().join(component).join("source")
-    }
-
-    /// Validate the repository configuration
-    pub fn validate(&self) -> Result<(), String> {
-        if self.name.is_empty() {
-            return Err("Repository name cannot be empty".to_string());
-        }
-        if self.architectures.is_empty() {
-            return Err("At least one architecture must be specified".to_string());
-        }
-        if self.components.is_empty() {
-            return Err("At least one component must be specified".to_string());
-        }
-        Ok(())
     }
 }
 
@@ -263,7 +215,6 @@ mod tests {
         assert_eq!(cfg.base_path, archive_path.join("lintian-fixes"));
         assert_eq!(cfg.architectures, vec!["amd64", "source"]);
         assert_eq!(cfg.components, vec!["main"]);
-        assert!(cfg.by_hash);
     }
 
     /// Description left empty in the textproto: synthesise one
@@ -320,13 +271,12 @@ apt_repository {
         assert!(config.gpg.is_none());
         assert!(config.runtime_config.is_some());
         assert_eq!(config.repositories.len(), 1);
-        let repo = config.get_repository("lintian-fixes").unwrap();
+        let repo = config.repositories.get("lintian-fixes").unwrap();
         assert_eq!(repo.origin, "janitor.debian.net");
         assert_eq!(repo.description, "Builds of lintian fixes");
         assert_eq!(repo.base_path, dists.join("lintian-fixes"));
         assert_eq!(repo.components, vec!["main", "contrib"]);
         assert_eq!(repo.architectures, vec!["amd64"]);
-        assert!(repo.by_hash);
     }
 
     #[test]
