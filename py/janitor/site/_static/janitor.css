@@ -12,11 +12,11 @@ span.result-code-bug, span.publish-bug {
 }
 
 span.result-code-failure, span.publish-failure {
-    color: red;
+    color: #ec0000;
 }
 
 span.result-code-transient-failure, span.publish-transient {
-    color: orange;
+    color: #a36900;
 }
 
 span.result-code-success, span.publish-success {
@@ -24,15 +24,15 @@ span.result-code-success, span.publish-success {
 }
 
 span.missing-description {
-    color: red;
+    color: #ec0000;
 }
 
 span.result-code-nothing-new-to-do, span.publish-nothing-to-do {
-    color: lightgreen;
+    color: #4e814e;
 }
 
 span.result-code-nothing-to-do, span.publish-missing {
-    color: grey;
+    color: #757575;
 }
 
 blockquote.result-code-explanation {
