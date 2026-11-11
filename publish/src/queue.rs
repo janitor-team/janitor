@@ -3,37 +3,11 @@
 //! This module handles the main queue processing loop and related functionality,
 //! ported from the Python implementation.
 
-use crate::{consider_publish_run, AppState, PublishError};
+use crate::{consider_publish_run, AppState, Consideration, PublishError};
 use chrono::Utc;
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
-
-/// Represents a publish-ready run with its associated metadata.
-///
-/// NOTE: retained for external API shape (`crate::state::iter_publish_ready`
-/// now returns a tuple). Prefer that function directly in new code -
-/// see commit history for why the previous in-module
-/// `PublishReadyIterator` was removed.
-#[derive(Debug, Clone)]
-pub struct PublishReadyRun {
-    /// The run information.
-    pub run: janitor::state::Run,
-    /// The rate limit bucket for this run.
-    pub rate_limit_bucket: String,
-    /// The command that was executed.
-    pub command: String,
-    /// List of unpublished branches for this run.
-    pub unpublished_branches: Vec<crate::state::UnpublishedBranch>,
-}
-
-// `PublishReadyIterator` was removed: its hand-rolled join bypassed
-// the `publish_ready` view and the associated gating (publish_status,
-// change_set_state, mode, max_frequency_days, ordering), hardcoded
-// `publish_mode = "propose"`, and returned a single run per call.
-// `publish_pending_ready` and the single-run path in
-// `handle_publish_run` now both go through
-// `crate::state::iter_publish_ready`.
 
 /// Periodically check existing merge proposals and publish pending
 /// ready changes.
@@ -256,7 +230,7 @@ pub async fn publish_pending_ready(
     require_binary_diff: bool,
 ) -> Result<(), PublishError> {
     let start_time = std::time::Instant::now();
-    let mut actions: HashMap<Option<String>, usize> = HashMap::new();
+    let mut actions: HashMap<String, usize> = HashMap::new();
     let mut published_count = 0;
     let mut error_count = 0;
 
@@ -277,10 +251,10 @@ pub async fn publish_pending_ready(
         .await
         .map_err(|e| {
             log::error!("Database error iterating publish-ready runs: {}", e);
-            PublishError::Failure {
-                code: "database-error".to_string(),
-                description: format!("Failed to iterate publish-ready runs: {}", e),
-            }
+            PublishError::failure(
+                "database-error",
+                format!("Failed to iterate publish-ready runs: {}", e),
+            )
         })?;
 
     for (run, rate_limit_bucket, policy_command, unpublished_branches) in ready_runs {
@@ -306,7 +280,6 @@ pub async fn publish_pending_ready(
             std::time::Duration::from_secs(PER_RUN_PUBLISH_TIMEOUT_SECS),
             consider_publish_run(
                 &state.conn,
-                state.redis.clone(),
                 state.config,
                 &state.publish_worker,
                 &state.vcs_managers,
@@ -333,23 +306,22 @@ pub async fn publish_pending_ready(
                     run.suite,
                     run.codebase,
                 );
-                *actions.entry(Some("timeout".to_string())).or_insert(0) += 1;
+                *actions.entry("timeout".to_string()).or_insert(0) += 1;
             }
-            Ok(Ok(results)) => {
-                if let Some(pre_flight) = results.get("__status").and_then(|v| v.as_ref()) {
-                    *actions.entry(Some(pre_flight.clone())).or_insert(0) += 1;
-                } else {
-                    for (role, mode) in &results {
-                        match mode {
-                            Some(m) => {
-                                *actions.entry(Some(m.clone())).or_insert(0) += 1;
-                                if m != "build-only" && m != "skip" {
-                                    published_count += 1;
-                                }
+            Ok(Ok(Consideration::Skipped(reason))) => {
+                *actions.entry(reason.to_string()).or_insert(0) += 1;
+            }
+            Ok(Ok(Consideration::Roles(results))) => {
+                for (role, mode) in &results {
+                    match mode {
+                        Some(m) => {
+                            *actions.entry(m.clone()).or_insert(0) += 1;
+                            if m != "build-only" && m != "skip" {
+                                published_count += 1;
                             }
-                            None => {
-                                *actions.entry(Some(format!("gated:{}", role))).or_insert(0) += 1;
-                            }
+                        }
+                        None => {
+                            *actions.entry(format!("gated:{}", role)).or_insert(0) += 1;
                         }
                     }
                 }
@@ -359,7 +331,7 @@ pub async fn publish_pending_ready(
             Ok(Err(e)) => {
                 error_count += 1;
                 log::error!("Error considering run {} for publishing: {}", run.id, e);
-                *actions.entry(Some("error".to_string())).or_insert(0) += 1;
+                *actions.entry("error".to_string()).or_insert(0) += 1;
             }
         }
     }
