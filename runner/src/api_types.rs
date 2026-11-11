@@ -396,21 +396,6 @@ pub struct QueueItemResponse {
     pub codebase: CodebaseName,
 }
 
-/// Response for `GET /active-runs/+peek`.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct PeekResponse {
-    /// The next queue item.
-    pub queue_item: QueueItemResponse,
-    /// VCS location of the codebase.
-    #[schema(value_type = Object)]
-    pub vcs_info: janitor::queue::VcsInfo,
-    /// Build configuration; contains `builder_kind` when a builder
-    /// could be created.
-    pub build_config: BTreeMap<String, String>,
-    /// Estimated duration in seconds.
-    pub estimated_duration: Option<u64>,
-}
-
 /// Entry in the `GET /queue` response.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct QueueEntry {
