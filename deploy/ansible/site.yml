@@ -111,6 +111,17 @@
         quiet: true
       when: enable_mta | bool
 
+    - name: Check monitoring has a Grafana admin password
+      ansible.builtin.assert:
+        that:
+          - grafana_admin_password | default('') | string | length > 0
+          - not (grafana_admin_password | default('') | string | regex_search("['\"\\s]"))
+        fail_msg: enable_monitoring needs grafana_admin_password, with no quotes or whitespace.
+        quiet: true
+      when:
+        - enable_monitoring | bool
+        - "'control' in group_names"
+
 - name: Deploy the janitor control services
   hosts: control
   become: true
@@ -131,6 +142,8 @@
     - janitor_quadlet
     - { role: mail_filter, when: enable_mail_filter | bool }
     - { role: mta, when: enable_mta | bool }
+    - host_metrics
+    - { role: monitoring, when: enable_monitoring | bool }
 
 - name: Deploy the janitor workers (the control play already covers a host in both groups)
   hosts: worker:!control
@@ -139,6 +152,7 @@
     - base
     # Before janitor-worker starts listening.
     - worker_firewall
+    - host_metrics
     - janitor_source
     - janitor_config
     - janitor_quadlet

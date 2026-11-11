@@ -1,0 +1,126 @@
+---
+# Rendered by templates/dashboard.json.j2.
+title: Janitor overview
+uid: janitor-overview
+description: The queue, the runs and anything that needs a look.
+panels:
+  - title: Queue length
+    type: stat
+    datasource: postgres
+    unit: short
+    width: 4
+    targets:
+      - sql: SELECT count(*) AS queue FROM queue
+        format: table
+  - title: Active runs
+    type: stat
+    unit: short
+    width: 4
+    targets:
+      - expr: sum(active_runs) or vector(0)
+        legend: active
+  - title: Services down
+    type: stat
+    unit: short
+    width: 4
+    description: Scrape targets that do not answer, and health checks that fail.
+    defaults: &zero_is_good
+      thresholds:
+        mode: absolute
+        steps:
+          - {color: green, value: null}
+          - {color: red, value: 1}
+    options: &background
+      colorMode: background
+      graphMode: none
+    targets:
+      - expr: (count(up == 0) or vector(0)) + (count(probe_success == 0) or vector(0))
+        legend: down
+  - title: Units failed
+    type: stat
+    unit: short
+    width: 4
+    description: Failed units in the unit state file, on every host.
+    requires: [enable_node_exporter]
+    defaults: *zero_is_good
+    options: *background
+    targets:
+      - expr: count(janitor_unit_state{state="failed"} == 1) or vector(0)
+        legend: failed
+  - title: Firing alerts
+    type: stat
+    unit: short
+    width: 4
+    description: Listed on Grafana's Alerting pages.
+    defaults: *zero_is_good
+    options: *background
+    targets:
+      - expr: count(ALERTS{alertstate="firing"}) or vector(0)
+        legend: firing
+  - title: Worker failures, last 24 hours
+    type: stat
+    unit: short
+    width: 4
+    defaults: *zero_is_good
+    options: *background
+    targets:
+      - expr: sum(increase(result_total{result_code="worker-failure"}[24h])) or vector(0)
+        legend: worker-failure
+  - title: Runs ended by the watchdog, last 24 hours
+    type: stat
+    unit: short
+    width: 4
+    description: Runs the runner ended because their worker stopped reporting.
+    defaults: *zero_is_good
+    options: *background
+    targets:
+      - expr: sum(increase(janitor_runner_watchdog_terminated_runs_total[24h])) or vector(0)
+        legend: lost
+  - title: Disk free on /
+    type: stat
+    unit: bytes
+    width: 8
+    requires: [enable_node_exporter]
+    targets:
+      - expr: node_filesystem_avail_bytes{job="node",mountpoint="/"}
+        legend: "{{host}}"
+  - title: Worker busy
+    type: stat
+    unit: short
+    width: 12
+    description: Workers that have a run from the runner.
+    defaults:
+      mappings:
+        - type: value
+          options:
+            "0": {text: idle, color: blue, index: 0}
+            "1": {text: busy, color: green, index: 1}
+    options: *background
+    targets:
+      - expr: active_runs > bool 0
+        legend: "{{worker}}"
+  - title: Runs per hour by result code
+    type: timeseries
+    datasource: postgres
+    unit: short
+    width: 24
+    height: 9
+    targets:
+      - sql: |-
+          SELECT $__timeGroupAlias(finish_time, '1h'), result_code AS metric, count(*) AS value
+          FROM run WHERE $__timeFilter(finish_time)
+          GROUP BY 1, 2 ORDER BY 1
+  - title: Active runs per worker
+    type: timeseries
+    unit: short
+    targets:
+      - expr: active_runs
+        legend: "{{worker}}"
+  - title: Time since the worker last pushed
+    type: timeseries
+    unit: s
+    description: Only with enable_pushgateway and a worker on a [control] host, which pushes after each run.
+    requires: [enable_pushgateway]
+    targets:
+      - expr: time() - max(push_time_seconds{job="janitor.worker"})
+        legend: worker

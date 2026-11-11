@@ -33,5 +33,5 @@ Volume={{ janitor_home }}/sbuild-apt:/etc/janitor/sbuild-apt:ro
 # what janitor-worker's children leave behind.
 {% set has_init = true %}
 Entrypoint=tini-static
-Exec=-- janitor-worker --credentials /etc/janitor/worker-credentials.json --port {{ janitor_worker_instances[item] }} --listen-address {{ janitor_worker_address }} --external-address {{ janitor_worker_address }} --base-url {{ janitor_external_url }}runner/ --loop
+Exec=-- janitor-worker --credentials /etc/janitor/worker-credentials.json --port {{ janitor_worker_instances[item] }} --listen-address {{ janitor_worker_address }} --external-address {{ janitor_worker_address }} --base-url {{ janitor_external_url }}runner/{% if janitor_worker_pushgateway_url | length > 0 %} --prometheus {{ janitor_worker_pushgateway_url }}{% endif %} --loop
 {% include 'common.j2' %}

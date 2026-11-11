@@ -21,7 +21,9 @@
   args:
     executable: /bin/bash
     creates: "{{ gitea_home }}/secrets/{{ item }}"
-  loop: "{{ ['secret_key', 'internal_token', 'jwt_secret'] + gitea_users | map('regex_replace', '$', '.password') | list }}"
+  loop: >-
+    {{ ['secret_key', 'internal_token', 'jwt_secret'] + gitea_users | map('regex_replace', '$', '.password') | list
+       + (['metrics_token'] if enable_monitoring | bool else []) }}
 
 - name: Read Gitea's secrets
   ansible.builtin.include_tasks: read_secrets.yml

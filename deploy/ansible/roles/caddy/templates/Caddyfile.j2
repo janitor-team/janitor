@@ -1,4 +1,13 @@
 # Managed by ansible (roles/caddy).
+{% if enable_monitoring | bool %}
+{
+	# Request metrics on the admin API's /metrics (localhost:2019), for roles/monitoring.
+	servers {
+		metrics
+	}
+}
+
+{% endif %}
 {# Headers on every public site, with Strict-Transport-Security only on HTTPS. #}
 {# Every public site also has an access log: JSON lines on stderr, in caddy's journal. #}
 {% macro security_headers(https, frame_options='DENY', csp="frame-ancestors 'none'; object-src 'none'; base-uri 'self'") %}

@@ -63,6 +63,13 @@ ALLOWED_HOST_LIST = {{ janitor_domain }}
 ; Off, so Gitea does not ask dl.gitea.com for a new version each week.
 ENABLED = false
 
+{% if enable_monitoring | bool %}
+[metrics]
+; Caddy serves Gitea publicly, so /metrics needs the token (roles/monitoring).
+ENABLED = true
+TOKEN = {{ gitea_secrets.metrics_token }}
+
+{% endif %}
 [log]
 MODE = console
 LEVEL = info

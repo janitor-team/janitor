@@ -1,0 +1,86 @@
+---
+# Installed stopped, then started once /etc/default points them at loopback.
+- name: Install the exporters without starting them
+  ansible.builtin.apt:
+    name: "{{ monitoring_exporters | map('extract', monitoring_exporter_settings, 'package') | list }}"
+    install_recommends: false
+    policy_rc_d: 101
+    state: present
+
+- name: Start the syslog daemon, which writes the /var/log/mail.log the Postfix exporter reads
+  # Debian's package pulled it in, stopped like the exporters.
+  ansible.builtin.systemd:
+    name: syslog.service
+    state: started
+  when: "'postfix' in monitoring_exporters"
+
+- name: Point each exporter at loopback
+  ansible.builtin.template:
+    src: exporter.default.j2
+    dest: "/etc/default/{{ monitoring_exporter_settings[item].package }}"
+    # The PostgreSQL exporter's package sets these on its file.
+    owner: "{{ 'prometheus' if item == 'postgres' else 'root' }}"
+    group: "{{ 'prometheus' if item == 'postgres' else 'root' }}"
+    mode: "{{ '0640' if item == 'postgres' else '0644' }}"
+  loop: "{{ monitoring_exporters }}"
+  register: monitoring_exporter_defaults
+
+- name: Deploy the blackbox exporter's checks
+  ansible.builtin.template:
+    src: blackbox.yml.j2
+    dest: /etc/prometheus/janitor-blackbox.yml
+    mode: "0644"
+  register: monitoring_blackbox_config
+  when: "'blackbox' in monitoring_exporters"
+
+- name: Create /var/log/mail.log, which the Postfix exporter reads
+  # rsyslog makes it only when Postfix first logs a line.
+  ansible.builtin.file:
+    path: /var/log/mail.log
+    state: touch
+    owner: root
+    group: adm
+    mode: "0640"
+    access_time: preserve
+    modification_time: preserve
+  when: "'postfix' in monitoring_exporters"
+
+- name: Create the PostgreSQL role the exporter logs in as
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_user:
+    name: prometheus
+  when: "'postgres' in monitoring_exporters"
+
+- name: Let the exporter's PostgreSQL role read the server's statistics
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_membership:
+    groups: [pg_monitor]
+    target_roles: [prometheus]
+  when: "'postgres' in monitoring_exporters"
+
+- name: Start the exporters, restarting those whose settings changed
+  ansible.builtin.systemd:
+    name: "{{ monitoring_exporter_settings[item.item].package }}.service"
+    enabled: true
+    daemon_reload: true
+    state: >-
+      {{ 'restarted' if item.changed or (item.item == 'blackbox' and monitoring_blackbox_config is changed)
+         else 'started' }}
+  loop: "{{ monitoring_exporter_defaults.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Read which packages are installed
+  ansible.builtin.package_facts:
+
+- name: Stop the exporters that are turned off
+  ansible.builtin.systemd:
+    name: "{{ item.value.package }}.service"
+    enabled: false
+    state: stopped
+  loop: "{{ monitoring_exporter_settings | dict2items | rejectattr('key', 'in', monitoring_exporters) | list }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: item.value.package in ansible_facts.packages

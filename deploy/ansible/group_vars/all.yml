@@ -15,6 +15,8 @@
 #   oauth_client_id      OAuth2 client for the site login, or omit both
 #   oauth_client_secret  to run the site without login
 #   janitor_s3_secret_access_key  S3 key for janitor_logs_location
+#   grafana_admin_password  Grafana's admin password, with enable_monitoring
+#                        (it may hold @ : / %, but no quotes or whitespace)
 # With a login, also set oauth_base_url (an OpenID Connect provider,
 # which GitHub is not), oauth_qa_reviewer_group and oauth_admin_group
 # (OpenID groups).
@@ -64,6 +66,8 @@ enable_worker_firewall: true
 # Names or addresses, resolved on the worker: each [control] host's
 # ansible_host, or janitor_domain for one without.
 worker_firewall_sources: "{{ groups['control'] | map('extract', hostvars) | map(attribute='ansible_host', default=janitor_domain) | list }}"
+# The ports the table guards: the workers' and the node exporter's.
+worker_firewall_ports: "{{ [janitor_worker_ports, node_exporter_port] }}"
 
 # Every worker gets a row in the worker table on the control host, each
 # with its own password.
@@ -240,6 +244,56 @@ jaeger_ui_port: 16686
 jaeger_health_port: 13133
 jaeger_max_traces: 10000
 jaeger_memory: 512m
+# Optional: Prometheus, Grafana and exporters (roles/monitoring, roles/host_metrics).
+enable_monitoring: false
+prometheus_image: docker.io/prom/prometheus:v3.15.0
+prometheus_home: "/home/{{ ansible_user }}/prometheus"
+prometheus_port: 9090
+prometheus_retention: 15d
+# The janitor services Prometheus scrapes on their /metrics. The worker
+# and the dependency server have none, so the blackbox exporter checks
+# their /health.
+prometheus_jobs: "{{ janitor_services | reject('in', ['worker', 'ognibuild_dep']) | list }}"
+grafana_image: docker.io/grafana/grafana:13.2.4
+grafana_home: "/home/{{ ansible_user }}/grafana"
+grafana_port: 3300
+# The dashboards come from janitor.debian.net's repository at this commit.
+grafana_dashboards_url: https://salsa.debian.org/janitor-team/janitor.debian.net/-/raw/354a701bca7b5c8bc6b71572b19088e5dfba9e2f/grafana
+grafana_dashboards:
+  - {name: publisher, checksum: "sha256:03292a5246cc31e8945a8a4731b750b4fef9bc4628c95b68c83cb77213c66405"}
+  - {name: runner, checksum: "sha256:ab25a1d2785c984167c10359c4dce461c87622bfe2fd60ddc1ba3c251ea6318c"}
+# Exporters from Debian's packages. The node exporter runs on every
+# host, and also reports the state, memory and CPU of ansible_user's
+# units and of the system units in host_metrics_system_units.
+enable_node_exporter: true
+node_exporter_port: 9100
+enable_postgres_exporter: true
+postgres_exporter_port: 9187
+enable_redis_exporter: true
+redis_exporter_port: 9121
+# With enable_mta. Pulls in rsyslog, which copies the journal into /var/log.
+enable_postfix_exporter: true
+postfix_exporter_port: 9154
+# Checks the /health of each worker and of the dependency server.
+enable_blackbox_exporter: true
+blackbox_exporter_port: 9115
+# The worker-only hosts Prometheus scrapes, {inventory name: address}:
+# their node exporter and their workers' /health. The address is the
+# host's janitor_worker_address.
+monitoring_worker_addresses: >-
+  {{ dict(groups['worker'] | difference(groups['control'])
+     | zip(groups['worker'] | difference(groups['control']) | map('extract', hostvars, 'janitor_worker_address'))) }}
+# A Pushgateway on the control host. A worker on a [control] host then
+# pushes to it after each run (janitor_worker_pushgateway_url).
+enable_pushgateway: false
+pushgateway_port: 9091
+# janitor-worker's --prometheus, set only on a [control] host. "" turns
+# the push off.
+janitor_worker_pushgateway_url: >-
+  {{ 'http://%s:%s/' % (janitor_loopback, pushgateway_port)
+     if enable_monitoring | bool and enable_pushgateway | bool and 'control' in group_names else '' }}
+# Jaeger's own metrics, with enable_tracing.
+jaeger_metrics_port: 8888
 # Optional: janitor-mail-filter reads a forge's notification mail on
 # stdin and has publish refresh that proposal's status at once.
 # roles/mail_filter installs mail_filter_command for an MTA to pipe mail

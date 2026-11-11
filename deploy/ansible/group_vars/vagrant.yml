@@ -59,3 +59,7 @@ janitor_s3_region: garage
 
 # Spans of the runner, site, git_store and archive in Jaeger on control.
 enable_tracing: true
+
+# Prometheus and Grafana on control, with every exporter.
+enable_monitoring: true
+grafana_admin_password: vagrant-dev-only-grafana

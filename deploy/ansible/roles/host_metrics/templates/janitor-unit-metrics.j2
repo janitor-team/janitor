@@ -1,0 +1,45 @@
+#!/bin/sh
+# Managed by ansible (roles/host_metrics). Writes the state, memory and
+# CPU time of this user's systemd units and of the janitor's system
+# units for the node exporter.
+set -eu
+out={{ host_metrics_textfile_dir }}/units.prom
+units=$(systemctl --user list-units --all --plain --no-legend --type=service,socket,timer | awk '{print $1}')
+{% if host_metrics_system_units | length > 0 %}
+system=$(systemctl list-units --all --plain --no-legend --type=service {{ host_metrics_system_units | map('quote') | join(' ') }} | awk '{print $1}')
+{% else %}
+system=
+{% endif %}
+{
+  systemctl --user show --property=Id,ActiveState,MemoryCurrent,CPUUsageNSec $units
+  echo
+  [ -z "$system" ] || systemctl show --property=Id,ActiveState,MemoryCurrent,CPUUsageNSec $system
+} |
+  awk -F= '
+  function flush() {
+    if (id != "") {
+      gsub(/\\/, "\\\\", id)
+      st = st sprintf("janitor_unit_state{unit=\"%s\",state=\"%s\"} 1\n", id, state)
+      if (mem ~ /^[0-9]+$/) me = me sprintf("janitor_unit_memory_bytes{unit=\"%s\"} %s\n", id, mem)
+      if (cpu ~ /^[0-9]+$/) cp = cp sprintf("janitor_unit_cpu_seconds_total{unit=\"%s\"} %.3f\n", id, cpu / 1e9)
+    }
+    id = ""; state = ""; mem = ""; cpu = ""
+  }
+  $0 == "" { flush(); next }
+  $1 == "Id" { id = $2 }
+  $1 == "ActiveState" { state = $2 }
+  $1 == "MemoryCurrent" { mem = $2 }
+  $1 == "CPUUsageNSec" { cpu = $2 }
+  END {
+    flush()
+    print "# HELP janitor_unit_state State of a systemd unit, 1 for its current state."
+    print "# TYPE janitor_unit_state gauge"
+    printf "%s", st
+    print "# HELP janitor_unit_memory_bytes Memory a systemd unit uses."
+    print "# TYPE janitor_unit_memory_bytes gauge"
+    printf "%s", me
+    print "# HELP janitor_unit_cpu_seconds_total CPU time a systemd unit used."
+    print "# TYPE janitor_unit_cpu_seconds_total counter"
+    printf "%s", cp
+  }' > "$out.tmp"
+mv "$out.tmp" "$out"

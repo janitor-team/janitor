@@ -1,0 +1,6 @@
+# Managed by ansible (roles/monitoring).
+{% if item == 'postgres' %}
+# Peer authentication over the socket, as the PostgreSQL role prometheus.
+DATA_SOURCE_NAME='user=prometheus host=/run/postgresql dbname=postgres'
+{% endif %}
+ARGS="{{ monitoring_exporter_settings[item].args }}"

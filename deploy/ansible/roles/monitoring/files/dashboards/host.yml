@@ -1,0 +1,298 @@
+---
+# Rendered by templates/dashboard.json.j2.
+title: Janitor host
+uid: janitor-host
+description: Each host, its units, Caddy, Prometheus, Grafana, the blackbox exporter, Jaeger and the Pushgateway.
+panels:
+  - title: Node exporter
+    type: stat
+    unit: short
+    width: 8
+    requires: [enable_node_exporter]
+    defaults: &up_down
+      mappings:
+        - type: value
+          options:
+            "0": {text: down, color: red, index: 0}
+            "1": {text: up, color: green, index: 1}
+    options: &background
+      colorMode: background
+      graphMode: none
+    targets:
+      - expr: up{job="node"}
+        legend: "{{host}}"
+  - title: Caddy
+    type: stat
+    unit: short
+    width: 4
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: up{job="caddy"}
+        legend: caddy
+  - title: Prometheus
+    type: stat
+    unit: short
+    width: 4
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: up{job="prometheus"}
+        legend: prometheus
+  - title: Grafana
+    type: stat
+    unit: short
+    width: 4
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: up{job="grafana"}
+        legend: grafana
+  - title: Blackbox exporter
+    type: stat
+    unit: short
+    width: 4
+    requires: [enable_blackbox_exporter]
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: up{job="blackbox"}
+        legend: blackbox
+  - title: Jaeger
+    type: stat
+    unit: short
+    width: 4
+    requires: [enable_tracing]
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: up{job="jaeger"}
+        legend: jaeger
+  - title: Pushgateway
+    type: stat
+    unit: short
+    width: 4
+    requires: [enable_pushgateway]
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: up{job="pushgateway"}
+        legend: pushgateway
+  - title: CPU busy
+    type: timeseries
+    unit: percentunit
+    requires: [enable_node_exporter]
+    targets:
+      - expr: 1 - avg by (host) (rate(node_cpu_seconds_total{job="node",mode="idle"}[5m]))
+        legend: "{{host}}"
+  - title: Load
+    type: timeseries
+    unit: short
+    requires: [enable_node_exporter]
+    targets:
+      - expr: node_load1{job="node"}
+        legend: "{{host}} 1 minute"
+      - expr: node_load15{job="node"}
+        legend: "{{host}} 15 minutes"
+  - title: Memory used
+    type: timeseries
+    unit: bytes
+    requires: [enable_node_exporter]
+    targets:
+      - expr: node_memory_MemTotal_bytes{job="node"} - node_memory_MemAvailable_bytes{job="node"}
+        legend: "{{host}} used"
+      - expr: node_memory_MemTotal_bytes{job="node"}
+        legend: "{{host}} total"
+  - title: Disk free
+    type: timeseries
+    unit: bytes
+    requires: [enable_node_exporter]
+    targets:
+      - expr: node_filesystem_avail_bytes{job="node",fstype!~"tmpfs|overlay|squashfs|ramfs|fuse.*"}
+        legend: "{{host}} {{mountpoint}}"
+  - title: Disk reads and writes
+    type: timeseries
+    unit: Bps
+    requires: [enable_node_exporter]
+    targets:
+      - expr: sum by (host) (rate(node_disk_read_bytes_total{job="node"}[5m]))
+        legend: "{{host}} read"
+      - expr: sum by (host) (rate(node_disk_written_bytes_total{job="node"}[5m]))
+        legend: "{{host}} written"
+  - title: Network
+    type: timeseries
+    unit: Bps
+    requires: [enable_node_exporter]
+    targets:
+      - expr: sum by (host) (rate(node_network_receive_bytes_total{job="node",device!="lo"}[5m]))
+        legend: "{{host}} received"
+      - expr: sum by (host) (rate(node_network_transmit_bytes_total{job="node",device!="lo"}[5m]))
+        legend: "{{host}} sent"
+  - title: Unit states
+    type: stat
+    unit: short
+    width: 24
+    height: 8
+    description: The playbook's units in the unit state file, on each host.
+    requires: [enable_node_exporter]
+    options:
+      colorMode: none
+      graphMode: none
+      textMode: name
+    targets:
+      - expr: >-
+          janitor_unit_state{unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service"}
+          == 1
+        legend: "{{host}} {{unit}} {{state}}"
+  - title: Caddy requests per second by status
+    type: timeseries
+    unit: reqps
+    description: Requests Caddy served.
+    targets:
+      - expr: sum by (code) (rate(caddy_http_request_duration_seconds_count{handler="subroute"}[5m]))
+        legend: "{{code}}"
+  - title: Caddy request time, 90th percentile
+    type: timeseries
+    unit: s
+    targets:
+      - expr: >-
+          histogram_quantile(0.9, sum by (le)
+          (rate(caddy_http_request_duration_seconds_bucket{handler="subroute"}[5m])))
+        legend: 90th percentile
+      - expr: sum(caddy_http_requests_in_flight{handler="subroute"})
+        legend: in flight
+  - title: Prometheus series
+    type: timeseries
+    unit: short
+    targets:
+      - expr: prometheus_tsdb_head_series
+        legend: series
+  - title: Rule evaluation failures per hour
+    type: timeseries
+    unit: short
+    targets:
+      - expr: sum by (rule_group) (increase(prometheus_rule_evaluation_failures_total[1h]))
+        legend: "{{rule_group}}"
+  - title: Scrape duration by job
+    type: timeseries
+    unit: s
+    targets:
+      - expr: max by (job) (scrape_duration_seconds)
+        legend: "{{job}}"
+  - title: Grafana requests per second by status
+    type: timeseries
+    unit: reqps
+    targets:
+      - expr: sum by (status_code) (rate(grafana_http_request_duration_seconds_count[5m]))
+        legend: "{{status_code}}"
+  - title: Grafana request time, 90th percentile
+    type: timeseries
+    unit: s
+    targets:
+      - expr: histogram_quantile(0.9, sum by (le) (rate(grafana_http_request_duration_seconds_bucket[5m])))
+        legend: grafana
+  - title: Prometheus requests per second by status
+    type: timeseries
+    unit: reqps
+    targets:
+      - expr: sum by (code) (rate(prometheus_http_requests_total[5m]))
+        legend: "{{code}}"
+  - title: Prometheus request time, mean
+    type: timeseries
+    unit: s
+    targets:
+      - expr: sum(rate(prometheus_http_request_duration_seconds_sum[5m])) / sum(rate(prometheus_http_request_duration_seconds_count[5m]))
+        legend: prometheus
+  - title: Health checks failing by job
+    type: timeseries
+    unit: short
+    requires: [enable_blackbox_exporter]
+    targets:
+      - expr: sum by (job) (probe_success == bool 0)
+        legend: "{{job}}"
+  - title: Blackbox exporter configuration loaded
+    type: stat
+    unit: short
+    width: 12
+    requires: [enable_blackbox_exporter]
+    defaults:
+      mappings:
+        - type: value
+          options:
+            "0": {text: failed, color: red, index: 0}
+            "1": {text: loaded, color: green, index: 1}
+    options: *background
+    targets:
+      - expr: blackbox_exporter_config_last_reload_successful
+        legend: blackbox
+  - title: Spans Jaeger took in per second
+    type: timeseries
+    unit: short
+    requires: [enable_tracing]
+    targets:
+      - expr: sum by (receiver) (rate({__name__=~"otelcol_receiver_accepted_spans(_total)?"}[5m]))
+        legend: "{{receiver}}"
+      - expr: sum by (receiver) (rate({__name__=~"otelcol_receiver_refused_spans(_total)?"}[5m]))
+        legend: "{{receiver}} refused"
+  - title: Spans Jaeger stored per second
+    type: timeseries
+    unit: short
+    requires: [enable_tracing]
+    targets:
+      - expr: sum by (exporter) (rate({__name__=~"otelcol_exporter_sent_spans(_total)?"}[5m]))
+        legend: "{{exporter}}"
+      - expr: sum by (exporter) (rate({__name__=~"otelcol_exporter_send_failed_spans(_total)?"}[5m]))
+        legend: "{{exporter}} failed"
+  - title: Metric groups on the Pushgateway
+    type: timeseries
+    unit: short
+    description: One group per run.
+    requires: [enable_pushgateway]
+    targets:
+      - expr: count(push_time_seconds)
+        legend: groups
+  - title: Memory of the monitoring units
+    type: timeseries
+    unit: bytes
+    requires: [enable_node_exporter]
+    targets:
+      - expr: janitor_unit_memory_bytes{unit=~"(prometheus|grafana|jaeger)[.]service"}
+        legend: "{{host}} {{unit}}"
+  - title: CPU of the monitoring units
+    type: timeseries
+    unit: percentunit
+    description: 100% is one core.
+    requires: [enable_node_exporter]
+    targets:
+      - expr: rate(janitor_unit_cpu_seconds_total{unit=~"(prometheus|grafana|jaeger)[.]service"}[5m])
+        legend: "{{host}} {{unit}}"
+  - title: Caddy memory
+    type: timeseries
+    unit: bytes
+    requires: [enable_node_exporter]
+    targets:
+      - expr: janitor_unit_memory_bytes{unit="caddy.service"}
+        legend: caddy
+  - title: Caddy CPU
+    type: timeseries
+    unit: percentunit
+    description: 100% is one core.
+    requires: [enable_node_exporter]
+    targets:
+      - expr: rate(janitor_unit_cpu_seconds_total{unit="caddy.service"}[5m])
+        legend: caddy
+  - title: Exporter memory
+    type: timeseries
+    unit: bytes
+    requires: [enable_node_exporter]
+    targets:
+      - expr: janitor_unit_memory_bytes{unit=~"prometheus-.+[.]service"}
+        legend: "{{host}} {{unit}}"
+  - title: Exporter CPU
+    type: timeseries
+    unit: percentunit
+    description: 100% is one core.
+    requires: [enable_node_exporter]
+    targets:
+      - expr: rate(janitor_unit_cpu_seconds_total{unit=~"prometheus-.+[.]service"}[5m])
+        legend: "{{host}} {{unit}}"

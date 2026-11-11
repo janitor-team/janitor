@@ -1,0 +1,111 @@
+---
+# With monitoring: Debian's node exporter on every host, with the state,
+# memory and CPU time of the janitor units from a user timer.
+- name: Run the node exporter and the unit states timer
+  when: enable_monitoring | bool and enable_node_exporter | bool
+  block:
+    - name: Install the node exporter without starting it
+      ansible.builtin.apt:
+        name: prometheus-node-exporter
+        install_recommends: false
+        policy_rc_d: 101
+        state: present
+
+    - name: Create the directory for the unit state file
+      ansible.builtin.file:
+        path: "{{ host_metrics_textfile_dir }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        mode: "0755"
+
+    - name: Point the node exporter at its address and the unit state file
+      ansible.builtin.template:
+        src: node-exporter.default.j2
+        dest: /etc/default/prometheus-node-exporter
+        mode: "0644"
+      register: host_metrics_default
+
+    - name: Make the directory for the node exporter's drop-in
+      ansible.builtin.file:
+        path: /etc/systemd/system/prometheus-node-exporter.service.d
+        state: directory
+        mode: "0755"
+
+    - name: Start the node exporter once the network is up, and retry
+      # On a worker-only host it listens on janitor_worker_address.
+      ansible.builtin.copy:
+        src: node-exporter-network.conf
+        dest: /etc/systemd/system/prometheus-node-exporter.service.d/janitor.conf
+        mode: "0644"
+      register: host_metrics_dropin
+
+    - name: Start the node exporter, restarting it when its settings changed
+      ansible.builtin.systemd:
+        name: prometheus-node-exporter.service
+        enabled: true
+        daemon_reload: "{{ host_metrics_dropin is changed }}"
+        state: "{{ 'restarted' if host_metrics_default is changed or host_metrics_dropin is changed else 'started' }}"
+
+    - name: Install the script that writes the unit states
+      ansible.builtin.template:
+        src: janitor-unit-metrics.j2
+        dest: /usr/local/bin/janitor-unit-metrics
+        mode: "0755"
+
+    - name: Create the systemd user unit directory
+      ansible.builtin.file:
+        path: "/home/{{ ansible_user }}/.config/systemd/user"
+        state: directory
+        owner: "{{ ansible_user }}"
+        mode: "0755"
+
+    - name: Deploy the timer that writes the unit states
+      ansible.builtin.template:
+        src: "{{ item }}.j2"
+        dest: "/home/{{ ansible_user }}/.config/systemd/user/{{ item }}"
+        owner: "{{ ansible_user }}"
+        mode: "0644"
+      loop:
+        - janitor-unit-metrics.service
+        - janitor-unit-metrics.timer
+      register: host_metrics_units
+
+    - name: Enable the timer that writes the unit states
+      become: true
+      become_user: "{{ ansible_user }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+      ansible.builtin.systemd:
+        name: janitor-unit-metrics.timer
+        scope: user
+        daemon_reload: "{{ host_metrics_units is changed }}"
+        enabled: true
+        state: started
+
+# Only what this role set up, which the unit state directory marks.
+- name: Stop the node exporter and the unit states timer
+  when: not (enable_monitoring | bool and enable_node_exporter | bool)
+  block:
+    - name: Check whether this role set up the node exporter
+      ansible.builtin.stat:
+        path: "{{ host_metrics_textfile_dir }}"
+      register: host_metrics_dir
+
+    - name: Stop the node exporter
+      ansible.builtin.systemd:
+        name: prometheus-node-exporter.service
+        enabled: false
+        state: stopped
+      when: host_metrics_dir.stat.exists
+
+    - name: Stop the unit states timer
+      become: true
+      become_user: "{{ ansible_user }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+      ansible.builtin.systemd:
+        name: janitor-unit-metrics.timer
+        scope: user
+        enabled: false
+        state: stopped
+      when: host_metrics_dir.stat.exists

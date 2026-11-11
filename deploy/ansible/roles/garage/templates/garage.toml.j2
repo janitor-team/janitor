@@ -12,6 +12,6 @@ s3_region = "{{ janitor_s3_region }}"
 api_bind_addr = "{{ janitor_loopback }}:{{ garage_s3_port }}"
 
 [admin]
-# Loopback only. The playbook uses only /health.
+# Loopback only. The playbook uses /health and, with monitoring, /metrics.
 api_bind_addr = "{{ janitor_loopback }}:{{ garage_admin_port }}"
-metrics_require_token = true
+metrics_require_token = {{ 'false' if enable_monitoring | bool else 'true' }}

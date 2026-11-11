@@ -1,6 +1,6 @@
 ---
 # Only the control host and this host may reach janitor-worker's ports
-# (9821 and up).
+# (9821 and up) and the node exporter's.
 - name: Set up the worker firewall
   when: enable_worker_firewall | bool
   block:
