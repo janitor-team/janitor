@@ -238,7 +238,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             janitor_worker::client::Client::new(base_url, auth, janitor_worker::DEFAULT_USER_AGENT)
                 .expect("Failed to create HTTP client");
         loop {
-            let exit_code = match janitor_worker::process_single_item(
+            let result = janitor_worker::process_single_item(
                 &client,
                 my_url.as_ref(),
                 &node_name,
@@ -250,8 +250,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Some(&args.output_directory),
                 state.clone(),
             )
-            .await
-            {
+            .await;
+            state.write().unwrap().assignment = None;
+            let exit_code = match result {
                 Err(janitor_worker::SingleItemError::AssignmentFailure(e)) => {
                     log::error!("failed to get assignment: {}", e);
                     if args.r#loop {
