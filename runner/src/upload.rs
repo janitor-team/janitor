@@ -203,10 +203,13 @@ impl UploadProcessor {
         field: axum::extract::multipart::Field<'a>,
         dir: &PathBuf,
     ) -> Result<UploadedFile, UploadError> {
-        let filename = field.file_name().unwrap_or("unknown").to_string();
+        let filename = field
+            .file_name()
+            .ok_or_else(|| UploadError::Validation("Part without filename".to_string()))?
+            .to_string();
+        validate_filename(&filename)?;
         let content_type = field.content_type().map(|ct| ct.to_string());
-        let safe_filename = sanitize_filename(&filename);
-        let file_path = dir.join(&safe_filename);
+        let file_path = dir.join(&filename);
         let file_size = stream_field_to_disk(field, &file_path, &filename).await?;
         log::info!(
             "Uploaded log: {} ({} bytes) -> {:?}",
@@ -230,7 +233,11 @@ impl UploadProcessor {
         run_dir: &PathBuf,
         category: &str,
     ) -> Result<UploadedFile, UploadError> {
-        let filename = field.file_name().unwrap_or("unknown").to_string();
+        let filename = field
+            .file_name()
+            .ok_or_else(|| UploadError::Validation("Part without filename".to_string()))?
+            .to_string();
+        validate_filename(&filename)?;
 
         let content_type = field.content_type().map(|ct| ct.to_string());
 
@@ -241,8 +248,7 @@ impl UploadProcessor {
                 UploadError::Storage(format!("Failed to create {} directory: {}", category, e))
             })?;
 
-        let safe_filename = sanitize_filename(&filename);
-        let file_path = category_dir.join(&safe_filename);
+        let file_path = category_dir.join(&filename);
 
         let file_size = stream_field_to_disk(field, &file_path, &filename).await?;
 
@@ -581,19 +587,17 @@ async fn stream_field_to_disk<'a>(
     Ok(written)
 }
 
-/// Sanitize a filename for safe storage.
-fn sanitize_filename(filename: &str) -> String {
-    // Replace potentially dangerous characters
-    filename
-        .chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-            c if c.is_control() => '_',
-            c => c,
-        })
-        .collect::<String>()
-        .trim_matches('.')
-        .to_string()
+/// Check that an uploaded filename is a plain basename, so joining it
+/// onto a directory can not escape that directory.
+fn validate_filename(filename: &str) -> Result<(), UploadError> {
+    if filename.is_empty() || filename == "." || filename == ".." || filename.contains(['/', '\0'])
+    {
+        return Err(UploadError::Validation(format!(
+            "Invalid filename: {:?}",
+            filename
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -601,11 +605,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_sanitize_filename() {
-        assert_eq!(sanitize_filename("normal.txt"), "normal.txt");
-        assert_eq!(sanitize_filename("with/slash.txt"), "with_slash.txt");
-        assert_eq!(sanitize_filename("with:colon.txt"), "with_colon.txt");
-        assert_eq!(sanitize_filename("..dangerous"), "dangerous");
-        assert_eq!(sanitize_filename("dangerous.."), "dangerous");
+    fn test_validate_filename_accepts_plain_names() {
+        for name in [
+            "normal.txt",
+            "foo_1:2.0_amd64.deb",
+            "..hidden",
+            "back\\slash",
+        ] {
+            assert!(
+                validate_filename(name).is_ok(),
+                "{:?} should be accepted",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_filename_rejects_unsafe_names() {
+        for name in [
+            "",
+            ".",
+            "..",
+            "../escape",
+            "sub/dir.txt",
+            "trailing/",
+            "/etc/passwd",
+            "nul\0byte",
+        ] {
+            assert!(
+                matches!(validate_filename(name), Err(UploadError::Validation(_))),
+                "{:?} should be rejected",
+                name
+            );
+        }
     }
 }
