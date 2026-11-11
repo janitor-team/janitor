@@ -759,6 +759,7 @@ pub fn run_worker(
         &result_branches,
         changer_result.tags(),
         false,
+        None,
         possible_transports,
     )
     .map_err(|e| push_error_to_worker_failure(e, vec!["result-push".to_string()]))?;
@@ -789,6 +790,18 @@ pub fn run_worker(
         details: target_details,
     });
 
+    let vendor = vendor.to_string();
+    let cache = match (cached_branch_url, ws.main_branch()) {
+        (Some(url), Some(main_branch)) => Some(crate::vcs::CacheBranch {
+            url: url.clone(),
+            revision: main_branch.last_revision(),
+            tag_selector: Box::new(move |tag_name: String| -> bool {
+                tag_name.starts_with(&format!("{}/", vendor)) || tag_name.starts_with("upstream/")
+            }),
+        }),
+        _ => None,
+    };
+
     log::info!("Pushing result branch to {}", target_repo_url);
 
     crate::vcs::import_branches(
@@ -800,53 +813,10 @@ pub fn run_worker(
         &result_branches,
         changer_result.tags(),
         true,
+        cache,
         possible_transports,
     )
     .map_err(|e| push_error_to_worker_failure(e, vec!["result-sym".to_owned()]))?;
-
-    if let Some(cached_branch_url) = cached_branch_url.as_ref() {
-        // TODO(jelmer): integrate into import_branches_git / import_branches_bzr
-        log::info!("Pushing packaging branch cache to {}", cached_branch_url);
-
-        let vendor = vendor.to_string();
-
-        let tag_selector = move |tag_name: String| -> bool {
-            tag_name.starts_with(&format!("{}/", vendor)) || tag_name.starts_with("upstream/")
-        };
-
-        if let Some(main_branch) = ws.main_branch() {
-            match crate::vcs::push_branch(
-                &ws.local_tree().branch(),
-                cached_branch_url,
-                Some(vcs_type),
-                true,
-                Some(main_branch.last_revision()),
-                Some(Box::new(tag_selector)),
-                possible_transports,
-            ) {
-                Err(e) => match cache_push_error_kind(&e) {
-                    Some(CachePushError::Transient) => {
-                        log::warn!("unable to push to cache URL {}: {}", cached_branch_url, e);
-                    }
-                    Some(CachePushError::Permanent) => {
-                        return Err(push_error_to_worker_failure(
-                            e,
-                            vec!["result-cache".to_owned()],
-                        ));
-                    }
-                    None => {
-                        panic!(
-                            "Unexpected error pushing to cache URL {}: {}",
-                            cached_branch_url, e
-                        );
-                    }
-                },
-                Ok(_) => {
-                    log::info!("Pushed packaging branch cache to {}", cached_branch_url);
-                }
-            }
-        }
-    }
 
     std::mem::drop(copy_output);
 

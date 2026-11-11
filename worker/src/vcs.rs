@@ -296,8 +296,15 @@ fn import_branches_git(
     Ok(())
 }
 
+/// The packaging branch cache that `import_branches` pushes after the results.
+pub struct CacheBranch {
+    pub url: Url,
+    pub revision: RevisionId,
+    pub tag_selector: Box<dyn Fn(String) -> bool>,
+}
+
 /// Import the result branches and tags of a run into the repository at
-/// `repo_url`.
+/// `repo_url`, then push the packaging branch cache if there is one.
 #[allow(clippy::too_many_arguments)]
 pub fn import_branches(
     vcs_type: janitor::vcs::VcsType,
@@ -308,6 +315,7 @@ pub fn import_branches(
     branches: &Vec<(String, String, Option<RevisionId>, Option<RevisionId>)>,
     tags: Vec<(String, Option<RevisionId>)>,
     update_current: bool,
+    cache: Option<CacheBranch>,
     possible_transports: &mut Option<Vec<Transport>>,
 ) -> Result<(), BrzError> {
     let import = match vcs_type {
@@ -326,7 +334,36 @@ pub fn import_branches(
         tags,
         update_current,
         possible_transports,
-    )
+    )?;
+    let Some(cache) = cache else {
+        return Ok(());
+    };
+    log::info!("Pushing packaging branch cache to {}", cache.url);
+    match push_branch(
+        local_branch,
+        &cache.url,
+        Some(vcs_type),
+        true,
+        Some(cache.revision),
+        Some(cache.tag_selector),
+        possible_transports,
+    ) {
+        Err(e) => match crate::cache_push_error_kind(&e) {
+            Some(crate::CachePushError::Transient) => {
+                log::warn!("unable to push to cache URL {}: {}", cache.url, e);
+            }
+            Some(crate::CachePushError::Permanent) => {
+                return Err(e);
+            }
+            None => {
+                panic!("Unexpected error pushing to cache URL {}: {}", cache.url, e);
+            }
+        },
+        Ok(_) => {
+            log::info!("Pushed packaging branch cache to {}", cache.url);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -417,6 +454,9 @@ mod tests {
         )
         .unwrap();
         target.create_repository(Some(true)).unwrap();
+        let source_tags = source_tree.branch().tags().unwrap();
+        source_tags.set_tag("upstream/1.0", &revid1).unwrap();
+        source_tags.set_tag("other", &revid1).unwrap();
         import_branches(
             janitor::vcs::VcsType::Bzr,
             &target_url,
@@ -431,9 +471,25 @@ mod tests {
             )],
             vec![("tag".to_string(), Some(revid1.clone()))],
             false,
+            Some(CacheBranch {
+                url: target_url.join("debian/latest").unwrap(),
+                revision: revid1.clone(),
+                tag_selector: Box::new(|tag_name| tag_name.starts_with("upstream/")),
+            }),
             &mut None,
         )
         .unwrap();
+        let cache_branch = breezyshim::branch::open_as_generic(
+            &Url::from_directory_path(target_path.join("debian/latest")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(&cache_branch.last_revision(), &revid1);
+        assert_eq!(
+            &cache_branch.tags().unwrap().get_tag_dict().unwrap(),
+            &maplit::hashmap! {
+                "upstream/1.0".to_string() => revid1.clone(),
+            }
+        );
         let target_branch_foo = breezyshim::branch::open_as_generic(
             &Url::from_directory_path(target_path.join("campaign")).unwrap(),
         )
@@ -491,6 +547,7 @@ mod tests {
             )],
             vec![("tag".to_string(), Some(revid1.clone()))],
             true,
+            None,
             &mut None,
         )
         .unwrap();
