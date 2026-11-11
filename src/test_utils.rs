@@ -3,6 +3,7 @@
 //!
 //! Only compiled with the `testing` feature.
 
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::PgPool;
 use std::sync::Once;
 use tokio::sync::OnceCell;
@@ -56,7 +57,7 @@ impl Default for TestDatabaseConfig {
 }
 
 /// A throwaway PostgreSQL database created for a single test. Dropped
-/// asynchronously when the value is dropped.
+/// when the value is dropped.
 pub struct TestDatabase {
     /// Pool connected to the freshly-created database.
     pub pool: PgPool,
@@ -145,37 +146,69 @@ impl TestDatabase {
         &self.pool
     }
 
-    /// Detach the database from automatic cleanup and return its pool.
-    /// The underlying database stays on the server after the pool is
-    /// dropped; it is only cleaned up at the next test run (via the
-    /// `DROP DATABASE IF EXISTS` in [`create_template`]) or by hand.
-    /// Use when the pool must outlive the [`TestDatabase`] guard, for
-    /// example when handing it off to a long-lived `AppState` whose
-    /// drop order you don't control.
-    pub fn leak_pool(mut self) -> PgPool {
+    /// Hand the database over to a pool of its own, which drops the
+    /// database once that pool and all its clones are gone. Use when the
+    /// pool must outlive the [`TestDatabase`] guard, for example when
+    /// handing it off to a long-lived `AppState`.
+    pub fn into_pool(mut self) -> PgPool {
         self.should_cleanup = false;
-        self.pool.clone()
+        let guard = DropDatabaseGuard {
+            admin: (*self.admin_pool.connect_options()).clone(),
+            name: self.database_name.clone(),
+        };
+        PgPoolOptions::new()
+            // The hook owns the guard, so the guard lives as long as the pool.
+            .after_connect(move |_, _| {
+                let _guard = &guard;
+                Box::pin(async { Ok(()) })
+            })
+            .connect_lazy_with((*self.pool.connect_options()).clone())
     }
 }
 
 impl Drop for TestDatabase {
     fn drop(&mut self) {
         if self.should_cleanup {
-            let admin_pool = self.admin_pool.clone();
-            let database_name = self.database_name.clone();
-            // `Drop` can't be async; spawn onto whatever runtime is
-            // driving this thread. If there's no runtime the drop
-            // is best-effort and the leaked database will be
-            // cleaned up next CI run.
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.spawn(async move {
-                    let drop_query = format!("DROP DATABASE IF EXISTS \"{}\"", database_name);
-                    let _ = sqlx::query(sqlx::AssertSqlSafe(drop_query.as_str()))
-                        .execute(&admin_pool)
-                        .await;
-                });
-            }
+            drop_test_database(&self.admin_pool.connect_options(), &self.database_name);
         }
+    }
+}
+
+struct DropDatabaseGuard {
+    admin: PgConnectOptions,
+    name: String,
+}
+
+impl Drop for DropDatabaseGuard {
+    fn drop(&mut self) {
+        drop_test_database(&self.admin, &self.name);
+    }
+}
+
+/// Drop the test database `name`, even while connections to it are open.
+pub fn drop_test_database(admin: &PgConnectOptions, name: &str) {
+    use sqlx::Connection;
+    let options = admin.clone();
+    let drop_query = format!("DROP DATABASE IF EXISTS \"{}\" WITH (FORCE)", name);
+    // `Drop` can't be async, so drop the database on a thread of our own.
+    let dropped = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build a runtime to drop the test database");
+        runtime.block_on(async {
+            let mut conn = sqlx::PgConnection::connect_with(&options)
+                .await
+                .expect("connect to drop the test database");
+            sqlx::query(sqlx::AssertSqlSafe(drop_query.as_str()))
+                .execute(&mut conn)
+                .await
+                .expect("drop the test database");
+        })
+    })
+    .join();
+    if dropped.is_err() && !std::thread::panicking() {
+        panic!("could not drop test database {}", name);
     }
 }
 
