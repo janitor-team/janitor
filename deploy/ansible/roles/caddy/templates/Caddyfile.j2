@@ -95,3 +95,17 @@
 	}
 }
 {% endif %}
+{% if enable_tracing | bool %}
+
+# janitor.conf's zipkin_address, on loopback: the site posts Zipkin JSON,
+# the Rust services OTLP, and Jaeger takes each on a port of its own.
+:{{ tracing_port }} {
+	bind {{ janitor_loopback_addresses | join(" ") }}
+	handle /api/v2/spans {
+		reverse_proxy {{ janitor_loopback }}:{{ jaeger_zipkin_port }}
+	}
+	handle {
+		reverse_proxy {{ janitor_loopback }}:{{ jaeger_otlp_port }}
+	}
+}
+{% endif %}
