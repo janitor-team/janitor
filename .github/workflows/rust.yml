@@ -65,6 +65,10 @@ jobs:
           docker exec ${{ job.services.postgres.id }} \
             apt-get install -y --no-install-recommends \
             postgresql-16-debversion
+          # debversion can pull in a newer server; restart to run it
+          docker restart ${{ job.services.postgres.id }}
+          timeout 60 sh -c 'until docker exec ${{ job.services.postgres.id }} \
+            pg_isready -U postgres; do sleep 1; done'
       - name: Build
         run: cargo build --verbose --workspace
       - name: Run tests
