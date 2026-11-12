@@ -23,7 +23,7 @@ struct Args {
     once: bool,
 
     /// Listen address
-    #[clap(long, default_value = "0.0.0.0")]
+    #[clap(long, default_value = "127.0.0.1")]
     listen_address: std::net::IpAddr,
 
     /// Listen port
