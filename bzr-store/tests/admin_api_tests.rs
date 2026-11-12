@@ -352,9 +352,7 @@ test_with_database! {
 test_with_database! {
     schema = Core;
     async fn test_public_repo_list_406_on_unmatchable_accept(test_db: TestDatabase) {
-        // mimeparse-style negotiator returns None for an Accept header
-        // that doesn't match html/plain/json — must surface as 406,
-        // matching Python's `web.HTTPNotAcceptable`.
+        // An Accept header matching none of html/plain/json is a 406.
         let tmp = TempDir::new().unwrap();
         let cfg = build_config(tmp.path(), test_db_url(&test_db));
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())

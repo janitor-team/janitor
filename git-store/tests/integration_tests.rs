@@ -1645,8 +1645,6 @@ db_test! {
 
 db_test! {
     async fn test_public_repo_list_406_on_unmatchable_accept(test_db: TestDatabase) {
-        // Matches Python's mimeparse `best_match` returning empty ->
-        // `HTTPNotAcceptable` (406).
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
