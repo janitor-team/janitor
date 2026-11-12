@@ -17,6 +17,9 @@
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock
 
+from bs4 import BeautifulSoup
+from pygments.lexers.diff import DiffLexer
+from pygments.token import Generic, Whitespace
 from yarl import URL
 
 from janitor.site import (
@@ -24,8 +27,10 @@ from janitor.site import (
     format_debdiff_error,
     format_duration,
     format_timestamp,
+    highlight_diff,
     update_vars_from_request,
 )
+from janitor.site.pygments_whitespace import TrailingWhitespaceFilter
 
 
 def test_duration():
@@ -93,3 +98,49 @@ def test_update_vars_from_request_uses_external_url():
         vs["bzr_vcs_manager"].get_repository_url("mycb")
         == "https://public.example.org/bzr/mycb"
     )
+
+
+def test_highlight_diff():
+    diff = (
+        "--- a/debian/control\n"
+        "+++ b/debian/control\n"
+        "@@ -1,2 +1,5 @@\n"
+        " Section: misc \n"
+        "-Priority: extra \n"
+        "+Priority: optional  \n"
+        "+Depends: a,\t\n"
+        "+Suggests: b\r\n"
+        "+Homepage: a\rb\n"
+    )
+    soup = BeautifulSoup(highlight_diff(diff), "html.parser")
+    (pre,) = soup.find_all("pre")
+    spans = [(span["class"], span.get_text()) for span in soup.select(".gd, .gi")]
+    assert pre.get_text() == diff.replace("\r", "\N{SYMBOL FOR CARRIAGE RETURN}")
+    assert spans == [
+        (["gd"], "--- a/debian/control"),
+        (["gi"], "+++ b/debian/control"),
+        (["gd"], "-Priority: extra"),
+        (["gd", "gd-TrailingWhitespace"], " "),
+        (["gi"], "+Priority: optional"),
+        (["gi", "gi-TrailingWhitespace"], "  "),
+        (["gi"], "+Depends: a,"),
+        (["gi", "gi-TrailingWhitespace"], "\t"),
+        (["gi"], "+Suggests: b"),
+        (["gi", "gi-TrailingWhitespace"], "\N{SYMBOL FOR CARRIAGE RETURN}"),
+        (["gi"], "+Homepage: a\N{SYMBOL FOR CARRIAGE RETURN}b"),
+    ]
+
+
+def test_trailing_whitespace_filter_carriage_return_inside_line():
+    lexer = DiffLexer(stripnl=False)
+    lexer.add_filter(TrailingWhitespaceFilter())
+    tokens = list(
+        lexer.get_tokens("+See https://example.org/a\N{SYMBOL FOR CARRIAGE RETURN}b \n")
+    )
+    assert tokens == [
+        (Generic.Inserted, "+See https://example.org/a"),
+        (Generic.Inserted, "\N{SYMBOL FOR CARRIAGE RETURN}"),
+        (Generic.Inserted, "b"),
+        (Generic.Inserted.TrailingWhitespace, " "),
+        (Whitespace, "\n"),
+    ]
