@@ -1971,7 +1971,7 @@ async fn peek_active_run(State(state): State<Arc<AppState>>) -> Response {
 #[derive(serde::Deserialize, Default, IntoParams)]
 #[into_params(parameter_in = Query)]
 struct GetQueueQuery {
-    limit: Option<i64>,
+    limit: Option<u32>,
 }
 
 /// `GET /queue` -- return the queued items as
