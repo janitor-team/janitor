@@ -26,6 +26,8 @@ import aiohttp
 from aiohttp import web
 from yarl import URL
 
+from . import site_root
+
 # Seconds a user has to log in at the provider before the state cookie is gone.
 LOGIN_STATE_MAX_AGE = 10 * 60
 
@@ -60,6 +62,9 @@ async def _site_path(request, raw: str) -> Optional[str]:
             return None
         url = url.relative()
     elif url.scheme:
+        return None
+    # The browser would resolve these, maybe to a path outside the site.
+    if any(part in (".", "..") for part in url.path.split("/")):
         return None
     match = await request.app.router.resolve(request.clone(rel_url=url))
     if match.http_exception is not None:
@@ -104,7 +109,8 @@ async def handle_oauth_callback(request):
             )
         access_token = resp["access_token"]
 
-    back_url = await _site_path(request, request.cookies.get("back_url", "/")) or "/"
+    home = site_root(request) + "/"
+    back_url = await _site_path(request, request.cookies.get("back_url", home)) or home
 
     async with request.app["http_client_session"].get(
         request.app["openid_config"]["userinfo_endpoint"],
@@ -130,9 +136,14 @@ INSERT INTO site_session (id, userinfo) VALUES ($1, $2)
     resp = web.HTTPFound(back_url)
 
     resp.del_cookie("state", path=callback_path)
-    resp.del_cookie("back_url")
+    resp.del_cookie("back_url", path=home)
     resp.set_cookie(
-        "session_id", session_id, secure=True, httponly=True, samesite="Strict"
+        "session_id",
+        session_id,
+        path=home,
+        secure=True,
+        httponly=True,
+        samesite="Strict",
     )
     return resp
 
@@ -163,8 +174,9 @@ async def handle_logout(request):
     if session_id is not None:
         async with request.app.database.acquire() as conn:
             await conn.execute("DELETE FROM site_session WHERE id = $1", session_id)
-    resp = web.HTTPFound("/")
-    resp.del_cookie("session_id")
+    home = site_root(request) + "/"
+    resp = web.HTTPFound(home)
+    resp.del_cookie("session_id", path=home)
     return resp
 
 
@@ -198,7 +210,8 @@ async def handle_login(request):
         target = await _site_path(request, request.query["url"])
         if target is None:
             raise web.HTTPBadRequest(text="invalid url")
-        response.set_cookie("back_url", target)
+        home = site_root(request) + "/"
+        response.set_cookie("back_url", target, path=home)
     return response
 
 

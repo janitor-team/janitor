@@ -5,7 +5,7 @@
     {%- if user or not config.hide_reviewer_identities -%}
         {{ reviewer }}
     {%- else -%}
-        <a href="/login?url={{ url | urlencode }}">Login to see reviewer identities</a>
+        <a href="{{ site_root }}/login?url={{ url | urlencode }}">Login to see reviewer identities</a>
     {%- endif -%}
 {% endmacro %}
 {% macro display_reviews_table(reviews, user=None) %}
@@ -67,7 +67,7 @@
 	    }
 	    console.log("Submitting review " + verdict + " for run {{ run_id }} ");
 	    $("#review-status").text("Saving...");
-	    $.post('/api/run/{{ run_id }}', {
+	    $.post('{{ site_root }}/api/run/{{ run_id }}', {
 		'verdict': verdict,
 		'review-comment': comment
 	    }).done(function() {
@@ -78,7 +78,7 @@
 		console.log("Saving review failed: " + xhr.status + " " + xhr.statusText);
 		$("#verdict").val(saved_verdict);
 		if (xhr.status == 401) {
-		    var login = $("<a>").attr("href", "/login?url=" + encodeURIComponent(window.location.href)).text("log in again");
+		    var login = $("<a>").attr("href", "{{ site_root }}/login?url=" + encodeURIComponent(window.location.href)).text("log in again");
 		    $("#review-status").text("Could not save your review. Please ").append(login, ".");
 		} else {
 		    $("#review-status").text("Could not save your review. Please try again.");

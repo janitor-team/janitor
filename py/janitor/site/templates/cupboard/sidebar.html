@@ -2,14 +2,14 @@
 <div class="sphinxsidebar" role="navigation" aria-label="main navigation">
     <div class="sphinxsidebarwrapper">
         <div class="logo">
-            <a href="/">Janitor</a>
+            <a href="{{ site_root }}/">Janitor</a>
         </div>
         <h3>
             <a href="{{ url_for('cupboard-start') }}">Cupboard</a>
         </h3>
         {% if user %}
             Logged in as {{ user['name'] }}
-            <form action="/logout" method="post">
+            <form action="{{ site_root }}/logout" method="post">
                 <input type="submit" value="Log out" />
             </form>
         {% else %}

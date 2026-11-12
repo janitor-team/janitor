@@ -34,7 +34,7 @@
                 {% for candidate in candidates %}
                     <tr class="row-even">
                         <td>
-                            <a href="/{{ candidate.campaign }}/c/{{ codebase.name }}/">{{ candidate.campaign }}</a>
+                            <a href="{{ site_root }}/{{ candidate.campaign }}/c/{{ codebase.name }}/">{{ candidate.campaign }}</a>
                         </td>
                         <td>
                             <code>{{ candidate.command }}</code>

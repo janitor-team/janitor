@@ -21,9 +21,9 @@
             }
 
             function allowReview(codebase, run_id, campaign) {
-                $('#full-run-link').attr('href', "/cupboard/c/" + codebase + "/" + run_id + "/");
+                $('#full-run-link').attr('href', "{{ site_root }}/cupboard/c/" + codebase + "/" + run_id + "/");
                 $('#run-campaign').text(campaign);
-                $('#run-codebase').attr('href', "/cupboard/c/" + codebase + "/").text(codebase);
+                $('#run-codebase').attr('href', "{{ site_root }}/cupboard/c/" + codebase + "/").text(codebase);
                 $('#run-id').attr('value', run_id);
                 $('#codebase').attr('value', codebase);
                 $('.review-button').prop('disabled', false);
@@ -88,7 +88,7 @@
             function refreshData(cb) {
                 console.log("Updating backlog of todo items");
                 $.ajax({
-			url: '/cupboard/api/{% if campaign %}{{ campaign }}/{% endif %}needs-review?required_only={{ 'true' if required_only else 'false' }}&{% if user %}&reviewer={{ user['email'] }}{% endif %}&publishable_only={{ 'true ' if publishable_only else 'false ' }}',
+			url: '{{ site_root }}/cupboard/api/{% if campaign %}{{ campaign }}/{% endif %}needs-review?required_only={{ 'true' if required_only else 'false' }}&{% if user %}&reviewer={{ user['email'] }}{% endif %}&publishable_only={{ 'true ' if publishable_only else 'false ' }}',
                     dataType: 'json',
                     success: function(data) {
                         data.forEach(function(entry) {
@@ -108,7 +108,7 @@
                 var codebase = $('#codebase').val();
                 console.log("Submitting review " + verdict + " for run " + codebase + "/" + run_id);
                 disallowReview();
-                $.ajax('/api/run/' + run_id, {
+                $.ajax('{{ site_root }}/api/run/' + run_id, {
                     type: "POST",
                     data: {
                         'verdict': verdict,
@@ -122,7 +122,7 @@
                        {% if user %}
                            alert('failed to submit review: not authorized');
                        {% else %}
-                           window.location.replace("/login?url=" + encodeURI(window.location.href));
+                           window.location.replace("{{ site_root }}/login?url=" + encodeURI(window.location.href));
                        {% endif %}
                        },
                        200: function() {
