@@ -32,7 +32,7 @@ from yarl import URL
 
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
-from janitor.site.simple import create_app
+from janitor.site.simple import create_app, main_async
 
 from .conftest import _insert_run
 
@@ -52,6 +52,21 @@ artifact_location: "{tempfile.mkdtemp()}"
 {f'database_location: "{database_location}"' if database_location else ""}
 {extra}
 """)
+
+
+@pytest.mark.parametrize("setting", ["campaign", "artifact_location", "redis_location"])
+async def test_main_without_setting(tmp_path, setting):
+    lines = {
+        "campaign": 'campaign { name: "lintian-fixes" }',
+        "artifact_location": f'artifact_location: "{tmp_path}"',
+        "redis_location": 'redis_location: "redis://localhost"',
+    }
+    del lines[setting]
+    path = tmp_path / "janitor.conf"
+    path.write_text("\n".join(lines.values()))
+    with pytest.raises(SystemExit) as e:
+        await main_async(["--config", str(path)])
+    assert e.value.code == f"{path} has no {setting}"
 
 
 async def test_create_app():
