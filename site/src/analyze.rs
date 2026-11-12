@@ -40,7 +40,8 @@ pub fn find_build_log_failure<R: std::io::Read>(
     length: usize,
 ) -> Result<AnalyzeResult, Error> {
     let bufread = std::io::BufReader::new(logf);
-    let sbuildlog = buildlog_consultant::sbuild::SbuildLog::try_from(bufread).unwrap();
+    let sbuildlog = buildlog_consultant::sbuild::SbuildLog::try_from(bufread)
+        .map_err(|e| Error::new(format!("failed to read build log: {}", e)))?;
     let linecount = sbuildlog.sections().last().map(|s| s.offsets.1).unwrap();
     let failure = buildlog_consultant::sbuild::worker_failure_from_sbuild_log(&sbuildlog)?;
 
@@ -123,6 +124,16 @@ mod tests {
                 include_lines: (1, 2),
                 highlight_lines: None,
             }
+        );
+    }
+
+    #[test]
+    fn test_find_build_log_failure_unreadable_log() {
+        assert_eq!(
+            find_build_log_failure(&b"hello\ncaf\xe9\n"[..], 15)
+                .unwrap_err()
+                .to_string(),
+            "failed to read build log: stream did not contain valid UTF-8"
         );
     }
 
