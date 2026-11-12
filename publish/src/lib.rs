@@ -2736,7 +2736,7 @@ pub async fn publish_from_policy(
 
     let tags: Option<Vec<(String, RevisionId)>> = run.result_tags.as_ref().map(|t| {
         t.iter()
-            .map(|tag| (tag.actual_name.clone(), tag.revision.clone()))
+            .filter_map(|tag| Some((tag.actual_name.clone(), tag.revision.clone()?)))
             .collect()
     });
     let codemod_result = run.result.clone().unwrap_or(serde_json::Value::Null);
@@ -3009,7 +3009,7 @@ pub async fn publish_and_store(
 
     let tags: Option<Vec<(String, RevisionId)>> = run.result_tags.as_ref().map(|t| {
         t.iter()
-            .map(|tag| (tag.actual_name.clone(), tag.revision.clone()))
+            .filter_map(|tag| Some((tag.actual_name.clone(), tag.revision.clone()?)))
             .collect()
     });
 
@@ -4073,7 +4073,7 @@ async fn check_existing_mp(
         let tags_for_publish: Option<Vec<(String, RevisionId)>> =
             last_run.result_tags.as_ref().map(|tags| {
                 tags.iter()
-                    .map(|tag| (tag.actual_name.clone(), tag.revision.clone()))
+                    .filter_map(|tag| Some((tag.actual_name.clone(), tag.revision.clone()?)))
                     .collect()
             });
 

@@ -280,7 +280,7 @@ impl RunnerDatabase {
             change_set: Some(run.change_set),
             tags: run.result_tags.map(|tags| {
                 tags.into_iter()
-                    .map(|tag| (tag.actual_name, Some(tag.revision)))
+                    .map(|tag| (tag.actual_name, tag.revision))
                     .collect()
             }),
             // TODO: remote URLs reported by the worker are not stored.
@@ -532,15 +532,10 @@ impl RunnerDatabase {
         // result_tags is a result_tag[] (composite of (actual_name, revision)).
         // Reconstruct it server-side from two parallel text[] binds via
         // unnest, which avoids having to encode composite arrays from Rust.
-        let (tag_names, tag_revisions): (Vec<String>, Vec<String>) =
+        let (tag_names, tag_revisions): (Vec<String>, Vec<Option<String>>) =
             if let Some(tags) = &result.tags {
                 tags.iter()
-                    .map(|(n, r)| {
-                        (
-                            n.clone(),
-                            r.as_ref().map(|r| r.to_string()).unwrap_or_default(),
-                        )
-                    })
+                    .map(|(n, r)| (n.clone(), r.as_ref().map(|r| r.to_string())))
                     .unzip()
             } else {
                 (Vec::new(), Vec::new())

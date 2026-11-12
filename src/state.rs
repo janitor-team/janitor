@@ -30,7 +30,7 @@ pub async fn create_pool(config: &Config) -> Result<Pool<Postgres>, sqlx::Error>
 #[sqlx(type_name = "result_tag")]
 pub struct ResultTag {
     pub actual_name: String,
-    pub revision: RevisionId,
+    pub revision: Option<RevisionId>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -186,7 +186,7 @@ mod tests {
             ]),
             result_tags: Some(vec![ResultTag {
                 actual_name: "v1.0".to_string(),
-                revision: RevisionId::from(b"tag-ref".to_vec()),
+                revision: Some(RevisionId::from(b"tag-ref".to_vec())),
             }]),
             target_branch_url: Some("https://salsa.debian.org/foo/bar".to_string()),
             change_set: ChangeSetId::new("cs-1").unwrap(),

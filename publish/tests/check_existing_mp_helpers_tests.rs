@@ -726,7 +726,7 @@ test_with_database! {
         .unwrap();
         let tags = Some(vec![ResultTag {
             actual_name: "upstream/1.0".to_string(),
-            revision: breezyshim::RevisionId::from(b"rev-tag".to_vec()),
+            revision: Some(breezyshim::RevisionId::from(b"rev-tag".to_vec())),
         }]);
         let run_id = RunId::new("run-1").unwrap();
 
