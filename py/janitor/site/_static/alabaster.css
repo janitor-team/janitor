@@ -179,6 +179,11 @@ h1 code, h2 code, h3 code, h4 code, h5 code, h6 code {
 
 /* -- page layout ----------------------------------------------------------- */
 
+:root {
+    --sidebar-margin: 25px;
+    --sidebar-width: 300px;
+}
+
 body {
     font-family: 'goudy old style', 'minion pro', 'bell mt', Georgia, 'Hiragino Mincho Pro', serif;
     font-size: 17px;
@@ -200,6 +205,17 @@ div.plain-document {
 div.documentwrapper {
     float: right;
     width: 80%;
+}
+
+/* Keep the content clear of the fixed sidebar */
+@media screen and (min-width: 876px) {
+    div.sphinxsidebar + div.documentwrapper {
+        max-width: calc(100% - var(--sidebar-margin) - var(--sidebar-width));
+    }
+
+    div.document:has(> div.sphinxsidebar) + div.footer {
+        margin-left: calc(max(20%, var(--sidebar-margin) + var(--sidebar-width)) + 30px);
+    }
 }
 
 div.bodywrapper {
@@ -329,6 +345,10 @@ div.sphinxsidebar input {
     border: 1px solid #949494;
     font-family: 'goudy old style', 'minion pro', 'bell mt', Georgia, 'Hiragino Mincho Pro', serif;
     font-size: 1em;
+}
+
+div.sidebar-packages {
+    width: var(--sidebar-width);
 }
 
 div.sidebar-packages .typeahead__container {
@@ -493,10 +513,11 @@ a:hover tt, a:hover code {
 
 div.sphinxsidebar {
     position: fixed;
+    width: var(--sidebar-width);
     margin-left: 0;
     font-size: 14px;
     line-height: 1.5;
-    margin-left: 25px;
+    margin-left: var(--sidebar-margin);
     font-size: 90%;
     word-wrap: break-word;
     overflow-wrap: break-word;
