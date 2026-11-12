@@ -42,7 +42,7 @@ debversion = { workspace = true, optional = true, features = ["sqlx"] }
 reqwest = { workspace = true, features = ["json", "query"] }
 debian-control.workspace = true
 shlex.workspace = true
-prometheus = { version = "0.14.0", features = ["reqwest"] }
+metrics = { workspace = true }
 buildlog-consultant = { workspace = true }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
@@ -113,6 +113,10 @@ janitor-types = { path = "types" }
 janitor-service = { path = "service" }
 utoipa = { version = "6", features = ["chrono", "url"] }
 utoipa-axum = "0.3"
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
+metrics-process = "2"
+metrics-util = { version = "0.20", default-features = false, features = ["debugging"] }
 
 [build-dependencies]
 protobuf-codegen = "3"

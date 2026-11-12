@@ -212,6 +212,7 @@ fn assemble_app_state(
     let error_tracker = Arc::new(ErrorTracker::new(
         crate::error_tracking::ErrorTrackingConfig::default(),
     ));
+    crate::metrics::install();
     let metrics = Arc::new(MetricsCollector);
 
     let temp_dir = std::env::temp_dir().join("janitor_test_uploads");

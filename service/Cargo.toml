@@ -8,9 +8,17 @@ license = "GPL-3.0+"
 repository = "https://github.com/jelmer/janitor.git"
 homepage = "https://github.com/jelmer/janitor"
 
+[features]
+testing = ["dep:metrics-util", "dep:tokio"]
+
 [dependencies]
-prometheus = { version = "0.14.0", features = ["reqwest"] }
+axum = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+metrics-process = { workspace = true }
+metrics-util = { workspace = true, optional = true }
 reqwest = { workspace = true }
+tokio = { workspace = true, features = ["rt"], optional = true }
 url = { workspace = true }
 
 [dev-dependencies]

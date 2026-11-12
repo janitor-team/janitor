@@ -2551,7 +2551,7 @@ pub async fn publish_from_policy(
             run.command,
             command
         );
-        crate::metrics::COMMAND_CHANGED_COUNT.inc();
+        ::metrics::counter!(crate::metrics::COMMAND_CHANGED_COUNT).increment(1);
         let reschedule_requester = format!(
             "publisher (changed policy: {:?} -> {:?})",
             run.command, command
@@ -2582,14 +2582,14 @@ pub async fn publish_from_policy(
 
     if run.result_branches.is_none() {
         log::warn!("no result branches for {}", run.id);
-        crate::metrics::NO_RESULT_BRANCHES_COUNT.inc();
+        ::metrics::counter!(crate::metrics::NO_RESULT_BRANCHES_COUNT).increment(1);
         return Ok(None);
     }
     let (remote_branch_name, base_revision, revision) = match run.get_result_branch(role) {
         Some(t) => t,
         None => {
             log::warn!("unable to find branch with role {}: {}", role, run.id);
-            crate::metrics::MISSING_MAIN_RESULT_BRANCH_COUNT.inc();
+            ::metrics::counter!(crate::metrics::MISSING_MAIN_RESULT_BRANCH_COUNT).increment(1);
             return Ok(None);
         }
     };
@@ -2869,27 +2869,28 @@ pub async fn publish_from_policy(
     // per successful new proposal.
     if let Some(r) = publish_result_opt.as_ref() {
         if r.is_new().unwrap_or(false) && r.proposal_url().is_some() {
-            crate::metrics::NEW_MERGE_PROPOSAL_COUNT.inc();
-            crate::metrics::MERGE_PROPOSAL_COUNT
-                .with_label_values(&["open"])
-                .inc();
-            crate::metrics::OPEN_PROPOSAL_COUNT.inc();
+            ::metrics::counter!(crate::metrics::NEW_MERGE_PROPOSAL_COUNT).increment(1);
+            ::metrics::gauge!(crate::metrics::MERGE_PROPOSAL_COUNT, "status" => "open")
+                .increment(1.0);
+            ::metrics::gauge!(crate::metrics::OPEN_PROPOSAL_COUNT).increment(1.0);
             if let Some(bucket) = rate_limit_bucket {
                 if let Ok(mut guard) = bucket_rate_limiter.lock() {
                     guard.inc(bucket);
                 } else {
                     log::error!("publish_from_policy: bucket_rate_limiter mutex poisoned");
                 }
-                crate::metrics::BUCKET_PROPOSAL_COUNT
-                    .with_label_values(&[bucket])
-                    .inc();
+                ::metrics::gauge!(
+                    crate::metrics::BUCKET_PROPOSAL_COUNT,
+                    "bucket" => bucket.to_string()
+                )
+                .increment(1.0);
             }
         }
     }
 
     let publish_delay_secs: Option<f64> = if code == "success" {
         let secs = (chrono::Utc::now() - run.finish_time).num_milliseconds() as f64 / 1000.0;
-        crate::metrics::PUBLISH_LATENCY.observe(secs);
+        ::metrics::histogram!(crate::metrics::PUBLISH_LATENCY).record(secs);
         Some(secs)
     } else {
         None
@@ -3143,7 +3144,7 @@ pub async fn publish_and_store(
 
             let publish_delay_secs =
                 (chrono::Utc::now() - run.finish_time).num_milliseconds() as f64 / 1000.0;
-            crate::metrics::PUBLISH_LATENCY.observe(publish_delay_secs);
+            ::metrics::histogram!(crate::metrics::PUBLISH_LATENCY).record(publish_delay_secs);
 
             if let Some(manager) = redis_manager {
                 let entry = serde_json::json!({
@@ -4616,9 +4617,11 @@ async fn check_existing(
         };
         match classify_forge_rate_limit(retry_after, chrono::Utc::now()) {
             ForgeRateLimitDecision::Backoff => {
-                crate::metrics::FORGE_RATE_LIMITED_COUNT
-                    .with_label_values(&[forge.forge_name().as_str()])
-                    .inc();
+                ::metrics::counter!(
+                    crate::metrics::FORGE_RATE_LIMITED_COUNT,
+                    "forge" => forge.forge_name()
+                )
+                .increment(1);
                 was_forge_ratelimited = true;
                 continue;
             }
@@ -4688,9 +4691,11 @@ async fn check_existing(
                         // Continue anyway - better to skip rate limiting than panic
                     }
                 }
-                crate::metrics::FORGE_RATE_LIMITED_COUNT
-                    .with_label_values(&[forge.forge_name().as_str()])
-                    .inc();
+                ::metrics::counter!(
+                    crate::metrics::FORGE_RATE_LIMITED_COUNT,
+                    "forge" => forge.forge_name()
+                )
+                .increment(1);
                 continue;
             }
             Err(CheckMpError::UnexpectedHttpStatus) => {
@@ -4705,7 +4710,7 @@ async fn check_existing(
                     mp_url,
                     forge.forge_name()
                 );
-                crate::metrics::UNEXPECTED_HTTP_RESPONSE_COUNT.inc();
+                ::metrics::counter!(crate::metrics::UNEXPECTED_HTTP_RESPONSE_COUNT).increment(1);
                 unexpected += 1;
                 true
             }
@@ -4770,7 +4775,8 @@ async fn check_existing(
     // Unix seconds since epoch. Safe to set before or after the
     // rate-limit branch: dashboards plotting "time since last
     // successful scan" only care about the timestamp.
-    crate::metrics::LAST_SCAN_EXISTING_SUCCESS.set(chrono::Utc::now().timestamp() as f64);
+    ::metrics::gauge!(crate::metrics::LAST_SCAN_EXISTING_SUCCESS)
+        .set(chrono::Utc::now().timestamp() as f64);
 
     if !was_forge_ratelimited {
         // Push the fresh bucket counts into the rate limiter so future
@@ -4791,8 +4797,7 @@ async fn check_existing(
         // the open buckets, and open_proposal_count as the sum.
         for (status, bucket_counts) in &mps_per_bucket {
             let total_for_status: usize = bucket_counts.values().sum();
-            crate::metrics::MERGE_PROPOSAL_COUNT
-                .with_label_values(&[&status.to_string()])
+            ::metrics::gauge!(crate::metrics::MERGE_PROPOSAL_COUNT, "status" => status.to_string())
                 .set(total_for_status as f64);
         }
         let mut total_open = 0usize;
@@ -4800,12 +4805,14 @@ async fn check_existing(
         {
             for (bucket, count) in open_buckets {
                 total_open += count;
-                crate::metrics::BUCKET_PROPOSAL_COUNT
-                    .with_label_values(&[bucket.as_str()])
-                    .set(*count as f64);
+                ::metrics::gauge!(
+                    crate::metrics::BUCKET_PROPOSAL_COUNT,
+                    "bucket" => bucket.to_string()
+                )
+                .set(*count as f64);
             }
         }
-        crate::metrics::OPEN_PROPOSAL_COUNT.set(total_open as f64);
+        ::metrics::gauge!(crate::metrics::OPEN_PROPOSAL_COUNT).set(total_open as f64);
         log::debug!("Total open merge proposals across buckets: {}", total_open);
     } else {
         log::info!(
@@ -4992,7 +4999,7 @@ async fn consider_publish_run(
             run.id,
             next_try_time
         );
-        crate::metrics::EXPONENTIAL_BACKOFF_COUNT.inc();
+        ::metrics::counter!(crate::metrics::EXPONENTIAL_BACKOFF_COUNT).increment(1);
         return Ok(status_only("exponential_backoff"));
     }
 
@@ -5005,7 +5012,7 @@ async fn consider_publish_run(
             run.codebase,
             run.suite
         );
-        crate::metrics::PUSH_LIMIT_COUNT.inc();
+        ::metrics::counter!(crate::metrics::PUSH_LIMIT_COUNT).increment(1);
         return Ok(status_only("push_limit_reached"));
     }
 
@@ -5015,7 +5022,7 @@ async fn consider_publish_run(
             "{}: considering publishing for branch without branch url",
             run.id
         );
-        crate::metrics::MISSING_BRANCH_URL_COUNT.inc();
+        ::metrics::counter!(crate::metrics::MISSING_BRANCH_URL_COUNT).increment(1);
         return Ok(status_only("missing_branch_url"));
     }
 
@@ -5029,7 +5036,7 @@ async fn consider_publish_run(
             run.id,
             previous_mp_status
         );
-        crate::metrics::REJECTED_LAST_MP_COUNT.inc();
+        ::metrics::counter!(crate::metrics::REJECTED_LAST_MP_COUNT).increment(1);
         return Ok(status_only("rejected_last_mp"));
     }
 
@@ -5059,9 +5066,11 @@ async fn consider_publish_run(
             Some(m) if !m.is_empty() => m,
             _ => {
                 log::warn!("{}: No publish mode for branch with role {}", run.id, role);
-                crate::metrics::MISSING_PUBLISH_MODE_COUNT
-                    .with_label_values(&[role.as_str()])
-                    .inc();
+                ::metrics::counter!(
+                    crate::metrics::MISSING_PUBLISH_MODE_COUNT,
+                    "role" => role.clone()
+                )
+                .increment(1);
                 continue;
             }
         };
@@ -5073,9 +5082,11 @@ async fn consider_publish_run(
                 "{}: Skipping branch with role main, as not all auxiliary branches were published.",
                 run.id
             );
-            crate::metrics::UNPUBLISHED_AUX_BRANCHES_COUNT
-                .with_label_values(&[role.as_str()])
-                .inc();
+            ::metrics::counter!(
+                crate::metrics::UNPUBLISHED_AUX_BRANCHES_COUNT,
+                "role" => role.clone()
+            )
+            .increment(1);
             continue;
         }
 

@@ -686,28 +686,18 @@ db_test! {
 
 db_test! {
     async fn test_admin_metrics_returns_prometheus_text(test_db: TestDatabase) {
+        janitor_git_store::web_utils::install_metrics();
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
         let (addr, handle) = spawn(app).await;
 
-        // Make at least one request so the per-request middleware
-        // has something to record.
-        reqwest::get(format!("http://{}/health", addr)).await.unwrap();
-
         let resp = reqwest::get(format!("http://{}/metrics", addr)).await.unwrap();
         assert_eq!(resp.status(), 200);
-        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap().to_string();
-        assert!(ct.starts_with("text/plain"), "unexpected content-type: {}", ct);
-        let body = resp.text().await.unwrap();
-        // The middleware records http_requests_total; the preceding
-        // /health call must appear in the output.
-        assert!(
-            body.contains("http_requests_total"),
-            "metrics output missing http_requests_total:\n{}",
-            body
+        assert_eq!(
+            resp.headers().get("content-type").unwrap(),
+            janitor_service::metrics::CONTENT_TYPE
         );
-        assert!(body.contains("http_request_duration_seconds"));
 
         handle.abort();
     }

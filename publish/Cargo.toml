@@ -39,8 +39,7 @@ tokio = { workspace = true, features = ["full"] }
 url = { workspace = true, features = ["serde"] }
 sqlx = { workspace = true, features = ["chrono"] }
 maplit.workspace = true
-prometheus = "0.14.0"
-lazy_static = "1.4"
+metrics = { workspace = true }
 pyo3 = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 utoipa.workspace = true
@@ -51,6 +50,7 @@ name = "janitor-publish-one"
 path = "src/bin/janitor-publish-one.rs"
 
 [dev-dependencies]
+janitor-service = { workspace = true, features = ["testing"] }
 maplit = { workspace = true }
 protobuf = "3"
 # Redeclare janitor with the `testing` feature so publish integration

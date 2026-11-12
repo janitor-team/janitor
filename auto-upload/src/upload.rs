@@ -23,7 +23,7 @@ pub async fn sign_package(changes_path: &Path, keyid: Option<&str>) -> Result<()
         .await
         .map_err(|e| UploadError::DebsignFailure(format!("debsign task panicked: {}", e)))?
         .map_err(|e| {
-            DEBSIGN_FAILED_COUNT.inc();
+            metrics::counter!(DEBSIGN_FAILED_COUNT).increment(1);
             match e {
                 sp_uploader::SignError::Failed(msg) => UploadError::DebsignFailure(msg),
                 sp_uploader::SignError::IOError(e) => UploadError::Io(e),
@@ -47,7 +47,7 @@ pub async fn upload_package(changes_path: &Path, dput_host: Option<&str>) -> Res
         .await
         .map_err(|e| UploadError::DputFailure(format!("dput task panicked: {}", e)))?
         .map_err(|e| {
-            UPLOAD_FAILED_COUNT.inc();
+            metrics::counter!(UPLOAD_FAILED_COUNT).increment(1);
             match e {
                 sp_uploader::UploadError::Failed(msg) => UploadError::DputFailure(msg),
                 sp_uploader::UploadError::IOError(e) => UploadError::Io(e),
@@ -80,6 +80,7 @@ impl UploadConfig {
 mod tests {
     use super::*;
 
+    use janitor_service::testing::{capture_async, Snapshot, Value};
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Mutex;
 
@@ -170,20 +171,23 @@ mod tests {
             .expect("sign should succeed");
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn sign_package_reports_failure_and_bumps_counter() {
+    #[test]
+    fn sign_package_reports_failure_and_bumps_counter() {
         let shims = TempDir::new().unwrap();
         write_shim(shims.path(), "debsign", 1);
         let _guard = PathGuard::prepend(shims.path());
 
-        let before = DEBSIGN_FAILED_COUNT.get();
         let workdir = TempDir::new().unwrap();
         let changes = write_changes(workdir.path());
-        match sign_package(&changes, None).await {
+        let (result, snapshot) = capture_async(sign_package(&changes, None));
+        match result {
             Err(UploadError::DebsignFailure(_)) => {}
             other => panic!("expected DebsignFailure, got {:?}", other),
         }
-        assert_eq!(DEBSIGN_FAILED_COUNT.get(), before + 1.0);
+        assert_eq!(
+            snapshot,
+            Snapshot::from([("debsign_failed".to_string(), Value::Counter(1))])
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -199,19 +203,22 @@ mod tests {
             .expect("upload should succeed");
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn upload_package_reports_failure_and_bumps_counter() {
+    #[test]
+    fn upload_package_reports_failure_and_bumps_counter() {
         let shims = TempDir::new().unwrap();
         write_shim(shims.path(), "dput", 1);
         let _guard = PathGuard::prepend(shims.path());
 
-        let before = UPLOAD_FAILED_COUNT.get();
         let workdir = TempDir::new().unwrap();
         let changes = write_changes(workdir.path());
-        match upload_package(&changes, Some("some-host")).await {
+        let (result, snapshot) = capture_async(upload_package(&changes, Some("some-host")));
+        match result {
             Err(UploadError::DputFailure(_)) => {}
             other => panic!("expected DputFailure, got {:?}", other),
         }
-        assert_eq!(UPLOAD_FAILED_COUNT.get(), before + 1.0);
+        assert_eq!(
+            snapshot,
+            Snapshot::from([("upload_failed".to_string(), Value::Counter(1))])
+        );
     }
 }

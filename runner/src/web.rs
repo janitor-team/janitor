@@ -1863,9 +1863,7 @@ async fn update_run(
             // {operation="publish_publish_status",status="error"}`.
             if let Err(e) = state.database.publish("publish-status", &payload).await {
                 log::error!("Failed to publish publish-status event: {}", e);
-                crate::metrics::REDIS_OPERATIONS_TOTAL
-                    .with_label_values(&["publish_publish_status", "error"])
-                    .inc();
+                MetricsCollector::record_redis_error("publish_publish_status");
             }
             Json(update).into_response()
         }
@@ -1957,7 +1955,7 @@ async fn peek_active_run(State(state): State<Arc<AppState>>) -> Response {
                 .into_response()
         }
         Ok(None) => {
-            crate::metrics::QUEUE_EMPTY_COUNT.inc();
+            MetricsCollector::record_queue_empty();
             reason(StatusCode::SERVICE_UNAVAILABLE, "queue empty")
         }
         Err(e) => {
@@ -2014,27 +2012,10 @@ async fn get_queue(
 #[utoipa::path(
     get,
     path = "/metrics",
-    responses(
-        (status = 200, description = "Prometheus metrics", body = String, content_type = "text/plain"),
-        (status = 500, description = "Metrics could not be collected", body = String, content_type = "text/plain"),
-    )
+    responses((status = 200, description = "Prometheus metrics", body = String, content_type = "text/plain"))
 )]
-async fn metrics() -> impl IntoResponse {
-    match MetricsCollector::collect_metrics() {
-        Ok(metrics) => (
-            StatusCode::OK,
-            [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
-            metrics,
-        ),
-        Err(e) => {
-            log::error!("Failed to collect metrics: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                [("content-type", "text/plain")],
-                "Failed to collect metrics".to_string(),
-            )
-        }
-    }
+async fn metrics() -> Response {
+    janitor_service::metrics::metrics_handler().await
 }
 
 /// Public endpoint to list workers with basic information.
@@ -2778,18 +2759,14 @@ async fn publish_finish_events(
         .await
     {
         log::error!("Failed to publish result event for {}: {}", run_id, e);
-        crate::metrics::REDIS_OPERATIONS_TOTAL
-            .with_label_values(&["publish_result", "error"])
-            .inc();
+        MetricsCollector::record_redis_error("publish_result");
     }
 
     state.active_runs.remove(run_id).await;
 
     if let Err(e) = state.database.unassign_queue_item(queue_id).await {
         log::error!("Failed to unassign queue item from Redis: {}", e);
-        crate::metrics::REDIS_OPERATIONS_TOTAL
-            .with_label_values(&["unassign_queue_item", "error"])
-            .inc();
+        MetricsCollector::record_redis_error("unassign_queue_item");
     }
 
     let status_payload = serde_json::to_value(StatusResponse {
@@ -2806,12 +2783,10 @@ async fn publish_finish_events(
     .expect("StatusResponse is plain data");
     if let Err(e) = state.database.publish("queue", &status_payload).await {
         log::error!("Failed to publish queue status event: {}", e);
-        crate::metrics::REDIS_OPERATIONS_TOTAL
-            .with_label_values(&["publish_queue_status", "error"])
-            .inc();
+        MetricsCollector::record_redis_error("publish_queue_status");
     }
 
-    crate::metrics::LAST_SUCCESS_GAUGE.set(chrono::Utc::now().timestamp() as f64);
+    MetricsCollector::record_last_success();
 
     // Spawn a follow-up regular schedule for the same codebase +
     // campaign. CandidateUnavailable is non-fatal: a one-off schedule
@@ -3099,7 +3074,7 @@ async fn finish_run_multipart_internal(
             log::warn!("Failed to store artifacts for run {}: {}", run_id, e);
             janitor_result.code = "artifact-upload-failed".to_string();
             janitor_result.description = Some(e.to_string());
-            crate::metrics::ARTIFACT_UPLOAD_FAILED_COUNT.inc();
+            MetricsCollector::record_artifact_upload_failed();
             stored_artifact_filenames = None;
         }
     }
@@ -3713,9 +3688,7 @@ async fn assign_work_internal(
     request: AssignRequest,
     active_runs_path: &str,
 ) -> Response {
-    crate::metrics::ASSIGNMENT_COUNT
-        .with_label_values(&[&worker_name])
-        .inc();
+    MetricsCollector::record_assignment_request(&worker_name);
     let mut excluded_hosts = state.avoid_hosts.clone();
     if let Some(client_exclusions) = request.exclude_hosts.as_ref() {
         for host in client_exclusions {
@@ -3763,7 +3736,7 @@ async fn assign_work_internal(
         {
             Ok(Some(assignment)) => assignment,
             Ok(None) => {
-                crate::metrics::QUEUE_EMPTY_COUNT.inc();
+                MetricsCollector::record_queue_empty();
                 return reason(StatusCode::SERVICE_UNAVAILABLE, "queue empty");
             }
             Err(e) => {
@@ -3911,9 +3884,7 @@ async fn assign_work_internal(
         // Retry-After header.
         let wait_secs = retry_after.unwrap_or(1800.0).max(0.0);
         let until = chrono::Utc::now() + chrono::Duration::seconds(wait_secs as i64);
-        crate::metrics::RATE_LIMITED_COUNT
-            .with_label_values(&[&host])
-            .inc();
+        MetricsCollector::record_rate_limited_host(&host);
         if let Err(e) = state.database.rate_limit_host(&host, until).await {
             log::warn!("Failed to record rate-limit for host {}: {}", host, e);
         }
@@ -3965,7 +3936,7 @@ async fn assign_work_internal(
 
     // Store active run in the in-memory store
     state.active_runs.store(active_run.clone()).await;
-    crate::metrics::RUN_COUNT.inc();
+    MetricsCollector::record_run_assigned();
     crate::metrics::MetricsCollector::set_active_runs(
         &active_run.worker_name,
         state
@@ -4319,30 +4290,6 @@ async fn readiness(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }
 }
 
-/// Axum middleware: record request count and duration by
-/// method/path/status.
-async fn record_http_metrics(
-    req: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> Response {
-    use std::time::Instant;
-    let start = Instant::now();
-    let method = req.method().to_string();
-    let path = req.uri().path().to_string();
-
-    let response = next.run(req).await;
-    let status = response.status().as_u16().to_string();
-
-    crate::metrics::HTTP_REQUEST_DURATION
-        .with_label_values(&[&method, &path])
-        .observe(start.elapsed().as_secs_f64());
-    crate::metrics::HTTP_REQUESTS_TOTAL
-        .with_label_values(&[&method, &path, &status])
-        .inc();
-
-    response
-}
-
 /// Multipart body of `POST /active-runs/{id}/finish`; only used to
 /// describe the request in the OpenAPI document.
 #[derive(ToSchema)]
@@ -4559,7 +4506,9 @@ pub fn private_openapi() -> OpenApi {
 pub fn app(state: Arc<AppState>) -> Router {
     let (router, _) = private_routes().split_for_parts();
     with_openapi_json(router, &private_openapi())
-        .layer(axum::middleware::from_fn(record_http_metrics))
+        .layer(axum::middleware::from_fn(
+            crate::metrics::metrics_middleware,
+        ))
         .with_state(state)
 }
 
