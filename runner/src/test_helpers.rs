@@ -162,6 +162,7 @@ mod tests {
             use crate::{JanitorResult, ResultResume};
             use breezyshim::RevisionId;
             use chrono::{Duration as ChronoDuration, Utc};
+            use janitor::state::ResultTag;
 
             // Seed the upstream FK dependencies that store_run needs:
             // a codebase (referenced by run.codebase), the worker
@@ -249,6 +250,7 @@ mod tests {
                 change_set: None,
                 tags: Some(vec![
                     ("v1.0".to_string(), Some(RevisionId::from(b"tag-rev".to_vec()))),
+                    ("removed".to_string(), None),
                 ]),
                 remotes: None,
                 branches: Some(vec![(
@@ -315,18 +317,24 @@ mod tests {
             assert_eq!(run_worker.as_deref(), Some("worker-42"));
             assert_eq!(run_codebase, "finish-run-codebase");
 
-            // result_tags is a result_tag[] composite; verify store_run's
-            // unnest-based construction actually materialised our tag.
-            let tag_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM (
-                    SELECT unnest(result_tags) AS t FROM run WHERE id = $1
-                 ) AS expanded",
-            )
-            .bind(log_id)
-            .fetch_one(test_db.pool())
-            .await
-            .unwrap();
-            assert_eq!(tag_count, 1);
+            let detail = runner_db
+                .get_run_detail(&result.log_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                detail.row.result_tags,
+                Some(vec![
+                    ResultTag {
+                        actual_name: "v1.0".to_string(),
+                        revision: Some(RevisionId::from(b"tag-rev".to_vec())),
+                    },
+                    ResultTag {
+                        actual_name: "removed".to_string(),
+                        revision: None,
+                    },
+                ])
+            );
 
             // new_result_branch should hold one main-role entry.
             let (role, remote_name): (String, Option<String>) = sqlx::query_as(

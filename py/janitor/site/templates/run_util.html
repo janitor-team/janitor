@@ -305,11 +305,16 @@ cd {{ codebase }}
 {% macro display_vcs_diffs(show_diff, branches, tags=None) %}
     {% if branches %}
         <h2>Diff</h2>
+        {% if tags %}
+            {% for tagname, tagrev in tags %}
+                {% if tagrev is none %}<p>Deleted tag: {{ tagname }}</p>{% endif %}
+            {% endfor %}
+        {% endif %}
         {% for role, name, baserev, rev in branches %}
             {% if branches|length > 1 %}<h3>Branch: {{ role }}</h3>{% endif %}
             {% if tags %}
                 {% for tagname, tagrev in tags %}
-                    {% if tagrev == rev %}Tag: {{ tagname }}{% endif %}
+                    {% if tagrev is not none and tagrev == rev %}Tag: {{ tagname }}{% endif %}
                 {% endfor %}
             {% endif %}
             {% set diff = show_diff(role) %}

@@ -476,7 +476,7 @@ pub fn publish(
     allow_create_proposal: bool,
     debdiff: Option<Vec<u8>>,
     reviewers: Option<Vec<String>>,
-    result_tags: Option<HashMap<String, RevisionId>>,
+    result_tags: Option<HashMap<String, Option<RevisionId>>>,
     stop_revision: Option<&RevisionId>,
     extra_context: Option<serde_json::Value>,
     derived_owner: Option<String>,
@@ -641,7 +641,12 @@ pub fn publish(
         Some(true),
         existing_proposal,
         reviewers,
-        result_tags,
+        // silver-platter only takes tags that have a revision.
+        result_tags.map(|tags| {
+            tags.into_iter()
+                .filter_map(|(name, revision)| Some((name, revision?)))
+                .collect()
+        }),
         derived_owner.as_deref(),
         Some(true),
         stop_revision,
