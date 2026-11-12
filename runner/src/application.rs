@@ -343,9 +343,7 @@ impl ApplicationBuilder {
 
         let health_checker = Arc::new(crate::HealthChecker::new(
             database.clone(),
-            vcs_manager.clone(),
             log_manager.clone(),
-            artifact_manager.clone(),
         ));
 
         let app_state = Arc::new(AppState {
