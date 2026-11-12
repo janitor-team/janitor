@@ -53,19 +53,32 @@
                             Rejected
                         </option>
                     </select>
+                    <div id="review-status" role="status"></div>
                     <script>
+	var saved_verdict = $("#verdict").val();
 	function submit_review(verdict) {
 	    var comment = undefined;
 	    if (verdict == 'rejected') {
 		comment = window.prompt('Please specify a comment for the rejection');
-		$("#my-review-comment").text(comment);
-	    } else {
-		$("#my-review-comment").text("");
 	    }
 	    console.log("Submitting review " + verdict + " for run {{ run_id }} ");
+	    $("#review-status").text("Saving...");
 	    $.post('/api/run/{{ run_id }}', {
 		'verdict': verdict,
 		'review-comment': comment
+	    }).done(function() {
+		saved_verdict = verdict;
+		$("#my-review-comment").text(comment || "");
+		$("#review-status").text("Saved.");
+	    }).fail(function(xhr) {
+		console.log("Saving review failed: " + xhr.status + " " + xhr.statusText);
+		$("#verdict").val(saved_verdict);
+		if (xhr.status == 401) {
+		    var login = $("<a>").attr("href", "/login?url=" + encodeURIComponent(window.location.href)).text("log in again");
+		    $("#review-status").text("Could not save your review. Please ").append(login, ".");
+		} else {
+		    $("#review-status").text("Could not save your review. Please try again.");
+		}
 	    });
 	}
                     </script>
