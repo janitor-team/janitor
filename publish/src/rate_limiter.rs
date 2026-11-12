@@ -203,6 +203,10 @@ impl RateLimiter for FixedRateLimiter {
     fn get_stats(&self) -> Option<RateLimitStats> {
         open_stats(&self.open_mps_per_bucket)
     }
+
+    fn get_max_open(&self, _bucket: &str) -> Option<usize> {
+        Some(self.max_mps_per_bucket)
+    }
 }
 
 /// Count a newly opened merge proposal, once the open counts are known.
