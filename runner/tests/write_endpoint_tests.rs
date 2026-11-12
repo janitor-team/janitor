@@ -10,7 +10,9 @@ use axum::http::{Method, Request, StatusCode};
 use chrono::Utc;
 use futures::TryStreamExt;
 use janitor::queue::VcsInfo;
+use janitor_runner::database::{CodebaseRow, CodebaseUpload};
 use janitor_runner::{test_utils, ActiveRun, AppState, Backchannel};
+use janitor_types::CodebaseName;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -63,6 +65,19 @@ async fn insert_codebase(pool: &sqlx::PgPool, name: &str) {
     .execute(pool)
     .await
     .expect("codebase insert");
+}
+
+/// POST `codebases` to `/codebases` and return the status and JSON body.
+async fn post_codebases(app: &axum::Router, codebases: &[CodebaseUpload]) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/codebases")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(codebases).unwrap()))
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    let status = response.status();
+    (status, get_body(response).await)
 }
 
 /// `DELETE /candidates/{id}` on a non-numeric id must reject with
@@ -153,6 +168,124 @@ async fn post_codebases_upserts_and_is_visible_via_get() {
         names,
         vec!["test-codebase-a".to_string(), "test-codebase-b".to_string()]
     );
+}
+
+fn some(s: &str) -> Option<String> {
+    Some(s.to_string())
+}
+
+/// An upload of codebase `cb` with every field but `url` set.
+fn full_upload() -> CodebaseUpload {
+    CodebaseUpload {
+        name: Some(CodebaseName::new("cb").unwrap()),
+        branch_url: some("https://example.invalid/cb"),
+        branch: some("dev"),
+        subpath: some("sub"),
+        vcs_type: some("git"),
+        web_url: some("https://example.invalid/web/cb"),
+        vcs_last_revision: some("abc"),
+        value: Some(5),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn post_codebases_stores_fields() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    assert_eq!(
+        post_codebases(&app, &[full_upload()]).await,
+        (StatusCode::OK, json!({}))
+    );
+    assert_eq!(
+        state.database.get_codebases().await.unwrap(),
+        vec![CodebaseRow {
+            name: Some(CodebaseName::new("cb").unwrap()),
+            branch_url: some("https://example.invalid/cb"),
+            url: some("https://example.invalid/cb"),
+            branch: some("dev"),
+            subpath: some("sub"),
+            vcs_type: some("git"),
+            web_url: some("https://example.invalid/web/cb"),
+            vcs_last_revision: some("abc"),
+            value: Some(5),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn post_codebases_replaces_fields_of_existing_codebase() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let second = CodebaseUpload {
+        name: Some(CodebaseName::new("cb").unwrap()),
+        url: some("https://example.invalid/new"),
+        vcs_type: some("bzr"),
+        ..Default::default()
+    };
+    for upload in [full_upload(), second.clone()] {
+        assert_eq!(
+            post_codebases(&app, &[upload]).await,
+            (StatusCode::OK, json!({}))
+        );
+    }
+    // vcs_last_revision is kept when the upload leaves it out.
+    let expected = CodebaseRow {
+        name: Some(CodebaseName::new("cb").unwrap()),
+        branch_url: some("https://example.invalid/new"),
+        url: some("https://example.invalid/new"),
+        branch: None,
+        subpath: some(""),
+        vcs_type: some("bzr"),
+        web_url: None,
+        vcs_last_revision: some("abc"),
+        value: None,
+    };
+    assert_eq!(
+        state.database.get_codebases().await.unwrap(),
+        vec![expected.clone()]
+    );
+
+    let third = CodebaseUpload {
+        vcs_last_revision: some("def"),
+        ..second
+    };
+    assert_eq!(
+        post_codebases(&app, &[third]).await,
+        (StatusCode::OK, json!({}))
+    );
+    assert_eq!(
+        state.database.get_codebases().await.unwrap(),
+        vec![CodebaseRow {
+            vcs_last_revision: some("def"),
+            ..expected
+        }]
+    );
+}
+
+#[tokio::test]
+async fn post_codebases_with_a_bad_entry_stores_none() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let bad = CodebaseUpload {
+        name: Some(CodebaseName::new("bad").unwrap()),
+        vcs_type: some("nope"),
+        ..full_upload()
+    };
+    assert_eq!(
+        post_codebases(&app, &[full_upload(), bad]).await,
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({"error": "Database error"})
+        )
+    );
+    assert_eq!(state.database.get_codebases().await.unwrap(), vec![]);
 }
 
 /// `POST /schedule` with a nonexistent `run_id` returns 404 with the
