@@ -53,13 +53,13 @@
                         }
                     </script>
                 {% elif proposal.status == 'merged' %}
-                    Merged
+                    <span class="mp-merged">Merged</span>
                     {% if proposal.merged_at %}
                         at {{ format_timestamp(proposal.merged_at) }}
                     {% endif %}
                     {% if proposal.merged_by %}by {{ proposal.merged_by }}{% endif %}
                 {% else %}
-                    {{ proposal.status }}
+                    <span class="mp-{{ proposal.status }}">{{ proposal.status }}</span>
                 {% endif %}
             </li>
             {% if proposal.campaign %}
