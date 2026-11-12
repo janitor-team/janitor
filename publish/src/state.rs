@@ -619,6 +619,14 @@ pub async fn get_publish_attempt_count(
     .await? as usize)
 }
 
+/// Fetch the publish status of a run (e.g. `approved`).
+pub async fn get_publish_status(conn: &PgPool, run_id: &RunId) -> Result<String, sqlx::Error> {
+    sqlx::query_scalar("SELECT publish_status::text FROM run WHERE id = $1")
+        .bind(run_id)
+        .fetch_one(conn)
+        .await
+}
+
 /// Get the status of previous merge proposals for a codebase and campaign.
 pub async fn get_previous_mp_status(
     conn: &PgPool,

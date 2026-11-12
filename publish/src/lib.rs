@@ -3977,6 +3977,16 @@ async fn check_existing_mp(
             return Ok(false);
         }
 
+        if crate::state::get_publish_status(conn, &last_run.id).await? != "approved" {
+            log::info!(
+                "{} ({}): new run {} is not approved, not updating the proposal.",
+                mp_url,
+                mp_run.codebase,
+                last_run.id
+            );
+            return Ok(false);
+        }
+
         let publish_id = new_publish_id();
         log::info!(
             "{} ({}) needs to be updated ({:?} -> {}).",
