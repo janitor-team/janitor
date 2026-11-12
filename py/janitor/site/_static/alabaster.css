@@ -222,12 +222,22 @@ div.body > .section {
 }
 
 div.footer {
-    width: 940px;
     margin: 20px auto 30px auto;
     font-size: 14px;
     color: #757575;
     text-align: right;
     clear: both;
+}
+
+/* Line the footer up with the content column */
+@media screen and (min-width: 876px) {
+    div.footer {
+        margin: 20px 30px 30px calc(20% + 30px);
+    }
+
+    div.plain-document + div.footer {
+        margin: 20px calc(5% + 30px) 30px;
+    }
 }
 
 div.footer a {
