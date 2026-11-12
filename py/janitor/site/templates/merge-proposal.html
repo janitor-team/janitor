@@ -46,7 +46,7 @@
                     <script>
                         function submit_status(status) {
                             console.log("Changing of merge proposal " + {{ proposal.url | tojson }} + " to " + status);
-                            $.post('/api/merge-proposal', {
+                            $.post('{{ site_root }}/api/merge-proposal', {
                                 'status': status,
                                 'url': {{ proposal.url | tojson }}
                             });

@@ -17,7 +17,7 @@ from .test_cupboard import _insert_codebase, _insert_run, _user_middleware
 REVIEWER = {"email": "reviewer@example.com", "name": "Reviewer", "groups": []}
 
 
-async def create_publishable_client(aiohttp_client, db):
+async def create_publishable_client(aiohttp_client, db, root=""):
     app = create_app(
         config=read_config_string("oauth2_provider {}\n"),
         publisher_url=None,
@@ -26,11 +26,15 @@ async def create_publishable_client(aiohttp_client, db):
         db=db,
     )
     port = unused_port()
-    app["external_url"] = URL(f"http://127.0.0.1:{port}/")
+    app["external_url"] = URL(f"http://127.0.0.1:{port}{root}/")
     aiohttp_jinja2.get_env(app).globals.update(TEMPLATE_ENV)
     app.middlewares.insert(0, _user_middleware(REVIEWER))
     endpoint = aiozipkin.create_endpoint("janitor.site", ipv4="127.0.0.1", port=80)
     aiozipkin.setup(app, await aiozipkin.create_custom(endpoint))
+    if root:
+        site = web.Application()
+        site.add_subapp(root, app)
+        return await aiohttp_client(site, server_kwargs={"port": port})
     return await aiohttp_client(app, server_kwargs={"port": port})
 
 
@@ -186,6 +190,21 @@ async def test_review_ignores_host_header(aiohttp_client, aiohttp_server, db):
     assert resp.status == 200
     assert contacted == []
     soup = BeautifulSoup(await resp.text(), "html.parser")
+    command = soup.select_one("#evaluate #command")
+    assert command is not None
+    assert command.get_text() == "true"
+
+
+async def test_review_evaluates_under_the_site_root(aiohttp_client, db):
+    client = await create_publishable_client(aiohttp_client, db, root="/janitor")
+    async with db.acquire() as conn:
+        await insert_review_run(conn, "somerun")
+
+    resp = await client.post("/janitor/cupboard/review", data={"run_id": "somerun"})
+    assert resp.status == 200
+    text = await resp.text()
+    assert shown_run(text) == ["somerun"]
+    soup = BeautifulSoup(text, "html.parser")
     command = soup.select_one("#evaluate #command")
     assert command is not None
     assert command.get_text() == "true"

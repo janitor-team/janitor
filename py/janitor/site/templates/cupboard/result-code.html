@@ -14,7 +14,7 @@
         {% if is_admin %}
             <form id="mass_reschedule"
                   method="post"
-                  action="/cupboard/api/mass-reschedule">
+                  action="{{ site_root }}/cupboard/api/mass-reschedule">
                 <label for="description-re">
                     Description regex:
                     <input type="text" name="description_re" id="description-re" />
@@ -40,7 +40,7 @@
                 window.mass_reschedule.onsubmit = function(e) {
                     $('form').submit(function(e) {
                         e.preventDefault();
-                        $.post("/cupboard/api/mass-reschedule", $('form').serializeArray(), function(receivedData) {
+                        $.post("{{ site_root }}/cupboard/api/mass-reschedule", $('form').serializeArray(), function(receivedData) {
                             alert('Rescheduled ' + receivedData);
                         });
                     });

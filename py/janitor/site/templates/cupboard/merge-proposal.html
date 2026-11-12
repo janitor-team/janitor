@@ -18,7 +18,7 @@ $(document).ready(function() {
            $("#refresh").closest("li").after($("<li />").append($("<span role=\"status\" />").text(text)));
            $("#refresh").remove();
        }
-       $.post("/api/refresh-proposal-status", { url: {{ proposal.url | tojson }} }, function() {
+       $.post("{{ site_root }}/api/refresh-proposal-status", { url: {{ proposal.url | tojson }} }, function() {
            showStatus("Refresh started.");
        }).fail(function(response) {
            {{ login_on_401() }}
@@ -64,7 +64,7 @@ $(document).ready(function() {
                     <script>
                         function submit_status(status) {
                             console.log("Changing of merge proposal " + {{ proposal.url | tojson }} + " to " + status);
-                            $.post('/api/merge-proposal', {
+                            $.post('{{ site_root }}/api/merge-proposal', {
                                 'status': status,
                                 'url': {{ proposal.url | tojson }}
                             });
@@ -84,7 +84,7 @@ $(document).ready(function() {
             </li>
             {% if proposal.campaign %}
                 <li>
-                    <a href="/{{ proposal.campaign }}/c/{{ proposal.codebase }}/">Run details</a>
+                    <a href="{{ site_root }}/{{ proposal.campaign }}/c/{{ proposal.codebase }}/">Run details</a>
                 </li>
             {% endif %}
         </ul>
@@ -100,7 +100,7 @@ $(document).ready(function() {
                             {{ publish.description }}
                         {% endif %}
                     {% endif %}
-                    {% if publish.run_id %}(<a href="/cupboard/c/{{ proposal.codebase }}/{{ publish.run_id }}/">run</a>){% endif %}
+                    {% if publish.run_id %}(<a href="{{ site_root }}/cupboard/c/{{ proposal.codebase }}/{{ publish.run_id }}/">run</a>){% endif %}
                     <!-- {{ publish.revision }} -->
                 </li>
             {% endfor %}

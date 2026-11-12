@@ -64,7 +64,7 @@
                         {{ debdiff|safe }}
                     {% else %}
                         <p>
-                            Debdiff is too long (more than 200 lines). Download the <a href="/api/run/{{ run_id }}/debdiff?filter_boring=1">raw debdiff</a>.
+                            Debdiff is too long (more than 200 lines). Download the <a href="{{ site_root }}/api/run/{{ run_id }}/debdiff?filter_boring=1">raw debdiff</a>.
                         </p>
                     {% endif %}
                 {% endif %}
