@@ -5,7 +5,9 @@ indexes for the Debian packages of runs. The site serves the package files
 themselves. See [The apt archive](debian.md#the-apt-archive).
 
 - *auto-upload*: The job that signs the `.changes` files of successful Debian
-builds with `debsign` and uploads them to an archive with `dput`.
+builds with `debsign` and uploads them to an archive with `dput`. It does
+this as soon as a run finishes, without waiting for a
+[review](runs.md#review-and-publishing).
 
 - *campaign*: A specific kind of change to attempt across codebases, such
 as `lintian-fixes`. Defined by a `campaign { ... }` block in
