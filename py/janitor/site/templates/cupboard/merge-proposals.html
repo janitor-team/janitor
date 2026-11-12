@@ -21,8 +21,8 @@
                     {{ proposal.url }}
                 {% endif %}
             </a>
-            {% if proposal.campaign %}(<a href="/{{ proposal.campaign }}/c/{{ proposal.codebase }}/">Details</a>){% endif %}
-            {% if not campaign %}(<a href="/cupboard/merge-proposal?url={{ proposal.url|urlencode }}">Info</a>){% endif %}
+            {% if proposal.campaign %}(<a href="{{ site_root }}/{{ proposal.campaign }}/c/{{ proposal.codebase }}/">Details</a>){% endif %}
+            {% if not campaign %}(<a href="{{ site_root }}/cupboard/merge-proposal?url={{ proposal.url|urlencode }}">Info</a>){% endif %}
         {% endmacro %}
         {% if not (open_proposals or merged_proposals or closed_proposals or abandoned_proposals or rejected_proposals) %}
             <p>No merge proposals yet.</p>

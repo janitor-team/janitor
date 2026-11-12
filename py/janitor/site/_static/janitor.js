@@ -4,17 +4,10 @@ registerHandler = function(kind, cb) {
   handlers.push({'kind': kind, 'callback': cb});
 };
 
-var ws_url;
+// This script is <site>/_static/janitor.js, so the socket is <site>/ws/notifications.
+var ws_url = new URL('../ws/notifications', document.currentScript.src);
+ws_url.protocol = ws_url.protocol == 'https:' ? 'wss:' : 'ws:';
 window.onload = function() {
-if(location.protocol == 'http:') {
-    ws_url = 'ws://' + location.hostname + '/ws/notifications';
-} else if(location.protocol == 'https:') {
-    ws_url = 'wss://' + location.hostname + '/ws/notifications';
-} else {
-    console.log('Unknown protocol: ' + location.protocol);
-    ws_url = undefined;
-}
-
 const connection = new WebSocket(ws_url);
 
 connection.onerror = (error) => {

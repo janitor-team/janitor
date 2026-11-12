@@ -85,6 +85,11 @@ def json_chart_data(max_age=None):
     return decorator
 
 
+def site_root(request) -> str:
+    """Return the path the site is served under, "" at the root of its host."""
+    return request.config_dict.get("site_root", "")
+
+
 def update_vars_from_request(vs, request):
     vs["is_admin"] = is_admin(request)
     vs["is_qa_reviewer"] = is_qa_reviewer(request)
@@ -295,7 +300,9 @@ def check_admin(request: web.Request) -> None:
 def check_logged_in(request: web.Request) -> None:
     if not request["user"]:
         if request.headers.get("Sec-Fetch-Mode") == "navigate":
-            raise web.HTTPFound(URL("/login").with_query(url=str(request.url)))
+            raise web.HTTPFound(
+                URL(site_root(request) + "/login").with_query(url=str(request.url))
+            )
         raise web.HTTPUnauthorized()
 
 

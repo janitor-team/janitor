@@ -4,7 +4,7 @@
     <script>
         $(function() {
             $("#{{ id }}").click(function() {
-                $.post('/cupboard/api/run/{{ run_id }}/reprocess-logs', {}, function(data) {
+                $.post('{{ site_root }}/cupboard/api/run/{{ run_id }}/reprocess-logs', {}, function(data) {
                         if (data['changed']) {
                             $("#{{ id }}").replaceWith("<span>Logs reprocessed and analysis updated.</span>");
                         } else {

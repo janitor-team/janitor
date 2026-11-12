@@ -17,6 +17,8 @@
 import asyncio
 import base64
 import json
+import pathlib
+import re
 import tempfile
 from datetime import timedelta
 
@@ -29,9 +31,10 @@ from bs4 import BeautifulSoup
 from fakeredis.aioredis import FakeRedis
 from yarl import URL
 
+import janitor.site
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
-from janitor.site.simple import create_app, main_async
+from janitor.site.simple import create_app, main_async, site_root_of
 
 from .conftest import _insert_run
 
@@ -870,3 +873,173 @@ async def test_oauth_callback_goes_back_only_to_a_url_the_site_serves(
         "//evil.example": (302, "/"),
         "https://evil.example/": (302, "/"),
     }
+
+
+@pytest.mark.parametrize(
+    "external_url, root",
+    [
+        ("https://example.com/", ""),
+        ("https://example.com", ""),
+        ("https://example.com/janitor/", "/janitor"),
+        ("https://example.com/janitor", "/janitor"),
+        ("https://example.com/a/b-c_d.e~f/", "/a/b-c_d.e~f"),
+    ],
+)
+def test_site_root_of(external_url, root):
+    assert site_root_of(URL(external_url)) == root
+
+
+@pytest.mark.parametrize(
+    "external_url",
+    [
+        "https://example.com/a%20b/",
+        "https://example.com/a'b/",
+        'https://example.com/a"b/',
+        "example.com",
+        "/a/../b/",
+    ],
+)
+def test_site_root_of_rejects(external_url):
+    with pytest.raises(ValueError):
+        site_root_of(URL(external_url))
+
+
+def test_templates_link_under_the_site_root():
+    templates = pathlib.Path(janitor.site.__file__).parent / "templates"
+    found = [
+        f"{path.relative_to(templates)}: {m.group()}"
+        for path in sorted(templates.rglob("*.html"))
+        for m in re.finditer(
+            r"""(href|src|action)="/[^/]|["']/(api|cupboard|_static|login)\b""",
+            path.read_text(),
+        )
+    ]
+    assert found == []
+
+
+def _site_links(html):
+    soup = BeautifulSoup(html, "html.parser")
+    return [
+        tag[attr]
+        for attr in ("href", "src", "action")
+        for tag in soup.select(f'[{attr}^="/"]')
+    ]
+
+
+@pytest.mark.parametrize("external_url", ["https://example.com/janitor", None])
+async def test_site_under_the_path_of_its_external_url(
+    aiohttp_client, database_location, external_url
+):
+    client = await _openid_site(
+        aiohttp_client, database_location, external_url=external_url
+    )
+    root = "/janitor" if external_url else ""
+    answers = {}
+    for path in [
+        "/",
+        "/lintian-fixes/candidates",
+        "/cupboard/",
+        "/_static/janitor.js",
+        "/api/swagger.json",
+    ]:
+        resp = await client.get(root + path)
+        html = await resp.text() if resp.content_type == "text/html" else ""
+        outside = [
+            link for link in _site_links(html) if not link.startswith(root + "/")
+        ]
+        answers[path] = (resp.status, outside)
+    assert answers == dict.fromkeys(answers, (200, []))
+    if external_url:
+        assert (await client.get("/cupboard/")).status == 404
+        resp = await client.get("/janitor", allow_redirects=False)
+        assert (resp.status, resp.headers["Location"]) == (308, "/janitor/")
+
+
+async def test_site_with_gpg_starts_under_the_path_of_its_external_url(
+    aiohttp_client, database_location
+):
+    _private_app, app = await create_app(
+        config=create_config(database_location),
+        external_url="https://example.com/janitor/",
+        publisher_url="http://publisher.invalid/",
+        redis=FakeRedis(),
+    )
+    client = await aiohttp_client(app)
+    assert (await client.get("/janitor/")).status == 200
+
+
+async def test_login_under_the_path_of_the_external_url(
+    aiohttp_client, aiohttp_server, database_location
+):
+    provider = await _start_provider(aiohttp_server, userinfo=ALICE)
+    client = await _openid_site(
+        aiohttp_client,
+        database_location,
+        provider,
+        external_url="https://example.com/janitor/",
+    )
+    for url in [
+        "/janitor/cupboard/c/x/y/../../../../../grafana/",
+        "/janitor/cupboard/c/x/y/%2e%2e/%2e%2e/%2e%2e/%2e%2e/%2e%2e/grafana/",
+    ]:
+        resp = await client.get(
+            "/janitor/login", params={"url": url}, allow_redirects=False
+        )
+        assert (resp.status, await resp.text()) == (400, "invalid url")
+    resp = await client.get(
+        "/janitor/login",
+        params={"url": "https://example.com/janitor/cupboard/queue"},
+        allow_redirects=False,
+    )
+    redirect_uri = URL(resp.headers["Location"]).query["redirect_uri"]
+    cookies = {name: (c.value, c["path"]) for name, c in resp.cookies.items()}
+    assert (resp.status, redirect_uri, cookies) == (
+        302,
+        "https://example.com/janitor/oauth/callback",
+        {
+            "state": (resp.cookies["state"].value, "/janitor/oauth/callback"),
+            "back_url": ("/janitor/cupboard/queue", "/janitor/"),
+        },
+    )
+    resp = await client.get(
+        "/janitor/oauth/callback",
+        params={"code": "authcode", "state": "mystate"},
+        cookies={"state": "mystate"},
+        allow_redirects=False,
+    )
+    # The client sends back the back_url cookie that /janitor/login set.
+    session = resp.cookies["session_id"]
+    assert (resp.status, resp.headers["Location"], session["path"]) == (
+        302,
+        "/janitor/cupboard/queue",
+        "/janitor/",
+    )
+    resp = await client.post(
+        "/janitor/logout",
+        cookies={"session_id": session.value},
+        allow_redirects=False,
+    )
+    session = resp.cookies["session_id"]
+    assert (resp.status, resp.headers["Location"], session["path"]) == (
+        302,
+        "/janitor/",
+        "/janitor/",
+    )
+
+
+async def test_login_required_under_the_path_of_the_external_url(
+    aiohttp_client, database_location
+):
+    client = await _openid_site(
+        aiohttp_client, database_location, external_url="https://example.com/janitor/"
+    )
+    resp = await client.get(
+        "/janitor/cupboard/reprocess-logs",
+        headers={"Sec-Fetch-Mode": "navigate"},
+        allow_redirects=False,
+    )
+    page = client.make_url("/janitor/cupboard/reprocess-logs")
+    assert (resp.status, resp.headers["Location"]) == (
+        302,
+        f"/janitor/login?url={page}",
+    )

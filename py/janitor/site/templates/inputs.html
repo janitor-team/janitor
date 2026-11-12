@@ -18,7 +18,7 @@
             var request = codebaseNames;
             if (!request) {
                 $("#sidebar-codebase-status").text("");
-                request = codebaseNames = $.getJSON("/api/codebase-names");
+                request = codebaseNames = $.getJSON("{{ site_root }}/api/codebase-names");
                 request.fail(function (xhr) {
                     codebaseNames = null;
                     $("#sidebar-codebase").closest(".typeahead__container").removeClass("loading");

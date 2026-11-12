@@ -105,7 +105,7 @@ cd {{ codebase }}
 {% endmacro %}
 {% macro login_on_401() -%}
     {%- if openid_configured and not user -%}
-        if (response.status == 401) return window.location.replace("/login?url=" + encodeURIComponent(window.location.href));
+        if (response.status == 401) return window.location.replace("{{ site_root }}/login?url=" + encodeURIComponent(window.location.href));
     {%- endif -%}
 {%- endmacro %}
 {% macro reschedule_button(campaign, codebase, title="Reschedule", id="reschedule", data={}, accesskey="s") %}
@@ -114,10 +114,10 @@ cd {{ codebase }}
     <script>
         $(function() {
             $("#{{ id }}").click(function() {
-                $.post('/api/{{ campaign }}/c/{{ codebase }}/schedule', {{ data | tojson }}, function(data) {
+                $.post('{{ site_root }}/api/{{ campaign }}/c/{{ codebase }}/schedule', {{ data | tojson }}, function(data) {
                         console.log('Scheduled: ' + data.offset);
                         $("#{{ id }}").replaceWith("<span>Scheduled new run at position " + data.queue_position + ".</span>");
-                        $('.queue-position.{{ codebase }}').replaceWith('<a href="/cupboard/queue">Queue</a> position: ' + data.queue_position);
+                        $('.queue-position.{{ codebase }}').replaceWith('<a href="{{ site_root }}/cupboard/queue">Queue</a> position: ' + data.queue_position);
                         $('.queue-position.{{ codebase }}').attr('style', '')
                     }, 'json')
                     .fail(function(response) {
@@ -132,7 +132,7 @@ cd {{ codebase }}
     <button id="{{ id }}" {% if accesskey %}accesskey="{{ accesskey }}"{% endif %}>{{ title }}</button><script>
         $(function() {
             $("#{{ id }}").click(function() {
-                $.post('/api/run/{{ run_id }}/schedule-control', {{ data | tojson }}, function(data) {
+                $.post('{{ site_root }}/api/run/{{ run_id }}/schedule-control', {{ data | tojson }}, function(data) {
                         console.log('Scheduled: ' + data.offset);
                         $("#{{ id }}").replaceWith("<span>Scheduled control run at position " + data.queue_position + ".</span>");
                     }, 'json')
@@ -159,7 +159,7 @@ cd {{ codebase }}
     <script>
         $(function() {
             $("#{{ publish_id }}").click(function() {
-                $.post('/api/{{ campaign }}/c/{{ codebase }}/publish', {}, function(data) {
+                $.post('{{ site_root }}/api/{{ campaign }}/c/{{ codebase }}/publish', {}, function(data) {
                         if (data) {
                             $("#{{ publish_id }}").replaceWith("<span>Publishing...</span>");
                         }
@@ -172,7 +172,7 @@ cd {{ codebase }}
         
             {% if is_admin %}
             $("#{{ propose_id }}").click(function() {
-                $.post('/api/{{ campaign }}/c/{{ codebase }}/publish', {
+                $.post('{{ site_root }}/api/{{ campaign }}/c/{{ codebase }}/publish', {
                         'mode': 'propose'
                     }, function(data) {
                         if (data) {
@@ -185,7 +185,7 @@ cd {{ codebase }}
             });
         
             $("#{{ fork_id }}").click(function() {
-                $.post('/api/{{ campaign }}/c/{{ codebase }}/publish', {
+                $.post('{{ site_root }}/api/{{ campaign }}/c/{{ codebase }}/publish', {
                         'mode': 'push-derived'
                     }, function(data) {
                         $("#{{ fork_id }}").replaceWith("<span>Creating fork.</span>");
@@ -196,7 +196,7 @@ cd {{ codebase }}
             });
         
             $("#{{ push_id }}").click(function() {
-                $.post('/api/{{ campaign }}/c/{{ codebase }}/publish', {
+                $.post('{{ site_root }}/api/{{ campaign }}/c/{{ codebase }}/publish', {
                         'mode': 'push'
                     }, function(data) {
                         $("#{{ push_id }}").replaceWith("<span>Pushing.</span>");
@@ -211,7 +211,7 @@ cd {{ codebase }}
 {% macro install_commands(binary_packages, distribution) %}
     {% if binary_packages %}
         <p>
-            The resulting binary packages can be installed (if you have the <a class="reference external" href="/{{ distribution }}">apt repository</a> enabled) by running one of:
+            The resulting binary packages can be installed (if you have the <a class="reference external" href="{{ site_root }}/{{ distribution }}">apt repository</a> enabled) by running one of:
         </p>
         <div class="highlight-default notranslate">
             <div class="highlight">
@@ -317,7 +317,7 @@ cd {{ codebase }}
                 <div class="diff">{{ highlight_diff(diff) |safe }}</div>
             {% else %}
                 <p>
-                    Diff is too long (more than 200 lines). Download the <a href="/api/run/{{ run_id }}/diff?role={{ role }}">raw diff</a>.
+                    Diff is too long (more than 200 lines). Download the <a href="{{ site_root }}/api/run/{{ run_id }}/diff?role={{ role }}">raw diff</a>.
                 </p>
             {% endif %}
         {% endfor %}
@@ -378,9 +378,9 @@ cd {{ codebase }}
                     {%- endif -%}
                 {%- elif k == 'change_set' -%}
                     {%- if r -%}
-                        changeset <a href="/cupboard/cs/{{ d.change_set_id }}/">{{ d.change_set_id }}</a> is {{ d.change_set_state }}
+                        changeset <a href="{{ site_root }}/cupboard/cs/{{ d.change_set_id }}/">{{ d.change_set_id }}</a> is {{ d.change_set_state }}
                     {%- else -%}
-                        changeset <a href="/cupboard/cs/{{ d.change_set_id }}/">{{ d.change_set_id }}</a> is {{ d.change_set_state }}
+                        changeset <a href="{{ site_root }}/cupboard/cs/{{ d.change_set_id }}/">{{ d.change_set_id }}</a> is {{ d.change_set_state }}
                     {%- endif -%}
                 {%- elif k == 'previous_mp' -%}
                     {%- if r -%}

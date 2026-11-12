@@ -28,7 +28,7 @@
             <div class="diff" id="diff-{{ role }}">{{ highlight_diff(diff) |safe }}</div>
         {% else %}
             <div class="diff" id="diff-{{ role }}">
-                The <a href="/api/run/{{ run_id }}/diff?role={{ role }}">full diff</a> is too large to include here.
+                The <a href="{{ site_root }}/api/run/{{ run_id }}/diff?role={{ role }}">full diff</a> is too large to include here.
             </div>
         {% endif %}
     </div>

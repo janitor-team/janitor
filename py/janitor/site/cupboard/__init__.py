@@ -40,6 +40,7 @@ from .. import (
     check_logged_in,
     is_admin,
     is_qa_reviewer,
+    site_root,
     worker_link_is_global,
 )
 from ..common import html_template
@@ -705,6 +706,7 @@ async def handle_cupboard_evaluate(request):
         request.app["differ_url"],
         run_id,
         span,
+        root=site_root(request),
     )
 
 
@@ -731,8 +733,6 @@ def register_cupboard_endpoints(
             db=db,
         ),
     )
-    if evaluate_url is None:
-        evaluate_url = app.router["cupboard-default-evaluate"].url_for(run_id="RUN_ID")
     app["evaluate_url"] = evaluate_url
     app["runner_status"] = None
 

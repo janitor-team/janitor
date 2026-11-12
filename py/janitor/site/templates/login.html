@@ -1,1 +1,1 @@
-{% if openid_configured %}<a href="/login?url={{ url | urlencode }}">Login</a>{% endif %}
+{% if openid_configured %}<a href="{{ site_root }}/login?url={{ url | urlencode }}">Login</a>{% endif %}

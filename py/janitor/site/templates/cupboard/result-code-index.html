@@ -91,10 +91,10 @@
                 var code = result_code_chart.data.labels[slice[0].index];
                 var url;
                 if (code == 'never-processed') {
-                    url = '/cupboard/never-processed';
+                    url = '{{ site_root }}/cupboard/never-processed';
                     url += '?' + '{{ {'campaign': campaign } | urlencode }}';
                 } else {
-                    url = '/cupboard/result-codes/' + code;
+                    url = '{{ site_root }}/cupboard/result-codes/' + code;
                     url += '?' + "{{ {'campaign': campaign or '_all', 'include_transient': 'on' if include_transient else 'off', 'include_historical': 'on' if include_historical else 'off' } | urlencode }}";
                 }
                 window.open(url, "_self");
@@ -117,7 +117,7 @@
                         <tr class="row-even">
                             <td>
                                 <a class="reference external"
-                                   href="/cupboard/never-processed{%- if campaign -%}?campaign={{ campaign }}{%- endif -%}">{{ code }}</a>
+                                   href="{{ site_root }}/cupboard/never-processed{%- if campaign -%}?campaign={{ campaign }}{%- endif -%}">{{ code }}</a>
                             </td>
                             <td>{{ count }}</td>
                         </tr>
@@ -125,7 +125,7 @@
                         <tr class="row-even">
                             <td>
                                 <a class="reference external"
-                                   href="/cupboard/result-codes/{{ code }}?{{ {'campaign': campaign or '_all', 'include_transient': 'on' if include_transient else 'off', 'include_historical': 'on' if include_historical else 'off' } | urlencode }}">{{ display_result_code(code) |safe }}</a>
+                                   href="{{ site_root }}/cupboard/result-codes/{{ code }}?{{ {'campaign': campaign or '_all', 'include_transient': 'on' if include_transient else 'off', 'include_historical': 'on' if include_historical else 'off' } | urlencode }}">{{ display_result_code(code) |safe }}</a>
                             </td>
                             <td>{{ count }}</td>
                         </tr>

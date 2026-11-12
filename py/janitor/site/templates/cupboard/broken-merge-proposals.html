@@ -34,14 +34,14 @@
                             <a class="reference external" href="{{ mp_url }}">Merge proposal</a>
                         </td>
                         <td>
-                            <a class="reference external" href="/cupboard/c/{{ codebase }}/">{{ codebase }}</a>
+                            <a class="reference external" href="{{ site_root }}/cupboard/c/{{ codebase }}/">{{ codebase }}</a>
                         </td>
                         <td>
-                            <a class="reference external" href="/{{ campaign }}/">{{ campaign }}</a>
+                            <a class="reference external" href="{{ site_root }}/{{ campaign }}/">{{ campaign }}</a>
                         </td>
                         <td>
                             <a class="reference external"
-                               href="/cupboard/c/{{ codebase }}/{{ run_id }}/">{{ display_result_code(result_code) }}</a>
+                               href="{{ site_root }}/cupboard/c/{{ codebase }}/{{ run_id }}/">{{ display_result_code(result_code) }}</a>
                         </td>
                         <td>{{ format_timestamp(finish_time) }}</td>
                         <td>{{ description }}</td>

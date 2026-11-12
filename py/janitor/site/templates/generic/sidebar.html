@@ -2,14 +2,14 @@
 <div class="sphinxsidebar" role="navigation" aria-label="main navigation">
     <div class="sphinxsidebarwrapper">
         <h1 class="logo">
-            <a href="/">Janitor</a>
+            <a href="{{ site_root }}/">Janitor</a>
         </h1>
         <h3>
-            <a href="/{{ campaign }}/">{{ campaign }}</a>
+            <a href="{{ site_root }}/{{ campaign }}/">{{ campaign }}</a>
         </h3>
         {% if user %}
             Logged in as {{ user['name'] }}
-            <form action="/logout" method="post">
+            <form action="{{ site_root }}/logout" method="post">
                 <input type="submit" value="Log out" />
             </form>
         {% else %}
@@ -17,21 +17,21 @@
         {% endif %}
         <ul class="current">
             <li class="toctree-l1">
-                <a class="reference internal" href="/{{ campaign }}/merge-proposals">Merge proposals</a>
+                <a class="reference internal" href="{{ site_root }}/{{ campaign }}/merge-proposals">Merge proposals</a>
             </li>
             <li class="toctree-l1">
-                <a class="reference internal" href="/{{ campaign }}/ready">Ready changes</a>
+                <a class="reference internal" href="{{ site_root }}/{{ campaign }}/ready">Ready changes</a>
             </li>
             <li class="toctree-l1">
-                <a class="reference internal" href="/{{ campaign }}/done">Merged or pushed changes</a>
+                <a class="reference internal" href="{{ site_root }}/{{ campaign }}/done">Merged or pushed changes</a>
             </li>
             <li class="toctree-l1">
-                <a class="reference internal" href="/{{ campaign }}/candidates">Candidates</a>
+                <a class="reference internal" href="{{ site_root }}/{{ campaign }}/candidates">Candidates</a>
             </li>
         </ul>
         <p>
             <label for="sidebar-codebase">See the status for a specific package:</label>
-            <form autocomplete="off" action="/{{ campaign }}/c">
+            <form autocomplete="off" action="{{ site_root }}/{{ campaign }}/c">
                 <div class="sidebar-packages" style="width:300px;">{{ codebase_input(name="package") }}</div>
                 <input type="submit" style="display: none" />
             </form>
