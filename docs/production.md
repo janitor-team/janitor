@@ -134,6 +134,10 @@ Without a distribution name it does every distribution in `janitor.conf`. The
 worker container looks in `/root/.cache/sbuild`, so mount the directory there
 with `--volume ~/.cache/sbuild:/root/.cache/sbuild`.
 
+The tarball gets an apt source for the distribution and one for each suite in
+its `extra` list. If the distribution sets `signed_by`, these sources use that
+keyring, and the script copies the keyring into the tarball at the same path.
+
 Run the script again after adding a campaign, and at least once a week:
 `sbuild` stops using a tarball older than `$unshare_mmdebstrap_max_age` (one
 week by default).

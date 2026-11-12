@@ -17,24 +17,34 @@ def create_chroot(
     include=[],  # noqa: B006
     setup_hooks=[],  # noqa: B006
 ):
+    components = " ".join(distro.component)
+    if distro.signed_by:
+        options = f"[signed-by={distro.signed_by}] "
+        deb_suites = [distro.name, *distro.extra]
+        mirrors = [
+            f"deb {options}{distro.archive_mirror_uri} {s} {components}"
+            for s in deb_suites
+        ]
+    else:
+        mirrors = [distro.archive_mirror_uri] + [
+            f"deb {distro.archive_mirror_uri} {s} {components}" for s in distro.extra
+        ]
     cmd = [
         "mmdebstrap",
         "--variant=buildd",
         distro.name,
         sbuild_path,
-        distro.archive_mirror_uri,
+        *mirrors,
         "--mode=unshare",
         f"--arch={sbuild_arch}",
     ]
     cmd.append("--components=" + ",".join(distro.component))
     if include:
         cmd.append("--include=" + ",".join(include))
-    for name in distro.extra:
-        cmd.append(
-            "--extra-repository=deb {} {} {}".format(
-                distro.archive_mirror_uri, name, " ".join(distro.component)
-            )
-        )
+    if distro.signed_by:
+        key = shlex.quote(distro.signed_by)
+        # mmdebstrap passes the chroot root to setup hooks as $1.
+        cmd.append(f'--setup-hook=install -D --mode=644 {key} "$1"{key}')
 
     for setup_hook in setup_hooks:
         cmd.append("--setup-hook=" + setup_hook)
