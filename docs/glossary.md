@@ -37,6 +37,7 @@ those merge proposals up to date.
 
 - *run*: One attempt at processing a candidate, from cloning the
 codebase through building the result.
+See [runs.md](runs.md).
 
 - *runner*: The permanently running job that processes the queue and
 hands work to workers.
