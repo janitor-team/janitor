@@ -145,6 +145,9 @@ gcp = [
 janitor-site = "janitor.site.simple:main"
 janitor-webhook = "janitor.site.webhook:main"
 
+[project.entry-points."pygments.filters"]
+trailingwhitespace = "janitor.site.pygments_whitespace:TrailingWhitespaceFilter"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 addopts = """
