@@ -25,7 +25,7 @@ use crate::web;
 /// completion is logged but does not stop the service.
 pub async fn run(
     config: Config,
-    listen_addr: &str,
+    listen_addr: std::net::IpAddr,
     port: u16,
     upload_config: UploadConfig,
     run_backfill: bool,
@@ -50,10 +50,7 @@ pub async fn run(
     };
 
     let web_task = {
-        let listen_addr = listen_addr.to_string();
-        tokio::spawn(
-            async move { web::run_web_server(web::create_app(), &listen_addr, port).await },
-        )
+        tokio::spawn(async move { web::run_web_server(web::create_app(), listen_addr, port).await })
     };
 
     let redis_task = tokio::spawn({

@@ -72,9 +72,9 @@ async fn metrics_handler() -> Response {
 /// Bind and serve `app` on `listen_addr:port` until the connection is
 /// closed. This is a thin wrapper over [`axum::serve`] so callers can
 /// select on it alongside other tasks.
-pub async fn run_web_server(app: Router, listen_addr: &str, port: u16) -> Result<()> {
-    let addr = format!("{}:{}", listen_addr, port);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+pub async fn run_web_server(app: Router, listen_addr: std::net::IpAddr, port: u16) -> Result<()> {
+    let addr = std::net::SocketAddr::new(listen_addr, port);
+    let listener = tokio::net::TcpListener::bind(addr).await?;
     info!("Web server listening on {}", addr);
     axum::serve(listener, app).await?;
     Ok(())

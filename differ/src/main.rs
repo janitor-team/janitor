@@ -156,8 +156,8 @@ impl Drop for GenerateGuard<'_> {
 
 #[derive(Parser)]
 struct Args {
-    #[clap(long, default_value = "localhost")]
-    listen_address: String,
+    #[clap(long, default_value = "127.0.0.1")]
+    listen_address: std::net::IpAddr,
 
     #[clap(long, default_value_t = 9920)]
     port: u16,
@@ -1535,14 +1535,6 @@ enum StartupError {
         #[source]
         source: std::io::Error,
     },
-    #[error("failed to resolve listen address {address}: {source}")]
-    Resolve {
-        address: String,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("{0} did not resolve to any address")]
-    NoAddress(String),
     #[error("failed to bind {addr}: {source}")]
     Bind {
         addr: std::net::SocketAddr,
@@ -1631,41 +1623,19 @@ async fn run() -> std::result::Result<(), StartupError> {
 
     let app = build_router(state);
 
-    let addrs: Vec<_> = tokio::net::lookup_host((args.listen_address.as_str(), args.port))
+    let addr = std::net::SocketAddr::new(args.listen_address, args.port);
+    let listener = tokio::net::TcpListener::bind(addr)
         .await
-        .map_err(|e| StartupError::Resolve {
-            address: args.listen_address.clone(),
-            source: e,
-        })?
-        .collect();
-    if addrs.is_empty() {
-        return Err(StartupError::NoAddress(args.listen_address.clone()));
-    }
-    // Python's aiohttp binds every address returned by getaddrinfo; do the
-    // same so `localhost` covers both ::1 and 127.0.0.1.
-    let mut listeners = Vec::with_capacity(addrs.len());
-    for addr in &addrs {
-        let listener =
-            tokio::net::TcpListener::bind(addr)
-                .await
-                .map_err(|e| StartupError::Bind {
-                    addr: *addr,
-                    source: e,
-                })?;
-        info!("listening on {addr}");
-        listeners.push(listener);
-    }
+        .map_err(|e| StartupError::Bind { addr, source: e })?;
+    info!("listening on {addr}");
 
     let mut servers = tokio::task::JoinSet::new();
-    for listener in listeners {
-        let app = app.clone();
-        let server_shutdown = shutdown.clone();
-        servers.spawn(async move {
-            axum::serve(listener, app)
-                .with_graceful_shutdown(async move { server_shutdown.cancelled().await })
-                .await
-        });
-    }
+    let server_shutdown = shutdown.clone();
+    servers.spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move { server_shutdown.cancelled().await })
+            .await
+    });
 
     // Trigger shutdown on ctrl_c or SIGTERM. Once triggered, the axum
     // servers stop accepting new connections and we await in-flight
