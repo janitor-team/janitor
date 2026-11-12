@@ -74,7 +74,7 @@ tr.row-disabled, td.old-version {
 }
 
 /* Wrapped diff lines are indented, so the +/- column stays clear */
-@media screen and (max-width: 875px) {
+@media screen {
     div.diff div.highlight > pre {
         white-space: pre-wrap;
         overflow-wrap: anywhere;
