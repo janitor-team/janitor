@@ -1,8 +1,8 @@
 //! End-to-end integration tests for the bzr-store public app.
 //!
 //! These boot the real `create_applications(...)` stack against a throw-
-//! away Postgres database and a throw-away vcs directory, then fire HTTP
-//! requests at an in-process TCP listener. They're the Rust counterpart
+//! away Postgres database and a throw-away vcs directory, then send HTTP
+//! requests directly to the router. They're the Rust counterpart
 //! to Python `tests/test_bzr_store.py`.
 //!
 //! The tests exercise:
@@ -14,10 +14,11 @@
 //! * Smart protocol `POST /bzr/{codebase}/.bzr/smart` for an unknown
 //!   codebase — asserts a 404.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
+use axum::body::{Body, Bytes};
+use axum::http::Request;
+use axum::response::Response;
 use axum::Router;
 use janitor::{test_utils::TestDatabase, test_with_database};
 use janitor_bzr_store::{
@@ -26,6 +27,7 @@ use janitor_bzr_store::{
 };
 use sqlx::PgPool;
 use tempfile::TempDir;
+use tower::ServiceExt;
 
 /// Build a libpq-style URL for the `TestDatabase`. `TestDatabase` doesn't
 /// expose the original base_url it was constructed from, so reuse the
@@ -75,17 +77,43 @@ campaign {
     Arc::new(janitor::config::read_string(text).expect("parse test janitor.conf"))
 }
 
-/// Bind the public Router on an ephemeral port, spawn an axum server,
-/// and return both the server's bound address and a JoinHandle.
-async fn spawn_public(public_app: Router) -> (SocketAddr, tokio::task::JoinHandle<()>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, public_app).await.ok();
-    });
-    // Give the server a beat to be ready.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    (addr, handle)
+async fn send(app: &Router, req: Request<Body>) -> Response {
+    app.clone().oneshot(req).await.unwrap()
+}
+
+fn get(uri: &str) -> Request<Body> {
+    Request::get(uri).body(Body::empty()).unwrap()
+}
+
+fn get_accept(uri: &str, accept: &str) -> Request<Body> {
+    Request::get(uri)
+        .header("Accept", accept)
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn basic_auth(user: &str, password: &str) -> String {
+    use base64::Engine;
+    let creds = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}"));
+    format!("Basic {creds}")
+}
+
+fn post(uri: &str, body: impl Into<Body>) -> Request<Body> {
+    Request::post(uri).body(body.into()).unwrap()
+}
+
+async fn body_bytes(resp: Response) -> Bytes {
+    axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap()
+}
+
+async fn body_text(resp: Response) -> String {
+    String::from_utf8(body_bytes(resp).await.to_vec()).unwrap()
+}
+
+async fn body_json<T: serde::de::DeserializeOwned>(resp: Response) -> T {
+    serde_json::from_slice(&body_bytes(resp).await).unwrap()
 }
 
 async fn seed_worker(pool: &PgPool, name: &str, password: &str) {
@@ -128,20 +156,11 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn_public(public).await;
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(format!("http://{}/bzr/", addr))
-            .header("Accept", "application/json")
-            .send()
-            .await
-            .unwrap();
+        let resp = send(&public, get_accept("/bzr/", "application/json")).await;
         assert_eq!(resp.status(), 200);
-        let body: Vec<String> = resp.json().await.unwrap();
+        let body: Vec<String> = body_json(resp).await;
         assert_eq!(body, vec!["alpha".to_string(), "beta".to_string()]);
-
-        handle.abort();
     }
 }
 
@@ -155,20 +174,11 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn_public(public).await;
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(format!("http://{}/bzr/", addr))
-            .header("Accept", "text/plain")
-            .send()
-            .await
-            .unwrap();
+        let resp = send(&public, get_accept("/bzr/", "text/plain")).await;
         assert_eq!(resp.status(), 200);
-        let text = resp.text().await.unwrap();
+        let text = body_text(resp).await;
         assert_eq!(text, "gamma\n");
-
-        handle.abort();
     }
 }
 
@@ -182,15 +192,9 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn_public(public).await;
 
-        let client = reqwest::Client::new();
-        // Default Accept */* should pick HTML, matching Python mimeparse.
-        let resp = client
-            .get(format!("http://{}/bzr/", addr))
-            .send()
-            .await
-            .unwrap();
+        // Accept */* should pick HTML, matching Python mimeparse.
+        let resp = send(&public, get_accept("/bzr/", "*/*")).await;
         assert_eq!(resp.status(), 200);
         let content_type = resp
             .headers()
@@ -203,7 +207,7 @@ test_with_database! {
             "expected text/html for Accept */*, got {}",
             content_type
         );
-        let text = resp.text().await.unwrap();
+        let text = body_text(resp).await;
         assert!(text.contains("Bazaar Repositories"), "body: {}", text);
         assert!(
             text.contains("foo"),
@@ -216,8 +220,6 @@ test_with_database! {
             "expected href=\"/bzr/foo/\" in HTML: {}",
             text
         );
-
-        handle.abort();
     }
 }
 
@@ -229,18 +231,9 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn_public(public).await;
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .post(format!("http://{}/bzr/ghost/.bzr/smart", addr))
-            .body(b"hello".to_vec())
-            .send()
-            .await
-            .unwrap();
+        let resp = send(&public, post("/bzr/ghost/.bzr/smart", b"hello".to_vec())).await;
         assert_eq!(resp.status(), 404);
-
-        handle.abort();
     }
 }
 
@@ -262,16 +255,12 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn_public(public).await;
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .post(format!("http://{}/bzr/foo/campaign/main/.bzr/smart", addr))
-            .basic_auth("alice", Some("s3cret"))
-            .body(b"bzr request 3\nhello\n".to_vec())
-            .send()
-            .await
+        let req = Request::post("/bzr/foo/campaign/main/.bzr/smart")
+            .header("Authorization", basic_auth("alice", "s3cret"))
+            .body(Body::from(b"bzr request 3\nhello\n".to_vec()))
             .unwrap();
+        let resp = send(&public, req).await;
         assert_eq!(resp.status(), 200);
 
         // With allow_writes=true the campaign/role transport sub-paths
@@ -283,8 +272,6 @@ test_with_database! {
             "expected write path to create {}",
             sub.display()
         );
-
-        handle.abort();
     }
 }
 
@@ -306,17 +293,14 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn_public(public).await;
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .post(format!("http://{}/bzr/foo/campaign/main/.bzr/smart", addr))
-            .body(b"bzr request 3\nhello\n".to_vec())
-            .send()
-            .await
-            .unwrap();
+        let resp = send(
+            &public,
+            post("/bzr/foo/campaign/main/.bzr/smart", b"bzr request 3\nhello\n".to_vec()),
+        )
+        .await;
         assert_eq!(resp.status(), 200);
-        let body = resp.bytes().await.unwrap();
+        let body = body_bytes(resp).await;
         // Smart-protocol error responses start with the literal `b"error\x01"`
         // (see `breezy.bzr.smart.message`). Assert on the prefix only —
         // the textual part is emitted by Breezy and may drift.
@@ -329,8 +313,6 @@ test_with_database! {
             "expected on-demand creation of shared repo at {}/foo/.bzr",
             tmp.path().display()
         );
-
-        handle.abort();
     }
 }
 
@@ -344,32 +326,19 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn_public(public).await;
 
-        let client = reqwest::Client::new();
         for path in [
             "/bzr/Ghost/.bzr/smart",
             "/bzr/foo/..%2Fetc/.bzr/smart",
             "/bzr/foo/Campaign/main/.bzr/smart",
             "/bzr/foo/campaign//.bzr/smart",
         ] {
-            let resp = client
-                .post(format!("http://{}{}", addr, path))
-                .body(b"hello".to_vec())
-                .send()
-                .await
-                .unwrap();
+            let resp = send(&public, post(path, b"hello".to_vec())).await;
             assert_eq!(resp.status(), 400, "{}", path);
         }
         for path in ["/bzr/Ghost", "/bzr/Ghost/changes"] {
-            let resp = client
-                .get(format!("http://{}{}", addr, path))
-                .send()
-                .await
-                .unwrap();
+            let resp = send(&public, get(path)).await;
             assert_eq!(resp.status(), 400, "{}", path);
         }
-
-        handle.abort();
     }
 }
