@@ -288,8 +288,17 @@ async def test_codebase(aiohttp_client, db):
         await _insert_codebase(conn, "foo")
         await _insert_codebase(conn, "bar")
         await conn.execute(
-            "INSERT INTO candidate (codebase, suite, command) "
-            "VALUES ('foo', 'lintian-fixes', 'true')"
+            "UPDATE codebase SET branch = 'main', vcs_type = 'git', value = 20 "
+            "WHERE name = 'foo'"
+        )
+        await conn.execute(
+            "INSERT INTO named_publish_policy (name, per_branch_policy, rate_limit_bucket) "
+            "VALUES ('lintian', ARRAY[ROW('main', 'propose', NULL)::branch_publish_policy], "
+            "'default')"
+        )
+        await conn.execute(
+            "INSERT INTO candidate (codebase, suite, command, value, publish_policy) "
+            "VALUES ('foo', 'lintian-fixes', 'true', 30, 'lintian')"
         )
         now = utcnow()
         await _insert_run(
@@ -316,8 +325,26 @@ async def test_codebase(aiohttp_client, db):
         "name": "foo",
         "url": "https://example.com/foo.git",
         "web_url": None,
+        "branch": "main",
+        "subpath": None,
+        "vcs_type": "git",
+        "vcs_last_revision": None,
+        "last_scanned": None,
+        "value": 20,
+        "inactive": False,
     }
-    assert [dict(c) for c in foo["candidates"]] == [{"campaign": "lintian-fixes"}]
+    assert [dict(c) for c in foo["candidates"]] == [
+        {
+            "campaign": "lintian-fixes",
+            "command": "true",
+            "context": None,
+            "value": 30,
+            "success_chance": None,
+            "publish_policy": "lintian",
+            "per_branch_policy": [("main", "propose", None)],
+            "rate_limit_bucket": "default",
+        }
+    ]
     assert [dict(r) for r in foo["runs"]] == [
         {
             "id": "newer",

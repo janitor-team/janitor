@@ -497,12 +497,17 @@ async def handle_run_redirect(request):
 
 async def generate_codebase(conn, codebase):
     row = await conn.fetchrow(
-        "SELECT name, url, web_url FROM codebase WHERE name = $1", codebase
+        "SELECT name, url, web_url, branch, subpath, vcs_type, vcs_last_revision, "
+        "last_scanned, value, inactive FROM codebase WHERE name = $1",
+        codebase,
     )
     if row is None:
         raise web.HTTPNotFound(text=f"No such codebase: {codebase}")
     candidates = await conn.fetch(
-        "SELECT DISTINCT suite AS campaign FROM candidate WHERE codebase = $1 ORDER BY suite",
+        "SELECT suite AS campaign, command, context, value, success_chance, "
+        "publish_policy, per_branch_policy, rate_limit_bucket FROM candidate "
+        "LEFT JOIN named_publish_policy ON named_publish_policy.name = publish_policy "
+        "WHERE codebase = $1 ORDER BY suite, id",
         codebase,
     )
     runs = await conn.fetch(
