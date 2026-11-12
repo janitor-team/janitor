@@ -57,7 +57,7 @@ struct Args {
     #[clap(long)]
     my_url: Option<url::Url>,
 
-    /// Keep building until the queue is empty
+    /// Keep processing runs, waiting when the queue is empty
     #[clap(long)]
     r#loop: bool,
 
