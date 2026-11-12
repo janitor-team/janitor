@@ -254,7 +254,9 @@ div.sphinxsidebarwrapper p.logo {
     text-align: center;
 }
 
-div.sphinxsidebarwrapper h1.logo {
+div.sphinxsidebarwrapper div.logo {
+    font-size: 2em;
+    font-weight: bold;
     margin-top: -10px;
     text-align: center;
     margin-bottom: 5px;
