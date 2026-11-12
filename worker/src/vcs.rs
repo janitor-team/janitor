@@ -33,11 +33,10 @@ pub fn push_branch(
                 .unwrap()
         },
     );
-    let target = match breezyshim::controldir::open(&url, possible_transports.as_mut()) {
+    let transport = breezyshim::transport::get_transport(&url, possible_transports.as_mut())?;
+    let target = match breezyshim::controldir::open_from_transport(&transport, None) {
         Ok(cd) => cd,
         Err(BrzError::NotBranchError(..)) => {
-            let transport =
-                breezyshim::transport::get_transport(&url, possible_transports.as_mut())?;
             match breezyshim::controldir::create_on_transport(&transport, &vcs_type) {
                 Err(BrzError::NoSuchFile(..)) => {
                     transport.create_prefix()?;
