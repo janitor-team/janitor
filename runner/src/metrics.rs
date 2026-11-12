@@ -82,7 +82,9 @@ lazy_static! {
     pub static ref BUILD_DURATION: HistogramVec = register_histogram_vec!(
         "build_duration",
         "Build duration",
-        &["campaign"]
+        &["campaign"],
+        // 15 seconds up to about 8.5 hours.
+        prometheus::exponential_buckets(15.0, 2.0, 12).unwrap()
     ).unwrap();
 
     /// Database operation metrics
@@ -384,12 +386,31 @@ pub async fn metrics_middleware(
 
 #[cfg(test)]
 mod tests {
-    use super::FORGE_LOGIN_REQUIRED_COUNT;
+    use super::{BUILD_DURATION, FORGE_LOGIN_REQUIRED_COUNT};
+    use prometheus::core::Metric;
 
     #[test]
     fn forge_login_required_counter_increments() {
         let before = FORGE_LOGIN_REQUIRED_COUNT.get();
         FORGE_LOGIN_REQUIRED_COUNT.inc();
         assert_eq!(FORGE_LOGIN_REQUIRED_COUNT.get(), before + 1);
+    }
+
+    #[test]
+    fn build_duration_buckets_cover_long_builds() {
+        let label = ["build_duration_buckets_test"];
+        let bounds: Vec<f64> = BUILD_DURATION
+            .with_label_values(&label)
+            .metric()
+            .get_histogram()
+            .get_bucket()
+            .iter()
+            .map(|b| b.upper_bound())
+            .collect();
+        BUILD_DURATION.remove_label_values(&label).unwrap();
+        assert!(
+            bounds.last().is_some_and(|&b| b >= 4.0 * 3600.0),
+            "largest build_duration bucket is too small: {bounds:?}"
+        );
     }
 }
