@@ -657,31 +657,48 @@ async fn wait_backend(process: &mut tokio::process::Child, limit: std::time::Dur
     tokio::time::timeout(limit, process.wait()).await.is_ok()
 }
 
-/// Scope guard: on drop, SIGTERM the http-backend process group,
-/// wait up to `GIT_BACKEND_TERM_TIMEOUT`, then SIGKILL and wait up
-/// to `GIT_BACKEND_REAP_TIMEOUT`. SIGTERM first lets git remove
-/// its own ref lockfiles.
-struct BackendReaper(Option<tokio::process::Child>);
+/// Scope guard: on drop, if it was given the http-backend's output,
+/// read the rest of it and wait for the backend to exit. Otherwise
+/// SIGTERM its process group, wait up to `GIT_BACKEND_TERM_TIMEOUT`,
+/// then SIGKILL and wait up to `GIT_BACKEND_REAP_TIMEOUT`. SIGTERM
+/// first lets git remove its own ref lockfiles.
+struct BackendReaper {
+    process: Option<tokio::process::Child>,
+    stdout: Option<tokio::io::BufReader<tokio::process::ChildStdout>>,
+}
 
 impl BackendReaper {
-    fn new(process: tokio::process::Child) -> Self {
-        Self(Some(process))
+    fn new(process: tokio::process::Child, stdout: Option<tokio::process::ChildStdout>) -> Self {
+        Self {
+            process: Some(process),
+            stdout: stdout.map(tokio::io::BufReader::new),
+        }
+    }
+
+    fn stdout(&mut self) -> &mut tokio::io::BufReader<tokio::process::ChildStdout> {
+        self.stdout
+            .as_mut()
+            .expect("only called on a reaper given stdout")
     }
 }
 
 impl Drop for BackendReaper {
     fn drop(&mut self) {
-        let Some(mut process) = self.0.take() else {
+        let Some(mut process) = self.process.take() else {
             return;
         };
         if matches!(process.try_wait(), Ok(Some(_))) {
             return;
         }
-        tokio::spawn(async move { reap_backend(&mut process).await });
+        let stdout = self.stdout.take();
+        tokio::spawn(async move { reap_backend(&mut process, stdout).await });
     }
 }
 
-async fn reap_backend(process: &mut tokio::process::Child) {
+async fn reap_backend(
+    process: &mut tokio::process::Child,
+    stdout: Option<tokio::io::BufReader<tokio::process::ChildStdout>>,
+) {
     let Some(raw_pid) = process.id() else {
         // Already reaped by someone else; just surface any error.
         if let Err(e) = process.wait().await {
@@ -693,6 +710,18 @@ async fn reap_backend(process: &mut tokio::process::Child) {
     #[cfg(unix)]
     {
         use nix::sys::signal::Signal;
+        // Drain git's output so it doesn't block on write, then wait for it to finish the push.
+        if let Some(mut stdout) = stdout {
+            tokio::spawn(async move {
+                if let Err(e) = tokio::io::copy(&mut stdout, &mut tokio::io::sink()).await {
+                    debug!("git http-backend output after the client left: {}", e);
+                }
+            });
+            if let Err(e) = process.wait().await {
+                warn!("git http-backend wait failed: {}", e);
+            }
+            return;
+        }
         signal_backend_group(raw_pid, Signal::SIGTERM);
         if wait_backend(process, GIT_BACKEND_TERM_TIMEOUT).await {
             return;
@@ -892,8 +921,18 @@ pub async fn git_backend(
         .take()
         .ok_or_else(|| GitStoreError::Other(anyhow::anyhow!("no stdout on git process")))?;
 
-    let _reaper = BackendReaper::new(process);
-    let mut reader = tokio::io::BufReader::new(stdout);
+    let (mut reaper, mut own_stdout) = if subpath == "git-receive-pack" {
+        (BackendReaper::new(process, Some(stdout)), None)
+    } else {
+        (
+            BackendReaper::new(process, None),
+            Some(tokio::io::BufReader::new(stdout)),
+        )
+    };
+    let reader = match own_stdout.as_mut() {
+        Some(reader) => reader,
+        None => reaper.stdout(),
+    };
 
     let mut response_headers = HeaderMap::new();
     let mut status_code = StatusCode::OK;
@@ -954,7 +993,7 @@ pub async fn git_backend(
         buf
     } else {
         let mut buf = Vec::new();
-        tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut buf)
+        tokio::io::AsyncReadExt::read_to_end(reader, &mut buf)
             .await
             .map_err(|e| GitStoreError::Other(anyhow::anyhow!("read git body: {}", e)))?;
         buf
