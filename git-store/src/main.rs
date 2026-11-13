@@ -82,7 +82,8 @@ async fn main() -> Result<()> {
 
     // CLI flags override env/TOML; the janitor.conf database_location
     // is the last-resort fallback.
-    let mut config = Config::from_env().unwrap_or_else(|_| Config::default());
+    let mut config =
+        Config::from_env().map_err(|e| anyhow!("Failed to load git-store config: {}", e))?;
     config.git.local_path = vcs_path;
     config.git.host = cli.listen_address.to_string();
     let public_listen_address = cli.public_listen_address.unwrap_or(cli.listen_address);

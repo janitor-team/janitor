@@ -69,7 +69,7 @@ impl FromEnv for DatabaseConfig {
             .get_string("DATABASE_URL")
             .ok_or_else(|| ConfigError::MissingRequired("DATABASE_URL".to_string()))?;
 
-        Ok(Self {
+        let config = Self {
             url,
             max_connections: parser
                 .get_u32("DATABASE_MAX_CONNECTIONS")?
@@ -86,7 +86,9 @@ impl FromEnv for DatabaseConfig {
             min_connections: parser.get_u32("DATABASE_MIN_CONNECTIONS")?,
             max_lifetime_seconds: parser.get_u64("DATABASE_MAX_LIFETIME_SECONDS")?,
             idle_timeout_seconds: parser.get_u64("DATABASE_IDLE_TIMEOUT_SECONDS")?,
-        })
+        };
+        config.validate()?;
+        Ok(config)
     }
 }
 
@@ -104,6 +106,13 @@ impl DatabaseConfig {
             return Err(ValidationError::InvalidValue {
                 field: "url".to_string(),
                 message: "Database URL must be a PostgreSQL connection string".to_string(),
+            });
+        }
+
+        if let Err(message) = crate::utils::check_url_without_password(&self.url) {
+            return Err(ValidationError::InvalidValue {
+                field: "url".to_string(),
+                message: format!("Database URL {}", message),
             });
         }
 
@@ -280,6 +289,10 @@ mod tests {
         config.url = "mysql://localhost/test".to_string();
         assert!(config.validate().is_err());
 
+        // Test URL with a password
+        config.url = "postgresql://janitor:secret@localhost/test".to_string();
+        assert!(config.validate().is_err());
+
         // Test zero max connections
         config.url = "postgresql://localhost/test".to_string();
         config.max_connections = 0;
@@ -289,6 +302,22 @@ mod tests {
         config.max_connections = 10;
         config.min_connections = Some(15);
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_database_config_from_env_rejects_password() {
+        std::env::set_var(
+            "PWTEST_DATABASE_URL",
+            "postgresql://janitor:secret@localhost/test",
+        );
+        assert_eq!(
+            DatabaseConfig::from_env_with_prefix("PWTEST")
+                .unwrap_err()
+                .to_string(),
+            "Configuration validation error: Invalid value for field 'url': Database URL must not contain a password"
+        );
+        std::env::set_var("PWTEST_DATABASE_URL", "postgresql://janitor@localhost/test");
+        assert!(DatabaseConfig::from_env_with_prefix("PWTEST").is_ok());
     }
 
     #[test]

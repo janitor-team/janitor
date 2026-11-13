@@ -74,7 +74,7 @@ impl FromEnv for RedisConfig {
             .get_string("REDIS_URL")
             .unwrap_or_else(|| "redis://localhost:6379".to_string());
 
-        Ok(Self {
+        let config = Self {
             url,
             connection_timeout_seconds: parser
                 .get_u64("REDIS_CONNECTION_TIMEOUT_SECONDS")?
@@ -94,7 +94,9 @@ impl FromEnv for RedisConfig {
             database: parser.get_i64("REDIS_DATABASE")?,
             username: parser.get_string("REDIS_USERNAME"),
             password: parser.get_string("REDIS_PASSWORD"),
-        })
+        };
+        config.validate()?;
+        Ok(config)
     }
 }
 
@@ -117,6 +119,13 @@ impl RedisConfig {
                 field: "url".to_string(),
                 message: "Redis URL must start with redis://, rediss://, or redis+unix://"
                     .to_string(),
+            });
+        }
+
+        if let Err(message) = crate::utils::check_url_without_password(&self.url) {
+            return Err(ValidationError::InvalidValue {
+                field: "url".to_string(),
+                message: format!("Redis URL {}, use the password setting", message),
             });
         }
 
@@ -263,6 +272,16 @@ mod tests {
 
         config.database = Some(0);
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_redis_config_from_env_rejects_password() {
+        std::env::set_var("PWTEST_REDIS_URL", "redis://:secret@localhost:6379");
+        assert!(RedisConfig::from_env_with_prefix("PWTEST").is_err());
+        std::env::set_var("PWTEST_REDIS_URL", "redis://localhost:6379");
+        std::env::set_var("PWTEST_REDIS_PASSWORD", "secret");
+        let config = RedisConfig::from_env_with_prefix("PWTEST").unwrap();
+        assert_eq!(config.password.as_deref(), Some("secret"));
     }
 
     #[test]

@@ -44,6 +44,11 @@ impl Config {
         self.inner.redis_location.as_deref()
     }
 
+    /// Redis pub/sub URL and password.
+    pub fn redis_config(&self) -> Option<janitor::redis::RedisConfig> {
+        self.inner.redis_config()
+    }
+
     /// PostgreSQL connection URL.
     pub fn database_location(&self) -> Option<&str> {
         self.inner.database_location.as_deref()

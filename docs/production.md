@@ -23,6 +23,19 @@ $ cat schema/state.sql | psql janitor
 $ cat schema/debian/debian.sql | psql janitor  # only if using the Debian-specific features
 ```
 
+Point `database_location` in `janitor.conf` at it. A URL with a password in it
+is rejected, since the URL ends up in logs. If the role needs a password, set
+`PGPASSWORD` in the environment of each service, or put it in `~/.pgpass`:
+
+```
+database_location: "postgresql://janitor@db.example.com/janitor"
+```
+
+```console
+$ echo 'db.example.com:5432:janitor:janitor:secret' >> ~/.pgpass
+$ chmod 600 ~/.pgpass
+```
+
 Workers log in to the runner with HTTP Basic Auth. See
 [Registering workers](#registering-workers).
 
@@ -39,6 +52,14 @@ Janitor needs a running Redis server. Set `redis_location` in
 
 ```
 redis_location: "redis://localhost"
+```
+
+If the server needs a password, set it in `redis_password`. A password in
+`redis_location` is rejected, like one in `database_location`:
+
+```
+redis_location: "redis://redis.example.com:6379/0"
+redis_password: "secret"
 ```
 
 ## Logs and artifacts

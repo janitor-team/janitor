@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
     // the Python deployment contract is preserved.
     let mut config: Config = BzrStoreConfig::load()
         .await
-        .unwrap_or_else(|_| BzrStoreConfig::default());
+        .map_err(|e| anyhow!("Failed to load bzr-store config: {}", e))?;
 
     let public_listen_address = cli.public_listen_address.unwrap_or(cli.listen_address);
     let admin_addr = SocketAddr::new(cli.listen_address, cli.port);

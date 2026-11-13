@@ -15,15 +15,17 @@ logs_location: "s3://janitor-logs"
 #  + any other URL that object_store supports
 artifact_location: "/home/janitor/artifacts"
 
-# Database location: must be a valid postgresql URL
+# Database location: must be a valid postgresql URL, without a password.
+# Use PGPASSWORD or ~/.pgpass for the password.
 database_location: "postgresql://janitor@example.com:5432/janitor"
 
 # VCS storage locations
 git_location: "http://localhost:9923"
 bzr_location: "http://localhost:9929"
 
-# Redis
+# Redis, without a password in the URL
 redis_location: "redis://localhost"
+# redis_password: "secret"
 
 # Zipkin server for distributed tracing. Optional; tracing is skipped if
 # unset.

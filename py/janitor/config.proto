@@ -32,7 +32,8 @@ message Config {
   // URL, such as gs:// for GCS or s3:// for S3.
   optional string logs_location = 2;
 
-  // postgresql URL for database connection
+  // postgresql URL for database connection, without a password. Use
+  // PGPASSWORD or ~/.pgpass for the password.
   optional string database_location = 4;
 
   // Default committer to use when committing changes.
@@ -60,8 +61,11 @@ message Config {
   // Location of bzr storage
   optional string bzr_location = 15;
 
-  // Location of the redis server
+  // Location of the redis server, without a password
   optional string redis_location = 16;
+
+  // Password for the redis server
+  optional string redis_password = 21;
 
   // User agent string
   optional string user_agent = 18;

@@ -14,10 +14,12 @@ pub mod pubsub;
 pub use pubsub::{PubSubMessage, Publisher, Subscriber};
 
 /// Configuration for Redis connections
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RedisConfig {
     /// Redis URL
     pub url: String,
+    /// Password, kept out of the URL so it is never logged
+    pub password: Option<String>,
     /// Connection timeout in seconds
     pub connection_timeout_seconds: u64,
     /// Number of retry attempts for failed operations
@@ -30,6 +32,7 @@ impl Default for RedisConfig {
     fn default() -> Self {
         Self {
             url: "redis://127.0.0.1/".to_string(),
+            password: None,
             connection_timeout_seconds: 30,
             retry_attempts: 3,
             retry_delay_ms: 1000,
@@ -45,6 +48,51 @@ impl RedisConfig {
             ..Default::default()
         }
     }
+
+    /// Set the password to authenticate with
+    pub fn with_password(mut self, password: Option<String>) -> Self {
+        self.password = password;
+        self
+    }
+
+    /// Connection info for the URL with the password added
+    pub fn connection_info(&self) -> redis::RedisResult<redis::ConnectionInfo> {
+        let info = redis::IntoConnectionInfo::into_connection_info(self.url.as_str())?;
+        Ok(match &self.password {
+            Some(password) => {
+                let settings = info.redis_settings().clone().set_password(password);
+                info.set_redis_settings(settings)
+            }
+            None => info,
+        })
+    }
+
+    /// The URL with the password added, for clients that only take a URL
+    pub fn url_with_password(&self) -> Result<String, url::ParseError> {
+        let mut url = url::Url::parse(&self.url)?;
+        if let Some(password) = &self.password {
+            if url.set_password(Some(password)).is_err() {
+                // A unix socket URL has no host to put it on.
+                url.query_pairs_mut().append_pair("pass", password);
+            }
+        }
+        Ok(url.into())
+    }
+}
+
+impl std::fmt::Debug for RedisConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RedisConfig")
+            .field("url", &self.url)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field(
+                "connection_timeout_seconds",
+                &self.connection_timeout_seconds,
+            )
+            .field("retry_attempts", &self.retry_attempts)
+            .field("retry_delay_ms", &self.retry_delay_ms)
+            .finish()
+    }
 }
 
 /// Redis manager holding a single, self-reconnecting connection that is
@@ -59,7 +107,7 @@ pub struct RedisManager {
 impl RedisManager {
     /// Create a new Redis manager from configuration
     pub fn new(config: RedisConfig) -> Result<Self, JanitorError> {
-        let client = Client::open(config.url.as_str())?;
+        let client = Client::open(config.connection_info()?)?;
 
         Ok(Self {
             client: Arc::new(client),
@@ -170,6 +218,29 @@ impl RedisManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_password_stays_out_of_url() {
+        let config = RedisConfig::new("redis://redis:6379/0").with_password(Some("s3cret".into()));
+        let info = config.connection_info().unwrap();
+        assert_eq!(info.redis_settings().password(), Some("s3cret"));
+        assert_eq!(
+            config.url_with_password().unwrap(),
+            "redis://:s3cret@redis:6379/0"
+        );
+        assert!(!format!("{:?}", config).contains("s3cret"));
+
+        let unix =
+            RedisConfig::new("redis+unix:///run/redis.sock").with_password(Some("s3cret".into()));
+        assert_eq!(
+            unix.connection_info().unwrap().redis_settings().password(),
+            Some("s3cret")
+        );
+        assert_eq!(
+            unix.url_with_password().unwrap(),
+            "redis+unix:///run/redis.sock?pass=s3cret"
+        );
+    }
 
     #[test]
     fn test_is_connection_error() {

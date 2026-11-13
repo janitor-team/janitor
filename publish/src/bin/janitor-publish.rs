@@ -173,11 +173,9 @@ async fn main() -> Result<(), i32> {
     })?;
     log::info!("database pool created");
 
-    let (redis_async_connection, redis_manager) = if let Some(redis_location) =
-        config.redis_location.as_ref()
+    let (redis_async_connection, redis_manager) = if let Some(redis_config) = config.redis_config()
     {
-        log::info!("creating RedisManager for {}", redis_location);
-        let redis_config = janitor::redis::RedisConfig::new(redis_location.to_string());
+        log::info!("creating RedisManager for {}", redis_config.url);
         let manager = janitor::redis::RedisManager::new(redis_config).map_err(|e| {
             log::error!("Failed to create redis manager: {}", e);
             1
@@ -222,10 +220,15 @@ async fn main() -> Result<(), i32> {
         (None, None)
     };
 
-    let lock_manager = config
-        .redis_location
-        .as_deref()
-        .map(|redis_location| rslock::LockManager::new(vec![redis_location]));
+    let lock_manager = match config.redis_config() {
+        Some(redis_config) => Some(rslock::LockManager::new(vec![redis_config
+            .url_with_password()
+            .map_err(|e| {
+                log::error!("Invalid redis_location: {}", e);
+                1
+            })?])),
+        None => None,
+    };
 
     log::info!("building publish worker");
     let publish_worker = janitor_publish::PublishWorker::new(
@@ -249,12 +252,10 @@ async fn main() -> Result<(), i32> {
     ));
 
     // Add Redis health check if Redis is configured
-    if let Some(redis_location) = config.redis_location.as_ref() {
-        if let Ok(client) = redis::Client::open(redis_location.as_str()) {
-            health_checker = health_checker.add_component_check(Arc::new(
-                janitor_publish::health::RedisHealthChecker::new(client),
-            ));
-        }
+    if let Some(manager) = redis_manager.as_ref() {
+        health_checker = health_checker.add_component_check(Arc::new(
+            janitor_publish::health::RedisHealthChecker::new(manager.client().as_ref().clone()),
+        ));
     }
 
     let health_checker = Arc::new(health_checker);

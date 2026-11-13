@@ -69,6 +69,20 @@ pub fn service_user_agent(service_name: &str) -> String {
     format!("janitor-{}/{}", service_name, VERSION)
 }
 
+/// Check that a database or Redis URL carries no password, in its user
+/// info or in a `password` or `pass` query parameter.
+pub fn check_url_without_password(url: &str) -> Result<(), String> {
+    let url = url::Url::parse(url).map_err(|e| format!("is not a valid URL: {}", e))?;
+    if url.password().is_some()
+        || url
+            .query_pairs()
+            .any(|(key, _)| key == "password" || key == "pass")
+    {
+        return Err("must not contain a password".to_string());
+    }
+    Ok(())
+}
+
 /// Override the User-Agent used by Python-backed HTTP clients.
 ///
 /// Mirrors `py/janitor/__init__.set_user_agent`: rebinds
