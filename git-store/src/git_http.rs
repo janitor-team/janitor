@@ -347,7 +347,10 @@ pub async fn revision_info(
         entries.push(RevisionInfoEntry {
             commit_id: sha.clone(),
             revision_id: format!("git-v1:{}", sha),
-            link: format!("/git/{}/commit/{}/", codebase, sha),
+            link: format!(
+                "{}/{}/commit/{}/",
+                state.config.git.path_prefix, codebase, sha
+            ),
             message,
         });
     }
@@ -733,13 +736,15 @@ pub async fn git_backend(
     let headers = req.headers().clone();
     let body = req.into_body();
 
-    // Strip optional `/git/` prefix so this handler serves both the
-    // admin and public route trees.
-    let path_trimmed = uri
-        .path()
-        .trim_start_matches('/')
-        .strip_prefix("git/")
-        .unwrap_or_else(|| uri.path().trim_start_matches('/'));
+    // The public app serves under the path prefix, the admin app at the root.
+    let path = uri.path();
+    let path = match state.role {
+        crate::web::AppRole::Public => path
+            .strip_prefix(state.config.git.path_prefix.as_str())
+            .unwrap_or(path),
+        crate::web::AppRole::Admin => path,
+    };
+    let path_trimmed = path.trim_start_matches('/');
     let path_segments: Vec<&str> = path_trimmed.split('/').collect();
 
     if path_segments.is_empty() || path_segments[0].is_empty() {

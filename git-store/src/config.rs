@@ -30,6 +30,10 @@ pub struct GitStoreConfig {
 
     #[serde(default = "default_git_timeout")]
     pub git_timeout: u64,
+
+    /// Path the public app serves its pages under, e.g. `/git`, or empty for the root.
+    #[serde(default = "default_path_prefix")]
+    pub path_prefix: String,
 }
 
 impl Default for GitStoreConfig {
@@ -41,6 +45,7 @@ impl Default for GitStoreConfig {
             host: default_host(),
             templates_path: None,
             git_timeout: default_git_timeout(),
+            path_prefix: default_path_prefix(),
         }
     }
 }
@@ -79,6 +84,7 @@ impl FromEnv for GitStoreConfig {
             git_timeout: parser
                 .get_u64("GIT_TIMEOUT")?
                 .unwrap_or(default_git_timeout()),
+            path_prefix: default_path_prefix(),
         })
     }
 }
@@ -99,6 +105,18 @@ fn default_git_timeout() -> u64 {
     30
 }
 
+fn default_path_prefix() -> String {
+    "/git".to_string()
+}
+
+/// Require a leading `/` and drop any trailing `/`, so `/` means the root.
+pub fn normalize_path_prefix(prefix: &str) -> Result<String, String> {
+    if !prefix.starts_with('/') {
+        return Err(format!("path prefix {:?} must start with /", prefix));
+    }
+    Ok(prefix.trim_end_matches('/').to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,6 +129,21 @@ mod tests {
         assert_eq!(config.git.git_timeout, 30);
         assert_eq!(config.git.admin_port, 9421);
         assert_eq!(config.git.public_port, 9422);
+        assert_eq!(config.git.path_prefix, "/git");
+    }
+
+    #[test]
+    fn test_normalize_path_prefix() {
+        assert_eq!(normalize_path_prefix("/git").unwrap(), "/git");
+        assert_eq!(
+            normalize_path_prefix("/janitor/git/").unwrap(),
+            "/janitor/git"
+        );
+        assert_eq!(normalize_path_prefix("/").unwrap(), "");
+        assert_eq!(
+            normalize_path_prefix("janitor/git").unwrap_err(),
+            "path prefix \"janitor/git\" must start with /"
+        );
     }
 
     #[test]

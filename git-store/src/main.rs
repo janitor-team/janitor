@@ -54,6 +54,10 @@ struct Cli {
 
     #[arg(long)]
     debug: bool,
+
+    /// Path the public app serves its pages and git URLs under, `/` for the root [default: /git].
+    #[arg(long, value_parser = janitor_git_store::config::normalize_path_prefix)]
+    path_prefix: Option<String>,
 }
 
 #[tokio::main]
@@ -84,6 +88,9 @@ async fn main() -> Result<()> {
     // is the last-resort fallback.
     let mut config = Config::from_env().unwrap_or_else(|_| Config::default());
     config.git.local_path = vcs_path;
+    if let Some(path_prefix) = cli.path_prefix {
+        config.git.path_prefix = path_prefix;
+    }
     config.git.host = cli.listen_address.to_string();
     let public_listen_address = cli.public_listen_address.unwrap_or(cli.listen_address);
     config.git.admin_port = cli.port;

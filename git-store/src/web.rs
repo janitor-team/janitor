@@ -1,8 +1,8 @@
 //! Admin and public web apps.
 //!
 //! The admin app is unauthenticated with full read/write. The public
-//! app is mounted under `/git/` and requires HTTP Basic worker
-//! credentials for writes.
+//! app is mounted under the path prefix (`/git` by default) and
+//! requires HTTP Basic worker credentials for writes.
 
 use crate::web_utils::{apply_standard_middleware, HealthChecker};
 use crate::{
@@ -173,7 +173,8 @@ fn web_config(client_max_size: usize) -> janitor::shared_config::WebConfig {
     }
 }
 
-/// Public app: mounted under `/git/`, writes gated by worker auth.
+/// Public app: mounted under the configured path prefix (`/git` by
+/// default), writes gated by worker auth.
 ///
 /// `/health`, `/ready`, and `/metrics` are **not** exposed here —
 /// those stay on the admin app, matching the Python route table in
@@ -181,46 +182,62 @@ fn web_config(client_max_size: usize) -> janitor::shared_config::WebConfig {
 /// reverse proxy at this port, and leaking `/metrics` externally is
 /// an information-disclosure risk.
 pub fn create_public_app(state: AppState, client_max_size: usize) -> Router {
-    let router = Router::new()
-        .route("/", get(home_handler))
-        .route("/git/", get(list_repositories))
+    let prefix = state.config.git.path_prefix.clone();
+    let mut router = Router::new();
+    if !prefix.is_empty() {
+        router = router.route("/", get(home_handler));
+    }
+    let router = router
+        .route(&format!("{}/", prefix), get(list_repositories))
         // Smart-protocol: POST for the pack transfer, GET for refs.
-        .route("/git/{codebase}/git-upload-pack", post(git_backend))
-        .route("/git/{codebase}/git-receive-pack", post(git_backend))
-        .route("/git/{codebase}/info/refs", get(git_backend))
+        .route(
+            &format!("{}/{{codebase}}/git-upload-pack", prefix),
+            post(git_backend),
+        )
+        .route(
+            &format!("{}/{{codebase}}/git-receive-pack", prefix),
+            post(git_backend),
+        )
+        .route(
+            &format!("{}/{{codebase}}/info/refs", prefix),
+            get(git_backend),
+        )
         // axum's `{*path}` needs at least one segment, so route the
-        // bare `/git/{codebase}` and `/git/{codebase}/` explicitly.
+        // bare `{prefix}/{codebase}` and `{prefix}/{codebase}/` explicitly.
         .route(
-            "/git/{codebase}",
+            &format!("{}/{{codebase}}", prefix),
             get(klaus_or_git_backend_root).post(klaus_or_git_backend_root),
         )
         .route(
-            "/git/{codebase}/",
+            &format!("{}/{{codebase}}/", prefix),
             get(klaus_or_git_backend_root).post(klaus_or_git_backend_root),
         )
         .route(
-            "/git/{codebase}/{*path}",
+            &format!("{}/{{codebase}}/{{*path}}", prefix),
             get(klaus_or_git_backend).post(klaus_or_git_backend),
         )
         .with_state(state);
 
     // Serve klaus's static assets from a single shared path so
     // browsers reuse the cache across repos.
+    let static_path = format!("{}/_static", prefix);
     let router = match crate::klaus::klaus_static_dir() {
         Ok(dir) if dir.exists() => {
-            router.nest_service("/git/_static", tower_http::services::ServeDir::new(dir))
+            router.nest_service(&static_path, tower_http::services::ServeDir::new(dir))
         }
         Ok(dir) => {
             tracing::warn!(
-                "klaus static dir {} missing, /git/_static disabled",
-                dir.display()
+                "klaus static dir {} missing, {} disabled",
+                dir.display(),
+                static_path
             );
             router
         }
         Err(e) => {
             tracing::warn!(
-                "klaus static dir lookup failed: {}, /git/_static disabled",
-                e
+                "klaus static dir lookup failed: {}, {} disabled",
+                e,
+                static_path
             );
             router
         }
@@ -322,6 +339,7 @@ async fn list_repositories(
             let mut context = tera::Context::new();
             context.insert("vcs", "git");
             context.insert("repositories", &repos);
+            context.insert("path_prefix", &state.config.git.path_prefix);
             let html = state
                 .tera
                 .render("index.html", &context)
@@ -409,7 +427,7 @@ pub fn init_templates(templates_path: Option<&std::path::Path>) -> Result<Tera> 
             "index.html",
             // Trailing slash matters: klaus's WSGI app dispatches off
             // SCRIPT_NAME ending at the repo root. Without it,
-            // `/git/<repo>` redirects (308) to add the slash.
+            // `<prefix>/<repo>` redirects (308) to add the slash.
             r#"{% extends "base.html" %}
 {% block title %}Git Store - Repositories{% endblock %}
 {% block content %}
@@ -417,7 +435,7 @@ pub fn init_templates(templates_path: Option<&std::path::Path>) -> Result<Tera> 
     <ul class="repo-list">
     {% for repo in repositories %}
         <li class="repo-item">
-            <a href="/git/{{ repo }}/">{{ repo }}</a>
+            <a href="{{ path_prefix | safe }}/{{ repo }}/">{{ repo }}</a>
         </li>
     {% endfor %}
     </ul>
@@ -482,19 +500,21 @@ mod tests {
     }
 
     /// Regression for janitor.debian.net#112: links must include
-    /// the `/git/` prefix and a trailing slash.
+    /// the path prefix and a trailing slash.
     #[test]
     fn test_index_template_links_to_git_repo_root() {
         let tera = init_templates(None).unwrap();
-        let mut ctx = tera::Context::new();
-        ctx.insert("repositories", &vec!["a52dec", "abi-tracker"]);
-        let html = tera.render("index.html", &ctx).unwrap();
+        for prefix in ["/git", "/janitor/git", ""] {
+            let mut ctx = tera::Context::new();
+            ctx.insert("repositories", &vec!["a52dec", "abi-tracker"]);
+            ctx.insert("path_prefix", prefix);
+            let html = tera.render("index.html", &ctx).unwrap();
 
-        for repo in ["a52dec", "abi-tracker"] {
-            let canonical = format!("href=\"/git/{}/\"", repo);
-            assert!(html.contains(&canonical), "missing {}", canonical);
-            assert!(!html.contains(&format!("href=\"/{}\"", repo)));
-            assert!(!html.contains(&format!("href=\"/git/{}\"", repo)));
+            for repo in ["a52dec", "abi-tracker"] {
+                let canonical = format!("href=\"{}/{}/\"", prefix, repo);
+                assert!(html.contains(&canonical), "missing {}", canonical);
+                assert!(!html.contains(&format!("href=\"{}/{}\"", prefix, repo)));
+            }
         }
     }
 
