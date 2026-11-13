@@ -1328,8 +1328,8 @@ fn spawn_precache(state: &Arc<AppState>, old_id: RunId, new_id: RunId, trigger: 
 struct ResultMessage {
     code: String,
     log_id: RunId,
-    revision: String,
-    main_branch_revision: String,
+    revision: Option<String>,
+    main_branch_revision: Option<String>,
     codebase: CodebaseName,
 }
 
@@ -1392,7 +1392,10 @@ async fn candidate_pairs(
             .map(|(id,)| (msg.log_id.clone(), id))
             .collect())
     } else {
-        let rev = RevisionId::from(msg.main_branch_revision.as_bytes().to_vec());
+        let Some(main_branch_revision) = &msg.main_branch_revision else {
+            return Ok(vec![]);
+        };
+        let rev = RevisionId::from(main_branch_revision.as_bytes().to_vec());
         let unchanged = get_unchanged_run(pool, &msg.codebase, &rev).await?;
         Ok(unchanged
             .into_iter()
