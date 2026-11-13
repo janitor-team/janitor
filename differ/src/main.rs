@@ -1236,8 +1236,8 @@ fn spawn_precache(state: &Arc<AppState>, old_id: RunId, new_id: RunId, trigger: 
 struct ResultMessage {
     code: String,
     log_id: RunId,
-    revision: String,
-    main_branch_revision: String,
+    revision: Option<RevisionId>,
+    main_branch_revision: Option<RevisionId>,
     codebase: CodebaseName,
 }
 
@@ -1264,7 +1264,20 @@ async fn listen_to_runner(redis_config: janitor::redis::RedisConfig, state: Arc<
                 if msg.code != "success" {
                     return Ok(());
                 }
-                let candidates = match candidate_pairs(&state.pool, &msg).await {
+                let (Some(revision), Some(main_branch_revision)) =
+                    (&msg.revision, &msg.main_branch_revision)
+                else {
+                    return Ok(());
+                };
+                let candidates = match candidate_pairs(
+                    &state.pool,
+                    &msg.log_id,
+                    &msg.codebase,
+                    revision,
+                    main_branch_revision,
+                )
+                .await
+                {
                     Ok(c) => c,
                     Err(e) => {
                         error!("failed to look up unchanged runs: {e}");
@@ -1285,28 +1298,27 @@ async fn listen_to_runner(redis_config: janitor::redis::RedisConfig, state: Arc<
 
 async fn candidate_pairs(
     pool: &sqlx::PgPool,
-    msg: &ResultMessage,
+    log_id: &RunId,
+    codebase: &CodebaseName,
+    revision: &RevisionId,
+    main_branch_revision: &RevisionId,
 ) -> sqlx::Result<Vec<(RunId, RunId)>> {
-    if msg.revision == msg.main_branch_revision {
+    if revision == main_branch_revision {
         let rows = sqlx::query_as::<_, (RunId,)>(
             r#"SELECT id FROM run
                WHERE result_code = 'success' AND main_branch_revision = $1
                  AND revision != main_branch_revision AND codebase = $2"#,
         )
-        .bind(&msg.revision)
-        .bind(&msg.codebase)
+        .bind(revision)
+        .bind(codebase)
         .fetch_all(pool)
         .await?;
-        Ok(rows
-            .into_iter()
-            .map(|(id,)| (msg.log_id.clone(), id))
-            .collect())
+        Ok(rows.into_iter().map(|(id,)| (log_id.clone(), id)).collect())
     } else {
-        let rev = RevisionId::from(msg.main_branch_revision.as_bytes().to_vec());
-        let unchanged = get_unchanged_run(pool, &msg.codebase, &rev).await?;
+        let unchanged = get_unchanged_run(pool, codebase, main_branch_revision).await?;
         Ok(unchanged
             .into_iter()
-            .map(|run| (run.id, msg.log_id.clone()))
+            .map(|run| (run.id, log_id.clone()))
             .collect())
     }
 }
@@ -1921,6 +1933,36 @@ mod tests {
                 resolve(&db.pool, "r3").await,
                 Err(Error::UnchangedRunNotFound(id)) if id == "r3"
             ));
+        }
+
+        #[tokio::test]
+        async fn result_message_pairs_with_unchanged_run() {
+            let Some(db) = setup().await else {
+                eprintln!("Skipping: no Postgres available");
+                return;
+            };
+            let failed: ResultMessage = serde_json::from_str(
+                r#"{"code": "branch-missing", "log_id": "r2", "revision": null,
+                    "main_branch_revision": null, "codebase": "foo"}"#,
+            )
+            .unwrap();
+            assert_eq!((failed.revision, failed.main_branch_revision), (None, None));
+            let pairs = |id: &str, revision: &str, base: &str| {
+                let pool = db.pool.clone();
+                let (id, codebase) = (run_id(id), CodebaseName::new("foo").unwrap());
+                let revision = RevisionId::from(revision.as_bytes().to_vec());
+                let base = RevisionId::from(base.as_bytes().to_vec());
+                async move {
+                    candidate_pairs(&pool, &id, &codebase, &revision, &base)
+                        .await
+                        .unwrap()
+                }
+            };
+            assert_eq!(
+                pairs("r1", "new1", "base").await,
+                vec![(run_id("ctl"), run_id("r1"))]
+            );
+            assert_eq!(pairs("r3", "new3", "other").await, vec![]);
         }
 
         #[tokio::test]
