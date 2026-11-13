@@ -124,7 +124,10 @@ impl RedisSubscriber {
         config: RedisConfig,
         generator_manager: Arc<GeneratorManager>,
     ) -> ArchiveResult<Self> {
-        info!("Creating Redis subscriber with URL: {}", config.url);
+        info!(
+            "Creating Redis subscriber with URL: {}",
+            janitor::utils::url_without_password(&config.url)
+        );
 
         let redis_manager =
             Arc::new(RedisManager::new(config).map_err(|e| {
@@ -381,7 +384,10 @@ pub struct RedisPublisher {
 impl RedisPublisher {
     /// Connect to Redis and health-check the connection.
     pub async fn new(config: RedisConfig) -> ArchiveResult<Self> {
-        info!("Creating Redis publisher with URL: {}", config.url);
+        info!(
+            "Creating Redis publisher with URL: {}",
+            janitor::utils::url_without_password(&config.url)
+        );
 
         let redis_manager =
             Arc::new(RedisManager::new(config).map_err(|e| {
