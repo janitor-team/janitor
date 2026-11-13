@@ -145,9 +145,10 @@ class BzrChange:
         return self.after
 
 
-def get_changes_from_github_webhook(body):
+def get_changes_from_github_webhook(
+    body, url_keys=("clone_url", "html_url", "git_url", "ssh_url")
+):
     # https://docs.github.com/en/developers/webhooks-and-events/webhooks/webhook-events-and-payloads#push
-    url_keys = ["clone_url", "html_url", "git_url", "ssh_url"]
     urls = []
     for url_key in url_keys:
         try:
@@ -252,7 +253,20 @@ async def parse_webhook(request, db):
             text=f"Invalid content type {request.content_type}"
         )
     changes: list[Union[GitChange, BzrChange]]
-    if "X-Gitlab-Event" in request.headers:
+    # Gitea and Gogs also send X-GitHub-Event, but no git_url.
+    if "X-Gitea-Event" in request.headers:
+        if request.headers["X-Gitea-Event"] not in ("push",):
+            return
+        changes = get_changes_from_github_webhook(
+            body, url_keys=("clone_url", "html_url", "ssh_url")
+        )
+    elif "X-Gogs-Event" in request.headers:
+        if request.headers["X-Gogs-Event"] not in ("push",):
+            return
+        changes = get_changes_from_github_webhook(
+            body, url_keys=("clone_url", "html_url", "ssh_url")
+        )
+    elif "X-Gitlab-Event" in request.headers:
         if request.headers["X-Gitlab-Event"] != "Push Hook":
             return
         changes = get_changes_from_gitlab_webhook(body)
@@ -260,14 +274,6 @@ async def parse_webhook(request, db):
         # urlutils.basename(body['project']['path_with_namespace'])?
     elif "X-GitHub-Event" in request.headers:
         if request.headers["X-GitHub-Event"] not in ("push",):
-            return
-        changes = get_changes_from_github_webhook(body)
-    elif "X-Gitea-Event" in request.headers:
-        if request.headers["X-Gitea-Event"] not in ("push",):
-            return
-        changes = get_changes_from_github_webhook(body)
-    elif "X-Gogs-Event" in request.headers:
-        if request.headers["X-Gogs-Event"] not in ("push",):
             return
         changes = get_changes_from_github_webhook(body)
     elif "X-Launchpad-Event-Type" in request.headers:
