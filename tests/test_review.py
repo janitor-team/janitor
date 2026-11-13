@@ -53,7 +53,7 @@ async def insert_review_run(
     )
     await _insert_codebase(conn, codebase)
     await conn.execute(
-        "INSERT INTO candidate (suite, command, codebase, publish_policy) "
+        "INSERT INTO candidate (campaign, command, codebase, publish_policy) "
         "VALUES ($1, 'true', $2, $3)",
         campaign,
         codebase,

@@ -37,7 +37,7 @@ async fn seed_codebase_and_run(pool: &PgPool, codebase: &str, campaign: &str) {
 
     sqlx::query(
         "INSERT INTO run (
-            id, codebase, suite, command, start_time, finish_time, description,
+            id, codebase, campaign, command, start_time, finish_time, description,
             result_code, branch_url, main_branch_revision, revision, value,
             change_set, logfilenames, vcs_type
          ) VALUES (
@@ -295,7 +295,7 @@ test_with_database! {
         sqlx::raw_sql(
             "INSERT INTO named_publish_policy (name, per_branch_policy) VALUES ('policy', ARRAY[
                  ROW('main', 'propose'::publish_mode, NULL::int)::branch_publish_policy]);
-             INSERT INTO candidate (suite, value, command, publish_policy, codebase)
+             INSERT INTO candidate (campaign, value, command, publish_policy, codebase)
                  VALUES ('lintian-fixes', 100, 'noop', 'policy', 'cb-1');
              UPDATE run SET start_time = '2026-01-02 02:04:05', finish_time = '2026-01-02 03:04:05';
              INSERT INTO publish (id, change_set, target_branch_url, revision, mode, result_code)
@@ -382,7 +382,7 @@ test_with_database! {
                  VALUES ('policy', ARRAY[
                      ROW('main', 'propose'::publish_mode, NULL::int)::branch_publish_policy],
                      'bucket-a');
-             INSERT INTO candidate (suite, value, command, publish_policy, codebase)
+             INSERT INTO candidate (campaign, value, command, publish_policy, codebase)
                  VALUES ('lintian-fixes', 100, 'noop', 'policy', 'cb-1');
              UPDATE run SET start_time = '2026-01-02 02:04:05',
                             finish_time = '2026-01-02 03:04:05',
@@ -490,7 +490,7 @@ test_with_database! {
                  VALUES ('policy', ARRAY[
                      ROW('main', 'propose'::publish_mode, NULL::int)::branch_publish_policy],
                      'bucket-a');
-             INSERT INTO candidate (suite, value, command, publish_policy, codebase)
+             INSERT INTO candidate (campaign, value, command, publish_policy, codebase)
                  VALUES ('lintian-fixes', 100, 'other', 'policy', 'cb-1');
              UPDATE codebase SET inactive = true;
              UPDATE run SET start_time = '2100-01-01 02:04:05',
@@ -498,7 +498,7 @@ test_with_database! {
                             result_code = 'build-failed',
                             publish_status = 'rejected';
              UPDATE change_set SET state = 'done';
-             INSERT INTO run (id, codebase, suite, command, start_time, finish_time,
+             INSERT INTO run (id, codebase, campaign, command, start_time, finish_time,
                               result_code, revision, change_set, logfilenames)
                  VALUES ('run-0', 'cb-1', 'lintian-fixes', 'noop', '2026-01-01 02:00:00',
                          '2026-01-01 03:00:00', 'success', 'rev-old', 'cs-1',
@@ -720,7 +720,7 @@ async fn seed_mp_with_run(
         .unwrap();
     sqlx::query(
         "INSERT INTO run (
-             id, codebase, suite, command, start_time, finish_time, description,
+             id, codebase, campaign, command, start_time, finish_time, description,
              result_code, branch_url, main_branch_revision, revision, value,
              change_set, logfilenames, vcs_type
          ) VALUES (
@@ -776,7 +776,7 @@ async fn seed_absorbed_run(
         .unwrap();
     sqlx::query(
         "INSERT INTO run (
-             id, codebase, suite, command, start_time, finish_time, description,
+             id, codebase, campaign, command, start_time, finish_time, description,
              result_code, branch_url, main_branch_revision, revision, value,
              change_set, logfilenames, vcs_type
          ) VALUES (
@@ -987,7 +987,7 @@ test_with_database! {
             .unwrap();
         sqlx::query(
             "INSERT INTO run (
-                 id, codebase, suite, command, start_time, finish_time, description,
+                 id, codebase, campaign, command, start_time, finish_time, description,
                  result_code, branch_url, main_branch_revision, revision, value,
                  change_set, logfilenames, vcs_type
              ) VALUES (

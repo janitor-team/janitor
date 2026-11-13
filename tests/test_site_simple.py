@@ -197,7 +197,7 @@ async def test_webhook_push_schedules_via_runner(aiohttp_client, database_locati
             "::branch_publish_policy])"
         )
         await conn.execute(
-            "INSERT INTO candidate (suite, command, codebase, publish_policy) "
+            "INSERT INTO candidate (campaign, command, codebase, publish_policy) "
             "VALUES ('lintian-fixes', 'true', 'example', 'mypolicy')"
         )
         now = utcnow()
@@ -317,7 +317,7 @@ async def test_candidates_with_multiple_unscored_does_not_500(
             "https://example.com/bar.git",
         )
         await conn.execute(
-            "INSERT INTO candidate (codebase, suite, command) VALUES "
+            "INSERT INTO candidate (codebase, campaign, command) VALUES "
             "($1, $2, $3), ($4, $2, $3)",
             "foo",
             "lintian-fixes",

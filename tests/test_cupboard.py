@@ -296,7 +296,7 @@ async def test_codebase(aiohttp_client, db):
             "'default')"
         )
         await conn.execute(
-            "INSERT INTO candidate (codebase, suite, command, value, publish_policy) "
+            "INSERT INTO candidate (codebase, campaign, command, value, publish_policy) "
             "VALUES ('foo', 'lintian-fixes', 'true', 30, 'lintian')"
         )
         now = utcnow()

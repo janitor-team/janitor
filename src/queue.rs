@@ -73,7 +73,7 @@ impl<'a> Queue<'a> {
         codebase: &CodebaseName,
     ) -> Result<Option<ETA>, Error> {
         let row: Option<ETA> = sqlx::query_as::<_, ETA>(
-            "SELECT position, wait_time FROM queue_positions WHERE codebase = $1 AND suite = $2",
+            "SELECT position, wait_time FROM queue_positions WHERE codebase = $1 AND campaign = $2",
         )
         .bind(codebase)
         .bind(campaign)
@@ -85,7 +85,7 @@ impl<'a> Queue<'a> {
 
     pub async fn get_item(&self, queue_id: i32) -> Result<Option<QueueItem>, Error> {
         let row = sqlx::query_as::<_, QueueItem>(
-            "SELECT id, context, command, estimated_duration, suite AS campaign, refresh, requester, change_set, codebase
+            "SELECT id, context, command, estimated_duration, campaign, refresh, requester, change_set, codebase
              FROM queue
              WHERE id = $1"
         )
@@ -115,11 +115,11 @@ impl<'a> Queue<'a> {
     ) -> Result<(Option<QueueItem>, Option<VcsInfo>), Error> {
         let mut query = String::from(
             "SELECT
-                queue.id, queue.context, queue.command, queue.estimated_duration, queue.suite AS campaign, 
+                queue.id, queue.context, queue.command, queue.estimated_duration, queue.campaign, 
                 queue.refresh, queue.requester, queue.change_set, queue.codebase,
                 codebase.vcs_type, codebase.branch_url, codebase.subpath
              FROM queue
-             LEFT JOIN codebase ON codebase.name = queue.codebase"
+             LEFT JOIN codebase ON codebase.name = queue.codebase",
         );
 
         let mut conditions = Vec::new();
@@ -133,7 +133,7 @@ impl<'a> Queue<'a> {
         }
 
         if campaign.is_some() {
-            conditions.push("queue.suite = $3");
+            conditions.push("queue.campaign = $3");
         }
 
         if exclude_hosts.is_some() {
@@ -195,9 +195,9 @@ impl<'a> Queue<'a> {
         requester: Option<&str>,
     ) -> Result<(i32, String), Error> {
         sqlx::query_as(
-            "INSERT INTO queue (command, priority, bucket, context, estimated_duration, suite, refresh, requester, change_set, codebase)
-             VALUES ($1, (SELECT COALESCE(MIN(priority), 0) FROM queue) + $2::bigint, $3::queue_bucket, $4, $5, $6::suite_name, $7, $8, $9, $10)
-             ON CONFLICT (codebase, suite, coalesce(change_set, ''::text))
+            "INSERT INTO queue (command, priority, bucket, context, estimated_duration, campaign, refresh, requester, change_set, codebase)
+             VALUES ($1, (SELECT COALESCE(MIN(priority), 0) FROM queue) + $2::bigint, $3::queue_bucket, $4, $5, $6::campaign_name, $7, $8, $9, $10)
+             ON CONFLICT (codebase, campaign, coalesce(change_set, ''::text))
              DO UPDATE SET (context, priority, bucket, estimated_duration, refresh, requester, command) = (
                                SELECT n.context, n.priority, n.bucket, n.estimated_duration, n.refresh, n.requester, n.command
                                FROM (SELECT (CASE WHEN queue.bucket >= EXCLUDED.bucket THEN EXCLUDED ELSE queue END).*) AS n),
@@ -231,17 +231,17 @@ impl<'a> Queue<'a> {
         let query = if campaign.is_some() {
             r#"
             SELECT queue.id, queue.context, queue.command, queue.estimated_duration,
-                   queue.suite AS campaign, queue.refresh, queue.requester,
+                   queue.campaign, queue.refresh, queue.requester,
                    queue.change_set, queue.codebase
             FROM queue
-            WHERE queue.suite = $1
+            WHERE queue.campaign = $1
             ORDER BY bucket ASC, priority ASC, queue.id ASC
             LIMIT $2
             "#
         } else {
             r#"
             SELECT queue.id, queue.context, queue.command, queue.estimated_duration,
-                   queue.suite AS campaign, queue.refresh, queue.requester,
+                   queue.campaign, queue.refresh, queue.requester,
                    queue.change_set, queue.codebase
             FROM queue
             ORDER BY bucket ASC, priority ASC, queue.id ASC

@@ -49,7 +49,6 @@ CREATE INDEX ON merge_proposal (revision);
 CREATE INDEX ON merge_proposal (url);
 CREATE INDEX ON merge_proposal (status);
 CREATE INDEX ON merge_proposal (status, rate_limit_bucket);
-CREATE DOMAIN suite_name AS TEXT check (value similar to '[a-z0-9][a-z0-9+.-]+');
 CREATE DOMAIN campaign_name AS TEXT check (value similar to '[a-z0-9][a-z0-9+.-]+');
 CREATE TYPE verdict AS ENUM('approved', 'rejected', 'abstained');
 CREATE TABLE result_tag (
@@ -89,7 +88,7 @@ CREATE TABLE IF NOT EXISTS run (
    main_branch_revision text,
    revision text,
    result json,
-   suite suite_name not null, -- DEPRECATED
+   campaign campaign_name not null,
    vcs_type vcs_type,
    branch_url text,
    logfilenames text[] not null,
@@ -115,11 +114,11 @@ CREATE TABLE IF NOT EXISTS run (
    check(result_code != 'nothing-new-to-do' or resume_from is not null),
    check(publish_status != 'approved' or revision is not null)
 );
-CREATE INDEX ON run (codebase, suite, start_time DESC);
+CREATE INDEX ON run (codebase, campaign, start_time DESC);
 CREATE INDEX ON run (start_time);
-CREATE INDEX ON run (suite, start_time);
-CREATE INDEX ON run (codebase, suite);
-CREATE INDEX ON run (suite);
+CREATE INDEX ON run (campaign, start_time);
+CREATE INDEX ON run (codebase, campaign);
+CREATE INDEX ON run (campaign);
 CREATE INDEX ON run (result_code);
 CREATE INDEX ON run (revision);
 CREATE INDEX ON run (main_branch_revision);
@@ -160,7 +159,7 @@ CREATE TABLE IF NOT EXISTS queue (
    bucket queue_bucket not null default 'default',
    codebase text not null references codebase(name) on delete cascade,
    branch_url text,
-   suite suite_name not null,
+   campaign campaign_name not null,
    command text,
    priority bigint default 0 not null,
    -- Some codemod-specific indication of what we are expecting to do.
@@ -171,7 +170,7 @@ CREATE TABLE IF NOT EXISTS queue (
    change_set text references change_set(id) on delete cascade,
    check (command != '')
 );
-CREATE UNIQUE INDEX queue_codebase_suite_set ON queue(codebase, suite, coalesce(change_set, ''));
+CREATE UNIQUE INDEX queue_codebase_campaign_set ON queue(codebase, campaign, coalesce(change_set, ''));
 CREATE INDEX ON queue (change_set);
 CREATE INDEX ON queue (priority ASC, id ASC);
 CREATE INDEX ON queue (bucket ASC, priority ASC, id ASC);
@@ -188,7 +187,7 @@ CREATE TABLE IF NOT EXISTS named_publish_policy (
 );
 
 CREATE TABLE IF NOT EXISTS candidate (
-   suite suite_name not null,
+   campaign campaign_name not null,
    context text,
    value integer,
    success_chance float,
@@ -201,8 +200,8 @@ CREATE TABLE IF NOT EXISTS candidate (
    check (value > 0),
    constraint candidate_codebase_fkey foreign key(codebase) references codebase(name) on delete cascade
 );
-CREATE UNIQUE INDEX candidate_codebase_suite_set ON candidate (codebase, suite, coalesce(change_set, ''));
-CREATE INDEX ON candidate (suite);
+CREATE UNIQUE INDEX candidate_codebase_campaign_set ON candidate (codebase, campaign, coalesce(change_set, ''));
+CREATE INDEX ON candidate (campaign);
 CREATE INDEX ON candidate(change_set);
 
 CREATE TABLE last_run (
@@ -252,9 +251,9 @@ CREATE OR REPLACE FUNCTION refresh_last_run(run_id text)
     DECLARE row RECORD;
     BEGIN
 
-    SELECT codebase, suite INTO row FROM run WHERE id = run_id;
+    SELECT codebase, campaign INTO row FROM run WHERE id = run_id;
     IF FOUND THEN
-        perform refresh_last_run(row.codebase, row.suite);
+        perform refresh_last_run(row.codebase, row.campaign);
     END IF;
     END;
 $$;
@@ -388,7 +387,7 @@ CREATE OR REPLACE FUNCTION refresh_last_run(_codebase text, _campaign text)
     DECLARE last_unabsorbed_run_id TEXT;
 
     BEGIN
-    SELECT id, result_code, failure_transient, resume_from INTO last_run FROM run WHERE run.codebase = _codebase AND suite = _campaign ORDER BY start_time DESC LIMIT 1;
+    SELECT id, result_code, failure_transient, resume_from INTO last_run FROM run WHERE run.codebase = _codebase AND campaign = _campaign ORDER BY start_time DESC LIMIT 1;
     IF FOUND THEN
         last_run_id := last_run.id;
     ELSE
@@ -400,7 +399,7 @@ CREATE OR REPLACE FUNCTION refresh_last_run(_codebase text, _campaign text)
         last_effective_run_id := last_run.resume_from;
         last_effective_run_result_code := 'success';
     ELSIF last_run.failure_transient IS TRUE THEN
-        SELECT id, result_code INTO last_effective_run FROM run WHERE run.codebase = _codebase AND run.suite = _campaign AND result_code != 'nothing-new-to-do' AND not coalesce(failure_transient, False) ORDER BY start_time DESC limit 1;
+        SELECT id, result_code INTO last_effective_run FROM run WHERE run.codebase = _codebase AND run.campaign = _campaign AND result_code != 'nothing-new-to-do' AND not coalesce(failure_transient, False) ORDER BY start_time DESC limit 1;
         IF FOUND THEN
            last_effective_run_id := last_effective_run.id;
            last_effective_run_result_code := last_effective_run.result_code;
@@ -446,7 +445,7 @@ CREATE OR REPLACE FUNCTION run_trigger_refresh_last_run()
       row = NEW;
     END IF;
 
-    PERFORM refresh_last_run(row.codebase, row.suite::text);
+    PERFORM refresh_last_run(row.codebase, row.campaign::text);
     RETURN NEW;
     END;
 $$;
@@ -483,14 +482,14 @@ CREATE OR REPLACE TRIGGER run_refresh_change_set_state
   FOR EACH ROW
   EXECUTE FUNCTION run_trigger_refresh_change_set_state();
 
-create or replace view campaigns as select distinct suite as name from run;
+create or replace view campaigns as select distinct campaign as name from run;
 
 CREATE OR REPLACE VIEW perpetual_candidates AS
-  select suite, codebase from candidate union select suite, codebase from run;
+  select campaign, codebase from candidate union select campaign, codebase from run;
 
 CREATE OR REPLACE VIEW first_run_time AS
- SELECT DISTINCT ON (run.codebase, run.suite) run.codebase, run.suite, run.start_time
- FROM run ORDER BY run.codebase, run.suite;
+ SELECT DISTINCT ON (run.codebase, run.campaign) run.codebase, run.campaign, run.start_time
+ FROM run ORDER BY run.codebase, run.campaign;
 
 CREATE OR REPLACE FUNCTION publish_trigger_refresh_change_set_state()
   RETURNS TRIGGER
@@ -542,7 +541,7 @@ CREATE OR REPLACE TRIGGER expire_site_session_delete_old_rows_trigger
 CREATE OR REPLACE VIEW queue_positions AS SELECT
     id,
     codebase,
-    suite,
+    campaign,
     row_number() OVER (ORDER BY bucket ASC, priority ASC, id ASC) AS position,
     SUM(estimated_duration) OVER (ORDER BY bucket ASC, priority ASC, id ASC)
         - coalesce(estimated_duration, interval '0') AS wait_time
@@ -579,7 +578,7 @@ WITH publishable AS (
   run.revision AS revision,
   run.context AS context,
   run.result AS result,
-  run.suite AS suite,
+  run.campaign AS campaign,
   run.instigated_context AS instigated_context,
   run.vcs_type AS vcs_type,
   run.branch_url AS branch_url,
@@ -608,7 +607,7 @@ WITH publishable AS (
 FROM
   last_effective_runs AS run
 INNER JOIN candidate ON
-    candidate.codebase = run.codebase AND candidate.suite = run.suite
+    candidate.codebase = run.codebase AND candidate.campaign = run.campaign
 INNER JOIN named_publish_policy ON
     candidate.publish_policy = named_publish_policy.name
 INNER JOIN change_set ON change_set.id = run.change_set
@@ -631,7 +630,7 @@ CREATE OR REPLACE VIEW change_set_todo AS
         SELECT FROM last_effective_runs WHERE
                 change_set = candidate.change_set AND
                 codebase = candidate.codebase AND
-                suite = candidate.suite AND
+                campaign = candidate.campaign AND
                 result_code in ('success', 'nothing-to-do'));
 
 CREATE OR REPLACE VIEW change_set_unpublished AS
@@ -646,7 +645,7 @@ CREATE OR REPLACE VIEW absorbed_runs AS
        run.change_set,
        run.codebase,
        merge_proposal.merged_at - run.finish_time as delay,
-       run.suite AS campaign,
+       run.campaign AS campaign,
        run.result::jsonb AS result,
        run.id,
        merge_proposal.merged_at AS absorbed_at,
@@ -656,14 +655,14 @@ CREATE OR REPLACE VIEW absorbed_runs AS
     FROM merge_proposal
     INNER JOIN run ON merge_proposal.revision = run.revision
     WHERE run.result_code = 'success'
-    AND run.suite not in ('unchanged', 'control')
+    AND run.campaign not in ('unchanged', 'control')
  UNION
     SELECT
         'push' AS mode,
         run.change_set,
        run.codebase,
         publish.timestamp - run.finish_time AS delay,
-        run.suite AS campaign,
+        run.campaign AS campaign,
         run.result::jsonb AS result,
         run.id, timestamp AS absorbed_at,
         NULL AS merged_by,
@@ -674,7 +673,7 @@ CREATE OR REPLACE VIEW absorbed_runs AS
     WHERE mode = 'push'
     AND run.result_code = 'success'
     AND publish.result_code = 'success'
-    AND run.suite not in ('unchanged', 'control');
+    AND run.campaign not in ('unchanged', 'control');
 
 CREATE TABLE followup (
     origin text not null references run(id),
@@ -684,8 +683,8 @@ CREATE TABLE followup (
 
 CREATE INDEX ON codebase (inactive);
 CREATE INDEX ON merge_proposal (can_be_merged);
-CREATE INDEX ON run (suite, revision, publish_status);
-CREATE INDEX ON run (codebase, suite, start_time, result_code);
+CREATE INDEX ON run (campaign, revision, publish_status);
+CREATE INDEX ON run (codebase, campaign, start_time, result_code);
 CREATE INDEX ON run (start_time);
 CREATE INDEX ON run (result_code);
 CREATE INDEX ON run (change_set);
@@ -694,5 +693,5 @@ CREATE INDEX ON publish (revision);
 CREATE INDEX ON publish (timestamp);
 CREATE INDEX ON queue (bucket);
 CREATE INDEX ON queue (codebase);
-CREATE INDEX ON queue (suite, priority, id);
-CREATE UNIQUE INDEX ON candidate (codebase, suite, coalesce(change_set, ''));
+CREATE INDEX ON queue (campaign, priority, id);
+CREATE UNIQUE INDEX ON candidate (codebase, campaign, coalesce(change_set, ''));

@@ -255,7 +255,7 @@ pub async fn handle_publish_failure(
             log::info!("{}: rescheduling for {}", run.id, requester);
             if let Err(err) = janitor::schedule::do_schedule(
                 conn,
-                &run.suite,
+                &run.campaign,
                 &run.codebase,
                 bucket,
                 Some(&run.change_set),
@@ -2550,7 +2550,7 @@ pub async fn publish_from_policy(
         log::warn!(
             "Not publishing {}/{}: command has changed. Build used {:?}, now: {:?}. Rescheduling.",
             run.codebase,
-            run.suite,
+            run.campaign,
             run.command,
             command
         );
@@ -2561,7 +2561,7 @@ pub async fn publish_from_policy(
         );
         if let Err(e) = janitor::schedule::do_schedule(
             conn,
-            &run.suite,
+            &run.campaign,
             &run.codebase,
             "update-new-mp",
             Some(&run.change_set),
@@ -2658,7 +2658,7 @@ pub async fn publish_from_policy(
                         log::debug!(
                             "Not creating proposal for {}/{}: bucket {} rate-limited",
                             run.codebase,
-                            run.suite,
+                            run.campaign,
                             bucket
                         );
                         mode = Mode::BuildOnly;
@@ -2667,14 +2667,14 @@ pub async fn publish_from_policy(
             }
             if let Some(max_days) = max_frequency_days {
                 if let Some(last_published) =
-                    crate::state::check_last_published(conn, &run.suite, &run.codebase).await?
+                    crate::state::check_last_published(conn, &run.campaign, &run.codebase).await?
                 {
                     let age = chrono::Utc::now() - last_published;
                     if age.num_days() < max_days as i64 {
                         log::debug!(
                             "Not creating proposal for {}/{}: was published already in last {} days (at {})",
                             run.codebase,
-                            run.suite,
+                            run.campaign,
                             max_days,
                             last_published
                         );
@@ -2707,7 +2707,7 @@ pub async fn publish_from_policy(
     // failed with the metadata-invalid error on the lintian-fixes campaign.
     let mut require_binary_diff = require_binary_diff;
     if let Some((_, ref code)) = unchanged_run {
-        if code == "debian-upstream-metadata-invalid" && run.suite == "lintian-fixes" {
+        if code == "debian-upstream-metadata-invalid" && run.campaign == "lintian-fixes" {
             require_binary_diff = false;
         }
     }
@@ -2755,7 +2755,7 @@ pub async fn publish_from_policy(
 
     let publish_outcome = publish_worker
         .publish_one(
-            &run.suite,
+            &run.campaign,
             &run.codebase,
             &run.command,
             &target_branch_url,
@@ -2902,7 +2902,7 @@ pub async fn publish_from_policy(
         let entry = serde_json::json!({
             "id": publish_id,
             "codebase": run.codebase,
-            "campaign": run.suite,
+            "campaign": run.campaign,
             "proposal_url": proposal_url_for_store.as_ref().map(|u| u.to_string()),
             "mode": effective_mode.to_string(),
             "main_branch_url": target_url_for_store.to_string(),
@@ -3027,7 +3027,7 @@ pub async fn publish_and_store(
     // increment the bucket counter below in a tight sync scope.
     let publish_outcome = publish_worker
         .publish_one(
-            &run.suite,
+            &run.campaign,
             &run.codebase,
             &run.command,
             &target_branch_url,
@@ -3086,7 +3086,7 @@ pub async fn publish_and_store(
                     "mode": mode.to_string(),
                     "result_code": code,
                     "description": description,
-                    "campaign": run.suite,
+                    "campaign": run.campaign,
                     "main_branch_url": target_branch_url.to_string(),
                     "result": run.result.clone().unwrap_or(serde_json::Value::Null),
                     "codebase": run.codebase,
@@ -3152,7 +3152,7 @@ pub async fn publish_and_store(
             if let Some(manager) = redis_manager {
                 let entry = serde_json::json!({
                     "id": publish_id,
-                    "campaign": run.suite,
+                    "campaign": run.campaign,
                     "proposal_url": publish_result.proposal_url().map(|u| u.to_string()),
                     "mode": effective_mode.to_string(),
                     "main_branch_url": publish_result.target_branch_url().to_string(),
@@ -3800,7 +3800,7 @@ async fn check_existing_mp(
         if let Some(requester) = reschedule_reason {
             if let Err(e) = janitor::schedule::do_schedule(
                 conn,
-                &last_run.suite,
+                &last_run.campaign,
                 &last_run.codebase,
                 "update-existing-mp",
                 Some(&last_run.change_set),
@@ -3815,7 +3815,7 @@ async fn check_existing_mp(
                 log::warn!(
                     "Failed to reschedule {}/{} after failed run: {}",
                     last_run.codebase,
-                    last_run.suite,
+                    last_run.campaign,
                     e
                 );
             }
@@ -4110,7 +4110,7 @@ async fn check_existing_mp(
         // open-new-proposal path elsewhere still does.
         let publish_outcome = publish_worker
             .publish_one(
-                &last_run.suite,
+                &last_run.campaign,
                 &last_run.codebase,
                 &last_run.command,
                 &target_branch_url_for_publish,
@@ -4966,7 +4966,7 @@ async fn consider_publish_run(
     log::info!(
         "Considering publish for run {} (campaign: {}, codebase: {})",
         run.id,
-        run.suite,
+        run.campaign,
         run.codebase
     );
 
@@ -4986,10 +4986,10 @@ async fn consider_publish_run(
         return Ok(status_only("no_revision"));
     }
 
-    let campaign_config = match config.campaign.iter().find(|c| c.name() == run.suite) {
+    let campaign_config = match config.campaign.iter().find(|c| c.name() == run.campaign) {
         Some(c) => c,
         None => {
-            log::warn!("No campaign configuration found for suite {}", run.suite);
+            log::warn!("No campaign configuration found for {}", run.campaign);
             return Ok(status_only("no_campaign_config"));
         }
     };
@@ -5005,7 +5005,7 @@ async fn consider_publish_run(
         log::info!(
             "Not attempting to push {} / {} ({}) due to exponential backoff. Next try at {}.",
             run.codebase,
-            run.suite,
+            run.campaign,
             run.id,
             next_try_time
         );
@@ -5020,7 +5020,7 @@ async fn consider_publish_run(
         log::info!(
             "Not pushing {} / {}: push limit reached",
             run.codebase,
-            run.suite
+            run.campaign
         );
         crate::metrics::PUSH_LIMIT_COUNT.inc();
         return Ok(status_only("push_limit_reached"));
@@ -5044,7 +5044,7 @@ async fn consider_publish_run(
     // Rejected/closed previous MP: the maintainer has explicitly
     // said no, so don't try again for this campaign/codebase.
     let previous_mp_status =
-        crate::state::get_previous_mp_status(conn, &run.codebase, &run.suite).await?;
+        crate::state::get_previous_mp_status(conn, &run.codebase, &run.campaign).await?;
     if previous_mp_blocks_publish(&previous_mp_status) {
         log::warn!(
             "{}: last merge proposal was rejected by maintainer: {:?}",
@@ -5146,13 +5146,13 @@ async fn consider_publish_run(
                 log::warn!(
                     "publish_from_policy failed for {}/{}/{}: {}",
                     run.codebase,
-                    run.suite,
+                    run.campaign,
                     role,
                     e
                 );
                 return Err(PublishError::ServiceUnavailable(format!(
                     "publish_from_policy failed for {}/{}/{}: {}",
-                    run.codebase, run.suite, role, e
+                    run.codebase, run.campaign, role, e
                 )));
             }
         }
@@ -5220,7 +5220,7 @@ pub async fn get_publish_policy(
         FROM candidate
         LEFT JOIN named_publish_policy
           ON named_publish_policy.name = candidate.publish_policy
-        WHERE codebase = $1 AND suite = $2
+        WHERE codebase = $1 AND campaign = $2
         "#,
     )
     .bind(codebase)
@@ -5242,7 +5242,7 @@ pub async fn get_publish_policy(
         JOIN named_publish_policy
           ON named_publish_policy.name = candidate.publish_policy
         CROSS JOIN UNNEST(named_publish_policy.per_branch_policy) AS pp
-        WHERE candidate.codebase = $1 AND candidate.suite = $2
+        WHERE candidate.codebase = $1 AND candidate.campaign = $2
         "#,
     )
     .bind(codebase)

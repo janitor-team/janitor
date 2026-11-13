@@ -85,19 +85,17 @@ async def handle_mass_reschedule(request):
     config = request.app["config"]
     all_campaigns = [c.name for c in config.campaign]
     if result_code == "never-processed":
-        query = (
-            "select c.codebase AS codebase, c.suite AS campaign from candidate c WHERE "
-        )
+        query = "select c.codebase AS codebase, c.campaign from candidate c WHERE "
         params = []
         where = [
-            "not exists (SELECT FROM run WHERE run.codebase = c.codebase AND c.suite = suite)"
+            "not exists (SELECT FROM run WHERE run.codebase = c.codebase AND c.campaign = run.campaign)"
         ]
         if campaign:
             params.append(campaign)
-            where.append(f"c.suite = ${len(params)}")
+            where.append(f"c.campaign = ${len(params)}")
         else:
             params.append(all_campaigns)
-            where.append(f"c.suite = ANY(${len(params)}::text[])")
+            where.append(f"c.campaign = ANY(${len(params)}::text[])")
     else:
         if include_transient:
             table = "last_runs"
@@ -106,13 +104,13 @@ async def handle_mass_reschedule(request):
         query = f"""
 SELECT
 codebase,
-suite AS campaign,
+campaign,
 finish_time - start_time as duration
 FROM {table} AS run
 WHERE
 EXISTS (SELECT FROM candidate WHERE
 run.codebase = candidate.codebase AND
-run.suite = candidate.suite AND
+run.campaign = candidate.campaign AND
 (run.change_set = candidate.change_set OR candidate.change_set IS NULL))
 AND """
         where = []
@@ -122,10 +120,10 @@ AND """
             where.append(f"result_code = ${len(params)}")
         if campaign:
             params.append(campaign)
-            where.append(f"suite = ${len(params)}")
+            where.append(f"campaign = ${len(params)}")
         else:
             params.append(all_campaigns)
-            where.append(f"suite = ANY(${len(params)}::text[])")
+            where.append(f"campaign = ANY(${len(params)}::text[])")
         if rejected:
             where.append("publish_status = 'rejected'")
         if description_re:
@@ -281,7 +279,7 @@ async def handle_run_reprocess_logs(request):
     reschedule = "reschedule" in post
     async with request.app["pool"].acquire() as conn:
         run = await conn.fetchrow(
-            "SELECT codebase, suite AS campaign, command, "
+            "SELECT codebase, campaign, command, "
             "finish_time - start_time as duration, codebase, "
             "result_code, description, failure_details, change_set FROM run WHERE id = $1",
             run_id,
@@ -345,7 +343,7 @@ async def select_runs_to_reprocess(
         ]
         if campaign:
             args.append(campaign)
-            where.append(f"suite = ${len(args)}")
+            where.append(f"campaign = ${len(args)}")
         if description_re:
             args.append(description_re)
             where.append(f"description ~ ${len(args)}")
@@ -356,7 +354,7 @@ async def select_runs_to_reprocess(
         query = """
 SELECT
   codebase,
-  suite AS campaign,
+  campaign,
   id,
   command,
   finish_time - start_time as duration,
@@ -372,7 +370,7 @@ WHERE
         query = """
 SELECT
   codebase,
-  suite AS campaign,
+  campaign,
   id,
   command,
   finish_time - start_time as duration,

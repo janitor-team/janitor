@@ -45,7 +45,7 @@ async fn test_get_codebases() {
 async fn test_get_candidates() {
     let Some(db) = setup().await else { return };
     sqlx::query(
-        "INSERT INTO candidate (id, suite, command, codebase, value, context, success_chance) \
+        "INSERT INTO candidate (id, campaign, command, codebase, value, context, success_chance) \
          VALUES (1, 'lintian-fixes', 'lintian-brush', 'foo', 5, 'some context', 0.5)",
     )
     .execute(&db.pool)
@@ -76,7 +76,7 @@ async fn test_get_run_debian_build() {
     let Some(db) = setup().await else { return };
     sqlx::raw_sql(
         "INSERT INTO change_set (id, campaign) VALUES ('cs', 'lintian-fixes');
-         INSERT INTO run (id, command, result_code, suite, logfilenames, change_set, codebase, \
+         INSERT INTO run (id, command, result_code, campaign, logfilenames, change_set, codebase, \
                           vcs_type, branch_url, start_time, finish_time) \
          VALUES ('run-1', 'lintian-brush', 'success', 'lintian-fixes', '{}', 'cs', 'foo', \
                  'git', 'https://example.com/foo', '2024-01-01 00:00:00', '2024-01-01 00:10:00');
@@ -151,7 +151,7 @@ async fn test_get_run_detail_combines_run_branches_and_debian_build() {
     sqlx::raw_sql(
         "INSERT INTO worker (name, password) VALUES ('worker-a', 'x');
          INSERT INTO change_set (id, campaign) VALUES ('cs', 'lintian-fixes');
-         INSERT INTO run (id, command, result_code, suite, logfilenames, change_set, codebase, \
+         INSERT INTO run (id, command, result_code, campaign, logfilenames, change_set, codebase, \
                           vcs_type, branch_url, main_branch_revision, revision, \
                           worker, worker_link, description, \
                           start_time, finish_time) \
@@ -213,7 +213,7 @@ async fn test_get_last_unabsorbed_run_detail() {
     let Some(db) = setup().await else { return };
     sqlx::raw_sql(
         "INSERT INTO change_set (id, campaign) VALUES ('cs', 'lintian-fixes');
-         INSERT INTO run (id, command, result_code, suite, logfilenames, change_set, \
+         INSERT INTO run (id, command, result_code, campaign, logfilenames, change_set, \
                           codebase, vcs_type, branch_url, start_time, finish_time) \
          VALUES ('run-older', 'true', 'success', 'lintian-fixes', '{}', 'cs', \
                  'foo', 'git', 'https://example.com/foo', \

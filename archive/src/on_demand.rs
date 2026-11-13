@@ -136,7 +136,7 @@ pub async fn lookup_builds(
 ) -> ArchiveResult<(Vec<BuildRecord>, Option<DateTime<Utc>>, Option<Campaign>)> {
     match target {
         OnDemandTarget::Run(id) => {
-            // Look up (suite, finish_time) for the run. The suite
+            // Look up (campaign, finish_time) for the run. The campaign
             // field is used to look up `campaign_config` for
             // components; without it the caller falls back to
             // defaults. Cast finish_time to TIMESTAMPTZ so sqlx can
@@ -144,7 +144,7 @@ pub async fn lookup_builds(
             // as TIMESTAMP without zone, same pattern as the
             // ChangeSet branch below).
             let row: Option<(Campaign, Option<DateTime<Utc>>)> = sqlx::query_as(
-                "SELECT suite::text AS suite, \
+                "SELECT campaign::text AS campaign, \
                         (finish_time AT TIME ZONE 'UTC') AS finish_time \
                  FROM run WHERE id = $1",
             )
@@ -193,7 +193,7 @@ pub async fn lookup_builds(
                 "SELECT run.change_set \
                  FROM run \
                  INNER JOIN change_set ON change_set.id = run.change_set \
-                 WHERE run.suite = $1 AND run.codebase = $2 \
+                 WHERE run.campaign = $1 AND run.codebase = $2 \
                    AND change_set.state IN ('working', 'ready', 'publishing', 'done') \
                    AND run.result_code = 'success' \
                  ORDER BY run.finish_time DESC \

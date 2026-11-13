@@ -42,7 +42,7 @@ async def get_previous_runs(client, runner_url: str, codebase: str, campaign: st
 async def get_candidate(conn: asyncpg.Connection, codebase: str, campaign: str):
     return await conn.fetchrow(
         "SELECT context, value, success_chance FROM candidate "
-        "WHERE codebase = $1 AND suite = $2",
+        "WHERE codebase = $1 AND campaign = $2",
         codebase,
         campaign,
     )
@@ -56,7 +56,7 @@ async def iter_candidates(
     query = """
 SELECT
   codebase AS codebase,
-  suite AS suite,
+  campaign,
   context AS context,
   value AS value,
   success_chance AS success_chance
@@ -64,10 +64,10 @@ FROM candidate
 """
     args = []
     if campaign is not None and codebases is not None:
-        query += " WHERE codebase = ANY($1::text[]) AND suite = $2"
+        query += " WHERE codebase = ANY($1::text[]) AND campaign = $2"
         args.extend([codebases, campaign])
     elif campaign is not None:
-        query += " WHERE suite = $1"
+        query += " WHERE campaign = $1"
         args.append(campaign)
     elif codebases is not None:
         query += " WHERE codebase = ANY($1::text[])"
@@ -75,7 +75,9 @@ FROM candidate
     return await conn.fetch(query, *args)
 
 
-async def get_last_unabsorbed_run(conn: asyncpg.Connection, codebase: str, suite: str):
+async def get_last_unabsorbed_run(
+    conn: asyncpg.Connection, codebase: str, campaign: str
+):
     args = []
     query = """
 SELECT
@@ -93,7 +95,7 @@ SELECT
   revision,
   context,
   result,
-  suite,
+  campaign,
   instigated_context,
   vcs_type,
   branch_url,
@@ -112,11 +114,11 @@ FROM
   last_unabsorbed_runs
 LEFT JOIN worker ON worker.name = last_unabsorbed_runs.worker
 LEFT JOIN debian_build ON last_unabsorbed_runs.id = debian_build.run_id
-WHERE codebase = $1 AND suite = $2
-ORDER BY codebase, suite DESC, start_time DESC
+WHERE codebase = $1 AND campaign = $2
+ORDER BY codebase, campaign DESC, start_time DESC
 LIMIT 1
 """
-    args = [codebase, suite]
+    args = [codebase, campaign]
     return await conn.fetchrow(query, *args)
 
 
@@ -129,7 +131,7 @@ SELECT
     debian_build.lintian_result AS lintian_result,
     debian_build.binary_packages AS binary_packages,
     result_code,
-    main_branch_revision, revision, context, result, suite,
+    main_branch_revision, revision, context, result, campaign,
     instigated_context, vcs_type, branch_url, logfilenames,
     run.worker AS worker_name,
     worker.link AS worker_link,
@@ -155,7 +157,6 @@ WHERE id = $1
 async def fetch_run_detail(client, runner_url: str, run_id: str):
     """Fetch a run's detail from the runner, shaped like `get_run`.
 
-    * `suite` is aliased to `campaign` for backward compatibility.
     * `result_branches` are projected to the 4-tuple shape the template
       unpacks: `(role, remote_name, base_revision, revision)`.
     * `result_tags` are projected to `(actual_name, revision)` tuples.
@@ -170,7 +171,6 @@ async def fetch_run_detail(client, runner_url: str, run_id: str):
         data = await resp.json()
 
     run = dict(data)
-    run["suite"] = run["campaign"]
     run["start_time"] = datetime.fromisoformat(run["start_time"])
     run["finish_time"] = datetime.fromisoformat(run["finish_time"])
     run["result_branches"] = [
@@ -197,7 +197,7 @@ SELECT
     id, command, start_time, finish_time, description, codebase,
     debian_build.version AS build_version,
     debian_build.distribution AS build_distribution, result_code, value,
-    main_branch_revision, revision, context, result, suite,
+    main_branch_revision, revision, context, result, campaign,
     instigated_context, vcs_type, branch_url, logfilenames,
     worker,
     array(SELECT row(role, remote_name, base_revision, revision) FROM
@@ -209,7 +209,7 @@ FROM
 LEFT JOIN
     debian_build ON debian_build.run_id = last_runs.id
 WHERE
-    suite in ('control', 'unchanged') AND revision = $1 AND
+    campaign in ('control', 'unchanged') AND revision = $1 AND
     codebase = $2 AND
     result_code = 'success' AND
     change_set = id
@@ -234,7 +234,7 @@ async def _fetch_codebase_merge_proposals(
 async def generate_codebase_context(
     db,
     config,
-    suite,
+    campaign,
     client,
     differ_url,
     vcs_managers,
@@ -250,11 +250,11 @@ async def generate_codebase_context(
                 """\
 SELECT codebase.*, named_publish_policy.per_branch_policy AS publish_policy
 FROM codebase
-LEFT JOIN candidate ON codebase.name = candidate.codebase AND candidate.suite = $2
+LEFT JOIN candidate ON codebase.name = candidate.codebase AND candidate.campaign = $2
 LEFT JOIN named_publish_policy ON named_publish_policy.name = candidate.publish_policy
 WHERE codebase.name = $1""",
                 codebase_name,
-                suite,
+                campaign,
             )
         if codebase is None:
             raise web.HTTPNotFound(text=f"no such codebase: {codebase_name}")
@@ -268,10 +268,10 @@ WHERE codebase.name = $1""",
             merge_proposals = []
         else:
             with span.new_child("sql:unchanged-run"):
-                run = await get_last_unabsorbed_run(conn, codebase_name, suite)
+                run = await get_last_unabsorbed_run(conn, codebase_name, campaign)
             with span.new_child("publisher:merge-proposals"):
                 merge_proposals = await _fetch_codebase_merge_proposals(
-                    client, publisher_url, codebase["name"], suite
+                    client, publisher_url, codebase["name"], campaign
                 )
         if run is None:
             # No runs recorded
@@ -310,7 +310,7 @@ WHERE codebase.name = $1""",
             try:
                 async with client.get(
                     URL(runner_url) / "queue" / "position",
-                    params={"codebase": codebase["name"], "campaign": suite},
+                    params={"codebase": codebase["name"], "campaign": campaign},
                     raise_for_status=True,
                 ) as resp:
                     ret = await resp.json()
@@ -318,7 +318,7 @@ WHERE codebase.name = $1""",
                 logging.warning(
                     "Unable to retrieve queue position for %s/%s: %r",
                     codebase["name"],
-                    suite,
+                    campaign,
                     e,
                 )
                 return (None, None)
@@ -330,10 +330,12 @@ WHERE codebase.name = $1""",
         if runner_url is None:
             return []
         with span.new_child("runner:previous-runs"):
-            return await get_previous_runs(client, runner_url, codebase["name"], suite)
+            return await get_previous_runs(
+                client, runner_url, codebase["name"], campaign
+            )
 
     candidate, previous_runs, (queue_position, queue_wait_time) = await asyncio.gather(
-        fetch("sql:candidate", get_candidate, codebase["name"], suite),
+        fetch("sql:candidate", get_candidate, codebase["name"], campaign),
         previous_runs_via_runner(),
         queue_position(),
     )
@@ -405,7 +407,7 @@ WHERE codebase.name = $1""",
     else:
         env = {}
 
-    campaign = get_campaign_config(config, suite)
+    campaign_config = get_campaign_config(config, campaign)
 
     kwargs.update(
         {
@@ -414,8 +416,8 @@ WHERE codebase.name = $1""",
             "unchanged_run": unchanged_run,
             "merge_proposals": merge_proposals,
             "run_id": run_id,
-            "suite": suite,
-            "campaign": campaign,
+            "campaign_name": campaign,
+            "campaign": campaign_config,
             "show_diff": show_diff,
             "show_debdiff": show_debdiff,
             "previous_runs": previous_runs,
@@ -432,15 +434,15 @@ WHERE codebase.name = $1""",
     return kwargs
 
 
-async def generate_candidates(db, suite):
+async def generate_candidates(db, campaign):
     candidates = []
     async with db.acquire() as conn:
-        for row in await iter_candidates(conn, campaign=suite):
+        for row in await iter_candidates(conn, campaign=campaign):
             candidates.append((row["codebase"], row["value"]))
         candidates.sort(
             key=lambda x: x[1] if x[1] is not None else float("-inf"), reverse=True
         )
-    return {"candidates": candidates, "suite": suite, "campaign": suite}
+    return {"candidates": candidates, "campaign": campaign}
 
 
 def html_template(template_name, headers={}):  # noqa: B006

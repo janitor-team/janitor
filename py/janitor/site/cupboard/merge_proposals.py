@@ -6,9 +6,9 @@ from typing import Optional
 from yarl import URL
 
 
-async def write_merge_proposals(client, publisher_url: str, suite: Optional[str]):
-    if suite:
-        url = URL(publisher_url) / suite / "merge-proposals"
+async def write_merge_proposals(client, publisher_url: str, campaign: Optional[str]):
+    if campaign:
+        url = URL(publisher_url) / campaign / "merge-proposals"
     else:
         url = URL(publisher_url) / "merge-proposals"
     async with client.get(url, raise_for_status=True) as resp:
@@ -22,7 +22,7 @@ async def write_merge_proposals(client, publisher_url: str, suite: Optional[str]
         "applied", []
     )
     return {
-        "suite": suite,
+        "campaign": campaign,
         "open_proposals": proposals_by_status.get("open", []),
         "merged_proposals": merged,
         "closed_proposals": proposals_by_status.get("closed", []),
