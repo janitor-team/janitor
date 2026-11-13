@@ -25,6 +25,9 @@ The runner puts each candidate in the queue, as
 worker that asks for work. After each run, the candidate goes back in the
 queue for a later run. A successful run also queues a control run: the
 same codebase built without the change, so the two builds can be compared.
+When workers fail to open three resume branches on one host within an
+hour, the runner hands out no runs for codebases on that host, and no runs
+that resume from it, for an hour.
 
 ## Stages
 
