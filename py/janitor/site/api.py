@@ -607,6 +607,8 @@ async def handle_run_post(request):
                     reviewer=user,
                     is_qa_reviewer=is_qa_reviewer(request),
                 )
+        else:
+            raise web.HTTPBadRequest(text="no verdict in the form")
         return web.json_response({"verdict": verdict, "review-comment": review_comment})
 
 
