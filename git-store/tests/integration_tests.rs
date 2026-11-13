@@ -637,6 +637,78 @@ db_test! {
     }
 }
 
+// A client that goes away once git has its push must not lose the push.
+db_test! {
+    async fn test_admin_git_push_lands_after_client_leaves(test_db: TestDatabase) {
+        seed_codebase(test_db.pool(), "pushtest").await;
+
+        let tmp = TempDir::new().unwrap();
+        let bare = tmp.path().join("pushtest");
+        git2::Repository::init_bare(&bare).unwrap();
+        let state = build_state(&tmp, &test_db, AppRole::Admin).await;
+        let app = web::create_admin_app(state, 0);
+
+        let src = TempDir::new().unwrap();
+        let repo = git2::Repository::init_bare(src.path()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let blob_oid = repo.blob(b"hi\n").unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert("hello.txt", blob_oid, 0o100644).unwrap();
+        let tree = repo.find_tree(tb.write().unwrap()).unwrap();
+        let commit = repo.commit(None, &sig, &sig, "init", &tree, &[]).unwrap();
+
+        let command = format!(
+            "{} {} refs/heads/main\0report-status\n",
+            git2::Oid::zero(),
+            commit
+        );
+        let mut request = format!("{:04x}{}0000", command.len() + 4, command).into_bytes();
+        let mut pack = git2::Buf::new();
+        let mut packbuilder = repo.packbuilder().unwrap();
+        packbuilder.insert_commit(commit).unwrap();
+        packbuilder.write_buf(&mut pack).unwrap();
+        request.extend_from_slice(&pack);
+
+        // Leave once git starts reading the request, as a client that hangs up would.
+        let (sent, started) = tokio::sync::oneshot::channel();
+        let body = futures_util::stream::once(async move {
+            sent.send(()).unwrap();
+            Ok::<_, std::io::Error>(Bytes::from(request))
+        });
+        let req = Request::post("/pushtest/git-receive-pack")
+            .header("Content-Type", "application/x-git-receive-pack-request")
+            .body(Body::from_stream(body))
+            .unwrap();
+        let mut response = Box::pin(app.oneshot(req));
+        tokio::select! {
+            resp = &mut response => panic!("push answered before git read it: {:?}", resp),
+            started = started => started.unwrap(),
+        }
+        drop(response);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        let head = loop {
+            match git2::Repository::open_bare(&bare)
+                .unwrap()
+                .find_reference("refs/heads/main")
+            {
+                Ok(r) => break r.target().unwrap(),
+                Err(e) if e.code() == git2::ErrorCode::NotFound => {}
+                Err(e) => panic!("{e}"),
+            }
+            assert!(std::time::Instant::now() < deadline, "the push never landed");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        assert_eq!(head, commit);
+        let quarantines: Vec<String> = std::fs::read_dir(bare.join("objects"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|name| name.starts_with("tmp_objdir"))
+            .collect();
+        assert_eq!(quarantines, Vec::<String>::new());
+    }
+}
+
 db_test! {
     async fn test_public_worker_auth_flows_through(test_db: TestDatabase) {
         // Checks the auth + codebase-exists gate; does not drive a
