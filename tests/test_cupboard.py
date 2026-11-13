@@ -180,6 +180,43 @@ async def test_publish_history(aiohttp_client, aiohttp_server, db):
     assert resp.status == 200
 
 
+async def test_generate_done_list(aiohttp_server):
+    from janitor.site.pkg import generate_done_list
+
+    captured = {}
+
+    async def handle_absorbed(request):
+        captured.update(request.query)
+        return web.json_response(
+            {
+                "runs": [{"id": "run-1", "absorbed_at": "2026-11-12T14:11:00Z"}],
+                "oldest": "2026-11-01T09:00:00Z",
+            }
+        )
+
+    app = web.Application()
+    app.router.add_get("/absorbed", handle_absorbed)
+    server = await aiohttp_server(app)
+
+    async with ClientSession() as client:
+        result = await generate_done_list(
+            client, str(server.make_url("/")), "foo", datetime(2026, 11, 12)
+        )
+
+    assert captured == {"campaign": "foo", "since": "2026-11-12T00:00:00+00:00"}
+    assert result == {
+        "oldest": datetime(2026, 11, 1, 9, 0, tzinfo=timezone.utc),
+        "runs": [
+            {
+                "id": "run-1",
+                "absorbed_at": datetime(2026, 11, 12, 14, 11, tzinfo=timezone.utc),
+            }
+        ],
+        "campaign": "foo",
+        "since": datetime(2026, 11, 12, tzinfo=timezone.utc),
+    }
+
+
 ADMIN_GROUP_CONFIG = 'oauth2_provider { admin_group: "admins" }\n'
 
 

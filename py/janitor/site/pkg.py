@@ -16,7 +16,7 @@
 
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from io import BytesIO
 from typing import Optional
 
@@ -341,6 +341,8 @@ async def generate_done_list(
     if campaign is not None:
         params["campaign"] = campaign
     if since is not None:
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
         params["since"] = since.isoformat()
     async with client.get(url, params=params, raise_for_status=True) as resp:
         data = await resp.json()
