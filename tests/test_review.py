@@ -82,6 +82,48 @@ async def insert_review_run(
     )
 
 
+async def test_review_refill_keeps_filter(aiohttp_client, db):
+    client = await create_publishable_client(aiohttp_client, db)
+    async with db.acquire() as conn:
+        for run_id, codebase, campaign, mode, value in [
+            ("run-a", "foo", "campaign-a", "propose", 3),
+            ("run-b", "bar", "campaign-b", "propose", 2),
+            ("run-c", "baz", "campaign-c", "propose", 1),
+            ("run-d", "qux", "campaign-b", "build-only", 0),
+        ]:
+            await insert_review_run(
+                conn,
+                run_id,
+                codebase=codebase,
+                campaign=campaign,
+                mode=mode,
+                value=value,
+            )
+
+    for query, expected in [
+        ("campaign=campaign-a&campaign=campaign-b", ["run-a", "run-b"]),
+        (
+            "campaign=campaign-a&campaign=campaign-b&publishable_only=false",
+            ["run-a", "run-b", "run-d"],
+        ),
+        ("", ["run-a", "run-b", "run-c"]),
+    ]:
+        resp = await client.get("/cupboard/review?" + query)
+        assert resp.status == 200
+        text = await resp.text()
+        assert shown_run(text) == ["run-a"]
+        (review,) = BeautifulSoup(text, "html.parser").find_all(id="review")
+        resp = await client.get(review["data-needs-review-url"])
+        assert resp.status == 200
+        assert [entry["id"] for entry in await resp.json()] == expected
+
+    resp = await client.get("/cupboard/api/campaign-a/needs-review?campaign=campaign-b")
+    assert resp.status == 400
+    assert (
+        await resp.text() == "use either a campaign in the path or campaign arguments"
+    )
+
+
 def shown_run(text):
     soup = BeautifulSoup(text, "html.parser")
     return [field["value"] for field in soup.find_all("input", id="run-id")]

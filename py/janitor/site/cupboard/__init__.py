@@ -708,16 +708,15 @@ def register_cupboard_endpoints(
     app.router.add_routes(routes)
     from .api import create_app
 
-    app.add_subapp(
-        "/cupboard/api",
-        create_app(
-            config=config,
-            publisher_url=publisher_url,
-            runner_url=runner_url,
-            trace_configs=trace_configs,
-            db=db,
-        ),
+    api_app = create_app(
+        config=config,
+        publisher_url=publisher_url,
+        runner_url=runner_url,
+        trace_configs=trace_configs,
+        db=db,
     )
+    app.add_subapp("/cupboard/api", api_app)
+    app["cupboard_api_app"] = api_app
     if evaluate_url is None:
         evaluate_url = app.router["cupboard-default-evaluate"].url_for(run_id="RUN_ID")
     app["evaluate_url"] = evaluate_url
