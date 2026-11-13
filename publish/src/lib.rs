@@ -1130,6 +1130,17 @@ fn split_segment_parameters(url: &url::Url) -> Option<(url::Url, HashMap<String,
     Some(breezyshim::urlutils::split_segment_parameters(&url))
 }
 
+/// Whether two URLs name the same branch; breezy may add a trailing slash or drop the branch name.
+fn same_branch_url(a: &url::Url, b: &url::Url) -> bool {
+    let (base_a, params_a) = breezyshim::urlutils::split_segment_parameters(a);
+    let (base_b, params_b) = breezyshim::urlutils::split_segment_parameters(b);
+    base_a.as_str().trim_end_matches('/') == base_b.as_str().trim_end_matches('/')
+        && match (params_a.get("branch"), params_b.get("branch")) {
+            (Some(branch_a), Some(branch_b)) => branch_a == branch_b,
+            _ => true,
+        }
+}
+
 /// Resolve redirects for a URL to get the canonical URL.
 ///
 /// # Arguments
@@ -2605,6 +2616,7 @@ pub async fn publish_from_policy(
         }
     };
     let target_branch_url = role_branch_url(target_branch_url, Some(&remote_branch_name));
+    let derived_name = derived_branch_name(conn, campaign_config, run, role).await?;
 
     // Bail if this run has already been published for this
     // (target_url, branch_name, revision) tuple.
@@ -2618,7 +2630,7 @@ pub async fn publish_from_policy(
         if crate::state::already_published(
             conn,
             &target_branch_url,
-            branch_name_for_lookup,
+            &[branch_name_for_lookup, &derived_name],
             &revision,
             &modes_to_check,
         )
@@ -2708,8 +2720,6 @@ pub async fn publish_from_policy(
             require_binary_diff = false;
         }
     }
-
-    let derived_name = derived_branch_name(conn, campaign_config, run, role).await?;
 
     let vcs_type_parsed = match <VcsType as std::str::FromStr>::from_str(&run.vcs_type) {
         Ok(v) => v,

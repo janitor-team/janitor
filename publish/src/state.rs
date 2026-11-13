@@ -115,14 +115,20 @@ pub async fn store_publish(
 pub(crate) async fn already_published(
     conn: &PgPool,
     target_branch_url: &Url,
-    branch_name: &str,
+    branch_names: &[&str],
     revision: &RevisionId,
     modes: &[Mode],
 ) -> Result<bool, sqlx::Error> {
     let modes = modes.iter().map(|m| m.to_string()).collect::<Vec<_>>();
-    let row = sqlx::query(
-        "SELECT * FROM publish WHERE mode = ANY($1::publish_mode[]) AND revision = $2 AND target_branch_url = $3 AND branch_name = $4").bind(modes).bind(revision.to_string()).bind(target_branch_url.to_string()).bind(branch_name).fetch_optional(conn).await?;
-    Ok(row.is_some())
+    let urls: Vec<String> = sqlx::query_scalar(
+        "SELECT target_branch_url FROM publish WHERE mode = ANY($1::publish_mode[]) AND revision = $2 AND branch_name = ANY($3) AND result_code IN ('success', 'nothing-to-do') AND target_branch_url IS NOT NULL").bind(modes).bind(revision.to_string()).bind(branch_names).fetch_all(conn).await?;
+    for url in urls {
+        let url: Url = url.parse().map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
+        if crate::same_branch_url(&url, target_branch_url) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub(crate) async fn get_open_merge_proposal(
@@ -792,6 +798,48 @@ pub async fn iter_publish_ready(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use janitor::test_with_database;
+
+    test_with_database! {
+        schema = Core;
+        async fn test_already_published(test_db: TestDatabase) {
+            let pool = test_db.pool();
+            for query in [
+                "INSERT INTO change_set (id, campaign) VALUES ('cs', 'lintian-fixes')",
+                "INSERT INTO publish (id, change_set, mode, result_code, revision, branch_name, target_branch_url) VALUES
+                    ('p1', 'cs', 'propose', 'success', 'rev-1', 'lintian-fixes', 'https://example.com/cb.git/'),
+                    ('p2', 'cs', 'push', 'success', 'rev-1', 'lintian-fixes', 'file:///srv/cb.git/,branch=master'),
+                    ('p3', 'cs', 'propose', 'publisher-invalid-response', 'rev-2', 'lintian-fixes', 'https://example.com/cb.git,branch=master'),
+                    ('p4', 'cs', 'propose', 'success', 'rev-3', 'lintian-fixes/main', 'https://example.com/cb.git/')",
+            ] {
+                sqlx::query(query).execute(pool).await.unwrap();
+            }
+            let mut found = Vec::new();
+            for (url, revision, mode) in [
+                ("https://example.com/cb.git,branch=master", "rev-1", Mode::Propose),
+                ("https://example.com/cb.git,branch=master", "rev-1", Mode::Push),
+                ("file:///srv/cb.git,branch=master", "rev-1", Mode::Push),
+                ("file:///srv/cb.git,branch=other", "rev-1", Mode::Push),
+                ("https://example.com/cb.git,branch=master", "rev-2", Mode::Propose),
+                ("https://example.com/cb.git,branch=master", "rev-3", Mode::Propose),
+            ] {
+                let url: Url = url.parse().unwrap();
+                let revision = RevisionId::from(revision.as_bytes().to_vec());
+                found.push(
+                    already_published(
+                        pool,
+                        &url,
+                        &["lintian-fixes", "lintian-fixes/main"],
+                        &revision,
+                        &[mode],
+                    )
+                    .await
+                    .unwrap(),
+                );
+            }
+            assert_eq!(found, vec![true, false, true, false, false, true]);
+        }
+    }
 
     /// Regression: `run.vcs_type` is a Postgres ENUM
     /// (`vcs_type`). Decoding it as `String` without a `::text`
