@@ -100,7 +100,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for instructions on e.g. setting up
 a development environment.
 
 If you're interested in working on adding another campaign for a janitor
-instance, see [Adding a new campaign](devnotes/adding-a-new-campaign.md).
+instance, see [Adding a new campaign](docs/production.md#adding-a-new-campaign).
 
 The Matrix channel for the Janitor project can be found at
 [#janitor:matrix.org](https://matrix.to/#/#janitor:matrix.org).

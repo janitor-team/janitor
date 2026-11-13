@@ -154,3 +154,119 @@ This calls the admin-only `POST /cupboard/api/workers` API on the site, which
 generates a random password, stores its hash, and returns the plaintext password once
 in the response. It isn't kept anywhere in recoverable form, so copy it down when it's
 printed.
+
+## Adding a new campaign
+
+### Define the campaign
+
+Each campaign has a `campaign` block in `janitor.conf`, like the
+`lintian-fixes` one in the [quickstart](quickstart.md#define-a-campaign).
+`name` is what candidates refer to, and `branch_name` is the name of the
+branch that merge proposals come from.
+
+`command` is the codemod script, which makes the change. Workers look it
+up on their `PATH` and run it in a checkout of the codebase, so it has to
+be installed in the worker image, as [Worker images](#worker-images)
+shows.
+
+With `debian_build`, the worker builds the changed code as a Debian
+package. `base_distribution` names a `distribution` block in
+`janitor.conf`. That block's `build_command` runs the build, unless
+`debian_build` sets its own. The package is built for
+`build_distribution`, with `build_suffix` added to its version.
+`build_distribution` is only a name for this campaign's builds and needs
+no `distribution` block of its own. It does need an sbuild chroot, so
+after adding the campaign, run `create-sbuild-chroot-unshare.py` again
+as [sbuild chroots](#sbuild-chroots) shows.
+
+For code that is not a Debian package, use `generic_build {}` in place of
+`debian_build`. The worker then finds the code's build system, such as a
+`Makefile`, builds the code and runs its tests. A generic build needs no
+`distribution` block or sbuild chroot.
+
+The services read `janitor.conf` when they start, so restart them after
+adding a campaign.
+
+### Write the codemod script
+
+Every campaign has a codemod script that makes changes to a version
+controlled branch. It runs in a checkout of the codebase and can change
+whatever it needs to. See
+[this blog post](https://www.jelmer.uk/silver-platter-intro.html) for more
+information about creating codemod scripts. The script follows
+silver-platter's
+[codemod protocol](https://github.com/jelmer/silver-platter/blob/master/codemod-protocol.md).
+
+You can test the script on its own with silver-platter. In a checkout of a
+Debian package, run:
+
+```console
+$ debian-svp apply --diff /path/to/myscript
+```
+
+This commits the change to that checkout, so use a copy you can throw away.
+
+### Write the merge proposal text
+
+The description of a merge proposal comes from a template named after the
+campaign: `lintian-fixes.md` for forges that take Markdown,
+`lintian-fixes.txt` for the others. Put the templates in a directory the
+publisher can read, and pass it to `janitor-publish` with
+`--template-env-path`.
+
+Templates use the [MiniJinja syntax](https://docs.rs/minijinja/latest/minijinja/syntax/index.html).
+A line that holds only a block tag, such as `{% endfor %}`, leaves no blank
+line in the output. A description template can use:
+
+- `campaign`: the campaign name.
+- `log_id`: the run id.
+- `role`: the branch role, such as `main`.
+- `codemod`: the `context` that the codemod script writes to `$SVP_RESULT`.
+  Each of its keys is also a variable of its own, such as `applied` for
+  lintian-brush.
+- `debdiff`: for Debian campaigns, the debdiff between the package built by
+  the run and the one built without the change, when there is one.
+- `external_url`: the URL given to `janitor-publish` with `--external-url`,
+  without a trailing slash.
+
+It can also call these functions:
+
+- `debdiff_is_empty(debdiff)`: whether the debdiff shows no changes.
+- `markdownify_debdiff(debdiff)`: the debdiff as Markdown.
+- `parseaddr("Name <email>")`: splits an address into `[name, email]`.
+
+For example, a `lintian-fixes.md`:
+
+```
+Fix some issues reported by lintian
+
+{% for fix in applied %}
+* {{ fix.summary }}
+{% endfor %}
+```
+
+The proposal's title and the commit message it suggests for the merge can
+come from `title` and `commit_message` in a `merge_proposal` block of the
+campaign. They are templates too:
+
+```
+campaign {
+  name: "lintian-fixes"
+  ...
+  merge_proposal {
+    title: "Fix {{ applied|length }} lintian issues"
+  }
+}
+```
+
+They can use the keys of the codemod script's `context`, `external_url`
+and the functions above. Where the forge supports labels, the proposal
+gets the campaign name as its label.
+
+### Add a script for finding candidates
+
+Write a script that finds candidates for the new campaign and uploads them
+to the runner, as the
+[quickstart](quickstart.md#add-a-codebase-a-publish-policy-and-a-candidate)
+does by hand, and run it regularly. [Candidates](scheduling.md#candidates)
+lists the fields a candidate can set.

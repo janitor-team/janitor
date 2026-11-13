@@ -1,9 +1,56 @@
 # Quickstart
 
-This page shows how to add a codebase, a publish policy and a candidate,
+This page shows how to define a campaign, add a codebase, a publish
+policy and a candidate,
 follow the run, and find its logs and diff. It assumes the services and
 at least one worker are running (see [production.md](production.md)).
 [glossary.md](glossary.md) explains the terms it uses.
+
+## Define a campaign
+
+A campaign is one kind of change that the janitor tries to make across
+many codebases. This page uses `lintian-fixes`, which runs `lintian-brush`
+to fix the problems that lintian finds in a Debian package.
+
+Copy the `lintian-fixes` and `control` campaigns and the `unstable`
+`distribution` block from `janitor.conf.example` into `janitor.conf`, the
+file you pass to the services with `--config`. The runner uses `control`
+to build each codebase without the change, so the two builds can be
+compared. The `lintian-fixes` campaign starts like this:
+
+```
+campaign {
+  name: "lintian-fixes"
+  command: "lintian-brush"
+  branch_name: "lintian-fixes"
+  debian_build {
+    build_distribution: "lintian-fixes"
+    build_suffix: "jan+lint"
+    base_distribution: "unstable"
+    build_command: "sbuild -Asv --no-clean-source"
+  }
+  ...
+}
+```
+
+`lintian-brush` is the codemod: it follows silver-platter's
+[codemod protocol](https://github.com/jelmer/silver-platter/blob/master/codemod-protocol.md).
+Workers run it from their `PATH`, so use a worker image with
+`lintian-brush` installed, as
+[Custom worker tooling](containers.md#custom-worker-tooling) shows.
+
+`debian_build` makes the worker build the changed code as a Debian
+package, in an sbuild chroot made from the `unstable` distribution.
+Create it as [sbuild chroots](production.md#sbuild-chroots) shows:
+
+```console
+$ ./create-sbuild-chroot-unshare.py --config janitor.conf unstable
+```
+
+Then restart the services, so they read the new `janitor.conf`.
+[Adding a new campaign](production.md#adding-a-new-campaign) shows how to
+write a campaign of your own, including one for code that is not a Debian
+package.
 
 ## Add a codebase, a publish policy and a candidate
 
@@ -51,12 +98,7 @@ $ curl http://localhost:9912/policy
 `per_branch` is keyed by branch role: `main` is the run's main result
 branch, not the name of a branch in the codebase.
 
-Finally the candidate. Its campaign is one kind of change that the
-janitor tries to make across many codebases: `lintian-fixes`, for example,
-fixes the problems that lintian finds in Debian packages. Each campaign has
-a `campaign` block in `janitor.conf` (the file the services' `--config`
-names), which gives the command that makes the change and how to build
-the result.
+Finally the candidate, for the `lintian-fixes` campaign:
 
 ```console
 $ curl -X POST http://localhost:9911/candidates \
