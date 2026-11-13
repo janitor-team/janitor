@@ -22,6 +22,8 @@
                    {% if since %} value="{{ since.date().isoformat() }}" {% elif oldest %} value="{{ oldest.date().isoformat() }}" {% endif %}
                    {% if oldest %}min="{{ oldest.date().isoformat() }}"{% endif %}
                    max="{{ utcnow().date().isoformat() }}" />
+            <input type="hidden" id="tz" name="tz" />
+            <script>$("#tz").val(Intl.DateTimeFormat().resolvedOptions().timeZone);</script>
             <input type="submit" value="Refresh" />
         </form>
         {% set ns = namespace(last_date=None, run_date=None) %}

@@ -19,7 +19,7 @@
 import logging
 import re
 from collections.abc import Mapping
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 import aiohttp_jinja2
@@ -43,6 +43,7 @@ from .. import (
     check_logged_in,
     is_admin,
     is_qa_reviewer,
+    request_tz,
     worker_link_is_global,
 )
 from ..common import html_template
@@ -651,6 +652,8 @@ async def handle_done_proposals(request):
             since = datetime.fromisoformat(since_str)
         except ValueError as e:
             raise web.HTTPBadRequest(text="invalid since") from e
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=request_tz(request))
     else:
         # Default to beginning of the month
         since = datetime.fromisoformat(
@@ -664,7 +667,10 @@ async def handle_done_proposals(request):
             orig_runs = await conn.fetch(
                 "SELECT * FROM absorbed_runs WHERE absorbed_at >= $1 "
                 "ORDER BY absorbed_at DESC NULLS LAST",
-                since,
+                # absorbed_at holds UTC without a zone
+                since.astimezone(timezone.utc).replace(tzinfo=None)
+                if since.tzinfo
+                else since,
             )
         else:
             orig_runs = await conn.fetch(

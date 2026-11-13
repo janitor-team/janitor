@@ -42,6 +42,7 @@ from ..vcs import VcsManager, get_vcs_managers_from_config
 from . import (
     TEMPLATE_ENV,
     hide_private_worker_links,
+    request_tz,
     serve_run_log,
     template_loader,
 )
@@ -341,6 +342,8 @@ async def handle_done_proposals(request):
             since = datetime.fromisoformat(since_str)
         except ValueError as e:
             raise web.HTTPBadRequest(text="invalid since") from e
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=request_tz(request))
     else:
         since = None
 

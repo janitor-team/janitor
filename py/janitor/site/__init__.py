@@ -16,7 +16,9 @@
 
 import html
 import logging
+from datetime import timezone, tzinfo
 from typing import Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiohttp import ClientConnectorError, ContentTypeError, web
 from jinja2 import PackageLoader
@@ -297,6 +299,17 @@ def check_logged_in(request: web.Request) -> None:
         if request.headers.get("Sec-Fetch-Mode") == "navigate":
             raise web.HTTPFound(URL("/login").with_query(url=str(request.url)))
         raise web.HTTPUnauthorized()
+
+
+def request_tz(request: web.Request) -> tzinfo:
+    """Return the time zone named by the tz field of a form, or UTC."""
+    name = request.query.get("tz")
+    if not name:
+        return timezone.utc
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError) as e:
+        raise web.HTTPBadRequest(text="invalid tz") from e
 
 
 def hide_private_worker_links(entry):
