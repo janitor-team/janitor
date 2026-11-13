@@ -2401,6 +2401,7 @@ pub async fn publish_from_policy(
         }
     };
     let target_branch_url = role_branch_url(target_branch_url, Some(&remote_branch_name));
+    let derived_name = derived_branch_name(conn, campaign_config, run, role).await?;
 
     // Bail if this run has already been published for this
     // (target_url, branch_name, revision) tuple.
@@ -2414,7 +2415,7 @@ pub async fn publish_from_policy(
         if crate::state::already_published(
             conn,
             &target_branch_url,
-            branch_name_for_lookup,
+            &[branch_name_for_lookup, &derived_name],
             &revision,
             &modes_to_check,
         )
@@ -2504,8 +2505,6 @@ pub async fn publish_from_policy(
             require_binary_diff = false;
         }
     }
-
-    let derived_name = derived_branch_name(conn, campaign_config, run, role).await?;
 
     let vcs_manager = match run.vcs_type.and_then(|v| vcs_managers.get(&v)) {
         Some(m) => m.as_ref(),
