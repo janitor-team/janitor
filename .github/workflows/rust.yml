@@ -46,7 +46,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      - name: Determine Python version
+        id: python
+        run: echo "version=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')" >> "$GITHUB_OUTPUT"
+      # pyo3-build-config does not notice when the system python changes,
+      # so a cache built against another version links the wrong libpython.
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: python${{ steps.python.outputs.version }}
       - name: Install dependencies
         run: |
           sudo apt -y update
@@ -93,7 +100,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Determine Python version
+        id: python
+        run: echo "version=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')" >> "$GITHUB_OUTPUT"
+      # pyo3-build-config does not notice when the system python changes,
+      # so a cache built against another version links the wrong libpython.
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: python${{ steps.python.outputs.version }}
       - name: Install dependencies
         run: |
           sudo apt -y update
