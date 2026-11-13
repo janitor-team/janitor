@@ -1184,7 +1184,7 @@ INSERT INTO run (
                     branch_url = EXCLUDED.branch_url,
                     subpath = EXCLUDED.subpath,
                     vcs_type = EXCLUDED.vcs_type,
-                    vcs_last_revision = EXCLUDED.vcs_last_revision,
+                    vcs_last_revision = COALESCE(EXCLUDED.vcs_last_revision, codebase.vcs_last_revision),
                     value = EXCLUDED.value,
                     url = EXCLUDED.url,
                     branch = EXCLUDED.branch,
@@ -1350,7 +1350,7 @@ INSERT INTO run (
 }
 
 /// Row of the codebase table as served by `GET /codebases`.
-#[derive(Debug, Clone, Serialize, sqlx::FromRow, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct CodebaseRow {
     /// Name of the codebase.
     pub name: Option<CodebaseName>,
@@ -1373,7 +1373,7 @@ pub struct CodebaseRow {
 }
 
 /// Entry in a `POST /codebases` request body.
-#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct CodebaseUpload {
     /// Name of the codebase.
     pub name: Option<CodebaseName>,
