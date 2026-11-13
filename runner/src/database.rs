@@ -251,7 +251,7 @@ impl RunnerDatabase {
         run: Run,
     ) -> Result<JanitorResult, sqlx::Error> {
         let resume = self
-            .get_resume_info(&run.id, &run.codebase, &run.suite)
+            .get_resume_info(&run.id, &run.codebase, &run.campaign)
             .await?;
         let debian_build = self.get_run_debian_build(&run.id).await?;
 
@@ -268,7 +268,7 @@ impl RunnerDatabase {
             code: run.result_code,
             transient: run.failure_transient,
             codebase: run.codebase,
-            campaign: run.suite,
+            campaign: run.campaign,
             description: run.description,
             codemod: run.result,
             value: run.value.map(|v| v as u64),
@@ -316,7 +316,7 @@ impl RunnerDatabase {
             r#"
             SELECT id,
                    codebase,
-                   suite::text AS campaign,
+                   campaign::text AS campaign,
                    publish_status::text AS publish_status,
                    result_code,
                    main_branch_revision,
@@ -381,7 +381,7 @@ impl RunnerDatabase {
             r#"
             SELECT id,
                    codebase,
-                   suite::text AS campaign,
+                   campaign::text AS campaign,
                    publish_status::text AS publish_status,
                    result_code,
                    main_branch_revision,
@@ -405,7 +405,7 @@ impl RunnerDatabase {
                    failure_transient,
                    resume_from
               FROM last_unabsorbed_runs
-             WHERE codebase = $1 AND suite = $2
+             WHERE codebase = $1 AND campaign = $2
             "#,
         )
         .bind(codebase)
@@ -437,14 +437,14 @@ impl RunnerDatabase {
 
     /// Get a run by ID.
     pub async fn get_run(&self, run_id: &RunId) -> Result<Option<JanitorResult>, sqlx::Error> {
-        // run.vcs_type and run.suite are postgres enums; cast both to
+        // run.vcs_type and run.campaign are postgres enums; cast both to
         // text so sqlx decodes them as Strings for the Run struct. The
         // timestamps are stored without a time zone, and result_branches
         // is built from new_result_branch as the RECORD[] Run expects.
         let run: Option<Run> = sqlx::query_as(
             r#"
             SELECT id, command, description, result_code, main_branch_revision, revision,
-                   context, result, suite::text AS suite, instigated_context, vcs_type::text AS vcs_type, branch_url,
+                   context, result, campaign::text AS campaign, instigated_context, vcs_type::text AS vcs_type, branch_url,
                    logfilenames, worker,
                    array(SELECT row(role, remote_name, base_revision, revision)
                          FROM new_result_branch WHERE run_id = run.id) AS result_branches,
@@ -557,7 +557,7 @@ impl RunnerDatabase {
 INSERT INTO run (
     id, command, description, result_code,
     start_time, finish_time, instigated_context, context,
-    main_branch_revision, revision, result, suite,
+    main_branch_revision, revision, result, campaign,
     vcs_type, branch_url, subpath, logfilenames,
     value, worker,
     result_tags,
@@ -791,7 +791,7 @@ INSERT INTO run (
             wait_time: Option<PgInterval>,
         }
         let row: Option<PositionRow> = sqlx::query_as(
-            "SELECT position, wait_time FROM queue_positions WHERE codebase = $1 AND suite = $2",
+            "SELECT position, wait_time FROM queue_positions WHERE codebase = $1 AND campaign = $2",
         )
         .bind(codebase)
         .bind(campaign)
@@ -812,26 +812,26 @@ INSERT INTO run (
         run_id: &RunId,
         publish_status: &str,
     ) -> Result<Option<(RunId, CodebaseName, Campaign)>, sqlx::Error> {
-        // `publish_status` is a Postgres ENUM and `suite` is a custom
+        // `publish_status` is a Postgres ENUM and `campaign` is a custom
         // domain -- cast both explicitly so sqlx's text-based encode
         // and decode paths succeed.
         #[derive(sqlx::FromRow)]
         struct UpdatedRow {
             id: RunId,
             codebase: CodebaseName,
-            suite: Campaign,
+            campaign: Campaign,
         }
         let row: Option<UpdatedRow> = sqlx::query_as(
             "UPDATE run SET publish_status = $2::publish_status \
              WHERE id = $1 \
-             RETURNING id, codebase, suite::text AS suite",
+             RETURNING id, codebase, campaign::text AS campaign",
         )
         .bind(run_id)
         .bind(publish_status)
         .fetch_optional(self.pool())
         .await?;
 
-        Ok(row.map(|r| (r.id, r.codebase, r.suite)))
+        Ok(row.map(|r| (r.id, r.codebase, r.campaign)))
     }
 
     /// Add a host to the rate limit list.
@@ -1021,7 +1021,7 @@ INSERT INTO run (
                 queue.context,
                 queue.id::bigint AS id,
                 queue.estimated_duration,
-                queue.suite::text AS campaign,
+                queue.campaign::text AS campaign,
                 queue.refresh,
                 queue.requester,
                 queue.change_set,
@@ -1043,7 +1043,7 @@ INSERT INTO run (
             LEFT JOIN codebase ON codebase.name = queue.codebase
             LEFT JOIN candidate
                    ON candidate.codebase = queue.codebase
-                  AND candidate.suite = queue.suite
+                  AND candidate.campaign = queue.campaign
                   AND coalesce(candidate.change_set, '') = coalesce(queue.change_set, '')
         "#
         .to_string();
@@ -1066,7 +1066,7 @@ INSERT INTO run (
         // Filter by campaign if specified
         if campaign.is_some() {
             bind_count += 1;
-            conditions.push(format!("queue.suite = ${}", bind_count));
+            conditions.push(format!("queue.campaign = ${}", bind_count));
         }
 
         // Exclude hosts
@@ -1218,7 +1218,7 @@ INSERT INTO run (
         campaigns: &[Campaign],
     ) -> Result<Vec<CandidateRow>, sqlx::Error> {
         let mut query = String::from(
-            "SELECT id, codebase, suite AS campaign, command, publish_policy, \
+            "SELECT id, codebase, campaign, command, publish_policy, \
                     change_set, context, value, success_chance FROM candidate",
         );
         let mut conditions = Vec::new();
@@ -1229,7 +1229,7 @@ INSERT INTO run (
         }
         if !campaigns.is_empty() {
             idx += 1;
-            conditions.push(format!("suite = ANY(${}::text[])", idx));
+            conditions.push(format!("campaign = ANY(${}::text[])", idx));
         }
         if !conditions.is_empty() {
             query.push_str(" WHERE ");
@@ -1252,9 +1252,9 @@ INSERT INTO run (
         campaign: &Campaign,
     ) -> Result<Option<CandidateRow>, sqlx::Error> {
         sqlx::query_as(
-            "SELECT id, codebase, suite AS campaign, command, publish_policy, \
+            "SELECT id, codebase, campaign, command, publish_policy, \
                     change_set, context, value, success_chance \
-             FROM candidate WHERE codebase = $1 AND suite = $2",
+             FROM candidate WHERE codebase = $1 AND campaign = $2",
         )
         .bind(codebase)
         .bind(campaign)
@@ -1272,14 +1272,14 @@ INSERT INTO run (
             .await?;
 
         let candidate_info: Option<(Campaign, CodebaseName)> =
-            sqlx::query_as("DELETE FROM candidate WHERE id = $1 RETURNING suite, codebase")
+            sqlx::query_as("DELETE FROM candidate WHERE id = $1 RETURNING campaign, codebase")
                 .bind(candidate_id)
                 .fetch_optional(&mut *tx)
                 .await?;
 
-        if let Some((suite, codebase)) = candidate_info {
-            sqlx::query("DELETE FROM queue WHERE suite = $1 AND codebase = $2")
-                .bind(&suite)
+        if let Some((campaign, codebase)) = candidate_info {
+            sqlx::query("DELETE FROM queue WHERE campaign = $1 AND codebase = $2")
+                .bind(&campaign)
                 .bind(&codebase)
                 .execute(&mut *tx)
                 .await?;
@@ -1303,7 +1303,7 @@ INSERT INTO run (
         let resume_run_id: Option<RunId> = sqlx::query_scalar(
             r#"
             SELECT id FROM run 
-            WHERE codebase = $1 AND suite = $2 AND id != $3
+            WHERE codebase = $1 AND campaign = $2 AND id != $3
             AND result_code IN ('interrupted', 'worker-failure', 'timeout')
             AND finish_time > NOW() - INTERVAL '7 days'
             ORDER BY finish_time DESC 
@@ -1402,7 +1402,7 @@ pub struct CandidateRow {
     pub id: i32,
     /// Name of the codebase.
     pub codebase: CodebaseName,
-    /// Campaign (stored as `suite`).
+    /// Campaign.
     pub campaign: Campaign,
     /// Command to run.
     pub command: String,

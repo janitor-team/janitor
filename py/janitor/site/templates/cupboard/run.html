@@ -8,11 +8,11 @@
 {% from "lintian_util.html" import display_lintian_result with context %}
 {% from "review_util.html" import display_reviews_table with context %}
 {% block page_title %}
-    Cupboard - Run of {{ suite }} for {{ run.codebase }}
+    Cupboard - Run of {{ campaign_name }} for {{ run.codebase }}
 {% endblock page_title %}
 {% block body %}
     <div class="section" id="{{ run_id }}">
-        <h1>Run of {{ suite }} for {{ run.codebase }}</h1>
+        <h1>Run of {{ campaign_name }} for {{ run.codebase }}</h1>
         <!-- {{ run.result_branches }} -->
         <ul class="metadata">
             <li>
@@ -38,9 +38,9 @@
             <li>Success probability: {{ success_probability|round(2) }} (based on {{ total_previous_runs }} previous run{% if total_previous_runs != 1 %}s{% endif %})</li>
             <li>
                 Status: {{ display_result_code(result_code, failure_transient) |safe }}
-                {% if unchanged_run and suite not in ('unchanged', 'control') %}
+                {% if unchanged_run and campaign_name not in ('unchanged', 'control') %}
                     (<a href="/cupboard/c/{{ unchanged_run.codebase }}/{{ unchanged_run.id }}/">run</a> without changes: {{ display_result_code(unchanged_run.result_code, unchanged_run.failure_transient) |safe }})
-                {% elif suite not in ('unchanged', 'control') %}
+                {% elif campaign_name not in ('unchanged', 'control') %}
                     ({{ schedule_control_button(run.id, "schedule control run", id="schedule-control") }})
                 {% endif %}
                 {% if run.resume_from %}(<a href="/cupboard/c/{{ run.codebase }}/{{ run.resume_from }}/">base run</a>){% endif %}
@@ -56,12 +56,12 @@
                 <li class="queue-position.{{ run.codebase }}" style="display:none" />
             {% endif %}
             {{ result_code_explanation(result_code, run) }}
-            {% if suite not in ('unchanged', 'control') %}
+            {% if campaign_name not in ('unchanged', 'control') %}
                 {% set debdiff = show_debdiff() %}
             {% else %}
                 {% set debdiff = "" %}
             {% endif %}
-            {% if revision and suite not in ('unchanged', 'control') %}
+            {% if revision and campaign_name not in ('unchanged', 'control') %}
                 <li>
                     Diff: <a href="/api/run/{{ run_id }}/diff">raw diff</a>,
                     {% if debdiff %}
@@ -75,18 +75,18 @@
             <li style="display: none">Command: {{ command }}</li>
             <li style="display: none">Build version: {{ run.build_version }}</li>
         </ul>
-        {{ local_command(command, run.codebase, vcs_type, suite) }}
+        {{ local_command(command, run.codebase, vcs_type, campaign_name) }}
         {% if branch_url or campaign.default_empty %}
-            {{ reschedule_button(suite, codebase, "Reschedule") }}
-            {{ reschedule_button(suite, codebase, "Reschedule (from scratch)", data={"refresh": "1"}, id="reschedule-refresh") }}
-            {% if run.result_branches %}{{ publish_buttons(suite, run.codebase) }}{% endif %}
+            {{ reschedule_button(campaign_name, codebase, "Reschedule") }}
+            {{ reschedule_button(campaign_name, codebase, "Reschedule (from scratch)", data={"refresh": "1"}, id="reschedule-refresh") }}
+            {% if run.result_branches %}{{ publish_buttons(campaign_name, run.codebase) }}{% endif %}
         {% endif %}
         {{ reprocess_logs_button(run_id) }}
         {{ file_bug_buttons(config.bugtracker, run_id, result_code, verbatim_id="#log") }}
         {{ file_bug_buttons(campaign.bugtracker, run_id, result_code, verbatim_id="#log") }}
         {% if run.result_branches %}
-            {% if suite not in ('unchanged', 'control') %}
-                {{ merge_command(run.codebase, suite, run.result_branches, vcs_type) }}
+            {% if campaign_name not in ('unchanged', 'control') %}
+                {{ merge_command(run.codebase, campaign_name, run.result_branches, vcs_type) }}
             {% endif %}
         {% else %}
             {% if result_code not in ('nothing-to-do', 'nothing-new-to-do', 'missing-control-file', 'unparseable-changelog', 'inconsistent-source-format', 'upstream-branch-unknown', 'requires-nested-tree-support', 'upstream-unsupported-vcs-svn', 'control-files-in-root', 'success') %}
@@ -126,9 +126,9 @@
         {% if result %}
             <h2>Summary</h2>
             <!-- {{ result|tojson(indent=4) }} -->
-            {% include [suite + "/summary.html", "generic/summary.html"] %}
+            {% include [campaign_name + "/summary.html", "generic/summary.html"] %}
         {% endif %}
-        {% if revision and result_code in ('success', 'nothing-to-do') and suite not in ('unchanged', 'control') %}
+        {% if revision and result_code in ('success', 'nothing-to-do') and campaign_name not in ('unchanged', 'control') %}
             {{ display_vcs_diffs(show_diff, run.result_branches, run.result_tags) }}
         {% endif %}
         {% if debdiff %}

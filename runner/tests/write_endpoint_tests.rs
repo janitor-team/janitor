@@ -387,7 +387,7 @@ async fn post_update_run_persists_publish_status() {
     // the run check `publish_status != 'approved' or revision is not null`.
     sqlx::query(
         "INSERT INTO run (
-             id, suite, codebase, result_code, revision,
+             id, campaign, codebase, result_code, revision,
              start_time, finish_time, logfilenames, change_set
          )
          VALUES ($1, $2, $3, $4, $5,
@@ -632,7 +632,7 @@ async fn get_run_returns_codebase_campaign_publish_status() {
         .expect("insert change_set");
     sqlx::query(
         "INSERT INTO run (
-             id, suite, codebase, result_code,
+             id, campaign, codebase, result_code,
              start_time, finish_time, logfilenames, change_set
          )
          VALUES ($1, $2, $3, $4,
@@ -687,7 +687,7 @@ async fn get_run_returns_run_detail_with_result_branches() {
         .expect("insert change_set");
     sqlx::query(
         "INSERT INTO run (
-             id, suite, codebase, result_code,
+             id, campaign, codebase, result_code,
              main_branch_revision, revision,
              vcs_type, branch_url,
              start_time, finish_time, logfilenames, change_set
@@ -800,12 +800,12 @@ async fn insert_run(
     .expect("insert worker");
     sqlx::query(
         "INSERT INTO run (
-             id, suite, codebase, result_code,
+             id, campaign, codebase, result_code,
              start_time, finish_time, logfilenames,
              change_set, revision, main_branch_revision,
              worker, worker_link, failure_transient, description
          )
-         VALUES ($1, $2::suite_name, $3, $4,
+         VALUES ($1, $2::campaign_name, $3, $4,
                  $5 - INTERVAL '30 seconds', $5, '{}',
                  $6, $7, 'base-rev',
                  'worker-a', 'https://worker.invalid/a', false, 'ok')",
@@ -1074,7 +1074,7 @@ async fn get_queue_returns_scheduled_entries() {
     let pool = state.database.pool().clone();
     insert_codebase(&pool, "queue-listing-cb").await;
     sqlx::query(
-        "INSERT INTO queue (codebase, suite, command, context)
+        "INSERT INTO queue (codebase, campaign, command, context)
          VALUES ($1, $2, $3, $4)",
     )
     .bind("queue-listing-cb")
@@ -1194,7 +1194,7 @@ async fn post_schedule_returns_queue_position() {
     let pool = state.database.pool().clone();
     insert_codebase(&pool, "sched-pos-cb").await;
     sqlx::query(
-        "INSERT INTO candidate (codebase, suite, command)
+        "INSERT INTO candidate (codebase, campaign, command)
          VALUES ($1, $2, $3)",
     )
     .bind("sched-pos-cb")
@@ -1280,13 +1280,13 @@ async fn post_candidates_success_path_writes_queue_row() {
 
     // The candidate row must be in the queue table now.
     let queue_row: Option<(String, String)> =
-        sqlx::query_as("SELECT codebase, suite::text FROM queue WHERE codebase = 'cand-ok-cb'")
+        sqlx::query_as("SELECT codebase, campaign::text FROM queue WHERE codebase = 'cand-ok-cb'")
             .fetch_optional(&pool)
             .await
             .expect("queue lookup");
-    let (codebase, suite) = queue_row.expect("expected queue row for cand-ok-cb");
+    let (codebase, campaign) = queue_row.expect("expected queue row for cand-ok-cb");
     assert_eq!(codebase, "cand-ok-cb");
-    assert_eq!(suite, "test-campaign");
+    assert_eq!(campaign, "test-campaign");
 }
 
 /// `POST /candidates` with `value: 0` records the candidate in
@@ -1812,7 +1812,7 @@ async fn end_to_end_assignment_lifecycle() {
     // The run row is now in the database; verify the code we sent
     // in the worker result landed in `run.result_code`.
     let (result_code, codebase, campaign): (String, String, String) =
-        sqlx::query_as("SELECT result_code, codebase, suite::text FROM run WHERE id = $1")
+        sqlx::query_as("SELECT result_code, codebase, campaign::text FROM run WHERE id = $1")
             .bind(run_id)
             .fetch_one(&pool)
             .await
@@ -2453,7 +2453,7 @@ async fn assign_picks_lowest_priority_first() {
     // lowest priority so it should be picked first.
     for (cb, prio) in [("prio-a", 100i64), ("prio-b", 1), ("prio-c", 50)] {
         sqlx::query(
-            "INSERT INTO queue (codebase, suite, command, priority)
+            "INSERT INTO queue (codebase, campaign, command, priority)
              VALUES ($1, 'test-campaign', 'true', $2)",
         )
         .bind(cb)
@@ -2504,7 +2504,7 @@ async fn assign_prefers_higher_success_chance_within_same_priority() {
     // score-b has the highest -> should win despite identical priority.
     for (cb, chance) in [("score-a", 0.1f64), ("score-b", 0.9), ("score-c", 0.5)] {
         sqlx::query(
-            "INSERT INTO candidate (codebase, suite, command, success_chance)
+            "INSERT INTO candidate (codebase, campaign, command, success_chance)
              VALUES ($1, 'test-campaign', 'true', $2)",
         )
         .bind(cb)
@@ -2513,7 +2513,7 @@ async fn assign_prefers_higher_success_chance_within_same_priority() {
         .await
         .expect("insert candidate");
         sqlx::query(
-            "INSERT INTO queue (codebase, suite, command, priority)
+            "INSERT INTO queue (codebase, campaign, command, priority)
              VALUES ($1, 'test-campaign', 'true', 50)",
         )
         .bind(cb)
@@ -2640,7 +2640,7 @@ async fn post_update_run_publishes_publish_status_event() {
         .expect("insert change_set");
     sqlx::query(
         "INSERT INTO run (
-             id, suite, codebase, result_code, revision,
+             id, campaign, codebase, result_code, revision,
              start_time, finish_time, logfilenames, change_set
          )
          VALUES ('run-pubsub-1', 'test-campaign', 'pubsub-cb',
@@ -2843,7 +2843,7 @@ async fn get_workers_reports_run_count_per_worker() {
     for id in ["run-a", "run-b"] {
         sqlx::query(
             "INSERT INTO run (
-                 id, suite, codebase, worker, result_code,
+                 id, campaign, codebase, worker, result_code,
                  start_time, finish_time, logfilenames, change_set
              )
              VALUES ($1, 'test-campaign', 'worker-count-cb', 'busy-worker', 'success',
@@ -3261,7 +3261,7 @@ async fn get_candidate_returns_row_or_404() {
     let pool = state.database.pool().clone();
     insert_codebase(&pool, "cand-cb").await;
     sqlx::query(
-        "INSERT INTO candidate (codebase, suite, command, context, value, success_chance)
+        "INSERT INTO candidate (codebase, campaign, command, context, value, success_chance)
          VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind("cand-cb")
@@ -3329,7 +3329,7 @@ async fn get_run_followups_returns_candidate_pairs() {
     .await
     .expect("insert change_set");
     sqlx::query(
-        "INSERT INTO run (id, suite, codebase, result_code, \
+        "INSERT INTO run (id, campaign, codebase, result_code, \
                           start_time, finish_time, logfilenames, change_set) \
          VALUES ('run-origin', 'test-campaign', 'alpha', 'success', \
                  NOW() - INTERVAL '1 minute', NOW(), '{}', 'cs-followup')",
@@ -3348,7 +3348,7 @@ async fn get_run_followups_returns_candidate_pairs() {
                     let pool = pool.clone();
                     async move {
                         let row: (i32,) = sqlx::query_as(
-                            "INSERT INTO candidate (codebase, suite, command) \
+                            "INSERT INTO candidate (codebase, campaign, command) \
                          VALUES ($1, $2, 'true') RETURNING id",
                         )
                         .bind(cb)
@@ -3363,7 +3363,7 @@ async fn get_run_followups_returns_candidate_pairs() {
         .await,
     );
     sqlx::query(
-        "INSERT INTO candidate (codebase, suite, command) \
+        "INSERT INTO candidate (codebase, campaign, command) \
          VALUES ('gamma', 'test-campaign', 'true')",
     )
     .execute(&pool)
@@ -3408,7 +3408,7 @@ async fn get_run_followups_returns_candidate_pairs() {
 
     // Run without followups: empty list, not 404.
     sqlx::query(
-        "INSERT INTO run (id, suite, codebase, result_code, \
+        "INSERT INTO run (id, campaign, codebase, result_code, \
                           start_time, finish_time, logfilenames, change_set) \
          VALUES ('run-lonely', 'test-campaign', 'alpha', 'success', \
                  NOW() - INTERVAL '1 minute', NOW(), '{}', 'cs-followup')",
@@ -3448,7 +3448,7 @@ async fn get_candidates_filters_by_codebase_and_campaign() {
         ("gamma", "test-campaign"),
     ] {
         sqlx::query(
-            "INSERT INTO candidate (codebase, suite, command)
+            "INSERT INTO candidate (codebase, campaign, command)
              VALUES ($1, $2, 'true')",
         )
         .bind(cb)

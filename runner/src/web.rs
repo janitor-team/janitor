@@ -74,10 +74,10 @@ struct UpdateRunRequest {
 /// Request for resume information.
 #[derive(Debug, Deserialize, ToSchema)]
 struct ResumeInfoRequest {
-    /// Campaign name (stored as `run.suite` in the schema).
+    /// Campaign name.
     campaign: Campaign,
     /// Revision id of the resume branch's tip. Used together with
-    /// `campaign` to form the `(suite, revision)` resume lookup key.
+    /// `campaign` to form the `(campaign, revision)` resume lookup key.
     resume_revision: String,
 }
 
@@ -410,19 +410,18 @@ async fn schedule(
     let pool = state.database.pool();
 
     let (campaign, codebase, run_command) = if let Some(run_id) = request.run_id.as_ref() {
-        let row: Option<(Campaign, CodebaseName, Option<String>)> = match sqlx::query_as(
-            "SELECT suite AS campaign, codebase, command FROM run WHERE id = $1",
-        )
-        .bind(run_id)
-        .fetch_optional(pool)
-        .await
-        {
-            Ok(row) => row,
-            Err(e) => {
-                log::error!("Failed to find run {}: {}", run_id, e);
-                return db_error();
-            }
-        };
+        let row: Option<(Campaign, CodebaseName, Option<String>)> =
+            match sqlx::query_as("SELECT campaign, codebase, command FROM run WHERE id = $1")
+                .bind(run_id)
+                .fetch_optional(pool)
+                .await
+            {
+                Ok(row) => row,
+                Err(e) => {
+                    log::error!("Failed to find run {}: {}", run_id, e);
+                    return db_error();
+                }
+            };
         match row {
             Some((campaign, codebase, command)) => (campaign, codebase, command),
             None => {
@@ -449,7 +448,7 @@ async fn schedule(
     // first, then the campaign config's command, then the run row's
     // command (only set when run_id was supplied).
     let candidate_command: Option<String> = match sqlx::query_scalar(
-        "SELECT command FROM candidate WHERE codebase = $1 AND suite = $2",
+        "SELECT command FROM candidate WHERE codebase = $1 AND campaign = $2",
     )
     .bind(&codebase)
     .bind(&campaign)
@@ -903,7 +902,7 @@ async fn update_codebases(
 }
 
 /// `DELETE /candidates/{id}` -- delete a candidate row plus its
-/// followup entries and any queue items for the same (suite,
+/// followup entries and any queue items for the same (campaign,
 /// codebase). Returns 200 with an empty object on success, or 404
 /// when no such candidate exists.
 #[utoipa::path(
@@ -1333,9 +1332,9 @@ async fn upload_candidates(
         let insert_result = sqlx::query_scalar::<_, i32>(
             r#"
             INSERT INTO candidate
-            (suite, command, change_set, context, value, success_chance, publish_policy, codebase)
+            (campaign, command, change_set, context, value, success_chance, publish_policy, codebase)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            ON CONFLICT (codebase, suite, coalesce(change_set, ''::text))
+            ON CONFLICT (codebase, campaign, coalesce(change_set, ''::text))
             DO UPDATE SET
                 context = EXCLUDED.context,
                 value = EXCLUDED.value,
@@ -1409,7 +1408,7 @@ async fn upload_candidates(
               ON last_effective_runs.revision = merge_proposal.revision
             WHERE merge_proposal.status = 'open'
               AND last_effective_runs.codebase = $1
-              AND last_effective_runs.suite = $2
+              AND last_effective_runs.campaign = $2
               AND last_effective_runs.command != $3
             "#,
         )
@@ -1578,7 +1577,7 @@ async fn list_runs(
     Query(params): Query<RunListQuery>,
 ) -> Response {
     let mut query = String::from(
-        "SELECT id, codebase, suite::text AS campaign, result_code, \
+        "SELECT id, codebase, campaign::text AS campaign, result_code, \
                 (start_time AT TIME ZONE 'UTC') AS start_time, \
                 (finish_time AT TIME ZONE 'UTC') AS finish_time, \
                 EXTRACT(epoch FROM (finish_time - start_time))::bigint AS duration_seconds, \
@@ -1595,7 +1594,7 @@ async fn list_runs(
     }
     if params.campaign.is_some() {
         idx += 1;
-        conditions.push(format!("suite = ${}", idx));
+        conditions.push(format!("campaign = ${}", idx));
     }
     if params.revision.is_some() {
         idx += 1;
@@ -1753,11 +1752,11 @@ async fn get_run_followups(State(state): State<Arc<AppState>>, Path(id): Path<Ru
     // deleted don't surface as rows with null codebase/campaign; the
     // UI has no useful way to display those.
     let rows: Result<Vec<RunFollowup>, _> = sqlx::query_as(
-        "SELECT candidate.codebase AS codebase, candidate.suite AS campaign \
+        "SELECT candidate.codebase AS codebase, candidate.campaign \
          FROM followup \
          JOIN candidate ON candidate.id = followup.candidate \
          WHERE followup.origin = $1 \
-         ORDER BY candidate.codebase, candidate.suite",
+         ORDER BY candidate.codebase, candidate.campaign",
     )
     .bind(&id)
     .fetch_all(state.database.pool())
@@ -1849,12 +1848,12 @@ async fn update_run(
         .update_run_publish_status(&id, &request.publish_status)
         .await
     {
-        Ok(Some((run_id, codebase, suite))) => {
+        Ok(Some((run_id, codebase, campaign))) => {
             let update = PublishStatusUpdate {
                 run_id,
                 publish_status: request.publish_status,
                 codebase,
-                campaign: suite,
+                campaign,
             };
             let payload = serde_json::to_value(&update).expect("PublishStatusUpdate is plain data");
             // Best-effort fanout to subscribers. A failed publish
@@ -2245,13 +2244,13 @@ async fn admin_security_stats(State(state): State<Arc<AppState>>) -> Response {
 /// `POST /admin/runs/cleanup` -- reschedule (and optionally delete)
 /// run rows that match a result-code (and optional time range /
 /// campaign) filter. For each matched row, a fresh queue entry is
-/// inserted at high priority for the same (codebase, suite, command).
+/// inserted at high priority for the same (codebase, campaign, command).
 /// When `delete` is truthy, the `last_run` / `run.resume_from` FK
 /// references are cleared and the row is deleted.
 ///
 /// Query parameters:
 /// * `result_code` (required) -- exact result code to match.
-/// * `campaign` (optional) -- restrict to a single suite.
+/// * `campaign` (optional) -- restrict to a single campaign.
 /// * `description_like` (optional) -- `ILIKE` pattern to match against
 ///   `run.description`. The caller supplies the wildcards (`%foo%`),
 ///   matching SQL semantics; needed because a single result_code
@@ -2345,13 +2344,13 @@ async fn admin_cleanup_runs(
     // schema; cast to timestamptz for the comparison so the bound
     // we received in UTC matches the stored value's intent.
     let mut sql = String::from(
-        "SELECT id, codebase, suite::text AS suite, command \
+        "SELECT id, codebase, campaign::text AS campaign, command \
          FROM run \
          WHERE result_code = $1",
     );
     let mut next_param = 2;
     if q.campaign.is_some() {
-        sql.push_str(&format!(" AND suite::text = ${}", next_param));
+        sql.push_str(&format!(" AND campaign::text = ${}", next_param));
         next_param += 1;
     }
     if q.description_like.is_some() {
@@ -2440,23 +2439,23 @@ async fn admin_cleanup_runs(
         }
     };
 
-    // Reschedule each (codebase, suite, command). The queue table
-    // has a unique index on `(codebase, suite, coalesce(change_set,
+    // Reschedule each (codebase, campaign, command). The queue table
+    // has a unique index on `(codebase, campaign, coalesce(change_set,
     // ''))`. Use ON CONFLICT so a re-run is idempotent: bump priority
     // on an existing queue row instead of failing.
     let requester = format!("cleanup:{}", q.result_code);
     let mut rescheduled = 0i64;
-    for (_id, codebase, suite, command) in rows.iter() {
+    for (_id, codebase, campaign, command) in rows.iter() {
         let r = sqlx::query(
-            "INSERT INTO queue (codebase, suite, command, priority, bucket, requester) \
-             VALUES ($1, $2::suite_name, $3, 0, 'reschedule', $4) \
-             ON CONFLICT (codebase, suite, coalesce(change_set, '')) DO UPDATE \
+            "INSERT INTO queue (codebase, campaign, command, priority, bucket, requester) \
+             VALUES ($1, $2::campaign_name, $3, 0, 'reschedule', $4) \
+             ON CONFLICT (codebase, campaign, coalesce(change_set, '')) DO UPDATE \
              SET priority = LEAST(queue.priority, 0), \
                  bucket = 'reschedule', \
                  requester = EXCLUDED.requester",
         )
         .bind(codebase)
-        .bind(suite)
+        .bind(campaign)
         .bind(command)
         .bind(&requester)
         .execute(&mut *tx)
@@ -2467,7 +2466,7 @@ async fn admin_cleanup_runs(
                 log::warn!(
                     "cleanup-runs: failed to reschedule {} ({}/{}): {}",
                     codebase,
-                    suite,
+                    campaign,
                     command,
                     e
                 );
@@ -4932,7 +4931,7 @@ distribution {
     /// Regression for `admin_cleanup_runs`. The handler selects
     /// run IDs matching `result_code` plus optional `campaign` and
     /// `[min_finish_time, max_finish_time)`, then reschedules each
-    /// `(codebase, suite, command)` and clears the `last_run.*` /
+    /// `(codebase, campaign, command)` and clears the `last_run.*` /
     /// `run.resume_from` FKs before deleting. The Python original
     /// had no equivalent; this is the canonical contract test.
     ///
@@ -4969,7 +4968,7 @@ distribution {
 
         let make_run = |id: &str,
                         codebase: &str,
-                        suite: &str,
+                        campaign: &str,
                         cs: &str,
                         cmd: &str,
                         rc: &str,
@@ -4977,7 +4976,7 @@ distribution {
             let pool = pool.clone();
             let id = id.to_string();
             let codebase = codebase.to_string();
-            let suite = suite.to_string();
+            let campaign = campaign.to_string();
             let cs = cs.to_string();
             let cmd = cmd.to_string();
             let rc = rc.to_string();
@@ -4985,15 +4984,15 @@ distribution {
                 sqlx::query(
                     "INSERT INTO run \
                      (id, command, start_time, finish_time, result_code, \
-                      suite, change_set, codebase, logfilenames) \
-                     VALUES ($1, $2, $3, $4, $5, $6::suite_name, $7, $8, ARRAY[]::text[])",
+                      campaign, change_set, codebase, logfilenames) \
+                     VALUES ($1, $2, $3, $4, $5, $6::campaign_name, $7, $8, ARRAY[]::text[])",
                 )
                 .bind(id)
                 .bind(cmd)
                 .bind(finish - chrono::Duration::minutes(1))
                 .bind(finish)
                 .bind(rc)
-                .bind(suite)
+                .bind(campaign)
                 .bind(cs)
                 .bind(codebase)
                 .execute(&pool)
@@ -5087,10 +5086,10 @@ distribution {
         //    `min=early` (inclusive), `max=late` (exclusive).
         let max_window = Utc.with_ymd_and_hms(2026, 3, 1, 0, 0, 0).unwrap();
         let rows: Vec<(String, String, String, String)> = sqlx::query_as(
-            "SELECT id, codebase, suite::text AS suite, command \
+            "SELECT id, codebase, campaign::text AS campaign, command \
              FROM run \
              WHERE result_code = $1 \
-               AND suite::text = $2 \
+               AND campaign::text = $2 \
                AND (finish_time AT TIME ZONE 'UTC') >= $3 \
                AND (finish_time AT TIME ZONE 'UTC') < $4 \
              ORDER BY finish_time ASC",
@@ -5223,9 +5222,9 @@ distribution {
                 sqlx::query(
                     "INSERT INTO run \
                      (id, command, start_time, finish_time, result_code, description, \
-                      suite, change_set, codebase, logfilenames) \
+                      campaign, change_set, codebase, logfilenames) \
                      VALUES ($1, 'cmd', $2, $3, 'lintian', $4, \
-                             'lintian-fixes'::suite_name, 'cs1', $5, ARRAY[]::text[])",
+                             'lintian-fixes'::campaign_name, 'cs1', $5, ARRAY[]::text[])",
                 )
                 .bind(id)
                 .bind(when - chrono::Duration::minutes(1))
@@ -5311,9 +5310,9 @@ distribution {
             sqlx::query(
                 "INSERT INTO run \
                  (id, command, start_time, finish_time, result_code, \
-                  suite, change_set, codebase, logfilenames) \
+                  campaign, change_set, codebase, logfilenames) \
                  VALUES ($1, 'cmd', $2, $3, 'success', \
-                         'lintian-fixes'::suite_name, 'cs1', $4, ARRAY[]::text[])",
+                         'lintian-fixes'::campaign_name, 'cs1', $4, ARRAY[]::text[])",
             )
             .bind(id)
             .bind(when - chrono::Duration::minutes(1))
@@ -5326,9 +5325,9 @@ distribution {
 
         // candidate row needed for followup (origin + candidate).
         sqlx::query(
-            "INSERT INTO candidate (id, codebase, suite, command) \
-             VALUES (1, 'alpha', 'lintian-fixes'::suite_name, 'cmd'), \
-                    (2, 'beta',  'lintian-fixes'::suite_name, 'cmd')",
+            "INSERT INTO candidate (id, codebase, campaign, command) \
+             VALUES (1, 'alpha', 'lintian-fixes'::campaign_name, 'cmd'), \
+                    (2, 'beta',  'lintian-fixes'::campaign_name, 'cmd')",
         )
         .execute(pool)
         .await
@@ -5586,7 +5585,7 @@ distribution {
             .unwrap();
         sqlx::query(
             "INSERT INTO run (id, command, start_time, finish_time, result_code, \
-             suite, change_set, codebase, logfilenames) \
+             campaign, change_set, codebase, logfilenames) \
              VALUES ('run-1', 'cmd', NOW(), NOW(), 'success', 'mycampaign', 'cs1', \
              'foo', ARRAY['build.log', 'worker.log'])",
         )

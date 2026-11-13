@@ -6,7 +6,7 @@ For runs:
 * runs/$uuid/$function tags
 * runs/$uuid/tags/$tag tags for new/updated upstream tags
 
-There is a symref at refs/$suite/$function that points at said tag and updated
+There is a symref at refs/$campaign/$function that points at said tag and updated
 
 Also, track this information in the database.
 
@@ -30,5 +30,5 @@ Names for functions:
    * name of remote ("origin", "upstream")
    * URL of remote
 
-* Push symrefs (refs/$suite/$function => refs/tags/$uuid/$function)
+* Push symrefs (refs/$campaign/$function => refs/tags/$uuid/$function)
   + needs to be done by publisher

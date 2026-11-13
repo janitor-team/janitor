@@ -38,7 +38,7 @@ async def insert_build_only_run(conn, run_id):
     )
     await _insert_codebase(conn, "foo")
     await conn.execute(
-        "INSERT INTO candidate (suite, command, codebase, publish_policy) "
+        "INSERT INTO candidate (campaign, command, codebase, publish_policy) "
         "VALUES ('mycampaign', 'true', 'foo', 'mypolicy')"
     )
     now = utcnow()

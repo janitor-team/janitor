@@ -6,11 +6,11 @@
 {% endblock sidebar %}
 {% from "run_util.html" import local_command, merge_command, reschedule_button, describe_publish_policy, publish_buttons, result_code_explanation, display_result_code, display_vcs_diffs, display_branch_url with context %}
 {% block page_title %}
-    {{ suite }} codebase - {{ codebase }}
+    {{ campaign_name }} codebase - {{ codebase }}
 {% endblock page_title %}
 {% block body %}
     <div class="section" id="{{ codebase }}">
-        <h1>{{ suite }} codebase - {{ codebase }}</h1>
+        <h1>{{ campaign_name }} codebase - {{ codebase }}</h1>
         <ul class="metadata">
             {% if publish_policy %}<li>Automatic publish policy: {{ describe_publish_policy(publish_policy) }}</li>{% endif %}
             {% if changelog_policy != 'auto' %}<li>Changelog update policy: {{ changelog_policy }}</li>{% endif %}
@@ -30,7 +30,7 @@
                 <li id="queue-position.{{ codebase }}" />
             {% endif %}
         </ul>
-        {% if branch_url or campaign.default_empty %}{{ reschedule_button(suite, codebase, "Schedule a new run") }}{% endif %}
+        {% if branch_url or campaign.default_empty %}{{ reschedule_button(campaign_name, codebase, "Schedule a new run") }}{% endif %}
         {% if merge_proposals %}
             <div class="section" id="recent-merge-proposals">
                 <h2>Recent merge proposals</h2>
@@ -54,8 +54,8 @@
             {% if run.result_branches %}
                 <div class="section" id="ready-changes">
                     <h2>Ready changes</h2>
-                    {% if run.result_branches %}{{ publish_buttons(suite, run.codebase) }}{% endif %}
-                    {{ merge_command(run.codebase, suite, run.result_branches, vcs_type) }}
+                    {% if run.result_branches %}{{ publish_buttons(campaign_name, run.codebase) }}{% endif %}
+                    {{ merge_command(run.codebase, campaign_name, run.result_branches, vcs_type) }}
                 </div>
                 {{ display_vcs_diffs(show_diff, run.result_branches, run.result_tags) }}
                 {% if debdiff %}
@@ -69,7 +69,7 @@
                     {% endif %}
                 {% endif %}
             {% endif %}
-            {% set run_locally = local_command(command, run.codebase, vcs_type, suite) %}
+            {% set run_locally = local_command(command, run.codebase, vcs_type, campaign_name) %}
             {% if run_locally|trim %}
                 <h2>Run locally</h2>
                 {{ run_locally }}

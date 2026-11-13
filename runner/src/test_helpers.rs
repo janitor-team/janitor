@@ -57,7 +57,7 @@ pub async fn insert_test_run(
     sqlx::query(
         r#"
         INSERT INTO run (
-            id, suite, codebase, result_code, revision,
+            id, campaign, codebase, result_code, revision,
             start_time, finish_time, logfilenames, change_set
         )
         VALUES ($1, $2, $3, $4, $5, NOW() - INTERVAL '1 minute', NOW(), '{}', $6)
@@ -126,7 +126,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            // The resume lookup is keyed on (suite, revision), not on
+            // The resume lookup is keyed on (campaign, revision), not on
             // any per-run branch name.
             let result = resume_service
                 .check_resume_result(&janitor_types::Campaign::new("lintian-fixes").unwrap(), "rev-tip-1")
@@ -199,7 +199,7 @@ mod tests {
             .unwrap();
             sqlx::query(
                 "INSERT INTO run (
-                     id, suite, codebase, result_code,
+                     id, campaign, codebase, result_code,
                      start_time, finish_time, logfilenames, change_set
                  )
                  VALUES (
@@ -214,7 +214,7 @@ mod tests {
 
             // queue.id is serial (int4); cast so we can decode into i64.
             let queue_id: i64 = sqlx::query_scalar(
-                "INSERT INTO queue (codebase, suite, command)
+                "INSERT INTO queue (codebase, campaign, command)
                  VALUES ($1, $2, $3) RETURNING id::bigint",
             )
             .bind("finish-run-codebase")
@@ -295,21 +295,21 @@ mod tests {
             assert_eq!(change_set_count, 1);
 
             // The core run row should reflect every column we set.
-            let (run_suite, run_code, run_command, run_worker, run_codebase): (
+            let (run_campaign, run_code, run_command, run_worker, run_codebase): (
                 String,
                 String,
                 Option<String>,
                 Option<String>,
                 String,
             ) = sqlx::query_as(
-                "SELECT suite, result_code, command, worker, codebase
+                "SELECT campaign, result_code, command, worker, codebase
                  FROM run WHERE id = $1",
             )
             .bind(log_id)
             .fetch_one(test_db.pool())
             .await
             .unwrap();
-            assert_eq!(run_suite, "lintian-fixes");
+            assert_eq!(run_campaign, "lintian-fixes");
             assert_eq!(run_code, "success");
             assert_eq!(run_command.as_deref(), Some("lintian-brush"));
             assert_eq!(run_worker.as_deref(), Some("worker-42"));

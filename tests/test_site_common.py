@@ -42,7 +42,7 @@ async def test_get_unchanged_run(con):
     expected = {
         "id": "control-run",
         "codebase": "foo",
-        "suite": "control",
+        "campaign": "control",
         "result_code": "success",
         "revision": "revid",
     }
@@ -63,7 +63,7 @@ async def test_generate_codebase_context(aiohttp_client, db, con):
             finish_time=now - timedelta(hours=1 - i),
         )
     await con.execute(
-        "INSERT INTO candidate (codebase, suite, command, context, value, "
+        "INSERT INTO candidate (codebase, campaign, command, context, value, "
         "success_chance) VALUES ('foo', 'mycampaign', 'true', 'ctx', 10, 0.5)"
     )
     await con.execute(

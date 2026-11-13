@@ -249,7 +249,7 @@ impl Run {
 
 async fn get_run(pool: &sqlx::PgPool, run_id: &RunId) -> sqlx::Result<Option<Run>> {
     sqlx::query_as::<_, Run>(
-        r#"SELECT result_code, source AS build_source, suite::text AS campaign, id,
+        r#"SELECT result_code, source AS build_source, campaign::text AS campaign, id,
                   debian_build.version AS build_version, run.codebase,
                   run.main_branch_revision
            FROM run
@@ -267,7 +267,7 @@ async fn get_unchanged_run(
     main_branch_revision: &RevisionId,
 ) -> sqlx::Result<Option<Run>> {
     sqlx::query_as::<_, Run>(
-        r#"SELECT result_code, source AS build_source, suite::text AS campaign, id,
+        r#"SELECT result_code, source AS build_source, campaign::text AS campaign, id,
                   debian_build.version AS build_version, run.codebase,
                   run.main_branch_revision
            FROM run
@@ -1293,7 +1293,7 @@ async fn handle_precache_all(State(state): State<Arc<AppState>>) -> Result<Respo
            WHERE run.result_code = 'success'
              AND unchanged_run.result_code = 'success'
              AND run.main_branch_revision != run.revision
-             AND run.suite NOT IN ('control', 'unchanged')
+             AND run.campaign NOT IN ('control', 'unchanged')
            ORDER BY run.finish_time DESC, unchanged_run.finish_time DESC"#,
     )
     .fetch_all(&state.pool)
@@ -2033,7 +2033,7 @@ mod tests {
             .execute(&db.pool)
             .await
             .unwrap();
-            for (id, suite, result_code, revision, main_branch_revision, change_set) in [
+            for (id, campaign, result_code, revision, main_branch_revision, change_set) in [
                 ("ctl", "control", "success", "base", "base", "ctl"),
                 ("r1", "lintian-fixes", "success", "new1", "base", "r1"),
                 ("r2", "lintian-fixes", "build-failed", "new2", "base", "r2"),
@@ -2042,13 +2042,13 @@ mod tests {
             ] {
                 sqlx::query(
                     "INSERT INTO run (id, command, start_time, finish_time, result_code, \
-                     suite, change_set, codebase, revision, main_branch_revision, \
+                     campaign, change_set, codebase, revision, main_branch_revision, \
                      logfilenames) \
                      VALUES ($1, 'cmd', NOW(), NOW(), $2, $3, $4, 'foo', $5, $6, '{}')",
                 )
                 .bind(id)
                 .bind(result_code)
-                .bind(suite)
+                .bind(campaign)
                 .bind(change_set)
                 .bind(revision)
                 .bind(main_branch_revision)

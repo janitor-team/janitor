@@ -9,7 +9,7 @@ use std::fmt;
 
 /// Information about a run that can be resumed from.
 ///
-/// The resume lookup is keyed on `(suite, revision)` -- the revision
+/// The resume lookup is keyed on `(campaign, revision)` -- the revision
 /// of the resume branch's tip -- not on a per-run branch name. The
 /// `branch_name` field is kept for backwards-compatible
 /// serialization, populated from `new_result_branch.remote_name` for
@@ -19,7 +19,7 @@ use std::fmt;
 pub struct ResumeInfo {
     /// ID of the run to resume from.
     pub run_id: RunId,
-    /// Campaign (schema column: `suite`) that produced the run.
+    /// Campaign that produced the run.
     pub campaign: Campaign,
     /// Codebase the run targeted.
     pub codebase: CodebaseName,
@@ -85,7 +85,7 @@ impl ResumeService {
     }
 
     /// Check if a resume result exists for the given campaign and
-    /// resume-branch revision. The lookup keys on `(suite, revision)`,
+    /// resume-branch revision. The lookup keys on `(campaign, revision)`,
     /// where `revision` is the tip revision of the resume branch as
     /// returned by `branch.last_revision()`. Skips runs whose
     /// `publish_status` is `rejected`.
@@ -111,7 +111,7 @@ impl ResumeService {
             r#"
             SELECT
                 r.id,
-                r.suite AS campaign,
+                r.campaign,
                 r.codebase,
                 r.result_code,
                 r.revision,
@@ -124,7 +124,7 @@ impl ResumeService {
                     LIMIT 1
                 ) AS main_remote_name
             FROM run r
-            WHERE r.suite = $1
+            WHERE r.campaign = $1
               AND r.revision = $2
               AND r.result_code = 'success'
               AND r.finish_time IS NOT NULL
@@ -223,9 +223,9 @@ impl ResumeService {
         let row: Option<RunPair> = sqlx::query_as(
             r#"
             SELECT
-                r1.suite as current_campaign,
+                r1.campaign as current_campaign,
                 r1.codebase as current_codebase,
-                r2.suite as resume_campaign,
+                r2.campaign as resume_campaign,
                 r2.codebase as resume_codebase,
                 r2.result_code as resume_result
             FROM run r1, run r2

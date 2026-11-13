@@ -87,7 +87,7 @@ async fn seed_run(
     sqlx::query(
         r#"
         INSERT INTO run (
-            id, suite, codebase, command, result_code, revision,
+            id, campaign, codebase, command, result_code, revision,
             branch_url, value, start_time, finish_time, logfilenames,
             change_set, vcs_type
         ) VALUES ($1, $2, $3, $4, 'success', $5, $6, $7, $8, $9, '{}', $10, 'git')
@@ -195,7 +195,7 @@ async fn seed_publish_policy_and_candidate(
     .unwrap();
 
     sqlx::query(
-        "INSERT INTO candidate (suite, value, command, publish_policy, codebase)
+        "INSERT INTO candidate (campaign, value, command, publish_policy, codebase)
          VALUES ($1, 100, $2, $3, $4)
          ON CONFLICT DO NOTHING",
     )
@@ -340,7 +340,7 @@ test_with_database! {
             .unwrap()
             .expect("get_last_effective_run returned None");
         assert_eq!(last.id, "run-new");
-        assert_eq!(last.suite, "lintian-fixes");
+        assert_eq!(last.campaign, "lintian-fixes");
         assert_eq!(last.codebase, "cb-1");
         assert_eq!(
             last.revision.as_ref().map(|r| r.to_string()),
@@ -580,7 +580,7 @@ test_with_database! {
             .expect("get_run returned None for existing run");
         assert_eq!(run.id, "run-1");
         assert_eq!(run.codebase, "cb-1");
-        assert_eq!(run.suite, "lintian-fixes");
+        assert_eq!(run.campaign, "lintian-fixes");
         assert_eq!(run.command, "lintian-brush");
         assert_eq!(run.result_code, "success");
         assert_eq!(run.value, Some(42));
@@ -636,7 +636,7 @@ test_with_database! {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO candidate (suite, value, command, publish_policy, codebase)
+            "INSERT INTO candidate (campaign, value, command, publish_policy, codebase)
              VALUES ('lintian-fixes', 100, 'lintian-brush', 'test-policy', 'cb-1')",
         )
         .execute(test_db.pool())

@@ -153,7 +153,7 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
-            "INSERT INTO run (id, codebase, suite, change_set, logfilenames, result_code,
+            "INSERT INTO run (id, codebase, campaign, change_set, logfilenames, result_code,
                               start_time, finish_time) VALUES
              ('r1', 'cb', 'lintian-fixes', 'cs', '{worker.log,missing.log}', 'success',
               '2024-01-01 00:00:00', '2024-01-01 00:00:01'),

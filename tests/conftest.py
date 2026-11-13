@@ -78,7 +78,7 @@ async def _insert_run(
     )
     await conn.execute(
         "INSERT INTO run (id, command, result_code, start_time, finish_time, "
-        "main_branch_revision, revision, result, suite, vcs_type, branch_url, "
+        "main_branch_revision, revision, result, campaign, vcs_type, branch_url, "
         "subpath, logfilenames, value, change_set, codebase, description) "
         "VALUES ($1, 'true', $7, $2, $3, 'revid', 'revid', '{}', $4, "
         "'git', $5, '', '{}', 1, $1, $6, $8)",

@@ -86,7 +86,7 @@ impl RedisPublisher {
 pub struct PublishEvent {
     /// The codebase that was published.
     pub codebase: CodebaseName,
-    /// The campaign/suite that was published.
+    /// The campaign that was published.
     pub campaign: Campaign,
     /// The publish mode used.
     pub mode: String,
@@ -125,7 +125,7 @@ pub struct MergeProposalEvent {
     pub status: String,
     /// The codebase this proposal belongs to.
     pub codebase: CodebaseName,
-    /// The campaign/suite this proposal belongs to.
+    /// The campaign this proposal belongs to.
     pub campaign: Campaign,
     /// The target branch URL.
     pub target_branch_url: String,
@@ -154,7 +154,7 @@ pub struct PublishStatusMessage {
     pub publish_status: String,
     /// Codebase the run belongs to.
     pub codebase: CodebaseName,
-    /// Campaign (run.suite) the run belongs to.
+    /// Campaign (run.campaign) the run belongs to.
     pub campaign: Campaign,
 }
 
@@ -281,12 +281,17 @@ impl RedisSubscriber {
         };
 
         // Campaign config from the static config loaded at startup.
-        let campaign_config = match state.config.campaign.iter().find(|c| c.name() == run.suite) {
+        let campaign_config = match state
+            .config
+            .campaign
+            .iter()
+            .find(|c| c.name() == run.campaign)
+        {
             Some(c) => c,
             None => {
                 log::warn!(
-                    "No campaign config for suite {} when handling publish-status",
-                    run.suite
+                    "No campaign config for {} when handling publish-status",
+                    run.campaign
                 );
                 return Ok(());
             }
@@ -294,13 +299,13 @@ impl RedisSubscriber {
 
         // Publish policy = (role -> (mode, max_frequency_days), command, rate_limit_bucket).
         let (policy_map, command, rate_limit_bucket) =
-            match crate::get_publish_policy(&state.conn, &run.codebase, &run.suite).await? {
+            match crate::get_publish_policy(&state.conn, &run.codebase, &run.campaign).await? {
                 Some(p) => p,
                 None => {
                     log::warn!(
                         "No publish policy for {}/{}, skipping",
                         run.codebase,
-                        run.suite
+                        run.campaign
                     );
                     return Ok(());
                 }
@@ -315,7 +320,7 @@ impl RedisSubscriber {
                         "Unknown mode {:?} in publish policy for {}/{}/{}: {}",
                         mode_str,
                         run.codebase,
-                        run.suite,
+                        run.campaign,
                         role,
                         e
                     );
@@ -345,7 +350,7 @@ impl RedisSubscriber {
                 log::warn!(
                     "publish_from_policy failed for {}/{}/{}: {}",
                     run.codebase,
-                    run.suite,
+                    run.campaign,
                     role,
                     e
                 );
@@ -443,7 +448,7 @@ mod tests {
                  VALUES ('cb-1', 'https://example.invalid/moved', 'https://example.invalid/moved', 'git')",
                 "INSERT INTO change_set (id, campaign) VALUES ('cs-1', 'lintian-fixes')",
                 "INSERT INTO run (
-                    id, codebase, suite, command, start_time, finish_time, result_code,
+                    id, codebase, campaign, command, start_time, finish_time, result_code,
                     branch_url, target_branch_url, change_set, logfilenames, vcs_type
                  ) VALUES
                     ('run-target', 'cb-1', 'lintian-fixes', 'noop', NOW(), NOW(), 'success',

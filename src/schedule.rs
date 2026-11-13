@@ -60,7 +60,7 @@ pub async fn iter_schedule_requests_from_candidates(
 SELECT
   codebase.name AS codebase,
   codebase.branch_url AS branch_url,
-  candidate.suite AS campaign,
+  candidate.campaign,
   candidate.context AS context,
   candidate.value::bigint AS value,
   candidate.success_chance AS success_chance,
@@ -83,7 +83,7 @@ WHERE TRUE
         query.push("::text[])");
     }
     if let Some(campaign) = campaign {
-        query.push(" AND candidate.suite = ");
+        query.push(" AND candidate.campaign = ");
         query.push_bind(campaign);
     }
 
@@ -119,7 +119,7 @@ WHERE failure_transient is not True
         query.push_bind(codebase);
     }
     if let Some(campaign) = campaign {
-        query.push(" AND suite = ");
+        query.push(" AND campaign = ");
         query.push_bind(campaign);
     }
     // AVG(...) with no matching rows returns a single-row NULL, not
@@ -218,7 +218,7 @@ SELECT
   finish_time - start_time AS duration,
   start_time
 FROM run
-WHERE codebase = $1 AND suite = $2 AND failure_transient IS NOT True
+WHERE codebase = $1 AND campaign = $2 AND failure_transient IS NOT True
 ORDER BY start_time DESC
 "#,
     );
@@ -407,7 +407,7 @@ pub async fn do_schedule_regular(
         // Option semantics so downstream defaulting (matches Python's
         // `row["value"] -> None`) can propagate.
         let candidate = sqlx::query_as::<_, (Option<i32>, Option<f64>, String, Option<String>)>(
-            "SELECT value, success_chance, command, context FROM candidate WHERE codebase = $1 and suite = $2 and coalesce(change_set, '') = $3").bind(codebase).bind(campaign).bind(change_set.map_or("", |c| c.as_str())).fetch_optional(conn).await?;
+            "SELECT value, success_chance, command, context FROM candidate WHERE codebase = $1 and campaign = $2 and coalesce(change_set, '') = $3").bind(codebase).bind(campaign).bind(change_set.map_or("", |c| c.as_str())).fetch_optional(conn).await?;
         let candidate = if let Some(candidate) = candidate {
             candidate
         } else {
@@ -876,7 +876,7 @@ mod tests {
         sqlx::raw_sql(
             "INSERT INTO named_publish_policy (name, per_branch_policy) VALUES
              ('default', ARRAY[ROW('main', 'propose', NULL)::branch_publish_policy]);
-             INSERT INTO candidate (suite, command, codebase, value, context, success_chance,
+             INSERT INTO candidate (campaign, command, codebase, value, context, success_chance,
                                     publish_policy)
              VALUES ('lintian-fixes', 'lintian-brush', 'cb', 5, 'ctx', 0.5, 'default')",
         )
@@ -912,7 +912,7 @@ mod tests {
             "INSERT INTO codebase (name) VALUES ('other');
              INSERT INTO named_publish_policy (name, per_branch_policy) VALUES
              ('default', ARRAY[ROW('main', 'propose', NULL)::branch_publish_policy]);
-             INSERT INTO candidate (suite, command, codebase, value, context, success_chance,
+             INSERT INTO candidate (campaign, command, codebase, value, context, success_chance,
                                     publish_policy)
              VALUES ('lintian-fixes', 'lintian-brush', 'cb', 5, 'ctx', 0.5, 'default')",
         )
@@ -935,7 +935,7 @@ mod tests {
                 .await
                 .unwrap();
             let queue: Vec<(String, String, i64)> =
-                sqlx::query_as("SELECT codebase, suite, priority FROM queue")
+                sqlx::query_as("SELECT codebase, campaign, priority FROM queue")
                     .fetch_all(pool)
                     .await
                     .unwrap();
@@ -953,7 +953,7 @@ mod tests {
         };
         let pool = db.pool();
         sqlx::query(
-            "INSERT INTO run (id, codebase, suite, change_set, logfilenames, result_code,
+            "INSERT INTO run (id, codebase, campaign, change_set, logfilenames, result_code,
                               start_time, finish_time) VALUES
              ('r1', 'cb', 'lintian-fixes', 'cs', '{}', 'success',
               '2024-01-01 00:00:00', '2024-01-02 00:00:01.5'),
@@ -990,7 +990,7 @@ mod tests {
         };
         let pool = db.pool();
         sqlx::query(
-            "INSERT INTO run (id, codebase, suite, change_set, logfilenames, result_code,
+            "INSERT INTO run (id, codebase, campaign, change_set, logfilenames, result_code,
                               start_time, finish_time) VALUES
              ('r1', 'foo', 'lintian-fixes', 'cs', '{}', 'success',
               '2024-01-01 10:00:00', '2024-01-01 10:01:00'),
@@ -1033,7 +1033,7 @@ pub async fn do_schedule(
         command.to_string()
     } else {
         let candidate: Option<(String,)> =
-            sqlx::query_as("SELECT command FROM candidate WHERE codebase = $1 AND suite = $2")
+            sqlx::query_as("SELECT command FROM candidate WHERE codebase = $1 AND campaign = $2")
                 .bind(codebase)
                 .bind(campaign)
                 .fetch_optional(conn)

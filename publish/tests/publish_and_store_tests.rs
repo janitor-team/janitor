@@ -21,7 +21,7 @@ fn make_run(role: &str, revision: Option<&str>) -> janitor::state::Run {
         revision: None,
         context: None,
         result: None,
-        suite: Campaign::new("lintian-fixes").unwrap(),
+        campaign: Campaign::new("lintian-fixes").unwrap(),
         instigated_context: None,
         vcs_type: "git".to_string(),
         branch_url: "https://example.invalid/cb-1".to_string(),

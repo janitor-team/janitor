@@ -16,7 +16,7 @@
         <ul>
             {% for run in runs %}
                 <li>
-                    <a href="/cupboard/c/{{ run.codebase }}/{{ run.id }}/">{{ format_timestamp(run.finish_time) }} {{ run.codebase }}/{{ run.suite }}</a>: {{ display_result_code(run.result_code, run.failure_transient) }}
+                    <a href="/cupboard/c/{{ run.codebase }}/{{ run.id }}/">{{ format_timestamp(run.finish_time) }} {{ run.codebase }}/{{ run.campaign }}</a>: {{ display_result_code(run.result_code, run.failure_transient) }}
                 </li>
             {% endfor %}
         </ul>
@@ -27,7 +27,7 @@
         <ul>
             {% for candidate in todo %}
                 <li>
-                    <a href="/cupboard/c/{{ candidate.codebase }}/">{{ candidate.codebase }}</a> / <a href="/{{ candidate.suite }}/">{{ candidate.suite }}</a>
+                    <a href="/cupboard/c/{{ candidate.codebase }}/">{{ candidate.codebase }}</a> / <a href="/{{ candidate.campaign }}/">{{ candidate.campaign }}</a>
                 </li>
             {% endfor %}
         </ul>

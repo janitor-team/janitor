@@ -132,7 +132,7 @@ async fn test_queue_position_without_active_runs() {
     let pool = state.database.pool().clone();
     insert_codebase(&pool, "position-cb").await;
     sqlx::query(
-        "INSERT INTO queue (codebase, suite, command, estimated_duration)
+        "INSERT INTO queue (codebase, campaign, command, estimated_duration)
          VALUES ('position-cb', 'test-campaign', 'true', interval '10 seconds')",
     )
     .execute(&pool)
@@ -160,7 +160,7 @@ async fn test_queue_position_without_estimated_duration() {
     let pool = state.database.pool().clone();
     insert_codebase(&pool, "no-estimate-cb").await;
     sqlx::query(
-        "INSERT INTO queue (codebase, suite, command, estimated_duration)
+        "INSERT INTO queue (codebase, campaign, command, estimated_duration)
          VALUES ('no-estimate-cb', 'test-campaign', 'true', NULL)",
     )
     .execute(&pool)
@@ -236,7 +236,7 @@ async fn test_schedule_control_run_without_main_branch_revision() {
         .expect("insert change_set");
     sqlx::query(
         "INSERT INTO run (
-             id, suite, codebase, result_code,
+             id, campaign, codebase, result_code,
              start_time, finish_time, logfilenames, change_set
          )
          VALUES ('run-norev', 'test-campaign', 'control-norev-cb', 'success',

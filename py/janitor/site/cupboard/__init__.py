@@ -65,7 +65,7 @@ async def handle_history(request):
     offset = int(request.query.get("offset", "0"))
 
     query = """\
-SELECT finish_time, codebase, suite, worker_link,
+SELECT finish_time, codebase, campaign, worker_link,
 worker as worker_name, finish_time - start_time AS duration,
 result_code, id, description, failure_transient FROM run
 ORDER BY finish_time DESC LIMIT $1 OFFSET $2"""
@@ -124,13 +124,13 @@ async def handle_never_processed(request):
     campaigns = [campaign] if campaign else None
     async with request.app["pool"].acquire() as conn:
         query = """\
-        select c.codebase, c.suite from candidate c
+        select c.codebase, c.campaign from candidate c
         where not exists (
-            SELECT FROM run WHERE run.codebase = c.codebase AND c.suite = suite)
+            SELECT FROM run WHERE run.codebase = c.codebase AND c.campaign = run.campaign)
         """
         args = []
         if campaigns:
-            query += " AND suite = ANY($1::text[])"
+            query += " AND campaign = ANY($1::text[])"
             args.append(campaigns)
         return {
             "never_processed": await conn.fetch(query, *args),
@@ -160,12 +160,12 @@ async def handle_result_codes(request):
             query = """\
     select result_code, count(result_code) from last_effective_runs AS run
     """
-        query += " where suite = ANY($1::text[])"
+        query += " where campaign = ANY($1::text[])"
         if not include_historical:
             query += (
                 " AND EXISTS (SELECT FROM candidate WHERE "
                 "run.codebase = candidate.codebase AND "
-                "run.suite = candidate.suite AND "
+                "run.campaign = candidate.campaign AND "
                 "(run.change_set = candidate.change_set OR candidate.change_set is NULL))"
             )
         query += " group by 1"
@@ -173,8 +173,8 @@ async def handle_result_codes(request):
             query = f"""({query}) union
     select 'never-processed', count(*) from candidate c
         where not exists (
-            SELECT FROM run WHERE run.codebase = c.codebase AND c.suite = suite)
-        and suite = ANY($1::text[]) order by 2 desc
+            SELECT FROM run WHERE run.codebase = c.codebase AND c.campaign = run.campaign)
+        and campaign = ANY($1::text[]) order by 2 desc
     """
         return {
             "exclude_never_processed": exclude_never_processed,
@@ -204,12 +204,12 @@ async def handle_failure_stages(request):
             query = """\
     select failure_stage, count(failure_stage) from last_effective_runs AS run
     """
-        query += " where suite = ANY($1::text[])"
+        query += " where campaign = ANY($1::text[])"
         if not include_historical:
             query += (
                 " AND EXISTS (SELECT FROM candidate WHERE "
                 "run.codebase = candidate.codebase AND "
-                "run.suite = candidate.suite AND "
+                "run.campaign = candidate.campaign AND "
                 "(run.change_set = candidate.change_set OR candidate.change_set is NULL))"
             )
         query += " group by 1"
@@ -240,14 +240,14 @@ async def handle_result_code(request):
         else:
             table = "last_effective_runs"
     query = (
-        f"SELECT *, suite AS campaign FROM {table} AS run "
-        "WHERE result_code = ANY($1::text[]) AND suite = ANY($2::text[])"
+        f"SELECT * FROM {table} AS run "
+        "WHERE result_code = ANY($1::text[]) AND campaign = ANY($2::text[])"
     )
     if not include_historical:
         query += (
             " AND EXISTS (SELECT FROM candidate WHERE "
             "run.codebase = candidate.codebase AND "
-            "run.suite = candidate.suite AND "
+            "run.campaign = candidate.campaign AND "
             "(run.change_set = candidate.change_set OR candidate.change_set IS NULL))"
         )
     all_campaigns = [c.name for c in request.app["config"].campaign]
@@ -328,7 +328,7 @@ async def handle_review_post(request):
             request.app["http_client_session"],
             request.app["differ_url"],
             request.app["vcs_managers"],
-            campaigns=post.getall("suite", None),
+            campaigns=post.getall("campaign", None),
             publishable_only=publishable_only,
         )
         return web.Response(
@@ -348,7 +348,7 @@ async def handle_review(request):
     else:
         required_only = True
 
-    campaigns = request.query.getall("suite", None)
+    campaigns = request.query.getall("campaign", None)
     async with request.app["pool"].acquire() as conn:
         text = await generate_review(
             conn,
@@ -404,7 +404,7 @@ async def handle_broken_mps(request):
             """\
 SELECT
   current_run.url,
-  last_run.suite,
+  last_run.campaign,
   last_run.codebase,
   last_run.id,
   last_run.result_code,
@@ -413,7 +413,7 @@ SELECT
 FROM
   (SELECT DISTINCT ON (merge_proposal.url)
      merge_proposal.url,
-     run.suite,
+     run.campaign,
      run.codebase,
      run.finish_time,
      merge_proposal.revision AS current_revision
@@ -423,7 +423,7 @@ FROM
   ) AS current_run
 LEFT JOIN last_runs AS last_run
 ON
-  current_run.suite = last_run.suite
+  current_run.campaign = last_run.campaign
   AND current_run.codebase = last_run.codebase
 WHERE
   last_run.result_code NOT IN ('success', 'nothing-to-do', 'nothing-new-to-do')
@@ -503,14 +503,14 @@ async def generate_codebase(conn, codebase):
     if row is None:
         raise web.HTTPNotFound(text=f"No such codebase: {codebase}")
     candidates = await conn.fetch(
-        "SELECT suite AS campaign, command, context, value, success_chance, "
+        "SELECT campaign, command, context, value, success_chance, "
         "publish_policy, per_branch_policy, rate_limit_bucket FROM candidate "
         "LEFT JOIN named_publish_policy ON named_publish_policy.name = publish_policy "
-        "WHERE codebase = $1 ORDER BY suite, id",
+        "WHERE codebase = $1 ORDER BY campaign, id",
         codebase,
     )
     runs = await conn.fetch(
-        "SELECT id, suite AS campaign, finish_time, result_code, failure_transient "
+        "SELECT id, campaign, finish_time, result_code, failure_transient "
         "FROM run WHERE codebase = $1 ORDER BY finish_time DESC",
         codebase,
     )
@@ -539,11 +539,11 @@ async def handle_codebase(request):
 async def handle_merge_proposals(request):
     from .merge_proposals import write_merge_proposals
 
-    suite = request.match_info.get("suite")
+    campaign = request.match_info.get("campaign")
     return await write_merge_proposals(
         request.app["http_client_session"],
         request.app["publisher_url"],
-        suite,
+        campaign,
     )
 
 
@@ -611,7 +611,7 @@ async def handle_result_file(request):
 async def handle_ready_proposals(request):
     publish_status = request.query.get("publish_status")
     async with request.app["pool"].acquire() as conn:
-        query = "SELECT codebase, suite, id, command, result FROM publish_ready"
+        query = "SELECT codebase, campaign, id, command, result FROM publish_ready"
 
         conditions = [
             "EXISTS (SELECT * FROM unnest(unpublished_branches) "
@@ -739,11 +739,11 @@ async def iter_needs_review(
     reviewer: Optional[str] = None,
 ):
     args: list[Any] = []
-    query = "SELECT id, codebase, suite FROM publish_ready"
+    query = "SELECT id, codebase, campaign FROM publish_ready"
     conditions = []
     if campaigns is not None:
         args.append(campaigns)
-        conditions.append(f"suite = ANY(${len(args)}::text[])")
+        conditions.append(f"campaign = ANY(${len(args)}::text[])")
 
     publishable_condition = (
         "exists (select from unnest(unpublished_branches) where "

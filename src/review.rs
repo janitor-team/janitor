@@ -80,11 +80,11 @@ pub async fn store_review(
         // Get run information for rescheduling
         #[derive(sqlx::FromRow)]
         struct RunInfo {
-            suite: Campaign,
+            campaign: Campaign,
             codebase: CodebaseName,
         }
 
-        let run = sqlx::query_as::<_, RunInfo>("SELECT suite, codebase FROM run WHERE id = $1")
+        let run = sqlx::query_as::<_, RunInfo>("SELECT campaign, codebase FROM run WHERE id = $1")
             .bind(run_id)
             .fetch_one(&mut *tx)
             .await
@@ -93,7 +93,7 @@ pub async fn store_review(
         // Reschedule the run
         do_schedule(
             conn,
-            &run.suite,                                // campaign
+            &run.campaign,
             &run.codebase,                             // codebase
             "default",                                 // bucket
             None,                                      // change_set
@@ -240,7 +240,7 @@ pub async fn get_review_stats_for_campaign(
             COUNT(*) FILTER (WHERE verdict = 'abstained') as abstained
         FROM review r
         INNER JOIN run ON run.id = r.run_id
-        WHERE run.suite = $1
+        WHERE run.campaign = $1
         "#,
     )
     .bind(campaign)

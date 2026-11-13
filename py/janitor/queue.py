@@ -91,7 +91,7 @@ class Queue:
     ) -> tuple[Optional[int], Optional[timedelta]]:
         row = await self.conn.fetchrow(
             "SELECT position, wait_time FROM queue_positions "
-            "WHERE codebase = $1 AND suite = $2",
+            "WHERE codebase = $1 AND campaign = $2",
             codebase,
             campaign,
         )
@@ -106,7 +106,7 @@ SELECT
     queue.context AS context,
     queue.id AS id,
     queue.estimated_duration AS estimated_duration,
-    queue.suite AS campaign,
+    queue.campaign,
     queue.refresh AS refresh,
     queue.requester AS requester,
     queue.change_set AS change_set,
@@ -133,7 +133,7 @@ SELECT
     queue.context AS context,
     queue.id AS id,
     queue.estimated_duration AS estimated_duration,
-    queue.suite AS campaign,
+    queue.campaign,
     queue.refresh AS refresh,
     queue.requester AS requester,
     queue.change_set AS change_set,
@@ -155,7 +155,7 @@ LEFT JOIN codebase ON codebase.name = queue.codebase
             conditions.append(f"queue.codebase = ${len(args)}")
         if campaign:
             args.append(campaign)
-            conditions.append(f"queue.suite = ${len(args)}")
+            conditions.append(f"queue.campaign = ${len(args)}")
         if exclude_hosts:
             args.append(exclude_hosts)
             conditions.append(
@@ -193,7 +193,7 @@ SELECT
     queue.context AS context,
     queue.id AS id,
     queue.estimated_duration AS estimated_duration,
-    queue.suite AS campaign,
+    queue.campaign,
     queue.refresh AS refresh,
     queue.requester AS requester,
     queue.change_set AS change_set,
@@ -205,7 +205,7 @@ FROM
         args: list[Any] = []
         if campaign:
             args.append(campaign)
-            conditions.append(f"queue.suite = ${len(args)}")
+            conditions.append(f"queue.campaign = ${len(args)}")
 
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
@@ -238,11 +238,11 @@ queue.id ASC
         return await self.conn.fetchrow(
             "INSERT INTO queue "
             "(command, priority, bucket, context, "
-            "estimated_duration, suite, refresh, requester, change_set, "
+            "estimated_duration, campaign, refresh, requester, change_set, "
             "codebase) VALUES ($1, "
             "(SELECT COALESCE(MIN(priority), 0) FROM queue)"
             + " + $2, $3, $4, $5, $6, $7, $8, $9, $10) "
-            "ON CONFLICT (codebase, suite, coalesce(change_set, ''::text)) "
+            "ON CONFLICT (codebase, campaign, coalesce(change_set, ''::text)) "
             "DO UPDATE SET "
             "(context, priority, bucket, estimated_duration, refresh, "
             "requester, command) = (SELECT n.context, n.priority, n.bucket, "

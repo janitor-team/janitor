@@ -113,7 +113,7 @@ async def handle_generic_candidates(request):
     from .common import generate_candidates
 
     return await generate_candidates(
-        request.app["pool"], suite=request.match_info["suite"]
+        request.app["pool"], campaign=request.match_info["campaign"]
     )
 
 
@@ -121,11 +121,11 @@ async def handle_generic_candidates(request):
 async def handle_merge_proposals(request):
     from .merge_proposals import write_merge_proposals
 
-    suite = request.match_info.get("suite")
+    campaign = request.match_info.get("campaign")
     return await write_merge_proposals(
         request.app["http_client_session"],
         request.app["publisher_url"],
-        suite,
+        campaign,
     )
 
 
@@ -143,7 +143,7 @@ async def handle_merge_proposal(request):
             request.app["publisher_url"],
             url,
         ),
-        "campaign": request.match_info["suite"],
+        "campaign": request.match_info["campaign"],
     }
 
 
@@ -321,9 +321,9 @@ async def serve_artifact(request, run_id, filename):
 async def handle_ready_proposals(request):
     from .pkg import generate_ready_list
 
-    suite = request.match_info.get("suite")
+    campaign = request.match_info.get("campaign")
     publish_status = request.query.get("publish_status")
-    return await generate_ready_list(request.app["pool"], suite, publish_status)
+    return await generate_ready_list(request.app["pool"], campaign, publish_status)
 
 
 @html_template("generic/done.html", headers={"Vary": "Cookie"})
@@ -429,21 +429,21 @@ async def process_webhook(request, db):
 
     async with db.acquire() as conn:
         publishable = {
-            codebase: await state.iter_publishable_suites(conn, codebase)
+            codebase: await state.iter_publishable_campaigns(conn, codebase)
             for codebase in codebases
         }
 
     rescheduled = {
-        codebase: suites for codebase, suites in publishable.items() if suites
+        codebase: campaigns for codebase, campaigns in publishable.items() if campaigns
     }
     if rescheduled and request.app["runner_url"] is None:
         raise web.HTTPServiceUnavailable(text="no runner configured")
-    for codebase, suites in rescheduled.items():
-        for suite in suites:
+    for codebase, campaigns in rescheduled.items():
+        for campaign in campaigns:
             async with request.app["http_client_session"].post(
                 URL(request.app["runner_url"]) / "schedule",
                 json={
-                    "campaign": suite,
+                    "campaign": campaign,
                     "codebase": codebase,
                     "requester": f"Push hook for {codebases[codebase]}",
                     "bucket": "hook",
@@ -598,17 +598,17 @@ async def create_app(
         [re.escape(campaign.name) for campaign in config.campaign]
     )
     app.router.add_get(
-        f"/{{suite:{CAMPAIGN_REGEX}}}/merge-proposals",
+        f"/{{campaign:{CAMPAIGN_REGEX}}}/merge-proposals",
         handle_merge_proposals,
-        name="suite-merge-proposals",
+        name="campaign-merge-proposals",
     )
     app.router.add_get(
-        f"/{{suite:{CAMPAIGN_REGEX}}}/merge-proposal",
+        f"/{{campaign:{CAMPAIGN_REGEX}}}/merge-proposal",
         handle_merge_proposal,
-        name="suite-merge-proposal",
+        name="campaign-merge-proposal",
     )
     app.router.add_get(
-        f"/{{suite:{CAMPAIGN_REGEX}}}/ready",
+        f"/{{campaign:{CAMPAIGN_REGEX}}}/ready",
         handle_ready_proposals,
         name="campaign-ready",
     )
@@ -628,7 +628,7 @@ async def create_app(
         trace_configs=trace_configs,
     )
     app.router.add_get(
-        "/{suite:" + CAMPAIGN_REGEX + "}/pkg/{pkg}/{run_id}/{filename:.+}",
+        "/{campaign:" + CAMPAIGN_REGEX + "}/pkg/{pkg}/{run_id}/{filename:.+}",
         handle_result_file,
         name="result-file",
     )
@@ -638,7 +638,7 @@ async def create_app(
         name="generic-start",
     )
     app.router.add_get(
-        "/{suite:" + CAMPAIGN_REGEX + "}/candidates",
+        "/{campaign:" + CAMPAIGN_REGEX + "}/candidates",
         handle_generic_candidates,
         name="generic-candidates",
     )

@@ -287,7 +287,7 @@ pub async fn publish_pending_ready(
         log::info!(
             "Processing publish-ready run: {} (campaign: {}, codebase: {})",
             run.id,
-            run.suite,
+            run.campaign,
             run.codebase
         );
 
@@ -330,7 +330,7 @@ pub async fn publish_pending_ready(
                      publish-ready and will be retried next cycle.",
                     PER_RUN_PUBLISH_TIMEOUT_SECS,
                     run.id,
-                    run.suite,
+                    run.campaign,
                     run.codebase,
                 );
                 *actions.entry(Some("timeout".to_string())).or_insert(0) += 1;

@@ -176,7 +176,7 @@ pub(crate) async fn check_last_published(
         sqlx::query_as(sqlx::AssertSqlSafe(
             &*r###"
 SELECT timestamp from publish left join run on run.revision = publish.revision
-WHERE run.suite = $1 and run.codebase = $2 AND publish.result_code = 'success'
+WHERE run.campaign = $1 and run.codebase = $2 AND publish.result_code = 'success'
 order by timestamp desc limit 1
 "###,
         ))
@@ -202,7 +202,7 @@ pub async fn guess_proposal_info_from_revision(
 FROM run
 LEFT JOIN new_result_branch rb ON rb.run_id = run.id
 INNER JOIN candidate
-        ON run.codebase = candidate.codebase AND run.suite = candidate.suite
+        ON run.codebase = candidate.codebase AND run.campaign = candidate.campaign
 INNER JOIN named_publish_policy
         ON named_publish_policy.name = candidate.publish_policy
 WHERE rb.revision = $1 AND run.codebase IS NOT NULL"#,
@@ -246,7 +246,7 @@ pub async fn guess_rate_limit_bucket(
     sqlx::query_scalar::<_, Option<String>>(
         r#"SELECT named_publish_policy.rate_limit_bucket FROM candidate
 INNER JOIN named_publish_policy ON named_publish_policy.name = candidate.publish_policy
-WHERE candidate.suite = $1 AND candidate.codebase = $2"#,
+WHERE candidate.campaign = $1 AND candidate.codebase = $2"#,
     )
     .bind(&campaign)
     .bind(codebase)
@@ -469,7 +469,7 @@ pub struct MergeProposalRun {
     /// Run id. `None` for the placeholder built when recovering an
     /// orphaned merge proposal that has no run.
     pub id: Option<RunId>,
-    /// Campaign name (`run.suite` in the schema).
+    /// Campaign name.
     pub campaign: Campaign,
     /// URL of the codebase branch the run targeted.
     pub branch_url: String,
@@ -502,7 +502,7 @@ pub async fn get_merge_proposal_run(
         r#"
 SELECT
     run.id AS id,
-    run.suite AS campaign,
+    run.campaign,
     run.branch_url AS branch_url,
     run.command AS command,
     run.value AS value,
@@ -546,7 +546,7 @@ SELECT
     (finish_time AT TIME ZONE 'UTC') AS finish_time,
     description,
     result_code,
-    value, main_branch_revision, revision, context, result, suite,
+    value, main_branch_revision, revision, context, result, campaign,
     instigated_context, vcs_type::text AS vcs_type, branch_url, logfilenames,
     worker,
     array(SELECT row(role, remote_name, base_revision,
@@ -555,7 +555,7 @@ SELECT
     failure_transient, failure_stage, failure_details, codebase
 FROM
     last_effective_runs
-WHERE codebase = $1 AND suite = $2
+WHERE codebase = $1 AND campaign = $2
 LIMIT 1
 "#,
     )
@@ -587,7 +587,7 @@ SELECT
     (finish_time AT TIME ZONE 'UTC') AS finish_time,
     description,
     result_code,
-    value, main_branch_revision, revision, context, result, suite,
+    value, main_branch_revision, revision, context, result, campaign,
     instigated_context, vcs_type::text AS vcs_type, branch_url, logfilenames,
     worker,
     array(SELECT row(role, remote_name, base_revision,
@@ -633,7 +633,7 @@ WITH per_run_mps AS (
     FROM run
     LEFT JOIN merge_proposal ON run.revision = merge_proposal.revision
     WHERE run.codebase = $1
-    AND run.suite = $2
+    AND run.campaign = $2
     AND run.result_code = 'success'
     AND merge_proposal.status NOT IN ('open', 'abandoned')
     GROUP BY run.id, merge_proposal.url
@@ -717,7 +717,7 @@ pub async fn iter_publish_ready(
             (start_time AT TIME ZONE 'UTC') AS start_time, \
             (finish_time AT TIME ZONE 'UTC') AS finish_time, \
             description, result_code, \
-            value, main_branch_revision, revision, context, result, suite::text AS suite, \
+            value, main_branch_revision, revision, context, result, campaign::text AS campaign, \
             instigated_context, vcs_type::text AS vcs_type, branch_url, logfilenames, \
             worker, \
             array(SELECT row(role, remote_name, base_revision, revision) \

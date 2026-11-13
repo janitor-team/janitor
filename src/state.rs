@@ -43,7 +43,7 @@ pub struct Run {
     pub revision: Option<RevisionId>,
     pub context: Option<String>,
     pub result: Option<serde_json::Value>,
-    pub suite: Campaign,
+    pub campaign: Campaign,
     pub instigated_context: Option<String>,
     pub vcs_type: String,
     pub branch_url: String,
@@ -134,14 +134,14 @@ pub async fn has_cotenants(
     })
 }
 
-/// All distinct suites that currently have publishable runs for
+/// All distinct campaigns that currently have publishable runs for
 /// `codebase`, per the `publish_ready` view.
-pub async fn iter_publishable_suites(
+pub async fn iter_publishable_campaigns(
     conn: &PgPool,
     codebase: &CodebaseName,
 ) -> Result<Vec<String>, sqlx::Error> {
     let rows: Vec<(String,)> =
-        sqlx::query_as("SELECT DISTINCT suite FROM publish_ready WHERE codebase = $1")
+        sqlx::query_as("SELECT DISTINCT campaign FROM publish_ready WHERE codebase = $1")
             .bind(codebase)
             .fetch_all(conn)
             .await?;
@@ -164,7 +164,7 @@ mod tests {
             revision: Some(RevisionId::from(b"new-rev".to_vec())),
             context: Some("context-data".to_string()),
             result: Some(serde_json::json!({"applied": 3})),
-            suite: Campaign::new("lintian-fixes").unwrap(),
+            campaign: Campaign::new("lintian-fixes").unwrap(),
             instigated_context: None,
             vcs_type: "git".to_string(),
             branch_url: "https://salsa.debian.org/foo/bar".to_string(),

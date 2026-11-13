@@ -140,7 +140,7 @@
             <input type="hidden" name="run_id" id="run-id" value="{{ run_id }}" />
             <input type="hidden" name="codebase" id="codebase" value="{{ codebase }}" />
             {% if campaigns %}
-                {% for s in campaigns %}<input type="hidden" name="suites[]" value="{{ s }}" />{% endfor %}
+                {% for s in campaigns %}<input type="hidden" name="campaign" value="{{ s }}" />{% endfor %}
             {% endif %}
             <input class="review-button"
                    type="submit"

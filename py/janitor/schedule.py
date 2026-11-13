@@ -66,7 +66,7 @@ async def iter_candidates_with_publish_policy(
 SELECT
   codebase.name AS codebase,
   codebase.branch_url AS branch_url,
-  candidate.suite AS campaign,
+  candidate.campaign,
   candidate.context AS context,
   candidate.value AS value,
   candidate.success_chance AS success_chance,
@@ -79,10 +79,10 @@ INNER JOIN named_publish_policy ON
 """
     args = []
     if campaign is not None and codebases is not None:
-        query += " AND codebase.name = ANY($1::text[]) AND candidate.suite = $2"
+        query += " AND codebase.name = ANY($1::text[]) AND candidate.campaign = $2"
         args.extend([codebases, campaign])
     elif campaign is not None:
-        query += " AND candidate.suite = $1"
+        query += " AND candidate.campaign = $1"
         args.append(campaign)
     elif codebases is not None:
         query += " AND codebase.name = ANY($1::text[])"
@@ -120,7 +120,7 @@ WHERE failure_transient is not True """
         query += f" AND codebase = ${len(args) + 1}"
         args.append(codebase)
     if campaign is not None:
-        query += f" AND suite = ${len(args) + 1}"
+        query += f" AND campaign = ${len(args) + 1}"
         args.append(campaign)
     return await conn.fetchval(query, *args)
 
@@ -167,7 +167,7 @@ SELECT
   finish_time - start_time AS duration,
   start_time
 FROM run
-WHERE codebase = $1 AND suite = $2 AND failure_transient IS NOT True
+WHERE codebase = $1 AND campaign = $2 AND failure_transient IS NOT True
 ORDER BY start_time DESC
 """,
         codebase,
@@ -318,7 +318,7 @@ async def do_schedule_regular(
     if candidate_value is None or success_chance is None or command is None:
         row = await conn.fetchrow(
             "SELECT value, success_chance, command, context FROM candidate "
-            "WHERE codebase = $1 and suite = $2 and coalesce(change_set, '') = $3",
+            "WHERE codebase = $1 and campaign = $2 and coalesce(change_set, '') = $3",
             codebase,
             campaign,
             change_set or "",
@@ -599,7 +599,7 @@ async def do_schedule(
     assert codebase is not None
     if command is None:
         candidate = await conn.fetchrow(
-            "SELECT command FROM candidate WHERE codebase = $1 AND suite = $2",
+            "SELECT command FROM candidate WHERE codebase = $1 AND campaign = $2",
             codebase,
             campaign,
         )

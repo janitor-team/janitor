@@ -49,12 +49,12 @@ async def iter_queue_items_with_last_run(
             items.append(item)
             vals.append(item.codebase)
             vals.append(item.campaign)
-            qs.append(f"(codebase = ${len(vals) - 1} AND suite = ${len(vals)})")
+            qs.append(f"(codebase = ${len(vals) - 1} AND campaign = ${len(vals)})")
 
         runs = {}
         if qs:
             for row in await conn.fetch(
-                "SELECT codebase, suite AS campaign, id, result_code, failure_transient FROM last_runs "
+                "SELECT codebase, campaign, id, result_code, failure_transient FROM last_runs "
                 "WHERE ({})".format(" OR ".join(qs)),
                 *vals,
             ):

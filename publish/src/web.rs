@@ -60,7 +60,7 @@ async fn fetch_merge_proposal_list(
             merge_proposal.url AS url, \
             merge_proposal.status::text AS status, \
             run.codebase AS codebase, \
-            run.suite::text AS campaign, \
+            run.campaign::text AS campaign, \
             (run.finish_time AT TIME ZONE 'UTC') AS finish_time \
          FROM merge_proposal \
          LEFT JOIN run \
@@ -72,7 +72,7 @@ async fn fetch_merge_proposal_list(
         conditions.push(format!("run.codebase = ${}", conditions.len() + 1));
     }
     if campaign.is_some() {
-        conditions.push(format!("run.suite = ${}", conditions.len() + 1));
+        conditions.push(format!("run.campaign = ${}", conditions.len() + 1));
     }
     if !conditions.is_empty() {
         query.push_str(" WHERE ");
@@ -793,7 +793,7 @@ async fn get_merge_proposal(
             merge_proposal.url AS url, \
             merge_proposal.status::text AS status, \
             run.codebase AS codebase, \
-            run.suite::text AS campaign, \
+            run.campaign::text AS campaign, \
             (merge_proposal.merged_at AT TIME ZONE 'UTC') AS merged_at, \
             merge_proposal.merged_by AS merged_by, \
             (merge_proposal.last_scanned AT TIME ZONE 'UTC') AS last_scanned, \
@@ -1517,14 +1517,15 @@ async fn publish(
         let role_owned = role.clone();
         let publish_id_owned = publish_id.clone();
         tokio::spawn(async move {
-            let campaign_config = match state.config.campaign.iter().find(|c| c.name() == run.suite)
+            let campaign_config = match state
+                .config
+                .campaign
+                .iter()
+                .find(|c| c.name() == run.campaign)
             {
                 Some(c) => c,
                 None => {
-                    log::warn!(
-                        "publish handler: no campaign config for suite {}",
-                        run.suite
-                    );
+                    log::warn!("publish handler: no campaign config for {}", run.campaign);
                     return;
                 }
             };
@@ -1549,7 +1550,7 @@ async fn publish(
                 log::warn!(
                     "publish_and_store failed for {}/{}/{}: {}",
                     run.codebase,
-                    run.suite,
+                    run.campaign,
                     role_owned,
                     e
                 );
@@ -2338,7 +2339,7 @@ async fn get_blockers(State(state): State<Arc<AppState>>, Path(id): Path<RunId>)
 SELECT
   run.id AS id,
   run.codebase AS codebase,
-  run.suite::text AS campaign,
+  run.campaign::text AS campaign,
   (run.finish_time AT TIME ZONE 'UTC') AS finish_time,
   run.command AS run_command,
   run.publish_status::text AS publish_status,
@@ -2351,7 +2352,7 @@ SELECT
   codebase.inactive AS inactive
 FROM run
 INNER JOIN codebase ON codebase.name = run.codebase
-INNER JOIN candidate ON candidate.codebase = run.codebase AND candidate.suite = run.suite
+INNER JOIN candidate ON candidate.codebase = run.codebase AND candidate.campaign = run.campaign
 INNER JOIN named_publish_policy ON candidate.publish_policy = named_publish_policy.name
 INNER JOIN change_set ON change_set.id = run.change_set
 WHERE run.id = $1

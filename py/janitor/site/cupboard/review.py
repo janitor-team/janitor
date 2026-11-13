@@ -21,8 +21,8 @@ async def generate_rejected(conn, config, campaign=None):
         campaigns = [campaign]
 
     runs = await conn.fetch(
-        "SELECT id, suite, codebase FROM last_unabsorbed_runs "
-        "WHERE publish_status = 'rejected' AND suite = ANY($1::text[]) "
+        "SELECT id, campaign, codebase FROM last_unabsorbed_runs "
+        "WHERE publish_status = 'rejected' AND campaign = ANY($1::text[]) "
         "ORDER BY finish_time DESC",
         campaigns,
     )
@@ -35,7 +35,7 @@ async def generate_rejected(conn, config, campaign=None):
     ):
         reviews.setdefault(row["run_id"], []).append(row)
 
-    return {"runs": runs, "suite": campaign, "reviews": reviews}
+    return {"runs": runs, "campaign": campaign, "reviews": reviews}
 
 
 async def generate_review(
@@ -91,8 +91,6 @@ async def generate_review(
         "review_instructions_url": request.app.get("review_instructions_url"),
         "codebase": codebase,
         "run_id": run_id,
-        "suite": campaign,
-        "suites": campaigns,
         "campaign": campaign,
         "campaigns": campaigns,
         "evaluate": evaluate,
@@ -117,7 +115,7 @@ async def generate_evaluate(
         run = await conn.fetchrow(
             "SELECT codebase, array(SELECT row(role, remote_name, base_revision, revision) "
             "FROM new_result_branch WHERE run_id = id) AS result_branches, vcs_type, main_branch_revision, "
-            "finish_time, value, command, suite AS campaign FROM run WHERE id = $1",
+            "finish_time, value, command, campaign FROM run WHERE id = $1",
             run_id,
         )
     if run is None:
