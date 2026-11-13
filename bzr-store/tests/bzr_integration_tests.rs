@@ -5,10 +5,11 @@
 //! with a couple of commits via breezyshim and then drive the
 //! admin app via HTTP.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
+use axum::body::{Body, Bytes};
+use axum::http::Request;
+use axum::response::Response;
 use axum::Router;
 use breezyshim::branch::Branch;
 use breezyshim::tree::{MutableTree, WorkingTree};
@@ -19,6 +20,7 @@ use janitor_bzr_store::{
 };
 use sqlx::PgPool;
 use tempfile::TempDir;
+use tower::ServiceExt;
 
 fn test_db_url(test_db: &TestDatabase) -> String {
     let base = std::env::var("TEST_DATABASE_URL")
@@ -54,14 +56,26 @@ campaign {
     Arc::new(janitor::config::read_string(text).expect("parse test janitor.conf"))
 }
 
-async fn spawn(app: Router) -> (SocketAddr, tokio::task::JoinHandle<()>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, app).await.ok();
-    });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    (addr, handle)
+async fn send(app: &Router, req: Request<Body>) -> Response {
+    app.clone().oneshot(req).await.unwrap()
+}
+
+fn get(uri: &str) -> Request<Body> {
+    Request::get(uri).body(Body::empty()).unwrap()
+}
+
+async fn body_bytes(resp: Response) -> Bytes {
+    axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap()
+}
+
+async fn body_text(resp: Response) -> String {
+    String::from_utf8(body_bytes(resp).await.to_vec()).unwrap()
+}
+
+async fn body_json<T: serde::de::DeserializeOwned>(resp: Response) -> T {
+    serde_json::from_slice(&body_bytes(resp).await).unwrap()
 }
 
 async fn seed_codebase(pool: &PgPool, name: &str) {
@@ -106,17 +120,8 @@ test_with_database! {
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn(admin).await;
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(format!(
-                "http://{}/foo/diff?old={}&new={}",
-                addr, rev1, rev2
-            ))
-            .send()
-            .await
-            .unwrap();
+        let resp = send(&admin, get(&format!("/foo/diff?old={}&new={}", rev1, rev2))).await;
         assert_eq!(resp.status(), 200);
         let ct = resp
             .headers()
@@ -129,15 +134,13 @@ test_with_database! {
             "expected text/x-diff content-type, got {}",
             ct
         );
-        let text = resp.text().await.unwrap();
+        let text = body_text(resp).await;
         // A real bzr diff should mention README on one side.
         assert!(
             text.contains("README"),
             "diff body missing README: {}",
             text
         );
-
-        handle.abort();
     }
 }
 
@@ -154,27 +157,20 @@ test_with_database! {
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn(admin).await;
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(format!(
-                "http://{}/foo/revision-info?old={}&new={}",
-                addr, rev1, rev2
-            ))
-            .send()
-            .await
-            .unwrap();
+        let resp = send(
+            &admin,
+            get(&format!("/foo/revision-info?old={}&new={}", rev1, rev2)),
+        )
+        .await;
         assert_eq!(resp.status(), 200);
-        let body: serde_json::Value = resp.json().await.unwrap();
+        let body: serde_json::Value = body_json(resp).await;
         // The ancestry walk between rev1 and rev2 includes exactly
         // one revision (rev2 itself; rev1 is the stop node).
         let revs = body.as_array().expect("body must be a list");
         assert_eq!(revs.len(), 1, "expected one revision between r1 and r2, got {:?}", revs);
         assert_eq!(revs[0]["revision-id"], rev2);
         assert_eq!(revs[0]["message"], "second");
-
-        handle.abort();
     }
 }
 
@@ -196,18 +192,14 @@ test_with_database! {
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn(admin).await;
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .post(format!("http://{}/foo/remotes/main", addr))
+        let req = Request::post("/foo/remotes/main")
             .header("Content-Type", "application/x-www-form-urlencoded")
-            .body("url=bzr%2Bssh%3A%2F%2Fupstream.invalid%2Ffoo")
-            .send()
-            .await
+            .body(Body::from("url=bzr%2Bssh%3A%2F%2Fupstream.invalid%2Ffoo"))
             .unwrap();
+        let resp = send(&admin, req).await;
         assert_eq!(resp.status(), 200);
-        let body: serde_json::Value = resp.json().await.unwrap();
+        let body: serde_json::Value = body_json(resp).await;
         assert_eq!(body["status"], "configured");
         assert_eq!(body["remote_url"], "bzr+ssh://upstream.invalid/foo");
 
@@ -223,13 +215,9 @@ test_with_database! {
         );
         std::mem::drop(env);
 
-        let resp = client
-            .get(format!("http://{}/foo/remotes", addr))
-            .send()
-            .await
-            .unwrap();
+        let resp = send(&admin, get("/foo/remotes")).await;
         assert_eq!(resp.status(), 200);
-        let body: serde_json::Value = resp.json().await.unwrap();
+        let body: serde_json::Value = body_json(resp).await;
         assert_eq!(
             body,
             serde_json::json!({
@@ -237,8 +225,6 @@ test_with_database! {
                 "remotes": [{"name": "main", "url": "bzr+ssh://upstream.invalid/foo"}],
             })
         );
-
-        handle.abort();
     }
 }
 
@@ -252,18 +238,10 @@ test_with_database! {
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn(admin).await;
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(format!("http://{}/foo/diff", addr))
-            .send()
-            .await
-            .unwrap();
+        let resp = send(&admin, get("/foo/diff")).await;
         // Deserialize failure -> 400 (axum default).
         assert!(resp.status().is_client_error(), "status={}", resp.status());
-
-        handle.abort();
     }
 }
 
@@ -282,21 +260,13 @@ test_with_database! {
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn(admin).await;
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(format!("http://{}/foo/info", addr))
-            .send()
-            .await
-            .unwrap();
+        let resp = send(&admin, get("/foo/info")).await;
         assert_eq!(resp.status(), 200);
-        let body: serde_json::Value = resp.json().await.unwrap();
+        let body: serde_json::Value = body_json(resp).await;
         assert_eq!(body["path"]["codebase"], "foo");
         assert_eq!(body["exists"], true);
         assert_eq!(body["branch_count"], 1);
         assert_eq!(body["last_revision"], rev2);
-
-        handle.abort();
     }
 }

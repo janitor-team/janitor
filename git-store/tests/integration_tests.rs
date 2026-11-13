@@ -11,7 +11,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::body::{to_bytes, Body, Bytes};
+use axum::http::Request;
+use axum::response::Response;
 use axum::Router;
+use base64::Engine;
 use janitor_git_store::{
     config::Config,
     database::DatabaseManager,
@@ -26,6 +30,7 @@ use testcontainers_modules::{
     testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt},
 };
 use tokio::sync::OnceCell;
+use tower::ServiceExt;
 use uuid::Uuid;
 
 /// Backend that admin databases are created in. Either an external
@@ -216,6 +221,7 @@ async fn build_state(tmp: &TempDir, test_db: &TestDatabase, role: AppRole) -> Ap
     }
 }
 
+/// Only for tests driving the `git` CLI; everything else uses [`call`].
 async fn spawn(app: Router) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -224,6 +230,41 @@ async fn spawn(app: Router) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
     (addr, handle)
+}
+
+async fn call(app: &Router, req: Request<Body>) -> Response {
+    app.clone().oneshot(req).await.unwrap()
+}
+
+async fn get(app: &Router, uri: &str) -> Response {
+    call(app, Request::get(uri).body(Body::empty()).unwrap()).await
+}
+
+async fn body_bytes(resp: Response) -> Bytes {
+    to_bytes(resp.into_body(), usize::MAX).await.unwrap()
+}
+
+async fn body_text(resp: Response) -> String {
+    String::from_utf8(body_bytes(resp).await.to_vec()).unwrap()
+}
+
+async fn body_json<T: serde::de::DeserializeOwned>(resp: Response) -> T {
+    serde_json::from_slice(&body_bytes(resp).await).unwrap()
+}
+
+/// Browser-style request, so `is_git_client_request` routes to klaus
+/// rather than the smart-HTTP backend.
+fn browser_get(uri: &str) -> Request<Body> {
+    Request::get(uri)
+        .header("User-Agent", "Mozilla/5.0 (test)")
+        .header("Accept", "text/html")
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn basic_auth(user: &str, password: &str) -> String {
+    let creds = base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, password));
+    format!("Basic {}", creds)
 }
 
 async fn seed_codebase(pool: &PgPool, name: &str) {
@@ -277,12 +318,9 @@ db_test! {
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
-        let resp = reqwest::get(format!("http://{}/health", addr)).await.unwrap();
+        let resp = get(&app, "/health").await;
         assert_eq!(resp.status(), 200);
-
-        handle.abort();
     }
 }
 
@@ -291,13 +329,10 @@ db_test! {
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
-        let resp = reqwest::get(format!("http://{}/openapi.json", addr))
-            .await
-            .unwrap();
+        let resp = get(&app, "/openapi.json").await;
         assert_eq!(resp.status(), 200);
-        let body: serde_json::Value = resp.json().await.unwrap();
+        let body: serde_json::Value = body_json(resp).await;
         let mut paths: Vec<&String> = body["paths"].as_object().unwrap().keys().collect();
         paths.sort();
         assert_eq!(
@@ -313,8 +348,6 @@ db_test! {
                 "/{codebase}/revision-info",
             ]
         );
-
-        handle.abort();
     }
 }
 
@@ -323,12 +356,9 @@ db_test! {
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
-        let resp = reqwest::get(format!("http://{}/ready", addr)).await.unwrap();
+        let resp = get(&app, "/ready").await;
         assert_eq!(resp.status(), 200);
-
-        handle.abort();
     }
 }
 
@@ -340,20 +370,17 @@ db_test! {
 
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
-        let (addr, handle) = spawn(app).await;
-
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(format!("http://{}/git/", addr))
-            .header("Accept", "application/json")
-            .send()
-            .await
-            .unwrap();
+        let resp = call(
+            &app,
+            Request::get("/git/")
+                .header("Accept", "application/json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
         assert_eq!(resp.status(), 200);
-        let body: Vec<String> = resp.json().await.unwrap();
+        let body: Vec<String> = body_json(resp).await;
         assert_eq!(body, vec!["alpha".to_string(), "beta".to_string()]);
-
-        handle.abort();
     }
 }
 
@@ -364,20 +391,17 @@ db_test! {
 
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
-        let (addr, handle) = spawn(app).await;
-
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(format!("http://{}/git/", addr))
-            .header("Accept", "text/plain")
-            .send()
-            .await
-            .unwrap();
+        let resp = call(
+            &app,
+            Request::get("/git/")
+                .header("Accept", "text/plain")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
         assert_eq!(resp.status(), 200);
-        let text = resp.text().await.unwrap();
+        let text = body_text(resp).await;
         assert_eq!(text, "gamma\n");
-
-        handle.abort();
     }
 }
 
@@ -386,14 +410,11 @@ db_test! {
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
-        let resp = reqwest::get(format!("http://{}/", addr)).await.unwrap();
+        let resp = get(&app, "/").await;
         assert_eq!(resp.status(), 200);
-        let text = resp.text().await.unwrap();
+        let text = body_text(resp).await;
         assert_eq!(text, "");
-
-        handle.abort();
     }
 }
 
@@ -403,18 +424,13 @@ db_test! {
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
         // Valid SHAs but no on-disk repo: 503 with the
         // local-repository-unavailable error class, matching Python.
         let old = "0000000000000000000000000000000000000001";
         let new = "0000000000000000000000000000000000000002";
-        let resp = reqwest::get(format!(
-            "http://{}/codebase/diff?old={}&new={}",
-            addr, old, new
-        ))
-        .await
-        .unwrap();
+        let resp = get(&app, &format!("/codebase/diff?old={}&new={}", old, new
+        )).await;
         assert_eq!(resp.status(), 503);
         assert_eq!(
             resp.headers()
@@ -422,8 +438,6 @@ db_test! {
                 .and_then(|v| v.to_str().ok()),
             Some("local-repository-unavailable")
         );
-
-        handle.abort();
     }
 }
 
@@ -451,17 +465,10 @@ db_test! {
 
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
-        let resp = reqwest::get(format!(
-            "http://{}/codebase/diff?old={}&new={}",
-            addr, c1_oid, c2_oid
-        ))
-        .await
-        .unwrap();
+        let resp = get(&app, &format!("/codebase/diff?old={}&new={}", c1_oid, c2_oid
+        )).await;
         assert_eq!(resp.status(), 200);
-
-        handle.abort();
     }
 }
 
@@ -471,16 +478,11 @@ db_test! {
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
-        let resp = reqwest::get(format!("http://{}/codebase/revision-info?new=abc", addr))
-            .await
-            .unwrap();
+        let resp = get(&app, "/codebase/revision-info?new=abc").await;
         assert_eq!(resp.status(), 400);
-        let body = resp.text().await.unwrap();
+        let body = body_text(resp).await;
         assert_eq!(body, "need both old and new");
-
-        handle.abort();
     }
 }
 
@@ -495,21 +497,14 @@ db_test! {
 
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
         let missing = "0000000000000000000000000000000000000000abcdef";
         let missing = &missing[..40];
-        let resp = reqwest::get(format!(
-            "http://{}/codebase/revision-info?old={}&new={}",
-            addr, missing, missing
-        ))
-        .await
-        .unwrap();
+        let resp = get(&app, &format!("/codebase/revision-info?old={}&new={}", missing, missing
+        )).await;
         assert_eq!(resp.status(), 404);
-        let body: serde_json::Value = resp.json().await.unwrap();
+        let body: serde_json::Value = body_json(resp).await;
         assert_eq!(body, serde_json::json!({}));
-
-        handle.abort();
     }
 }
 
@@ -518,17 +513,12 @@ db_test! {
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
-        let resp = reqwest::get(format!("http://{}/git/ghost/info/refs?service=git-upload-pack", addr))
-            .await
-            .unwrap();
+        let resp = get(&app, "/git/ghost/info/refs?service=git-upload-pack").await;
         assert_eq!(resp.status(), 404);
         // Body must match Python's `_git_open_repo` exactly.
-        let body = resp.text().await.unwrap();
+        let body = body_text(resp).await;
         assert_eq!(body, "no such codebase: ghost");
-
-        handle.abort();
     }
 }
 
@@ -569,29 +559,19 @@ db_test! {
 
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
         // Browser-style Accept + non-git User-Agent, so
         // is_git_client_request routes to klaus rather than the
         // smart-HTTP backend.
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(format!("http://{}/git/klauzy/", addr))
-            .header("User-Agent", "Mozilla/5.0 (test)")
-            .header("Accept", "text/html")
-            .send()
-            .await
-            .unwrap();
+        let resp = call(&app, browser_get("/git/klauzy/")).await;
         assert_eq!(resp.status(), 200, "klaus index should render 200");
-        let body = resp.text().await.unwrap();
+        let body = body_text(resp).await;
         // Sanity: klaus's index template mentions the repo somewhere.
         assert!(
             body.contains("klauzy"),
             "expected 'klauzy' in klaus body, got:\n{}",
             body
         );
-
-        handle.abort();
     }
 }
 
@@ -666,21 +646,18 @@ db_test! {
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
-        let (addr, handle) = spawn(app).await;
-
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(format!("http://{}/git/foo/info/refs?service=git-upload-pack", addr))
-            .basic_auth("alice", Some("s3cret"))
-            .send()
-            .await
-            .unwrap();
+        let resp = call(
+            &app,
+            Request::get("/git/foo/info/refs?service=git-upload-pack")
+                .header("Authorization", basic_auth("alice", "s3cret"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
         // Whatever git http-backend returns downstream, the gate passed
         // if we're neither 404 nor 401.
         assert_ne!(resp.status(), 404, "codebase-exists check failed");
         assert_ne!(resp.status(), 401, "worker auth failed");
-
-        handle.abort();
     }
 }
 
@@ -689,17 +666,16 @@ db_test! {
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
         // Make at least one request so the per-request middleware
         // has something to record.
-        reqwest::get(format!("http://{}/health", addr)).await.unwrap();
+        get(&app, "/health").await;
 
-        let resp = reqwest::get(format!("http://{}/metrics", addr)).await.unwrap();
+        let resp = get(&app, "/metrics").await;
         assert_eq!(resp.status(), 200);
         let ct = resp.headers().get("content-type").unwrap().to_str().unwrap().to_string();
         assert!(ct.starts_with("text/plain"), "unexpected content-type: {}", ct);
-        let body = resp.text().await.unwrap();
+        let body = body_text(resp).await;
         // The middleware records http_requests_total; the preceding
         // /health call must appear in the output.
         assert!(
@@ -708,8 +684,6 @@ db_test! {
             body
         );
         assert!(body.contains("http_request_duration_seconds"));
-
-        handle.abort();
     }
 }
 
@@ -721,12 +695,9 @@ db_test! {
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
         for path in ["/health", "/ready", "/metrics"] {
-            let resp = reqwest::get(format!("http://{}{}", addr, path))
-                .await
-                .unwrap();
+            let resp = get(&app, path).await;
             assert_eq!(
                 resp.status(),
                 404,
@@ -735,8 +706,6 @@ db_test! {
                 resp.status()
             );
         }
-
-        handle.abort();
     }
 }
 
@@ -747,19 +716,18 @@ db_test! {
         std::fs::create_dir(tmp.path().join("only-one")).unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
-        let resp = reqwest::Client::new()
-            .get(format!("http://{}/", addr))
-            .header("Accept", "application/json")
-            .send()
-            .await
-            .unwrap();
+        let resp = call(
+            &app,
+            Request::get("/")
+                .header("Accept", "application/json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
         assert_eq!(resp.status(), 200);
-        let body: Vec<String> = resp.json().await.unwrap();
+        let body: Vec<String> = body_json(resp).await;
         assert_eq!(body, vec!["only-one".to_string()]);
-
-        handle.abort();
     }
 }
 
@@ -801,28 +769,20 @@ db_test! {
 
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
-        let resp = reqwest::get(format!(
-            "http://{}/codebase/diff?old={}&new={}",
-            addr, c1, c2
-        ))
-        .await
-        .unwrap();
+        let resp = get(&app, &format!("/codebase/diff?old={}&new={}", c1, c2
+        )).await;
         assert_eq!(resp.status(), 200);
-        // Streaming responses have no Content-Length.
-        assert!(
-            resp.headers().get("content-length").is_none(),
-            "streaming diff should not have a Content-Length header",
-        );
-        let body = resp.bytes().await.unwrap();
+        // Streaming responses have no exact size, so hyper won't set
+        // a Content-Length.
+        assert_eq!(resp.headers().get("content-length"), None);
+        assert_eq!(axum::body::HttpBody::size_hint(resp.body()).exact(), None);
+        let body = body_bytes(resp).await;
         // Body must contain the payload line markers end-to-end.
         let s = std::str::from_utf8(&body).unwrap();
         assert!(s.contains("line 0 "), "first line missing");
         assert!(s.contains("line 49 "), "last line missing (truncated?)");
         assert!(body.len() > 300_000, "body suspiciously small: {}", body.len());
-
-        handle.abort();
     }
 }
 
@@ -851,19 +811,12 @@ db_test! {
 
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
-        let resp = reqwest::get(format!(
-            "http://{}/codebase/diff?old={}&new={}",
-            addr, c1, c2
-        ))
-        .await
-        .unwrap();
+        let resp = get(&app, &format!("/codebase/diff?old={}&new={}", c1, c2
+        )).await;
         assert_eq!(resp.status(), 200);
-        let body = resp.bytes().await.unwrap();
+        let body = body_bytes(resp).await;
         assert_eq!(body.len(), 0, "identical trees should produce empty diff");
-
-        handle.abort();
     }
 }
 
@@ -880,24 +833,17 @@ db_test! {
 
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
         let missing = "0123456789abcdef0123456789abcdef01234567";
-        let resp = reqwest::get(format!(
-            "http://{}/codebase/diff?old={}&new={}",
-            addr, missing, missing
-        ))
-        .await
-        .unwrap();
+        let resp = get(&app, &format!("/codebase/diff?old={}&new={}", missing, missing
+        )).await;
         assert_eq!(resp.status(), 500);
-        let body = resp.text().await.unwrap();
+        let body = body_text(resp).await;
         assert!(
             body.starts_with("git diff failed:"),
             "expected 'git diff failed:' prefix, got: {}",
             body
         );
-
-        handle.abort();
     }
 }
 
@@ -907,21 +853,13 @@ db_test! {
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
         // Repo dir exists; invalid SHAs.
         std::fs::create_dir_all(tmp.path().join("codebase")).unwrap();
-        let resp = reqwest::get(format!(
-            "http://{}/codebase/diff?old=notasha&new=notasha",
-            addr
-        ))
-        .await
-        .unwrap();
+        let resp = get(&app, "/codebase/diff?old=notasha&new=notasha").await;
         assert_eq!(resp.status(), 400);
-        let body = resp.text().await.unwrap();
+        let body = body_text(resp).await;
         assert_eq!(body, "invalid shas specified");
-
-        handle.abort();
     }
 }
 
@@ -948,16 +886,11 @@ db_test! {
 
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
-        let resp = reqwest::get(format!(
-            "http://{}/codebase/revision-info?old={}&new={}",
-            addr, c1, c2
-        ))
-        .await
-        .unwrap();
+        let resp = get(&app, &format!("/codebase/revision-info?old={}&new={}", c1, c2
+        )).await;
         assert_eq!(resp.status(), 200);
-        let body: Vec<serde_json::Value> = resp.json().await.unwrap();
+        let body: Vec<serde_json::Value> = body_json(resp).await;
         // One commit in the exclusive `c1..c2` range.
         assert_eq!(body.len(), 1, "expected one commit, got {:?}", body);
         let entry = &body[0];
@@ -965,8 +898,6 @@ db_test! {
         assert_eq!(entry["revision-id"], format!("git-v1:{}", c2));
         assert_eq!(entry["link"], format!("/git/codebase/commit/{}/", c2));
         assert!(entry["message"].as_str().unwrap().contains("second"));
-
-        handle.abort();
     }
 }
 
@@ -993,23 +924,16 @@ db_test! {
 
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
-        let resp = reqwest::get(format!(
-            "http://{}/codebase/log?old={}&new={}",
-            addr, c1, c2
-        ))
-        .await
-        .unwrap();
+        let resp = get(&app, &format!("/codebase/log?old={}&new={}", c1, c2
+        )).await;
         assert_eq!(resp.status(), 200);
-        let body: serde_json::Value = resp.json().await.unwrap();
+        let body: serde_json::Value = body_json(resp).await;
         let commits = body["commits"].as_array().unwrap();
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0]["sha"], c2.to_string());
         assert_eq!(commits[0]["author"]["name"], "Alice");
         assert_eq!(commits[0]["author"]["email"], "alice@example.com");
-
-        handle.abort();
     }
 }
 
@@ -1023,15 +947,15 @@ db_test! {
 
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
-        let resp = reqwest::Client::new()
-            .post(format!("http://{}/codebase/remotes/upstream", addr))
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .body("url=https%3A%2F%2Fexample.com%2Frepo.git")
-            .send()
-            .await
-            .unwrap();
+        let resp = call(
+            &app,
+            Request::post("/codebase/remotes/upstream")
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .body(Body::from("url=https%3A%2F%2Fexample.com%2Frepo.git"))
+                .unwrap(),
+        )
+        .await;
         assert_eq!(resp.status(), 200);
 
         // Server-side: `git config remote.upstream.url` should return
@@ -1047,8 +971,6 @@ db_test! {
             .map(String::from)
             .collect();
         assert_eq!(fetch_specs, vec!["+refs/heads/*:refs/remotes/upstream/*"]);
-
-        handle.abort();
     }
 }
 
@@ -1058,18 +980,16 @@ db_test! {
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
-        let resp = reqwest::Client::new()
-            .post(format!("http://{}/codebase/remotes/upstream", addr))
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .body("wrongfield=x")
-            .send()
-            .await
-            .unwrap();
+        let resp = call(
+            &app,
+            Request::post("/codebase/remotes/upstream")
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .body(Body::from("wrongfield=x"))
+                .unwrap(),
+        )
+        .await;
         assert_eq!(resp.status(), 400);
-
-        handle.abort();
     }
 }
 
@@ -1079,20 +999,18 @@ db_test! {
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
-        let resp = reqwest::Client::new()
-            .post(format!("http://{}/ghost/remotes/upstream", addr))
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .body("url=https%3A%2F%2Fexample.com%2Fr.git")
-            .send()
-            .await
-            .unwrap();
+        let resp = call(
+            &app,
+            Request::post("/ghost/remotes/upstream")
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .body(Body::from("url=https%3A%2F%2Fexample.com%2Fr.git"))
+                .unwrap(),
+        )
+        .await;
         assert_eq!(resp.status(), 404);
-        let body = resp.text().await.unwrap();
+        let body = body_text(resp).await;
         assert_eq!(body, "no such codebase: ghost");
-
-        handle.abort();
     }
 }
 
@@ -1212,14 +1130,8 @@ db_test! {
 
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
-        let resp = reqwest::get(format!(
-            "http://{}/git/gated/info/refs?service=git-receive-pack",
-            addr
-        ))
-        .await
-        .unwrap();
+        let resp = get(&app, "/git/gated/info/refs?service=git-receive-pack").await;
         assert_eq!(resp.status(), 401);
         let www = resp
             .headers()
@@ -1231,8 +1143,6 @@ db_test! {
             "expected Janitor realm in {}",
             www
         );
-
-        handle.abort();
     }
 }
 
@@ -1245,20 +1155,16 @@ db_test! {
 
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
-        let resp = reqwest::Client::new()
-            .get(format!(
-                "http://{}/git/gated2/info/refs?service=git-receive-pack",
-                addr
-            ))
-            .basic_auth("alice", Some("wrong"))
-            .send()
-            .await
-            .unwrap();
+        let resp = call(
+            &app,
+            Request::get("/git/gated2/info/refs?service=git-receive-pack")
+                .header("Authorization", basic_auth("alice", "wrong"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
         assert_eq!(resp.status(), 401);
-
-        handle.abort();
     }
 }
 
@@ -1272,19 +1178,17 @@ db_test! {
         // set_remote is the simplest POST handler we have; hit it with
         // an oversized body.
         let app = web::create_admin_app(state, 1024);
-        let (addr, handle) = spawn(app).await;
 
         let big = vec![b'x'; 100 * 1024];
-        let resp = reqwest::Client::new()
-            .post(format!("http://{}/codebase/remotes/upstream", addr))
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .body(big)
-            .send()
-            .await
-            .unwrap();
+        let resp = call(
+            &app,
+            Request::post("/codebase/remotes/upstream")
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .body(Body::from(big))
+                .unwrap(),
+        )
+        .await;
         assert_eq!(resp.status(), 413);
-
-        handle.abort();
     }
 }
 
@@ -1298,22 +1202,20 @@ db_test! {
         std::fs::create_dir(tmp.path().join("codebase")).unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
         let big = vec![b'x'; 5 * 1024 * 1024];
-        let resp = reqwest::Client::new()
-            .post(format!("http://{}/codebase/remotes/upstream", addr))
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .body(big)
-            .send()
-            .await
-            .unwrap();
+        let resp = call(
+            &app,
+            Request::post("/codebase/remotes/upstream")
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .body(Body::from(big))
+                .unwrap(),
+        )
+        .await;
         // The body is malformed form-urlencoded so the handler will
         // fail parsing, but the important assertion is that we didn't
         // 413 before even reaching the handler.
         assert_ne!(resp.status(), 413);
-
-        handle.abort();
     }
 }
 
@@ -1332,23 +1234,14 @@ db_test! {
         // Deliberately do NOT pre-create the bare repo.
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
-        let resp = reqwest::Client::new()
-            .get(format!("http://{}/git/auto/", addr))
-            .header("User-Agent", "Mozilla/5.0 (test)")
-            .header("Accept", "text/html")
-            .send()
-            .await
-            .unwrap();
+        let resp = call(&app, browser_get("/git/auto/")).await;
         // klaus itself may render 404 for a ref-less repo since it
         // can't resolve a default branch. The real assertion is that
         // the on-disk clone got created, which is what Python does.
         let _ = resp.status();
         assert!(tmp.path().join("auto").exists());
         assert!(tmp.path().join("auto").join("HEAD").exists());
-
-        handle.abort();
     }
 }
 
@@ -1364,20 +1257,11 @@ db_test! {
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
-        let resp = reqwest::Client::new()
-            .get(format!("http://{}/git/ghost/", addr))
-            .header("User-Agent", "Mozilla/5.0 (test)")
-            .header("Accept", "text/html")
-            .send()
-            .await
-            .unwrap();
+        let resp = call(&app, browser_get("/git/ghost/")).await;
         assert_eq!(resp.status(), 404);
-        let body = resp.text().await.unwrap();
+        let body = body_text(resp).await;
         assert_eq!(body, "no such codebase: ghost");
-
-        handle.abort();
     }
 }
 
@@ -1407,24 +1291,13 @@ db_test! {
 
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
-        let (addr, handle) = spawn(app).await;
-
-        let client = reqwest::Client::new();
         for path in [
-            format!("http://{}/git/browse/tree/main/", addr),
-            format!("http://{}/git/browse/commit/{}/", addr, commit),
+            "/git/browse/tree/main/".to_string(),
+            format!("/git/browse/commit/{}/", commit),
         ] {
-            let resp = client
-                .get(&path)
-                .header("User-Agent", "Mozilla/5.0 (test)")
-                .header("Accept", "text/html")
-                .send()
-                .await
-                .unwrap();
+            let resp = call(&app, browser_get(&path)).await;
             assert_eq!(resp.status(), 200, "expected 200 from {}", path);
         }
-
-        handle.abort();
     }
 }
 
@@ -1453,19 +1326,10 @@ db_test! {
 
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
-        let (addr, handle) = spawn(app).await;
-
-        let client = reqwest::Client::new();
         for (name, message, commit) in commits.iter().chain(commits.iter()) {
-            let resp = client
-                .get(format!("http://{}/git/{}/tree/main/", addr, name))
-                .header("User-Agent", "Mozilla/5.0 (test)")
-                .header("Accept", "text/html")
-                .send()
-                .await
-                .unwrap();
+            let resp = call(&app, browser_get(&format!("/git/{}/tree/main/", name))).await;
             assert_eq!(resp.status(), 200);
-            let body = resp.text().await.unwrap();
+            let body = body_text(resp).await;
             assert!(body.contains(message.as_str()), "{} page: {}", name, body);
             let link = format!("/git/{}/commit/{}/", name, commit);
             assert!(body.contains(&link), "{} page lacks {}: {}", name, link, body);
@@ -1475,8 +1339,6 @@ db_test! {
                 }
             }
         }
-
-        handle.abort();
     }
 }
 
@@ -1513,22 +1375,13 @@ db_test! {
 
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
-        let (addr, handle) = spawn(app).await;
-
-        let client = reqwest::Client::new();
         for (name, content) in files {
             for view in ["blob", "raw", "blame", "tree"] {
                 let path = format!("/git/files/{}/main/debian/{}", view, name);
-                let resp = client
-                    .get(format!("http://{}{}", addr, path))
-                    .header("User-Agent", "Mozilla/5.0 (test)")
-                    .header("Accept", "text/html")
-                    .send()
-                    .await
-                    .unwrap();
+                let resp = call(&app, browser_get(&path)).await;
                 let status = resp.status().as_u16();
                 let raw = view == "raw";
-                let body = if raw { Some(resp.text().await.unwrap()) } else { None };
+                let body = if raw { Some(body_text(resp).await) } else { None };
                 assert_eq!(
                     (status, body),
                     (200, raw.then(|| content.to_string())),
@@ -1537,8 +1390,6 @@ db_test! {
                 );
             }
         }
-
-        handle.abort();
     }
 }
 
@@ -1555,19 +1406,14 @@ db_test! {
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
         // Pygments CSS is one of the assets klaus ships.
-        let resp = reqwest::get(format!("http://{}/git/_static/pygments.css", addr))
-            .await
-            .unwrap();
+        let resp = get(&app, "/git/_static/pygments.css").await;
         assert!(
             resp.status().is_success(),
             "expected pygments.css to be served, got {}",
             resp.status()
         );
-
-        handle.abort();
     }
 }
 
@@ -1596,18 +1442,19 @@ db_test! {
 
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
-        let resp = reqwest::Client::new()
-            .get(format!("http://{}/ce/info/refs?service=git-upload-pack", addr))
-            .header("Content-Encoding", "gzip")
-            .send()
-            .await
-            .unwrap();
+        let resp = call(
+            &app,
+            Request::get("/ce/info/refs?service=git-upload-pack")
+                .header("Content-Encoding", "gzip")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
         assert_eq!(resp.status(), 200);
         // Response body should be the real refs advertisement: the
         // first pkt-line marker starts with four hex chars.
-        let body = resp.bytes().await.unwrap();
+        let body = body_bytes(resp).await;
         assert!(
             body.len() > 20 && body.iter().take(4).all(|b| b.is_ascii_hexdigit()),
             "expected pkt-line prefix, got: {:?}",
@@ -1618,8 +1465,6 @@ db_test! {
             "expected the refs in the advertisement, got: {:?}",
             &body[..body.len().min(80)]
         );
-
-        handle.abort();
     }
 }
 
@@ -1632,14 +1477,9 @@ db_test! {
         std::fs::create_dir_all(tmp.path().join("codebase")).unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
-        let resp = reqwest::get(format!("http://{}/codebase/config", addr))
-            .await
-            .unwrap();
+        let resp = get(&app, "/codebase/config").await;
         assert_eq!(resp.status(), 404);
-
-        handle.abort();
     }
 }
 
@@ -1650,17 +1490,16 @@ db_test! {
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
-        let resp = reqwest::Client::new()
-            .get(format!("http://{}/git/", addr))
-            .header("Accept", "image/png")
-            .send()
-            .await
-            .unwrap();
+        let resp = call(
+            &app,
+            Request::get("/git/")
+                .header("Accept", "image/png")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
         assert_eq!(resp.status(), 406);
-
-        handle.abort();
     }
 }
 
@@ -1670,21 +1509,20 @@ db_test! {
         std::fs::create_dir(tmp.path().join("alpha")).unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
-        let (addr, handle) = spawn(app).await;
 
-        let resp = reqwest::Client::new()
-            .get(format!("http://{}/git/", addr))
-            .header("Accept", "text/html")
-            .send()
-            .await
-            .unwrap();
+        let resp = call(
+            &app,
+            Request::get("/git/")
+                .header("Accept", "text/html")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
         assert_eq!(resp.status(), 200);
-        let body = resp.text().await.unwrap();
+        let body = body_text(resp).await;
         // Regression for janitor.debian.net#112: link must be
         // /git/<repo>/ with the /git/ prefix and trailing slash.
         assert!(body.contains("href=\"/git/alpha/\""), "body missing canonical link:\n{}", body);
-
-        handle.abort();
     }
 }
 
@@ -1693,32 +1531,24 @@ db_test! {
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
-        let (addr, handle) = spawn(app).await;
-
-        let client = reqwest::Client::new();
         for path in [
             "/Upper/diff?old=a&new=b",
             "/under_score/revision-info?old=a&new=b",
             "/x/log?new=0000000000000000000000000000000000000000",
             "/..%2F..%2Fetc/info/refs?service=git-upload-pack",
         ] {
-            let resp = client
-                .get(format!("http://{}{}", addr, path))
-                .send()
-                .await
-                .unwrap();
+            let resp = call(&app, Request::get(path).body(Body::empty()).unwrap()).await;
             assert_eq!(resp.status(), 400, "{}", path);
         }
-        let resp = client
-            .post(format!("http://{}/Bad/remotes/upstream", addr))
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .body("url=https%3A%2F%2Fexample.com%2Fr.git")
-            .send()
-            .await
-            .unwrap();
+        let resp = call(
+            &app,
+            Request::post("/Bad/remotes/upstream")
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .body(Body::from("url=https%3A%2F%2Fexample.com%2Fr.git"))
+                .unwrap(),
+        )
+        .await;
         assert_eq!(resp.status(), 400);
-
-        handle.abort();
     }
 }
 
@@ -1727,31 +1557,27 @@ db_test! {
         let tmp = TempDir::new().unwrap();
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
-        let (addr, handle) = spawn(app).await;
-
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(format!(
-                "http://{}/git/Ghost/info/refs?service=git-upload-pack",
-                addr
-            ))
-            .send()
-            .await
-            .unwrap();
+        let resp = call(
+            &app,
+            Request::get("/git/Ghost/info/refs?service=git-upload-pack")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
         assert_eq!(resp.status(), 400);
 
         // klaus browsing is validated before touching the filesystem.
         for path in ["/git/Ghost/", "/git/Ghost/tree/master/"] {
-            let resp = client
-                .get(format!("http://{}{}", addr, path))
-                .header("User-Agent", "Mozilla/5.0 (test)")
-                .send()
-                .await
-                .unwrap();
+            let resp = call(
+                &app,
+                Request::get(path)
+                    .header("User-Agent", "Mozilla/5.0 (test)")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
             assert_eq!(resp.status(), 400, "{}", path);
         }
         assert!(!tmp.path().join("Ghost").exists());
-
-        handle.abort();
     }
 }

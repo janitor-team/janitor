@@ -76,5 +76,4 @@ base64 = "0.22"
 # into a real PostgreSQL.
 janitor = { path = "..", features = ["testing"] }
 serial_test = "3"
-# HTTP client for integration tests only.
-reqwest = { workspace = true, features = ["json"] }
+tower = { workspace = true, features = ["util"] }

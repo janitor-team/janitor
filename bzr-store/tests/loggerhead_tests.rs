@@ -6,10 +6,11 @@
 //! Postgres and a real on-disk bzr branch created via breezyshim,
 //! then check that the HTML browser answers.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
+use axum::body::Body;
+use axum::http::Request;
+use axum::response::Response;
 use axum::Router;
 use breezyshim::tree::{MutableTree, WorkingTree};
 use janitor::{test_utils::TestDatabase, test_with_database};
@@ -19,6 +20,7 @@ use janitor_bzr_store::{
 };
 use sqlx::PgPool;
 use tempfile::TempDir;
+use tower::ServiceExt;
 
 fn test_db_url(test_db: &TestDatabase) -> String {
     let base = std::env::var("TEST_DATABASE_URL")
@@ -54,14 +56,10 @@ campaign {
     Arc::new(janitor::config::read_string(text).expect("parse test janitor.conf"))
 }
 
-async fn spawn_public(public_app: Router) -> (SocketAddr, tokio::task::JoinHandle<()>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, public_app).await.ok();
-    });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    (addr, handle)
+async fn get(app: Router, uri: &str) -> Response {
+    app.oneshot(Request::get(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap()
 }
 
 async fn seed_codebase(pool: &PgPool, name: &str) {
@@ -97,17 +95,9 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn_public(public).await;
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(format!("http://{}/bzr/ghost/", addr))
-            .send()
-            .await
-            .unwrap();
+        let resp = get(public, "/bzr/ghost/").await;
         assert_eq!(resp.status(), 404);
-
-        handle.abort();
     }
 }
 
@@ -149,22 +139,13 @@ fn test_loggerhead_browse_known_codebase_renders() {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn_public(public).await;
 
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap();
         // GET /bzr/foo/ should either (a) 503 if loggerhead static dir
         // couldn't be located in this test environment, or (b) redirect
         // to /bzr/foo/changes (loggerhead's root_redirect), or (c)
         // 200 with HTML. Accept any of those as proof the integration
         // is wired up.
-        let resp = client
-            .get(format!("http://{}/bzr/foo/", addr))
-            .send()
-            .await
-            .unwrap();
+        let resp = get(public, "/bzr/foo/").await;
         let status = resp.status().as_u16();
         assert!(
             status == 301
@@ -184,8 +165,6 @@ fn test_loggerhead_browse_known_codebase_renders() {
                 loc
             );
         }
-
-        handle.abort();
     });
 }
 
@@ -225,17 +204,8 @@ fn test_loggerhead_changes_endpoint_reachable() {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn_public(public).await;
 
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap();
-        let resp = client
-            .get(format!("http://{}/bzr/foo/changes", addr))
-            .send()
-            .await
-            .unwrap();
+        let resp = get(public, "/bzr/foo/changes").await;
         // Expected 200 (rendered HTML) when loggerhead's static dir
         // is wired; 503 otherwise. Anything else is a routing bug.
         let status = resp.status().as_u16();
@@ -244,7 +214,5 @@ fn test_loggerhead_changes_endpoint_reachable() {
             "unexpected status {} for /bzr/foo/changes",
             status
         );
-
-        handle.abort();
     });
 }

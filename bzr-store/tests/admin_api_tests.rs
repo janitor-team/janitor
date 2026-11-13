@@ -11,10 +11,11 @@
 //! * The admin `/{codebase}/.bzr/smart` route is reachable (unlike
 //!   the public app it has no `/bzr/` prefix and no auth).
 
-use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
+use axum::body::{Body, Bytes};
+use axum::http::Request;
+use axum::response::Response;
 use axum::Router;
 use janitor::{test_utils::TestDatabase, test_with_database};
 use janitor_bzr_store::{
@@ -23,6 +24,7 @@ use janitor_bzr_store::{
 };
 use sqlx::PgPool;
 use tempfile::TempDir;
+use tower::ServiceExt;
 
 fn test_db_url(test_db: &TestDatabase) -> String {
     let base = std::env::var("TEST_DATABASE_URL")
@@ -58,14 +60,43 @@ campaign {
     Arc::new(janitor::config::read_string(text).expect("parse test janitor.conf"))
 }
 
-async fn spawn(app: Router) -> (SocketAddr, tokio::task::JoinHandle<()>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, app).await.ok();
-    });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    (addr, handle)
+async fn send(app: &Router, req: Request<Body>) -> Response {
+    app.clone().oneshot(req).await.unwrap()
+}
+
+fn get(uri: &str) -> Request<Body> {
+    Request::get(uri).body(Body::empty()).unwrap()
+}
+
+fn get_accept(uri: &str, accept: &str) -> Request<Body> {
+    Request::get(uri)
+        .header("Accept", accept)
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn basic_auth(user: &str, password: &str) -> String {
+    use base64::Engine;
+    let creds = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}"));
+    format!("Basic {creds}")
+}
+
+fn post(uri: &str, body: impl Into<Body>) -> Request<Body> {
+    Request::post(uri).body(body.into()).unwrap()
+}
+
+async fn body_bytes(resp: Response) -> Bytes {
+    axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap()
+}
+
+async fn body_text(resp: Response) -> String {
+    String::from_utf8(body_bytes(resp).await.to_vec()).unwrap()
+}
+
+async fn body_json<T: serde::de::DeserializeOwned>(resp: Response) -> T {
+    serde_json::from_slice(&body_bytes(resp).await).unwrap()
 }
 
 async fn seed_codebase(pool: &PgPool, name: &str) {
@@ -93,20 +124,11 @@ test_with_database! {
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn(admin).await;
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(format!("http://{}/", addr))
-            .header("Accept", "application/json")
-            .send()
-            .await
-            .unwrap();
+        let resp = send(&admin, get_accept("/", "application/json")).await;
         assert_eq!(resp.status(), 200);
-        let body: Vec<String> = resp.json().await.unwrap();
+        let body: Vec<String> = body_json(resp).await;
         assert_eq!(body, vec!["alpha".to_string(), "beta".to_string()]);
-
-        handle.abort();
     }
 }
 
@@ -118,26 +140,18 @@ test_with_database! {
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn(admin).await;
 
-        let client = reqwest::Client::new();
         // Fire a request first so the metrics middleware has something
         // to record.
-        let _ = client.get(format!("http://{}/health", addr)).send().await;
-        let resp = client
-            .get(format!("http://{}/metrics", addr))
-            .send()
-            .await
-            .unwrap();
+        send(&admin, get("/health")).await;
+        let resp = send(&admin, get("/metrics")).await;
         assert_eq!(resp.status(), 200);
-        let body = resp.text().await.unwrap();
+        let body = body_text(resp).await;
         assert!(
             body.contains("http_requests_total"),
             "metrics body missing counter: {}",
             body
         );
-
-        handle.abort();
     }
 }
 
@@ -149,25 +163,13 @@ test_with_database! {
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn(admin).await;
 
-        let client = reqwest::Client::new();
-        let health = client
-            .get(format!("http://{}/health", addr))
-            .send()
-            .await
-            .unwrap();
+        let health = send(&admin, get("/health")).await;
         assert_eq!(health.status(), 200);
-        assert_eq!(health.text().await.unwrap(), "ok");
+        assert_eq!(body_text(health).await, "ok");
 
-        let ready = client
-            .get(format!("http://{}/ready", addr))
-            .send()
-            .await
-            .unwrap();
+        let ready = send(&admin, get("/ready")).await;
         assert_eq!(ready.status(), 200);
-
-        handle.abort();
     }
 }
 
@@ -185,22 +187,16 @@ test_with_database! {
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn(admin).await;
 
-        let client = reqwest::Client::new();
         // No pre-existing branch, so configure_remote will return a
         // "path not found" error (404) — the point here is that the
         // routing + urlencoded body decoding is wired right.
-        let resp = client
-            .post(format!("http://{}/foo/remotes/main", addr))
+        let req = Request::post("/foo/remotes/main")
             .header("Content-Type", "application/x-www-form-urlencoded")
-            .body("url=bzr%2Bssh%3A%2F%2Fexample.invalid%2Ffoo")
-            .send()
-            .await
+            .body(Body::from("url=bzr%2Bssh%3A%2F%2Fexample.invalid%2Ffoo"))
             .unwrap();
+        let resp = send(&admin, req).await;
         assert_eq!(resp.status(), 404);
-
-        handle.abort();
     }
 }
 
@@ -212,14 +208,8 @@ test_with_database! {
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn(admin).await;
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .post(format!("http://{}/repositories/newcb", addr))
-            .send()
-            .await
-            .unwrap();
+        let resp = send(&admin, post("/repositories/newcb", Body::empty())).await;
         // 200 on success; 500 if neither PyO3 nor brz could create a
         // shared repo (e.g. hosts without breezy installed). The
         // directory should exist in either case because
@@ -234,8 +224,6 @@ test_with_database! {
             tmp.path().join("newcb").is_dir(),
             "ensure_codebase_structure should create the directory"
         );
-
-        handle.abort();
     }
 }
 
@@ -250,22 +238,13 @@ test_with_database! {
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn(admin).await;
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .post(format!("http://{}/foo/.bzr/smart", addr))
-            .body(b"bzr request 3\nhello\n".to_vec())
-            .send()
-            .await
-            .unwrap();
+        let resp = send(&admin, post("/foo/.bzr/smart", b"bzr request 3\nhello\n".to_vec())).await;
         // Admin app always allows writes; expect 200 (smart protocol
         // framed error for a malformed payload is still an HTTP 200).
         assert_eq!(resp.status(), 200);
         // Shared repo must have been created on demand.
         assert!(tmp.path().join("foo").join(".bzr").exists());
-
-        handle.abort();
     }
 }
 
@@ -280,19 +259,10 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn(public).await;
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(format!("http://{}/bzr/", addr))
-            .header("Accept", "text/plain")
-            .send()
-            .await
-            .unwrap();
+        let resp = send(&public, get_accept("/bzr/", "text/plain")).await;
         assert_eq!(resp.status(), 200);
-        assert_eq!(resp.text().await.unwrap(), "one\ntwo\n");
-
-        handle.abort();
+        assert_eq!(body_text(resp).await, "one\ntwo\n");
     }
 }
 
@@ -304,14 +274,10 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn(public).await;
 
-        let client = reqwest::Client::new();
-        let resp = client.get(format!("http://{}/", addr)).send().await.unwrap();
+        let resp = send(&public, get("/")).await;
         assert_eq!(resp.status(), 200);
-        assert_eq!(resp.text().await.unwrap(), "");
-
-        handle.abort();
+        assert_eq!(body_text(resp).await, "");
     }
 }
 
@@ -327,15 +293,9 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn(public).await;
 
-        let client = reqwest::Client::new();
         for path in ["/health", "/ready", "/metrics"] {
-            let resp = client
-                .get(format!("http://{}{}", addr, path))
-                .send()
-                .await
-                .unwrap();
+            let resp = send(&public, get(path)).await;
             assert_eq!(
                 resp.status(),
                 404,
@@ -344,8 +304,6 @@ test_with_database! {
                 resp.status()
             );
         }
-
-        handle.abort();
     }
 }
 
@@ -360,18 +318,9 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn(public).await;
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(format!("http://{}/bzr/", addr))
-            .header("Accept", "application/xml")
-            .send()
-            .await
-            .unwrap();
+        let resp = send(&public, get_accept("/bzr/", "application/xml")).await;
         assert_eq!(resp.status(), 406);
-
-        handle.abort();
     }
 }
 
@@ -390,15 +339,12 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn(public).await;
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .post(format!("http://{}/bzr/foo/campaign/main/.bzr/smart", addr))
-            .body(b"bzr request 3\nhello\n".to_vec())
-            .send()
-            .await
-            .unwrap();
+        let resp = send(
+            &public,
+            post("/bzr/foo/campaign/main/.bzr/smart", b"bzr request 3\nhello\n".to_vec()),
+        )
+        .await;
         assert_eq!(resp.status(), 200);
         // Without auth the campaign/main sub-path must not get
         // created on disk — proves the readonly path is taken.
@@ -406,8 +352,6 @@ test_with_database! {
             !tmp.path().join("foo").join("campaign").join("main").exists(),
             "readonly path should not have created campaign/main; it did"
         );
-
-        handle.abort();
     }
 }
 
@@ -423,23 +367,17 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn(public).await;
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .post(format!("http://{}/bzr/foo/campaign/main/.bzr/smart", addr))
-            .basic_auth("mallory", Some("wrong"))
-            .body(b"bzr request 3\nhello\n".to_vec())
-            .send()
-            .await
+        let req = Request::post("/bzr/foo/campaign/main/.bzr/smart")
+            .header("Authorization", basic_auth("mallory", "wrong"))
+            .body(Body::from(b"bzr request 3\nhello\n".to_vec()))
             .unwrap();
+        let resp = send(&public, req).await;
         assert_eq!(resp.status(), 200);
         assert!(
             !tmp.path().join("foo").join("campaign").join("main").exists(),
             "bogus auth must not get the write path"
         );
-
-        handle.abort();
     }
 }
 
@@ -456,23 +394,15 @@ test_with_database! {
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn(admin).await;
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(format!("http://{}/empty/info", addr))
-            .send()
-            .await
-            .unwrap();
+        let resp = send(&admin, get("/empty/info")).await;
         assert_eq!(resp.status(), 200);
-        let body: serde_json::Value = resp.json().await.unwrap();
+        let body: serde_json::Value = body_json(resp).await;
         assert_eq!(body["path"]["codebase"], "empty");
         // The directory exists but isn't a bzr repo, so `exists`
         // (true if `.bzr/` is present) must be false.
         assert_eq!(body["exists"], false);
         assert_eq!(body["branch_count"], 0);
-
-        handle.abort();
     }
 }
 
@@ -490,20 +420,11 @@ test_with_database! {
         let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn(public).await;
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(format!("http://{}/bzr/", addr))
-            .header("Accept", "application/json")
-            .send()
-            .await
-            .unwrap();
+        let resp = send(&public, get_accept("/bzr/", "application/json")).await;
         assert_eq!(resp.status(), 200);
-        let body: Vec<String> = resp.json().await.unwrap();
+        let body: Vec<String> = body_json(resp).await;
         assert_eq!(body, vec!["alpha", "mu", "zeta"]);
-
-        handle.abort();
     }
 }
 
@@ -515,15 +436,9 @@ test_with_database! {
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn(admin).await;
 
-        let client = reqwest::Client::new();
         for path in ["/Upper/info", "/under_score/diff?old=a&new=b", "/x/remotes"] {
-            let resp = client
-                .get(format!("http://{}{}", addr, path))
-                .send()
-                .await
-                .unwrap();
+            let resp = send(&admin, get(path)).await;
             assert_eq!(resp.status(), 400, "{}", path);
         }
         for path in [
@@ -533,17 +448,10 @@ test_with_database! {
             "/foo/Bad_Campaign/main/.bzr/smart",
             "/foo/campaign/..%2Fescape/.bzr/smart",
         ] {
-            let resp = client
-                .post(format!("http://{}{}", addr, path))
-                .body(b"hello".to_vec())
-                .send()
-                .await
-                .unwrap();
+            let resp = send(&admin, post(path, b"hello".to_vec())).await;
             assert_eq!(resp.status(), 400, "{}", path);
         }
         assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
-
-        handle.abort();
     }
 }
 
@@ -555,13 +463,10 @@ test_with_database! {
         let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
             .await
             .unwrap();
-        let (addr, handle) = spawn(admin).await;
 
-        let resp = reqwest::get(format!("http://{}/openapi.json", addr))
-            .await
-            .unwrap();
+        let resp = send(&admin, get("/openapi.json")).await;
         assert_eq!(resp.status(), 200);
-        let body: serde_json::Value = resp.json().await.unwrap();
+        let body: serde_json::Value = body_json(resp).await;
         let mut paths: Vec<&String> = body["paths"].as_object().unwrap().keys().collect();
         paths.sort();
         assert_eq!(
@@ -580,7 +485,5 @@ test_with_database! {
                 "/{codebase}/revision-info",
             ]
         );
-
-        handle.abort();
     }
 }
