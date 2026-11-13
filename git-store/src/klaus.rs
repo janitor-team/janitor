@@ -81,9 +81,11 @@ pub async fn handle_klaus(
     let path_info = latin1_from_utf8(&format!("/{}", sub_path));
     let query_string = parts.uri.query().unwrap_or("").to_string();
     let headers = parts.headers;
+    let path_prefix = state.config.git.path_prefix.clone();
 
     let (status, response_headers, body_out) = tokio::task::spawn_blocking(move || {
         invoke_klaus(
+            &path_prefix,
             &codebase,
             &repo_path,
             &method,
@@ -114,7 +116,9 @@ static KLAUS: PyOnceLock<(Py<PyAny>, Py<PyAny>)> = PyOnceLock::new();
 
 /// Build a WSGI environ dict for `repo_path`, call the klaus Flask app
 /// via Python, and return (status, headers, body).
+#[allow(clippy::too_many_arguments)]
 fn invoke_klaus(
+    path_prefix: &str,
     codebase: &CodebaseName,
     repo_path: &Path,
     method: &str,
@@ -139,7 +143,7 @@ fn invoke_klaus(
         // SCRIPT_NAME anchors klaus's `url_for(...)` under the
         // per-codebase mount so links resolve back through our
         // dispatch instead of hitting the document root.
-        let script_name = format!("/git/{}", codebase);
+        let script_name = format!("{}/git/{}", path_prefix, codebase);
         environ
             .set_item("SCRIPT_NAME", script_name)
             .map_err(py_err)?;
@@ -346,7 +350,8 @@ def build_klaus_app():
             # path so all codebases hit the same cache key.
             if endpoint == "static":
                 filename = values.get("filename", "")
-                return f"/git/_static/{filename}"
+                root = request.environ["SCRIPT_NAME"].rsplit("/", 1)[0]
+                return f"{root}/_static/{filename}"
             # The codebase is in SCRIPT_NAME rather than in the routes.
             values.pop("repo", None)
             return super().url_for(endpoint, **values)
