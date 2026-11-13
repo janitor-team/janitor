@@ -31,29 +31,91 @@ async def create_publishable_client(aiohttp_client, db):
     return await aiohttp_client(app)
 
 
-async def insert_build_only_run(conn, run_id):
+async def insert_review_run(
+    conn,
+    run_id,
+    *,
+    codebase="foo",
+    campaign="mycampaign",
+    mode="build-only",
+    value=1,
+    publish_status="needs-manual-review",
+):
     await conn.execute(
         "INSERT INTO named_publish_policy (name, per_branch_policy) VALUES "
-        "('mypolicy', ARRAY[ROW('main', 'build-only', NULL)::branch_publish_policy])"
+        "($1, ARRAY[ROW('main', $2, NULL)::branch_publish_policy]) "
+        "ON CONFLICT DO NOTHING",
+        mode,
+        mode,
     )
-    await _insert_codebase(conn, "foo")
+    await _insert_codebase(conn, codebase)
     await conn.execute(
         "INSERT INTO candidate (suite, command, codebase, publish_policy) "
-        "VALUES ('mycampaign', 'true', 'foo', 'mypolicy')"
+        "VALUES ($1, 'true', $2, $3)",
+        campaign,
+        codebase,
+        mode,
     )
     now = utcnow()
     await _insert_run(
         conn,
         run_id=run_id,
-        codebase="foo",
+        codebase=codebase,
+        campaign=campaign,
         start_time=now - timedelta(minutes=30),
         finish_time=now,
     )
-    await conn.execute("UPDATE run SET vcs_type = NULL WHERE id = $1", run_id)
+    # No VCS is set up here, so the evaluate page would fail on vcs_managers["git"].
+    await conn.execute(
+        "UPDATE run SET vcs_type = NULL, value = $2, publish_status = $3 WHERE id = $1",
+        run_id,
+        value,
+        publish_status,
+    )
     await conn.execute(
         "INSERT INTO new_result_branch (run_id, role, remote_name, base_revision, "
         "revision) VALUES ($1, 'main', 'main', 'base', 'revid')",
         run_id,
+    )
+
+
+async def test_review_refill_keeps_filter(aiohttp_client, db):
+    client = await create_publishable_client(aiohttp_client, db)
+    async with db.acquire() as conn:
+        for run_id, codebase, campaign, mode, value in [
+            ("run-a", "foo", "campaign-a", "propose", 3),
+            ("run-b", "bar", "campaign-b", "propose", 2),
+            ("run-c", "baz", "campaign-c", "propose", 1),
+            ("run-d", "qux", "campaign-b", "build-only", 0),
+        ]:
+            await insert_review_run(
+                conn,
+                run_id,
+                codebase=codebase,
+                campaign=campaign,
+                mode=mode,
+                value=value,
+            )
+
+    for publishable, expected in [
+        ("", ["run-a", "run-b"]),
+        ("&publishable_only=false", ["run-a", "run-b", "run-d"]),
+    ]:
+        resp = await client.get(
+            "/cupboard/review?suite=campaign-a&suite=campaign-b" + publishable
+        )
+        assert resp.status == 200
+        text = await resp.text()
+        assert shown_run(text) == ["run-a"]
+        (review,) = BeautifulSoup(text, "html.parser").find_all(id="review")
+        resp = await client.get(review["data-needs-review-url"])
+        assert resp.status == 200
+        assert [entry["id"] for entry in await resp.json()] == expected
+
+    resp = await client.get("/cupboard/api/campaign-a/needs-review?campaign=campaign-b")
+    assert (resp.status, await resp.text()) == (
+        400,
+        "use either a campaign in the path or campaign arguments",
     )
 
 
@@ -65,7 +127,7 @@ def shown_run(text):
 async def test_review_post_publishable_only_unchecked(aiohttp_client, db):
     client = await create_publishable_client(aiohttp_client, db)
     async with db.acquire() as conn:
-        await insert_build_only_run(conn, "somerun")
+        await insert_review_run(conn, "somerun")
 
     resp = await client.get("/cupboard/review?required_only=false")
     assert shown_run(await resp.text()) == []
