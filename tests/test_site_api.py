@@ -396,6 +396,10 @@ async def test_review_without_oauth2_provider_is_not_qa_review(aiohttp_client, d
         aiohttp_client, db, user={"email": "alice@example.com", "groups": []}
     )
 
+    resp = await client.post("/run/r1", json={"verdict": "rejected"})
+    assert resp.status == 400
+    assert await resp.text() == "no verdict in the form"
+
     resp = await client.post("/run/r1", data={"verdict": "approved"})
     assert resp.status == 200
     assert await resp.json() == {"verdict": "approved", "review-comment": None}
