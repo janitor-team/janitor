@@ -424,6 +424,32 @@ pub async fn upload_results(
     metadata: &Metadata,
     output_directory: Option<&Path>,
 ) -> Result<serde_json::Value, UploadFailure> {
+    upload_results_via(
+        client,
+        |request| client.execute(request),
+        credentials,
+        base_url,
+        run_id,
+        metadata,
+        output_directory,
+    )
+    .await
+}
+
+/// Like [`upload_results`], but hands each built request to `send`.
+async fn upload_results_via<F, Fut>(
+    client: &reqwest::Client,
+    send: F,
+    credentials: &Credentials,
+    base_url: &Url,
+    run_id: &RunId,
+    metadata: &Metadata,
+    output_directory: Option<&Path>,
+) -> Result<serde_json::Value, UploadFailure>
+where
+    F: Fn(reqwest::Request) -> Fut,
+    Fut: std::future::Future<Output = Result<Response, ReqwestError>>,
+{
     backoff::future::retry(ExponentialBackoff::default(), || async {
         let finish_url = base_url
             .join(&format!("active-runs/{}/finish", run_id))
@@ -437,9 +463,11 @@ pub async fn upload_results(
             .map_err(|e| {
                 backoff::Error::permanent(UploadFailure(format!("Error creating multipart: {}", e)))
             })?;
-        let response = builder.multipart(bundle_info.form).send().await.map_err(|e| {
-            backoff::Error::permanent(UploadFailure(format!("Error creating multipart: {}", e)))
-        })?;
+        let response = async { send(builder.multipart(bundle_info.form).build()?).await }
+            .await
+            .map_err(|e| {
+                backoff::Error::permanent(UploadFailure(format!("Error creating multipart: {}", e)))
+            })?;
 
         match response.status() {
             StatusCode::NOT_FOUND => {
@@ -561,6 +589,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Arc,
     };
+    use tower::ServiceExt;
 
     #[test]
     fn worker_credential_store_only_answers_for_its_host() {
@@ -644,18 +673,39 @@ mod tests {
         (state.status, Json(state.body.clone()))
     }
 
-    async fn spawn_mock(state: MockState) -> Url {
+    /// Run `upload_results` against a mock runner, driven with `oneshot`.
+    async fn upload_to_mock(
+        state: MockState,
+        run_id: &str,
+    ) -> Result<serde_json::Value, UploadFailure> {
         let app = Router::new()
             .route("/active-runs/{run_id}/finish", post(mock_finish))
             .with_state(state);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            axum::serve(listener, app.into_make_service())
-                .await
-                .unwrap();
-        });
-        format!("http://{}/", addr).parse().unwrap()
+        let send = |request: reqwest::Request| {
+            let app = app.clone();
+            async move {
+                let request: axum::http::Request<reqwest::Body> = request.try_into()?;
+                let response = app
+                    .oneshot(request.map(axum::body::Body::new))
+                    .await
+                    .unwrap();
+                let (parts, body) = response.into_parts();
+                let body = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+                Ok(Response::from(axum::http::Response::from_parts(
+                    parts, body,
+                )))
+            }
+        };
+        upload_results_via(
+            &reqwest::Client::new(),
+            send,
+            &Credentials::None,
+            &"http://runner.invalid/".parse().unwrap(),
+            &RunId::new(run_id).unwrap(),
+            &Metadata::default(),
+            None,
+        )
+        .await
     }
 
     #[tokio::test]
@@ -666,19 +716,9 @@ mod tests {
             body: serde_json::json!({"filenames": []}),
             hits: hits.clone(),
         };
-        let base_url = spawn_mock(state).await;
-
-        let metadata = Metadata::default();
-        let result = upload_results(
-            &reqwest::Client::new(),
-            &Credentials::None,
-            &base_url,
-            &RunId::new("run-1").unwrap(),
-            &metadata,
-            None,
-        )
-        .await
-        .expect("expected success");
+        let result = upload_to_mock(state, "run-1")
+            .await
+            .expect("expected success");
 
         assert_eq!(result, serde_json::json!({"filenames": []}));
         assert_eq!(hits.load(Ordering::SeqCst), 1);
@@ -692,19 +732,9 @@ mod tests {
             body: serde_json::json!({"reason": "already-processed"}),
             hits: hits.clone(),
         };
-        let base_url = spawn_mock(state).await;
-
-        let metadata = Metadata::default();
         let err = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            upload_results(
-                &reqwest::Client::new(),
-                &Credentials::None,
-                &base_url,
-                &RunId::new("run-2").unwrap(),
-                &metadata,
-                None,
-            ),
+            upload_to_mock(state, "run-2"),
         )
         .await
         .expect("should not exceed timeout, i.e. should not retry")
@@ -730,19 +760,9 @@ mod tests {
             body: serde_json::json!({"reason": "unknown-run"}),
             hits: hits.clone(),
         };
-        let base_url = spawn_mock(state).await;
-
-        let metadata = Metadata::default();
         let err = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            upload_results(
-                &reqwest::Client::new(),
-                &Credentials::None,
-                &base_url,
-                &RunId::new("run-3").unwrap(),
-                &metadata,
-                None,
-            ),
+            upload_to_mock(state, "run-3"),
         )
         .await
         .expect("should not exceed timeout")
