@@ -304,7 +304,7 @@ async fn main() -> Result<(), i32> {
             .unwrap();
         }
     } else {
-        tokio::spawn(janitor_publish::process_queue_loop(
+        let queue = tokio::spawn(janitor_publish::process_queue_loop(
             state.clone(),
             chrono::Duration::seconds(args.interval),
             !args.no_auto_publish,
@@ -312,6 +312,10 @@ async fn main() -> Result<(), i32> {
             args.modify_mp_limit,
             args.require_binary_diff,
         ));
+        tokio::spawn(async move {
+            log::error!("Publish queue loop stopped: {:?}", queue.await);
+            std::process::exit(1);
+        });
 
         tokio::spawn(janitor_publish::refresh_bucket_mp_counts(state.clone()));
 
