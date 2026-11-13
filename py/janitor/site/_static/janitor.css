@@ -35,6 +35,14 @@ span.result-code-nothing-to-do, span.publish-missing {
     color: #757575;
 }
 
+span.publish-status-approved {
+    color: green;
+}
+
+span.publish-status-rejected {
+    color: #ec0000;
+}
+
 /* -- publish blockers: only a failed run is fatal */
 li.blocker-waiting {
     color: #9a6700;
