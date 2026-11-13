@@ -1,9 +1,72 @@
 # Quickstart
 
-This page shows how to add a codebase, a publish policy and a candidate,
+This page shows how to define a campaign, add a codebase, a publish
+policy and a candidate,
 follow the run, and find its logs and diff. It assumes the services and
 at least one worker are running (see [production.md](production.md)).
 [glossary.md](glossary.md) explains the terms it uses.
+
+## Define a campaign
+
+A campaign is one kind of change that the janitor tries to make across
+many codebases: `lintian-fixes`, for example, fixes the problems that
+lintian finds in Debian packages. Each campaign has a `campaign` block in
+`janitor.conf`, the file the services' `--config` names:
+
+```
+campaign {
+  name: "lintian-fixes"
+  command: "lintian-brush"
+  branch_name: "lintian-fixes"
+  debian_build {
+    base_distribution: "unstable"
+    build_distribution: "lintian-fixes"
+    build_suffix: "jan+lint"
+  }
+}
+```
+
+`janitor.conf.example` has this campaign and the `unstable`
+`distribution` block it uses, so copy both from there. Copy its `control`
+campaign too: after each successful run, the runner queues a `control` run
+that builds the codebase without the change, so the two builds can be
+compared.
+
+`name` is what candidates refer to, and `branch_name` is the name of the
+branch that merge proposals come from.
+
+`command` is the codemod script, which makes the change. Workers look it
+up on their `PATH` and run it in a checkout of the codebase, so it has to
+be installed in the worker image. The published worker image has no
+codemods, so build your own, as [Worker images](production.md#worker-images)
+shows. The script has to follow silver-platter's
+[codemod protocol](https://github.com/jelmer/silver-platter/blob/master/codemod-protocol.md):
+change the files in the checkout and exit with status 0. It can also
+describe the change in the JSON file that `$SVP_RESULT` names.
+
+With `debian_build`, the worker builds the changed code as a Debian
+package. `base_distribution` names a `distribution` block in
+`janitor.conf`. That block's `build_command` runs the build, unless
+`debian_build` sets its own. The package is built for
+`build_distribution`, with `build_suffix` added to its version.
+`build_distribution` is only a name for this campaign's builds and needs
+no `distribution` block of its own. It does need an sbuild chroot, so
+after adding the campaign, run `create-sbuild-chroot-unshare.py` again
+as [sbuild chroots](production.md#sbuild-chroots) shows.
+
+For code that is not a Debian package, use `generic_build {}` in place of
+`debian_build`. The worker then finds the code's build system, such as a
+`Makefile`, builds the code and runs its tests. A generic build needs no
+`distribution` block or sbuild chroot.
+
+Merge proposals take their description from a template named after the
+campaign, such as `lintian-fixes.md`. Without one, the description is
+`Changes for lintian-fixes (<run id>)`.
+
+The services read `janitor.conf` when they start, so restart them after
+adding a campaign.
+[Adding a new campaign](production.md#adding-a-new-campaign) shows how to
+write the codemod script and the templates, and how to find candidates.
 
 ## Add a codebase, a publish policy and a candidate
 
@@ -51,12 +114,7 @@ $ curl http://localhost:9912/policy
 `per_branch` is keyed by branch role: `main` is the run's main result
 branch, not the name of a branch in the codebase.
 
-Finally the candidate. Its campaign is one kind of change that the
-janitor tries to make across many codebases: `lintian-fixes`, for example,
-fixes the problems that lintian finds in Debian packages. Each campaign has
-a `campaign` block in `janitor.conf` (the file the services' `--config`
-names), which gives the command that makes the change and how to build
-the result.
+Finally the candidate, for the `lintian-fixes` campaign:
 
 ```console
 $ curl -X POST http://localhost:9911/candidates \
