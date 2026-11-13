@@ -4578,6 +4578,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8f600ae365a73c584711cb3f88c1aa50a40139545270f3f51555621f86a8008"
 dependencies = [
  "apt-sources",
+ "axum",
  "breezyshim",
  "buildlog-consultant",
  "chrono",
@@ -4614,6 +4615,7 @@ dependencies = [
  "serde_yaml",
  "shlex 2.0.1",
  "tempfile",
+ "tokio",
  "toml 1.1.6+spec-1.1.0",
  "toml_edit 0.25.15+spec-1.1.0",
  "url",
