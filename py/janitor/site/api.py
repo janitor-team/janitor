@@ -417,7 +417,7 @@ async def serve_run_diff(request, run_id):
         None,
     )
     if branch is None:
-        raise web.HTTPNotFound(text=f"no run {run_id}")
+        raise web.HTTPNotFound(text=f"no {role} branch for run {run_id}")
 
     if run["vcs_type"] is None:
         return web.Response(status=404, text="Not in a VCS")
