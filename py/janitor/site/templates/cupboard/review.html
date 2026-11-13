@@ -16,14 +16,14 @@
         <script type="text/javascript">
             function disallowReview() {
                 $('.review-button').blur();
-                $('.review-button').disabled = "disabled";
+                $('.review-button').prop('disabled', true);
             }
 
             function allowReview(codebase, run_id) {
                 $('#full-run-link').attr('href', "/cupboard/c/" + codebase + "/" + run_id + "/");
                 $('#run-id').attr('value', run_id);
                 $('#codebase').attr('value', codebase);
-                $('.review-button').disabled = "enabled";
+                $('.review-button').prop('disabled', false);
             }
 
             function loadRun(codebase, run_id) {
@@ -113,6 +113,9 @@
                     data: {
                         'verdict': verdict,
                         'review-comment': comment
+                    },
+                    error: function() {
+                        $('.review-button').prop('disabled', false);
                     },
                     statusCode: {
                        401: function() {
