@@ -599,11 +599,14 @@ async def handle_merge_proposal(request):
         url = request.query["url"]
     except KeyError as e:
         raise web.HTTPBadRequest(text="no url specified") from e
-    return await write_merge_proposal(
+    ret = await write_merge_proposal(
         request.app["http_client_session"],
         request.app["publisher_url"],
         url,
     )
+    if ret["proposal"] is None:
+        raise web.HTTPNotFound(text=f"No merge proposal {url}")
+    return ret
 
 
 @routes.get(

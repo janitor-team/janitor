@@ -31,6 +31,7 @@ from aiohttp_apispec import (
 from aiojobs.aiohttp import setup as setup_aiojobs
 from aiojobs.aiohttp import spawn
 from marshmallow import Schema, fields
+from webargs.aiohttpparser import use_kwargs
 from yarl import URL
 
 from janitor import CAMPAIGN_REGEX, utcnow, version_string
@@ -69,20 +70,22 @@ class CodebaseCampaignSchema(Schema):
 @form_schema(MassRescheduleSchema())
 @response_schema(CodebaseCampaignSchema(many=True))
 @routes.post("/mass-reschedule", name="admin-reschedule")
-async def handle_mass_reschedule(request):
+@use_kwargs(MassRescheduleSchema(), locations=("form",))
+async def handle_mass_reschedule(
+    request,
+    result_code,
+    include_transient="off",
+    campaign=None,
+    description_re=None,
+    min_age=0,
+    rejected=None,
+    offset=0,
+    refresh=None,
+):
     check_admin(request)
-    post = await request.post()
-    include_transient = post.get("include_transient", "off") == "on"
-    try:
-        result_code = post["result_code"]
-    except KeyError as e:
-        raise web.HTTPBadRequest(text="result_code not specified") from e
-    campaign = post.get("campaign")
-    description_re = post.get("description_re")
-    min_age = int(post.get("min_age", "0"))
-    rejected = "rejected" in post
-    offset = int(post.get("offset", "0"))
-    refresh = "refresh" in post
+    include_transient = include_transient == "on"
+    rejected = rejected is not None
+    refresh = refresh is not None
     config = request.app["config"]
     all_campaigns = [c.name for c in config.campaign]
     if result_code == "never-processed":
