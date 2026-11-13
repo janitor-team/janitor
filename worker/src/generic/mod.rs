@@ -166,7 +166,9 @@ fn build(
             )
         })?;
     session.chdir(project.internal_path()).unwrap();
-    let installer = ognibuild::installer::auto_installer(session.as_ref(), scope, dep_server_url);
+    let installer =
+        ognibuild::installer::select_installers(session.as_ref(), &["apt"], dep_server_url)
+            .expect("ognibuild is built with apt support");
     let fixers = [Box::new(ognibuild::fixers::InstallFixer::new(
         installer.as_ref(),
         scope,
