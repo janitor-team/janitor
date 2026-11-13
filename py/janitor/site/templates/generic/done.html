@@ -44,9 +44,9 @@
                 <li>
                     <a href="c/{{ run.codebase }}/{{ run.id }}">{{ run.codebase }}</a>
                     {% if run.merged_by %}
-                        <em>(<a href="{{ run.merge_proposal_url }}">merged</a> by {{ run.merged_by }})</em>
+                        <em>(<a href="{{ run.merge_proposal_url }}"><span class="publish-success">merged</span></a> by {{ run.merged_by }})</em>
                     {% else %}
-                        <em>(pushed)</em>
+                        <em>(<span class="publish-success">pushed</span>)</em>
                     {% endif %}
                     {% set command = run.command -%}
                     {% set result = run.result -%}

@@ -326,7 +326,7 @@ cd {{ codebase }}
 {% macro display_publish_blockers(blockers) %}
     <ul>
         {% for k, v in blockers.items() %}
-            <li{% if not v.result %} class="{{ 'blocker-fatal' if k == 'success' else 'blocker-waiting' }}"{% endif %}>
+            <li class="{{ 'blocker-passed' if v.result else 'blocker-fatal' if k == 'success' else 'blocker-waiting' }}">
                 {%- if v.result -%}☑
                 {% else -%}
                     ☒
