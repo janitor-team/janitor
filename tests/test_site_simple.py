@@ -169,6 +169,11 @@ async def test_webhook_github_push_reschedules_without_crashing(
             "ssh_url": "git@github.com:jelmer/example.git",
             "default_branch": "main",
         },
+        # A big push: the hook body is over 1 MiB.
+        "commits": [
+            {"id": f"{n:040x}", "modified": ["debian/control"] * 20}
+            for n in range(3000)
+        ],
     }
     if encoding == "json":
         body = {"json": payload}

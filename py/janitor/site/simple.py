@@ -420,6 +420,8 @@ async def handle_health(request):
 
 
 async def process_webhook(request, db):
+    # Hooks for big pushes go over 1 MiB; the reverse proxy limits body sizes.
+    request = request.clone(client_max_size=0)
     urls = []
     codebases: dict[str, str] = {}
     async for codebase, branch_url in parse_webhook(request, db):
