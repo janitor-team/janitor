@@ -20,6 +20,7 @@ from datetime import timedelta
 
 import aiozipkin
 import asyncpg
+import mimeparse
 from aiohttp import ClientConnectorError, ClientResponseError, ClientSession, web
 from aiohttp_apispec import (
     docs,
@@ -186,6 +187,12 @@ AND """
                     )
 
     await spawn(request, do_reschedule())
+    best_match = mimeparse.best_match(
+        ["text/html", "application/json"], request.headers.get("Accept", "*/*")
+    )
+    # A form posted without scripts goes back to its page.
+    if best_match == "text/html" and "Referer" in request.headers:
+        raise web.HTTPSeeOther(request.headers["Referer"])
     return web.json_response(
         [{"codebase": run["codebase"], "campaign": run["campaign"]} for run in runs]
     )
