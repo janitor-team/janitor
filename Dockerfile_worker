@@ -42,6 +42,9 @@ RUN apt-get update --yes \
         ca-certificates \
         python3-breezy \
         brz-debian \
+        debcargo \
+        python3-toml \
+        python3-tomlkit \
         dpkg-dev \
         git \
         libjson-perl \
