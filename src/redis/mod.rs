@@ -73,7 +73,10 @@ impl RedisManager {
         let conn = self
             .connection
             .get_or_try_init(|| async {
-                info!("Attempting to connect to Redis at {}", self.config.url);
+                info!(
+                    "Attempting to connect to Redis at {}",
+                    crate::utils::url_without_password(&self.config.url)
+                );
                 let config = ConnectionManagerConfig::new().set_connection_timeout(Some(
                     Duration::from_secs(self.config.connection_timeout_seconds),
                 ));

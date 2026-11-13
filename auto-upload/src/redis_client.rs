@@ -66,7 +66,10 @@ impl PubSubMessage for BuildResultMessage {
 impl RedisClient {
     /// Set up the Redis client. The connection is made when subscribing.
     pub fn new(redis_url: &str) -> Result<Self> {
-        info!("using Redis at {}", redis_url);
+        info!(
+            "using Redis at {}",
+            janitor::utils::url_without_password(redis_url)
+        );
         let config = RedisConfig {
             url: redis_url.to_string(),
             ..Default::default()
