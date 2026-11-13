@@ -46,7 +46,7 @@ pub struct Run {
     pub suite: Campaign,
     pub instigated_context: Option<String>,
     pub vcs_type: String,
-    pub branch_url: String,
+    pub branch_url: Option<String>,
     pub logfilenames: Option<Vec<String>>,
     // Column in the schema is `worker` (name of the worker); keep the
     // Rust field as `worker_name` for clarity but rename at the sqlx
@@ -167,7 +167,7 @@ mod tests {
             suite: Campaign::new("lintian-fixes").unwrap(),
             instigated_context: None,
             vcs_type: "git".to_string(),
-            branch_url: "https://salsa.debian.org/foo/bar".to_string(),
+            branch_url: Some("https://salsa.debian.org/foo/bar".to_string()),
             logfilenames: Some(vec!["build.log".to_string(), "worker.log".to_string()]),
             worker_name: Some("worker-1".to_string()),
             result_branches: Some(vec![

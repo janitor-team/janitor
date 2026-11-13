@@ -24,7 +24,7 @@ fn make_run(role: &str, revision: Option<&str>) -> janitor::state::Run {
         suite: Campaign::new("lintian-fixes").unwrap(),
         instigated_context: None,
         vcs_type: "git".to_string(),
-        branch_url: "https://example.invalid/cb-1".to_string(),
+        branch_url: Some("https://example.invalid/cb-1".to_string()),
         logfilenames: None,
         worker_name: None,
         result_branches: Some(vec![(
@@ -107,6 +107,16 @@ async fn publish_and_store_errors_without_tip_revision() {
         .await
         .unwrap_err();
     assert_eq!(err.to_string(), "run run-1 role main has no tip revision");
+}
+
+#[tokio::test]
+async fn publish_and_store_errors_without_branch_url() {
+    let mut run = make_run("main", Some("rev-tip"));
+    run.branch_url = None;
+    let err = publish_main_role(&unconnected_pool(), &run)
+        .await
+        .unwrap_err();
+    assert_eq!(err.to_string(), "run run-1 has no target branch URL");
 }
 
 test_with_database! {
