@@ -157,7 +157,7 @@
             {% if user or not config.hide_reviewer_identities %}<!-- {{ blockers|tojson(indent=4) }}<-->{% endif %}
             {{ display_publish_blockers(blockers) }}
         {% endif %}
-        {% if binary_packages %}
+        {% if binary_packages and suite not in ('unchanged', 'control') %}
             <h2>Resulting package</h2>
             {{ install_commands(binary_packages, build_distribution) }}
         {% endif %}
