@@ -102,6 +102,11 @@ unset:
   see a login link instead of each reviewer's e-mail address. If unset,
   everyone sees the addresses.
 
+If a reverse proxy serves `git_store`'s public port under a path, such as
+`/janitor/git/`, and strips `/janitor` before passing requests on, start
+`janitor-git-store` with `--path-prefix /janitor` so its web pages link back
+under that path.
+
 For a Janitor instance, you probably want a custom website in combination with
 the Janitor API. See the existing instances for inspiration.
 
