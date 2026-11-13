@@ -8,7 +8,7 @@ from yarl import URL
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
 from janitor.site import TEMPLATE_ENV
-from janitor.site.cupboard import create_app
+from janitor.site.cupboard import create_app, parse_review_form
 
 from .test_cupboard import _insert_codebase, _insert_run, _user_middleware
 
@@ -77,3 +77,21 @@ async def test_review_post_publishable_only_unchecked(aiohttp_client, db):
     resp = await client.post("/cupboard/review", data={"run_id": "somerun"})
     assert resp.status == 200
     assert shown_run(await resp.text()) == ["somerun"]
+
+
+def test_parse_review_form_reschedule():
+    assert parse_review_form({"verdict": "Reschedule"}) == ("reschedule", None)
+
+
+def test_parse_review_form_comment():
+    assert parse_review_form({"verdict": "Reject", "review_comment": "broken"}) == (
+        "rejected",
+        "broken",
+    )
+
+
+def test_parse_review_form_empty_comment():
+    assert parse_review_form({"verdict": "Approve", "review_comment": ""}) == (
+        "approved",
+        None,
+    )

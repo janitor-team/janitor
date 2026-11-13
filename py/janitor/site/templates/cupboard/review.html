@@ -100,10 +100,7 @@
             }
 
             function submitReview(elem, verdict) {
-                var comment = undefined;
-                if (verdict == 'rejected') {
-                    comment = window.prompt('Please specify a comment for the rejection');
-                }
+                var comment = $('#review-comment').val() || undefined;
                 var run_id = $('#run-id').val();
                 var codebase = $('#codebase').val();
                 console.log("Submitting review " + verdict + " for run " + codebase + "/" + run_id);
@@ -123,6 +120,7 @@
                        {% endif %}
                        },
                        200: function() {
+                           $('#review-comment').val('');
                            if (todo.length == 0) {
                                 refreshData(loadNewJob);
                            } else {
@@ -140,8 +138,10 @@
             <input type="hidden" name="run_id" id="run-id" value="{{ run_id }}" />
             <input type="hidden" name="codebase" id="codebase" value="{{ codebase }}" />
             {% if campaigns %}
-                {% for s in campaigns %}<input type="hidden" name="suites[]" value="{{ s }}" />{% endfor %}
+                {% for s in campaigns %}<input type="hidden" name="suite" value="{{ s }}" />{% endfor %}
             {% endif %}
+            <label for="review-comment">Comment:</label>
+            <textarea name="review_comment" id="review-comment" rows="2" cols="60"></textarea>
             <input class="review-button"
                    type="submit"
                    name="verdict"
@@ -175,6 +175,9 @@
                        onchange="$('#options').submit()" />
                 Publishable only
             </label>
+            <noscript>
+                <input type="submit" value="Update" />
+            </noscript>
         </form>
     </div>
 {% endblock body %}
