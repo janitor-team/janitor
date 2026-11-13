@@ -2887,7 +2887,8 @@ async fn publish_finish_events(
             match janitor::schedule::do_schedule_control(
                 &pool,
                 &codebase,
-                change_set.as_ref(),
+                // Its own change set, so the unchanged-run lookups find it.
+                None,
                 main_branch_revision.as_ref(),
                 None,
                 false,
