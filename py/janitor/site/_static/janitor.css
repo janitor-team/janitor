@@ -91,6 +91,16 @@ tr.row-disabled, td.old-version {
     }
 }
 
+/* Long descriptions wrap in their table cell instead of widening the page */
+td.description, table.docutils td pre {
+    overflow-wrap: anywhere;
+}
+
+table.docutils td pre {
+    white-space: pre-wrap;
+    min-width: 30ch;
+}
+
 span.tinycode {
     font-family: monospace;
     font-weight: bold;

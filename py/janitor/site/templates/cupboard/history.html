@@ -56,7 +56,7 @@
                         <td>
                             <a class="reference external" href="c/{{ run.codebase }}/{{ run.id }}/">{{ display_result_code(run.result_code, run.failure_transient) |safe }}</a>
                         </td>
-                        <td>
+                        <td class="description">
                             {% if run.result_code != 'success' %}{{ run.description }}{% endif %}
                         </td>
                     </tr>
