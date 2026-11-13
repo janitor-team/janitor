@@ -122,6 +122,14 @@ async def test_review_post_publishable_only_unchecked(aiohttp_client, db):
     resp = await client.get("/cupboard/review?required_only=false")
     assert shown_run(await resp.text()) == []
 
+    for name in ["publishable_only", "required_only"]:
+        resp = await client.get("/cupboard/review", params={name: "maybe"})
+        assert resp.status == 422
+        assert await resp.json() == {name: ["Not a valid boolean."]}
+        resp = await client.post("/cupboard/review", data={name: "maybe"})
+        assert resp.status == 422
+        assert await resp.json() == {name: ["Not a valid boolean."]}
+
     resp = await client.post("/cupboard/review", data={"publishable_only": "true"})
     assert resp.status == 200
     assert shown_run(await resp.text()) == []

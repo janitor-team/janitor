@@ -314,18 +314,26 @@ def parse_review_form(post: Mapping[str, str]) -> tuple[str, Optional[str]]:
     return verdict, post.get("review_comment") or None
 
 
+class ReviewPostSchema(ReviewFormSchema):
+    required_only = fields.Bool(load_default=True)
+    # An unchecked checkbox is not part of the form data.
+    publishable_only = fields.Bool(load_default=False)
+
+
+class ReviewQuerySchema(Schema):
+    publishable_only = fields.Bool(load_default=True)
+    required_only = fields.Bool(load_default=True)
+
+
 @routes.post("/cupboard/review", name="cupboard-review-post")
-@use_kwargs(ReviewFormSchema(), locations=("form",))
-async def handle_review_post(request, **form):
+@use_kwargs(ReviewPostSchema(), locations=("form",))
+async def handle_review_post(request, required_only, publishable_only, **form):
     from ...review import store_review
     from .review import generate_review
 
     check_logged_in(request)
 
     post = await request.post()
-    required_only = post.get("required_only", "true") == "true"
-    # An unchecked checkbox is not part of the form data.
-    publishable_only = post.get("publishable_only", "false") == "true"
     async with request.app["pool"].acquire() as conn:
         if "verdict" in form:
             verdict, review_comment = parse_review_form(form)
@@ -361,14 +369,9 @@ async def handle_review_post(request, **form):
 
 
 @routes.get("/cupboard/review", name="cupboard-review")
-async def handle_review(request):
+@use_kwargs(ReviewQuerySchema(), locations=("query",))
+async def handle_review(request, publishable_only, required_only):
     from .review import generate_review
-
-    publishable_only = request.query.get("publishable_only", "true") == "true"
-    if "required_only" in request.query:
-        required_only = request.query["required_only"] == "true"
-    else:
-        required_only = True
 
     campaigns = request.query.getall("campaign", None)
     async with request.app["pool"].acquire() as conn:
