@@ -609,26 +609,10 @@ async def handle_result_file(request):
 @routes.get("/cupboard/ready", name="cupboard-ready")
 @html_template("cupboard/ready-list.html", headers={"Vary": "Cookie"})
 async def handle_ready_proposals(request):
+    from ..pkg import generate_ready_list
+
     publish_status = request.query.get("publish_status")
-    async with request.app["pool"].acquire() as conn:
-        query = "SELECT codebase, suite, id, command, result FROM publish_ready"
-
-        conditions = [
-            "EXISTS (SELECT * FROM unnest(unpublished_branches) "
-            "WHERE mode in "
-            "('propose', 'attempt-push', 'push-derived', 'push'))"
-        ]
-        args = []
-        if publish_status:
-            args.append(publish_status)
-            conditions.append(f"publish_status = ${len(args)}")
-
-        query += " WHERE " + " AND ".join(conditions)
-
-        query += " ORDER BY codebase ASC"
-
-        runs = await conn.fetch(query, *args)
-    return {"runs": runs}
+    return await generate_ready_list(request.app["pool"], None, publish_status)
 
 
 @routes.get("/cupboard/done", name="cupboard-done")
