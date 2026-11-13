@@ -243,10 +243,16 @@ WHERE
 
 async def parse_webhook(request, db):
     if request.content_type == "application/json":
-        body = await request.json()
+        try:
+            body = await request.json()
+        except json.JSONDecodeError as e:
+            raise web.HTTPBadRequest(text=f"Invalid JSON body: {e}") from e
     elif request.content_type == "application/x-www-form-urlencoded":
         post = await request.post()
-        body = json.loads(post["payload"])
+        try:
+            body = json.loads(post["payload"])
+        except json.JSONDecodeError as e:
+            raise web.HTTPBadRequest(text=f"Invalid JSON payload: {e}") from e
     else:
         raise web.HTTPUnsupportedMediaType(
             text=f"Invalid content type {request.content_type}"

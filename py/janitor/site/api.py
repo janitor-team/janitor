@@ -586,6 +586,8 @@ async def handle_run_post(request):
         run_id = request.match_info["run_id"]
 
         check_logged_in(request)
+        if await conn.fetchval("SELECT 1 FROM run WHERE id = $1", run_id) is None:
+            raise web.HTTPNotFound(text=f"no run {run_id}")
         span = aiozipkin.request_span(request)
         post = await request.post()
         verdict = post.get("verdict")
