@@ -297,6 +297,7 @@ async def handle_review_post(request):
     check_logged_in(request)
 
     post = await request.post()
+    required_only = post.get("required_only", "true") == "true"
     # An unchecked checkbox is not part of the form data.
     publishable_only = post.get("publishable_only", "false") == "true"
     async with request.app["pool"].acquire() as conn:
@@ -330,6 +331,7 @@ async def handle_review_post(request):
             request.app["vcs_managers"],
             campaigns=post.getall("suite", None),
             publishable_only=publishable_only,
+            required_only=required_only,
         )
         return web.Response(
             content_type="text/html",
