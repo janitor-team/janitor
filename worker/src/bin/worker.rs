@@ -90,6 +90,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         log::debug!("breezy plugins were already loaded");
     }
 
+    let metrics = janitor_worker::client::Metrics::new(prometheus::default_registry())?;
+
     let state = Arc::new(RwLock::new(AppState {
         assignment: None,
         output_directory: None,
@@ -234,16 +236,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = janitor_worker::web::app(state.clone());
     let state = state.clone();
     tokio::spawn(async move {
-        let client =
-            janitor_worker::client::Client::new(base_url, auth, janitor_worker::DEFAULT_USER_AGENT)
-                .expect("Failed to create HTTP client");
+        let client = janitor_worker::client::Client::new(
+            base_url,
+            auth,
+            janitor_worker::DEFAULT_USER_AGENT,
+            metrics,
+        )
+        .expect("Failed to create HTTP client");
         loop {
             let exit_code = match janitor_worker::process_single_item(
                 &client,
                 my_url.as_ref(),
                 &node_name,
                 jenkins_build_url.as_ref(),
-                args.prometheus.as_ref(),
                 args.codebase.as_ref(),
                 args.campaign.as_ref(),
                 args.tee,
@@ -274,7 +279,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                     0
                 }
-                Ok(_) => 0,
+                Ok((run_id, campaign)) => match args.prometheus.as_ref() {
+                    Some(prometheus) => match janitor_worker::push_metrics(
+                        prometheus,
+                        prometheus::default_registry(),
+                        &run_id,
+                        &campaign,
+                    )
+                    .await
+                    {
+                        Ok(()) => 0,
+                        Err(e) => {
+                            log::error!("failed to push metrics: {}", e);
+                            1
+                        }
+                    },
+                    None => 0,
+                },
             };
 
             if !args.r#loop {
