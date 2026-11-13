@@ -334,7 +334,7 @@ test_with_database! {
                     result: true,
                     details: BlockerCommandDetails {
                         correct: "noop".to_string(),
-                        actual: "noop".to_string(),
+                        actual: Some("noop".to_string()),
                     },
                 },
                 publish_status: Blocker {
@@ -418,7 +418,7 @@ test_with_database! {
                     result: true,
                     details: BlockerCommandDetails {
                         correct: "noop".to_string(),
-                        actual: "noop".to_string(),
+                        actual: Some("noop".to_string()),
                     },
                 },
                 publish_status: Blocker {
@@ -496,6 +496,7 @@ test_with_database! {
              UPDATE run SET start_time = '2100-01-01 02:04:05',
                             finish_time = '2100-01-01 03:04:05',
                             result_code = 'build-failed',
+                            command = NULL,
                             publish_status = 'rejected';
              UPDATE change_set SET state = 'done';
              INSERT INTO run (id, codebase, suite, command, start_time, finish_time,
@@ -538,7 +539,7 @@ test_with_database! {
                     result: false,
                     details: BlockerCommandDetails {
                         correct: "other".to_string(),
-                        actual: "noop".to_string(),
+                        actual: None,
                     },
                 },
                 publish_status: Blocker {

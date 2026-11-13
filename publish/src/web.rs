@@ -2177,7 +2177,7 @@ pub struct BlockerCommandDetails {
     /// Command of the candidate.
     pub correct: String,
     /// Command the run used.
-    pub actual: String,
+    pub actual: Option<String>,
 }
 
 /// Inner value of the `reviews` map in
@@ -2290,7 +2290,7 @@ struct RunDetails {
     codebase: CodebaseName,
     campaign: Campaign,
     finish_time: chrono::DateTime<chrono::Utc>,
-    run_command: String,
+    run_command: Option<String>,
     publish_status: String,
     rate_limit_bucket: Option<String>,
     revision: Option<breezyshim::RevisionId>,
@@ -2447,7 +2447,7 @@ WHERE run.id = $1
     };
 
     let command = Blocker {
-        result: run.run_command == run.policy_command,
+        result: run.run_command.as_deref() == Some(run.policy_command.as_str()),
         details: BlockerCommandDetails {
             correct: run.policy_command,
             actual: run.run_command,
