@@ -120,6 +120,9 @@ as `/dists/`, and `/janitor/git/` and `/janitor/bzr/` to `git_store`
 and `bzr_store` as `/git/` and `/bzr/`. The admin port (`/health` and
 `/metrics`) is not under the path.
 
+Start `janitor-git-store` with `--path-prefix /janitor`, so that its web
+pages link back under `/janitor/git/`.
+
 ## Worker images
 
 The published worker image carries Debian's build tooling, but it carries no
