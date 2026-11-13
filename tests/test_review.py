@@ -70,6 +70,18 @@ async def test_review_post_publishable_only_unchecked(aiohttp_client, db):
     resp = await client.get("/cupboard/review?required_only=false")
     assert shown_run(await resp.text()) == []
 
+    for name in ["publishable_only", "required_only"]:
+        resp = await client.get("/cupboard/review", params={name: "yes"})
+        assert (resp.status, await resp.text()) == (
+            400,
+            f"{name} must be true or false",
+        )
+    resp = await client.post("/cupboard/review", data={"publishable_only": "yes"})
+    assert (resp.status, await resp.text()) == (
+        400,
+        "publishable_only must be true or false",
+    )
+
     resp = await client.post("/cupboard/review", data={"publishable_only": "true"})
     assert resp.status == 200
     assert shown_run(await resp.text()) == []
