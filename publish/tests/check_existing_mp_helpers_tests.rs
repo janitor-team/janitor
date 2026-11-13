@@ -82,8 +82,6 @@ async fn seed_run(
 ) {
     let finish_time = Utc::now() - Duration::minutes(finish_time_offset_minutes);
     let start_time = finish_time - Duration::minutes(1);
-    // `vcs_type` must be non-null: the Rust `Run` struct decodes it
-    // as `String`, not `Option<String>`.
     sqlx::query(
         r#"
         INSERT INTO run (
@@ -749,11 +747,11 @@ test_with_database! {
             .collect();
         assert_eq!(ready, vec![(run_id.clone(), tags)]);
 
-        sqlx::query("UPDATE run SET result_tags = NULL")
+        sqlx::query("UPDATE run SET result_tags = NULL, vcs_type = NULL")
             .execute(pool)
             .await
             .unwrap();
         let run = get_run(pool, &run_id).await.unwrap().unwrap();
-        assert_eq!(run.result_tags, None);
+        assert_eq!((run.result_tags, run.vcs_type), (None, None));
     }
 }

@@ -74,7 +74,7 @@ async fn run_from_row_decodes_worker_column() {
     let run: Run = sqlx::query_as(
         "SELECT id, command, description, result_code, main_branch_revision, \
                 revision, context, result, suite::text AS suite, \
-                instigated_context, vcs_type::text AS vcs_type, branch_url, \
+                instigated_context, vcs_type, branch_url, \
                 logfilenames, worker, target_branch_url, change_set, \
                 failure_details, failure_transient, failure_stage, codebase, \
                 (start_time AT TIME ZONE 'UTC') AS start_time, \

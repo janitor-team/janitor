@@ -296,7 +296,7 @@ impl RunnerDatabase {
             resume,
             target,
             worker_name: run.worker_name,
-            vcs_type: Some(run.vcs_type),
+            vcs_type: run.vcs_type.map(|v| v.to_string()),
             target_branch_url: run.target_branch_url,
             context: run.context.and_then(|s| serde_json::from_str(&s).ok()),
             builder_result,
@@ -437,14 +437,14 @@ impl RunnerDatabase {
 
     /// Get a run by ID.
     pub async fn get_run(&self, run_id: &RunId) -> Result<Option<JanitorResult>, sqlx::Error> {
-        // run.vcs_type and run.suite are postgres enums; cast both to
-        // text so sqlx decodes them as Strings for the Run struct. The
+        // run.suite is a postgres enum; cast it to text so sqlx decodes
+        // it as a String for the Run struct. The
         // timestamps are stored without a time zone, and result_branches
         // is built from new_result_branch as the RECORD[] Run expects.
         let run: Option<Run> = sqlx::query_as(
             r#"
             SELECT id, command, description, result_code, main_branch_revision, revision,
-                   context, result, suite::text AS suite, instigated_context, vcs_type::text AS vcs_type, branch_url,
+                   context, result, suite::text AS suite, instigated_context, vcs_type, branch_url,
                    logfilenames, worker,
                    array(SELECT row(role, remote_name, base_revision, revision)
                          FROM new_result_branch WHERE run_id = run.id) AS result_branches,
