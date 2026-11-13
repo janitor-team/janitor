@@ -236,10 +236,10 @@ async fn test_schedule_control_run_without_main_branch_revision() {
         .expect("insert change_set");
     sqlx::query(
         "INSERT INTO run (
-             id, suite, codebase, result_code,
+             id, command, suite, codebase, result_code,
              start_time, finish_time, logfilenames, change_set
          )
-         VALUES ('run-norev', 'test-campaign', 'control-norev-cb', 'success',
+         VALUES ('run-norev', '', 'test-campaign', 'control-norev-cb', 'success',
                  NOW() - INTERVAL '1 minute', NOW(), '{}', 'cs-norev')",
     )
     .execute(&pool)

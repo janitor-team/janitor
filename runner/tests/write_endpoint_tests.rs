@@ -387,10 +387,10 @@ async fn post_update_run_persists_publish_status() {
     // the run check `publish_status != 'approved' or revision is not null`.
     sqlx::query(
         "INSERT INTO run (
-             id, suite, codebase, result_code, revision,
+             id, command, suite, codebase, result_code, revision,
              start_time, finish_time, logfilenames, change_set
          )
-         VALUES ($1, $2, $3, $4, $5,
+         VALUES ($1, '', $2, $3, $4, $5,
                  NOW() - INTERVAL '1 minute', NOW(), '{}', $6)",
     )
     .bind("run-upd-1")
@@ -632,10 +632,10 @@ async fn get_run_returns_codebase_campaign_publish_status() {
         .expect("insert change_set");
     sqlx::query(
         "INSERT INTO run (
-             id, suite, codebase, result_code,
+             id, command, suite, codebase, result_code,
              start_time, finish_time, logfilenames, change_set
          )
-         VALUES ($1, $2, $3, $4,
+         VALUES ($1, '', $2, $3, $4,
                  NOW() - INTERVAL '1 minute', NOW(), '{}', $5)",
     )
     .bind("run-get-1")
@@ -687,12 +687,12 @@ async fn get_run_returns_run_detail_with_result_branches() {
         .expect("insert change_set");
     sqlx::query(
         "INSERT INTO run (
-             id, suite, codebase, result_code,
+             id, command, suite, codebase, result_code,
              main_branch_revision, revision,
              vcs_type, branch_url,
              start_time, finish_time, logfilenames, change_set
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7::vcs_type, $8,
+         VALUES ($1, '', $2, $3, $4, $5, $6, $7::vcs_type, $8,
                  NOW() - INTERVAL '1 minute', NOW(), '{}', $9)",
     )
     .bind("run-detail-1")
@@ -800,12 +800,12 @@ async fn insert_run(
     .expect("insert worker");
     sqlx::query(
         "INSERT INTO run (
-             id, suite, codebase, result_code,
+             id, command, suite, codebase, result_code,
              start_time, finish_time, logfilenames,
              change_set, revision, main_branch_revision,
              worker, worker_link, failure_transient, description
          )
-         VALUES ($1, $2::suite_name, $3, $4,
+         VALUES ($1, '', $2::suite_name, $3, $4,
                  $5 - INTERVAL '30 seconds', $5, '{}',
                  $6, $7, 'base-rev',
                  'worker-a', 'https://worker.invalid/a', false, 'ok')",
@@ -2640,10 +2640,10 @@ async fn post_update_run_publishes_publish_status_event() {
         .expect("insert change_set");
     sqlx::query(
         "INSERT INTO run (
-             id, suite, codebase, result_code, revision,
+             id, command, suite, codebase, result_code, revision,
              start_time, finish_time, logfilenames, change_set
          )
-         VALUES ('run-pubsub-1', 'test-campaign', 'pubsub-cb',
+         VALUES ('run-pubsub-1', '', 'test-campaign', 'pubsub-cb',
                  'success', 'rev-pubsub',
                  NOW() - INTERVAL '1 minute', NOW(), '{}', 'cs-pubsub')",
     )
@@ -2843,10 +2843,10 @@ async fn get_workers_reports_run_count_per_worker() {
     for id in ["run-a", "run-b"] {
         sqlx::query(
             "INSERT INTO run (
-                 id, suite, codebase, worker, result_code,
+                 id, command, suite, codebase, worker, result_code,
                  start_time, finish_time, logfilenames, change_set
              )
-             VALUES ($1, 'test-campaign', 'worker-count-cb', 'busy-worker', 'success',
+             VALUES ($1, '', 'test-campaign', 'worker-count-cb', 'busy-worker', 'success',
                      NOW() - INTERVAL '1 minute', NOW(), '{}', 'cs-worker-count')",
         )
         .bind(id)
@@ -3329,9 +3329,9 @@ async fn get_run_followups_returns_candidate_pairs() {
     .await
     .expect("insert change_set");
     sqlx::query(
-        "INSERT INTO run (id, suite, codebase, result_code, \
+        "INSERT INTO run (id, command, suite, codebase, result_code, \
                           start_time, finish_time, logfilenames, change_set) \
-         VALUES ('run-origin', 'test-campaign', 'alpha', 'success', \
+         VALUES ('run-origin', '', 'test-campaign', 'alpha', 'success', \
                  NOW() - INTERVAL '1 minute', NOW(), '{}', 'cs-followup')",
     )
     .execute(&pool)
@@ -3408,9 +3408,9 @@ async fn get_run_followups_returns_candidate_pairs() {
 
     // Run without followups: empty list, not 404.
     sqlx::query(
-        "INSERT INTO run (id, suite, codebase, result_code, \
+        "INSERT INTO run (id, command, suite, codebase, result_code, \
                           start_time, finish_time, logfilenames, change_set) \
-         VALUES ('run-lonely', 'test-campaign', 'alpha', 'success', \
+         VALUES ('run-lonely', '', 'test-campaign', 'alpha', 'success', \
                  NOW() - INTERVAL '1 minute', NOW(), '{}', 'cs-followup')",
     )
     .execute(&pool)

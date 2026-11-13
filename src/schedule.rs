@@ -953,13 +953,13 @@ mod tests {
         };
         let pool = db.pool();
         sqlx::query(
-            "INSERT INTO run (id, codebase, suite, change_set, logfilenames, result_code,
+            "INSERT INTO run (id, command, codebase, suite, change_set, logfilenames, result_code,
                               start_time, finish_time) VALUES
-             ('r1', 'cb', 'lintian-fixes', 'cs', '{}', 'success',
+             ('r1', '', 'cb', 'lintian-fixes', 'cs', '{}', 'success',
               '2024-01-01 00:00:00', '2024-01-02 00:00:01.5'),
-             ('r2', 'cb', 'lintian-fixes', 'cs', '{}', 'some-failure',
+             ('r2', '', 'cb', 'lintian-fixes', 'cs', '{}', 'some-failure',
               '2024-01-03 00:00:00', '2024-01-03 00:00:02'),
-             ('r3', 'cb', 'lintian-fixes', 'cs', '{}', 'some-failure',
+             ('r3', '', 'cb', 'lintian-fixes', 'cs', '{}', 'some-failure',
               '2024-01-04 00:00:00', '2024-01-04 00:00:03.250001')",
         )
         .execute(pool)
@@ -990,11 +990,11 @@ mod tests {
         };
         let pool = db.pool();
         sqlx::query(
-            "INSERT INTO run (id, codebase, suite, change_set, logfilenames, result_code,
+            "INSERT INTO run (id, command, codebase, suite, change_set, logfilenames, result_code,
                               start_time, finish_time) VALUES
-             ('r1', 'foo', 'lintian-fixes', 'cs', '{}', 'success',
+             ('r1', '', 'foo', 'lintian-fixes', 'cs', '{}', 'success',
               '2024-01-01 10:00:00', '2024-01-01 10:01:00'),
-             ('r2', 'foo', 'lintian-fixes', 'cs', '{}', 'worker-failure',
+             ('r2', '', 'foo', 'lintian-fixes', 'cs', '{}', 'worker-failure',
               '2024-01-02 10:00:00', '2024-01-02 10:00:30')",
         )
         .execute(pool)

@@ -75,7 +75,7 @@ CREATE INDEX ON result_tag (revision);
 CREATE TYPE publish_status AS ENUM ('unknown', 'blocked', 'needs-manual-review', 'rejected', 'approved', 'ignored');
 CREATE TABLE IF NOT EXISTS run (
    id text not null primary key,
-   command text,
+   command text not null,
    description text,
    start_time timestamp,
    finish_time timestamp,

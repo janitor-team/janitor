@@ -57,10 +57,10 @@ pub async fn insert_test_run(
     sqlx::query(
         r#"
         INSERT INTO run (
-            id, suite, codebase, result_code, revision,
+            id, command, suite, codebase, result_code, revision,
             start_time, finish_time, logfilenames, change_set
         )
-        VALUES ($1, $2, $3, $4, $5, NOW() - INTERVAL '1 minute', NOW(), '{}', $6)
+        VALUES ($1, '', $2, $3, $4, $5, NOW() - INTERVAL '1 minute', NOW(), '{}', $6)
         "#,
     )
     .bind(run_id)
@@ -199,11 +199,11 @@ mod tests {
             .unwrap();
             sqlx::query(
                 "INSERT INTO run (
-                     id, suite, codebase, result_code,
+                     id, command, suite, codebase, result_code,
                      start_time, finish_time, logfilenames, change_set
                  )
                  VALUES (
-                     'earlier-run', 'lintian-fixes', 'finish-run-codebase',
+                     'earlier-run', '', 'lintian-fixes', 'finish-run-codebase',
                      'success', NOW() - INTERVAL '1 hour', NOW() - INTERVAL '55 minutes',
                      '{}', 'cs-earlier'
                  )",
