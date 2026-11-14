@@ -23,12 +23,14 @@ import aiohttp_jinja2
 import pytest
 from aiohttp import ClientSession, web
 from aiohttp.test_utils import make_mocked_request
+from bs4 import BeautifulSoup
 from jinja2 import Environment
 from yarl import URL
 
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
 from janitor.logs import LogRetrievalError, get_log_manager
+from janitor.queue import Queue
 from janitor.site import (
     TEMPLATE_ENV,
     classify_result_code,
@@ -556,6 +558,51 @@ async def test_workers_delete_unknown(aiohttp_client, db):
     client = await create_api_client(aiohttp_client, db, user=ADMIN_USER)
     resp = await client.delete("/workers/nonexistent")
     assert resp.status == 404
+
+
+def test_cupboard_page_size_defaults_to_100():
+    assert read_config_string("").cupboard_page_size == 100
+    assert read_config_string("cupboard_page_size: 2").cupboard_page_size == 2
+
+
+async def test_cupboard_page_size(aiohttp_client, db):
+    async with db.acquire() as conn:
+        queue = Queue(conn)
+        now = utcnow()
+        for i in range(3):
+            await _insert_codebase(conn, f"cb{i}")
+            await _insert_run(
+                conn,
+                run_id=f"run-{i}",
+                codebase=f"cb{i}",
+                start_time=now - timedelta(hours=i + 1),
+                finish_time=now - timedelta(hours=i),
+            )
+            await queue.add(codebase=f"cb{i}", campaign="mycampaign", command="true")
+    client = await create_client(aiohttp_client, db, config="cupboard_page_size: 2")
+
+    async def codebases(path, rows, column):
+        resp = await client.get(path)
+        assert resp.status == 200
+        soup = BeautifulSoup(await resp.text(), "html.parser")
+        return [
+            tr.find_all("td")[column].get_text(strip=True) for tr in soup.select(rows)
+        ]
+
+    history = "#history tbody tr"
+    queue_rows = "div[name=coming-up] tbody tr"
+    assert await codebases("/cupboard/history", history, 1) == ["cb0", "cb1"]
+    assert await codebases("/cupboard/history?limit=3", history, 1) == [
+        "cb0",
+        "cb1",
+        "cb2",
+    ]
+    assert await codebases("/cupboard/queue", queue_rows, 0) == ["cb0", "cb1"]
+    assert await codebases("/cupboard/queue?limit=3", queue_rows, 0) == [
+        "cb0",
+        "cb1",
+        "cb2",
+    ]
 
 
 async def test_history_limit_zero_lists_no_runs(aiohttp_client, db):
