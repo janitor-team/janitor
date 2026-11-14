@@ -67,4 +67,4 @@ ENV AUTOPKGTEST=/usr/local/bin/autopkgtest-wrapper
 EXPOSE 9821
 
 # tini-static reaps zombies that janitor-worker, running as PID 1, would otherwise leave.
-ENTRYPOINT ["tini-static", "--", "janitor-worker", "--port=9821", "--listen-address=0.0.0.0"]
+ENTRYPOINT ["tini-static", "--", "janitor-worker", "--port=9821", "--listen-address=::"]

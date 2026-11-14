@@ -56,4 +56,4 @@ EXPOSE 9914
 
 EXPOSE 9915
 
-ENTRYPOINT ["janitor-archive", "--port=9914", "--public-port=9915", "--listen-address=0.0.0.0"]
+ENTRYPOINT ["janitor-archive", "--port=9914", "--public-port=9915", "--listen-address=::"]

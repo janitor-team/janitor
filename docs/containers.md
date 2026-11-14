@@ -37,6 +37,9 @@ $ podman run --rm --network=host --name janitor-worker \
     --base-url http://localhost:9919/ --loop
 ```
 
+Except for `site`, the service images listen on `::`, which takes IPv4 and
+IPv6 connections.
+
 `janitor-mail-filter` is not a service. It reads one email from standard input
 and posts the URL of the merge proposal in it to `--refresh-url`.
 
