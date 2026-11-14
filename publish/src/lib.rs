@@ -762,41 +762,45 @@ async fn run_worker_process(
         ));
     }
 
-    let status = p.wait().await?;
-
-    if status.success() {
-        let mut stdout = p.stdout.take().ok_or_else(|| {
-            WorkerInvalidResponse::from("Failed to get stdout handle".to_string())
-        })?;
-        let _stderr = p.stderr.take();
+    let mut stdout = p
+        .stdout
+        .take()
+        .ok_or_else(|| WorkerInvalidResponse::from("Failed to get stdout handle".to_string()))?;
+    let stderr = p
+        .stderr
+        .take()
+        .ok_or_else(|| WorkerInvalidResponse::from("Failed to get stderr handle".to_string()))?;
+    let read_stdout = async {
         let mut output = Vec::new();
         tokio::io::AsyncReadExt::read_to_end(&mut stdout, &mut output).await?;
+        Ok::<_, std::io::Error>(output)
+    };
+    // Pass stderr on line by line as it comes, and keep it for the error below.
+    let pass_on_stderr = async {
+        use std::io::Write;
+        use tokio::io::AsyncBufReadExt;
+        let mut stderr = tokio::io::BufReader::new(stderr);
+        let mut error = Vec::new();
+        loop {
+            let start = error.len();
+            if stderr.read_until(b'\n', &mut error).await? == 0 {
+                return Ok::<_, std::io::Error>(error);
+            }
+            std::io::stderr().write_all(&error[start..])?;
+        }
+    };
+    // Read both pipes while waiting, so a full pipe cannot block the child.
+    let (status, output, error) = tokio::try_join!(p.wait(), read_stdout, pass_on_stderr)?;
 
+    if status.success() {
         let response =
             serde_json::from_reader(&mut output.as_slice()).map_err(WorkerInvalidResponse::from)?;
         Ok((status.code().unwrap_or(-1), response))
     } else if status.code() == Some(1) {
-        let mut stdout = p.stdout.take().ok_or_else(|| {
-            WorkerInvalidResponse::from("Failed to get stdout handle".to_string())
-        })?;
-        let mut stderr = p.stderr.take().ok_or_else(|| {
-            WorkerInvalidResponse::from("Failed to get stderr handle".to_string())
-        })?;
-        let mut output = Vec::new();
-        tokio::io::AsyncReadExt::read_to_end(&mut stdout, &mut output).await?;
         let response =
             serde_json::from_reader(&mut output.as_slice()).map_err(WorkerInvalidResponse::from)?;
-        let mut error = Vec::new();
-        tokio::io::AsyncReadExt::read_to_end(&mut stderr, &mut error).await?;
-        use std::io::Write;
-        std::io::stderr().write_all(&error)?;
         return Ok((status.code().unwrap_or(1), response));
     } else {
-        let mut stderr = p.stderr.take().ok_or_else(|| {
-            WorkerInvalidResponse::from("Failed to get stderr handle".to_string())
-        })?;
-        let mut error = Vec::new();
-        tokio::io::AsyncReadExt::read_to_end(&mut stderr, &mut error).await?;
         let error_string = String::from_utf8(error)
             .unwrap_or_else(|_| "Failed to decode error output".to_string());
         return Err(WorkerInvalidResponse::from(error_string));
