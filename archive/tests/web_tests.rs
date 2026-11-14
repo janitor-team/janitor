@@ -87,9 +87,9 @@ async fn insert_run(pool: &sqlx::PgPool, run_id: &str) {
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO run (id, suite, codebase, result_code, start_time, finish_time,
+        "INSERT INTO run (id, command, suite, codebase, result_code, start_time, finish_time,
                           logfilenames, change_set)
-         VALUES ($1, 'lintian-fixes', 'hello', 'success',
+         VALUES ($1, '', 'lintian-fixes', 'hello', 'success',
                  NOW() - INTERVAL '1 minute', NOW() - INTERVAL '30 seconds', '{}', 'cs-1')",
     )
     .bind(run_id)

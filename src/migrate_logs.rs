@@ -153,11 +153,11 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
-            "INSERT INTO run (id, codebase, suite, change_set, logfilenames, result_code,
+            "INSERT INTO run (id, command, codebase, suite, change_set, logfilenames, result_code,
                               start_time, finish_time) VALUES
-             ('r1', 'cb', 'lintian-fixes', 'cs', '{worker.log,missing.log}', 'success',
+             ('r1', '', 'cb', 'lintian-fixes', 'cs', '{worker.log,missing.log}', 'success',
               '2024-01-01 00:00:00', '2024-01-01 00:00:01'),
-             ('r2', 'cb', 'lintian-fixes', 'cs', '{worker.log,build.log}', 'some-failure',
+             ('r2', '', 'cb', 'lintian-fixes', 'cs', '{worker.log,build.log}', 'some-failure',
               '2024-01-02 00:00:00', '2024-01-02 00:00:01')",
         )
         .execute(db.pool())
