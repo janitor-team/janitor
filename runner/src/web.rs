@@ -3,12 +3,11 @@ use crate::api_types::{
     AssignmentCodemod, AssignmentResponse, AssignmentTargetRepository, BuildAssignmentConfig,
     CleanupRunsResponse, CurrentStageResponse, DebianBuildAssignment, EmptyResponse, ErrorResponse,
     FinishConflictResponse, FinishResponse, GenericBuildAssignment, MessageResponse, PeekResponse,
-    PublishStatusUpdate, QueueEntry, QueuePositionResponse, QueueStatsResponse,
-    RateLimitedResponse, ReasonResponse, ResultBranchEntry, ResumeAssignment, ResumeChainResponse,
-    ResumeCheckResponse, ResumeDescendantsResponse, ResumeValidationResponse, RunDetailResponse,
-    RunFollowup, RunFollowupsResponse, RunHealthSummary, RunListResponse, RunSummary,
-    ScheduleControlResponse, ScheduleResponse, ScheduledCandidate, StatusResponse,
-    UploadCandidatesResponse, WatchdogHealthResponse, WorkerInfo, WorkerListResponse,
+    PublishStatusUpdate, QueueEntry, QueuePositionResponse, RateLimitedResponse, ReasonResponse,
+    ResultBranchEntry, ResumeAssignment, ResumeChainResponse, ResumeCheckResponse,
+    ResumeDescendantsResponse, ResumeValidationResponse, RunDetailResponse, RunFollowup,
+    RunFollowupsResponse, RunListResponse, RunSummary, ScheduleControlResponse, ScheduleResponse,
+    ScheduledCandidate, StatusResponse, UploadCandidatesResponse, WorkerInfo, WorkerListResponse,
     WorkerSummary,
 };
 use crate::{
@@ -4178,98 +4177,6 @@ async fn public_finish(
     finish_run_multipart_internal(state, id, multipart, true).await
 }
 
-/// Get watchdog health information for all active runs.
-#[utoipa::path(
-    get,
-    path = "/watchdog/health",
-    responses((status = 200, description = "Health of the active runs", body = WatchdogHealthResponse))
-)]
-async fn public_watchdog_health(
-    State(state): State<Arc<AppState>>,
-) -> Json<WatchdogHealthResponse> {
-    let watchdog_config = crate::WatchdogConfig::default();
-    let watchdog = crate::Watchdog::new(
-        Arc::clone(&state.database),
-        state.active_runs.clone(),
-        watchdog_config,
-    );
-
-    match watchdog.get_detailed_health_status().await {
-        Ok(health_statuses) => {
-            // Filter to public information only
-            let public_statuses: Vec<RunHealthSummary> = health_statuses
-                .into_iter()
-                .map(|status| RunHealthSummary {
-                    log_id: status.log_id,
-                    worker_name: status.worker_name,
-                    start_time: status.start_time,
-                    estimated_duration: status.estimated_duration.map(|d| d.as_secs()),
-                    failure_count: status.failure_count,
-                    max_failures: status.max_failures,
-                    alive: status.health.as_ref().is_some_and(|h| h.alive),
-                    status: status
-                        .health
-                        .as_ref()
-                        .map_or_else(|| "unknown".to_string(), |h| h.status.clone()),
-                    last_ping: status.health.as_ref().and_then(|h| h.last_ping),
-                })
-                .collect();
-
-            Json(WatchdogHealthResponse {
-                status: "ok".to_string(),
-                active_runs: Some(public_statuses.len()),
-                health_statuses: Some(public_statuses),
-                error: None,
-            })
-        }
-        Err(e) => {
-            log::error!("Failed to get watchdog health status: {}", e);
-            Json(WatchdogHealthResponse {
-                status: "error".to_string(),
-                active_runs: None,
-                health_statuses: None,
-                error: Some("Failed to get health status".to_string()),
-            })
-        }
-    }
-}
-
-/// Get public queue statistics.
-#[utoipa::path(
-    get,
-    path = "/queue/stats",
-    responses((status = 200, description = "Queue statistics", body = QueueStatsResponse))
-)]
-async fn public_queue_stats(State(state): State<Arc<AppState>>) -> Json<QueueStatsResponse> {
-    // Active runs live in Redis, not Postgres; source them here so
-    // the count reflects reality.
-    let active_runs = state.active_runs.len().await as i64;
-    match state.database.get_queue_stats().await {
-        Ok(stats) => {
-            let count = |key: &str| Some(stats.get(key).copied().unwrap_or(0));
-            Json(QueueStatsResponse {
-                queue_length: count("total"),
-                active_runs: Some(active_runs),
-                succeeded: count("succeeded"),
-                failed: count("failed"),
-                status: "operational".to_string(),
-                error: None,
-            })
-        }
-        Err(e) => {
-            log::error!("Failed to get queue stats: {}", e);
-            Json(QueueStatsResponse {
-                queue_length: None,
-                active_runs: None,
-                succeeded: None,
-                failed: None,
-                status: "error".to_string(),
-                error: Some("Database error".to_string()),
-            })
-        }
-    }
-}
-
 /// `GET /health` -- full component health report.
 #[utoipa::path(
     get,
@@ -4380,32 +4287,20 @@ fn openapi_router() -> OpenApiRouter<Arc<AppState>> {
 
 /// Unauthenticated routes of the public app.
 fn public_routes() -> OpenApiRouter<Arc<AppState>> {
-    openapi_router()
-        .routes(routes!(public_root))
-        .routes(routes!(health))
-        .routes(routes!(liveness))
-        .routes(routes!(readiness))
-        .routes(routes!(public_queue_stats))
-        .routes(routes!(public_watchdog_health))
+    openapi_router().routes(routes!(public_root))
 }
 
-/// Routes of the public app that require worker credentials. The
-/// caller is responsible for adding the authentication layer.
-///
-/// The `/runner/` prefix that workers use is an ingress concern, not a
-/// routing concern in this binary. nginx matches `/runner(/|$)(.*)` on
-/// the public site and rewrites to `/$2` before forwarding to this
-/// port, so handlers see the same shapes as the private app -- just
-/// gated by authenticate_worker.
+/// Routes of the public app that require worker credentials. Like the
+/// Python runner, they are served under `/runner/`. The caller is
+/// responsible for adding the authentication layer.
 fn worker_routes() -> OpenApiRouter<Arc<AppState>> {
-    let mut router = openapi_router()
-        .routes(routes!(public_assign))
-        .routes(without_body_limit(routes!(public_finish)))
-        .routes(routes!(get_active_run))
-        .route(
-            "/active-runs/{id}/finish-multipart",
-            post(public_finish).layer(DefaultBodyLimit::disable()),
-        );
+    let mut router = openapi_router().nest(
+        "/runner",
+        openapi_router()
+            .routes(routes!(public_assign))
+            .routes(without_body_limit(routes!(public_finish)))
+            .routes(routes!(get_active_run)),
+    );
     for item in router.get_openapi_mut().paths.paths.values_mut() {
         for operation in [
             &mut item.get,
@@ -5754,7 +5649,7 @@ distribution {
         );
         let mut got = Vec::new();
         for auth in [None, Some("Bearer x"), Some(basic.as_str())] {
-            let mut req = Request::post("/active-runs");
+            let mut req = Request::post("/runner/active-runs");
             if let Some(auth) = auth {
                 req = req.header("authorization", auth);
             }
