@@ -139,6 +139,35 @@ pub struct ActiveRunResponse {
     pub instigated_context: Option<serde_json::Value>,
     /// Run this run resumes from.
     pub resume_from: Option<RunId>,
+    /// Seconds since the last keepalive; only in `GET /status`, where it
+    /// is null if no keepalive was recorded.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "::serde_with::rust::double_option"
+    )]
+    #[schema(value_type = Option<f64>)]
+    pub keepalive_age: Option<Option<f64>>,
+    /// Time of the last keepalive, as a naive ISO 8601 timestamp in
+    /// UTC; only in `GET /status`, where it is null if no keepalive was
+    /// recorded.
+    #[serde(
+        rename = "last-keepalive",
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "::serde_with::rust::double_option"
+    )]
+    #[schema(value_type = Option<String>)]
+    pub last_keepalive: Option<Option<String>>,
+    /// Whether no keepalive was received within the run timeout; only in
+    /// `GET /status`, where it is null if no keepalive was recorded.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "::serde_with::rust::double_option"
+    )]
+    #[schema(value_type = Option<bool>)]
+    pub mia: Option<Option<bool>>,
 }
 
 /// Response for `GET /status`.
@@ -148,7 +177,8 @@ pub struct StatusResponse {
     pub processing: Vec<ActiveRunResponse>,
     /// Hosts that the runner avoids.
     pub avoid_hosts: Vec<String>,
-    /// Rate-limited hosts, mapped to the RFC 3339 time the limit expires.
+    /// Rate-limited hosts, mapped to the time the limit expires, as a
+    /// naive ISO 8601 timestamp in UTC.
     pub rate_limit_hosts: BTreeMap<String, String>,
 }
 
@@ -735,45 +765,6 @@ pub struct AssignmentResponse {
     pub env: BTreeMap<String, String>,
     /// Build to run.
     pub build: AssignmentBuild,
-}
-
-/// Health of a single active run in `GET /watchdog/health`.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct RunHealthSummary {
-    /// Run id.
-    pub log_id: RunId,
-    /// Worker processing the run.
-    pub worker_name: String,
-    /// When the run started.
-    pub start_time: DateTime<Utc>,
-    /// Estimated duration in seconds.
-    pub estimated_duration: Option<u64>,
-    /// Number of consecutive failed health checks.
-    pub failure_count: u32,
-    /// Failed health checks after which the run is terminated.
-    pub max_failures: u32,
-    /// Whether the worker responded.
-    pub alive: bool,
-    /// Status reported by the worker, or `unknown`.
-    pub status: String,
-    /// Last successful ping.
-    pub last_ping: Option<DateTime<Utc>>,
-}
-
-/// Response for `GET /watchdog/health`.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct WatchdogHealthResponse {
-    /// `ok` or `error`.
-    pub status: String,
-    /// Number of active runs.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub active_runs: Option<usize>,
-    /// Health of each active run.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub health_statuses: Option<Vec<RunHealthSummary>>,
-    /// Set when the health could not be determined.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
 }
 
 /// Response for `GET /queue/stats`.

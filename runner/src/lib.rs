@@ -29,7 +29,7 @@ pub use backchannel::{
 };
 
 // Re-export watchdog types
-pub use watchdog::{RunHealthStatus, TerminationReason, Watchdog, WatchdogConfig, WatchdogStats};
+pub use watchdog::Watchdog;
 
 /// In-memory active-run tracking, mirroring Python's
 /// `QueueProcessor.active_runs`.
@@ -809,6 +809,9 @@ impl ActiveRun {
             backchannel: self.backchannel.to_json(),
             instigated_context: self.instigated_context.clone(),
             resume_from: self.resume_from.clone(),
+            keepalive_age: None,
+            last_keepalive: None,
+            mia: None,
         }
     }
 
@@ -859,12 +862,9 @@ impl Backchannel {
     /// Ping the worker.
     pub async fn ping(&self, expected_log_id: &RunId) -> Result<(), PingError> {
         match self {
-            Backchannel::None {} => {
-                // No ping available
-                Err(PingError::Retriable(
-                    "No backchannel available for ping".to_string(),
-                ))
-            }
+            Backchannel::None {} => Err(PingError::NotSupported(
+                "No backchannel available for ping".to_string(),
+            )),
             Backchannel::Jenkins { my_url, .. } => {
                 // Implement Jenkins ping by checking job status
                 use reqwest::Client;
@@ -1655,6 +1655,9 @@ pub struct AppState {
     /// public URL, when it is an http(s) one -- supplied via
     /// `--redirect-artifact-downloads`.
     pub redirect_artifact_downloads: bool,
+    /// Minutes without a keepalive after which a run is considered
+    /// missing -- supplied via `--run-timeout`.
+    pub run_timeout_minutes: u64,
 }
 
 /// Overall health of a component or the runner service as a whole,
