@@ -17,8 +17,10 @@
 """OpenID support."""
 
 import asyncio
+import hashlib
 import logging
 import os
+import secrets
 import uuid
 from typing import Optional
 
@@ -26,15 +28,37 @@ import aiohttp
 from aiohttp import web
 from yarl import URL
 
+from . import check_logged_in
+from .common import render_template_for_request
+
+API_TOKEN_DAYS = 180
+
+
+def token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
 
 @web.middleware
 async def openid_middleware(request, handler):
     session_id = request.cookies.get("session_id")
+    authorization = request.headers.get("Authorization")
     if session_id is not None:
         async with request.app.database.acquire() as conn:
             userinfo = await conn.fetchval(
                 "SELECT userinfo FROM site_session WHERE id = $1", session_id
             )
+    elif authorization is not None and authorization.startswith("Bearer "):
+        async with request.app.database.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT userinfo, expires_at < NOW() AS expired "
+                "FROM site_api_token WHERE hash = $1",
+                token_hash(authorization.removeprefix("Bearer ")),
+            )
+        if row is None:
+            raise web.HTTPUnauthorized(text="invalid token")
+        if row["expired"]:
+            raise web.HTTPUnauthorized(text="token expired")
+        userinfo = row["userinfo"]
     else:
         userinfo = None
     request["user"] = userinfo
@@ -165,6 +189,73 @@ async def handle_logout(request):
     return resp
 
 
+async def handle_token_create(request):
+    # Only a browser session can create tokens, not another token.
+    if request.cookies.get("session_id") is None:
+        raise web.HTTPUnauthorized()
+    check_logged_in(request)
+    form = await request.post()
+    try:
+        days = int(form.get("days") or API_TOKEN_DAYS)
+    except ValueError:
+        raise web.HTTPBadRequest(text="days must be a number") from None
+    if not 1 <= days <= API_TOKEN_DAYS:
+        raise web.HTTPBadRequest(text=f"days must be from 1 to {API_TOKEN_DAYS}")
+    token = secrets.token_urlsafe(32)
+    async with request.app.database.acquire() as conn:
+        expires_at = await conn.fetchval(
+            "INSERT INTO site_api_token (hash, owner, userinfo, expires_at) "
+            "VALUES ($1, $2, $3, NOW() + make_interval(days => $4)) "
+            "RETURNING expires_at",
+            token_hash(token),
+            request["user"]["sub"],
+            request["user"],
+            days,
+        )
+    text = await render_template_for_request(
+        "api-token.html", request, {"token": token, "expires_at": expires_at}
+    )
+    return web.Response(
+        content_type="text/html",
+        text=text,
+        status=201,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+async def handle_token_list(request):
+    check_logged_in(request)
+    async with request.app.database.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT hash, created, expires_at FROM site_api_token "
+            "WHERE owner = $1 ORDER BY created",
+            request["user"]["sub"],
+        )
+    return web.json_response(
+        [
+            {
+                "hash": row["hash"],
+                "created": row["created"].isoformat(),
+                "expires_at": row["expires_at"].isoformat(),
+            }
+            for row in rows
+        ]
+    )
+
+
+async def handle_token_delete(request):
+    check_logged_in(request)
+    async with request.app.database.acquire() as conn:
+        status = await conn.execute(
+            "DELETE FROM site_api_token WHERE hash = $1 AND owner = $2",
+            request.match_info["hash"],
+            request["user"]["sub"],
+        )
+    if status == "DELETE 0":
+        raise web.HTTPNotFound(text="no such token")
+    return web.Response(status=204)
+
+
 async def handle_login(request):
     state = str(uuid.uuid4())
     callback_path = request.app.router["oauth2-callback"].url_for()
@@ -199,6 +290,11 @@ def setup_openid(app, oauth2_provider_base_url: Optional[str]):
     app.router.add_get("/login", handle_login, name="login")
     app.router.add_post("/logout", handle_logout, name="logout")
     app.router.add_get("/oauth/callback", handle_oauth_callback, name="oauth2-callback")
+    app.router.add_get("/api-tokens", handle_token_list, name="api-token-list")
+    app.router.add_post("/api-tokens", handle_token_create, name="api-token-create")
+    app.router.add_delete(
+        "/api-tokens/{hash}", handle_token_delete, name="api-token-delete"
+    )
     app["openid_config"] = None
     if oauth2_provider_base_url:
         app.on_startup.append(
