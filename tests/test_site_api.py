@@ -408,6 +408,50 @@ async def test_review_without_oauth2_provider_is_not_qa_review(aiohttp_client, d
     assert [tuple(row) for row in rows] == [("r1", "alice@example.com", "approved")]
 
 
+async def test_run(aiohttp_client, db):
+    async def handle_run(request):
+        if request.match_info["run_id"] != "r1":
+            return web.json_response({"reason": "no such run: r2"}, status=404)
+        return web.json_response(
+            {
+                "id": "r1",
+                "codebase": "foo",
+                "campaign": "mycampaign",
+                "publish_status": "unknown",
+                "result_code": "success",
+                "start_time": "2026-11-04T05:52:17Z",
+                "finish_time": "2026-11-04T06:52:17Z",
+                "command": "true",
+                "description": "Fixed 2 issues",
+                "debian_build": {"version": "1.0-1", "distribution": "unstable"},
+            }
+        )
+
+    runner_app = web.Application()
+    runner_app.router.add_get("/runs/{run_id}", handle_run)
+    runner_client = await aiohttp_client(runner_app)
+    client = await create_client(
+        aiohttp_client, db, runner_url=str(runner_client.make_url("/"))
+    )
+
+    resp = await client.get("/run/r1")
+    assert resp.status == 200
+    assert await resp.json() == {
+        "run_id": "r1",
+        "codebase": "foo",
+        "campaign": "mycampaign",
+        "start_time": "2026-11-04T05:52:17+00:00",
+        "finish_time": "2026-11-04T06:52:17+00:00",
+        "command": "true",
+        "description": "Fixed 2 issues",
+        "build_info": {"version": "1.0-1", "distribution": "unstable"},
+        "result_code": "success",
+        "publish_status": "unknown",
+    }
+    resp = await client.get("/run/r2")
+    assert resp.status == 404
+
+
 async def test_run_logs(aiohttp_client, db):
     async def handle_log_index(request):
         if request.match_info["run_id"] != "r1":
