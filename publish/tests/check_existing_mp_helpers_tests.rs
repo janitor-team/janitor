@@ -260,6 +260,13 @@ test_with_database! {
         assert_eq!(mp_run.remote_branch_name, "refs/heads/main");
         assert_eq!(mp_run.command, "lintian-brush");
         assert_eq!(mp_run.value, 10);
+
+        sqlx::query("UPDATE run SET branch_url = NULL")
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+        let mp_run = get_merge_proposal_run(test_db.pool(), &url).await.unwrap();
+        assert_eq!(mp_run.unwrap().branch_url, None);
     }
 }
 
@@ -588,6 +595,15 @@ test_with_database! {
         assert_eq!(branches.len(), 1);
         assert_eq!(branches[0].0, "main");
         assert_eq!(branches[0].1, "refs/heads/main");
+
+        sqlx::query("UPDATE run SET branch_url = NULL")
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+        let run = get_run(test_db.pool(), &RunId::new("run-1").unwrap())
+            .await
+            .unwrap();
+        assert_eq!(run.unwrap().branch_url, None);
     }
 }
 

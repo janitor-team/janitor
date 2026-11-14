@@ -1052,7 +1052,10 @@ pub async fn derived_branch_name(
         format!("{}/{}", campaign_branch, role)
     };
 
-    let cotenants = has_cotenants(conn, &run.codebase, &run.branch_url).await?;
+    let cotenants = match run.branch_url.as_deref() {
+        Some(branch_url) => has_cotenants(conn, &run.codebase, branch_url).await?,
+        None => Some(false),
+    };
 
     if cotenants == Some(true) {
         Ok(format!("{}/{}", base, run.codebase))
@@ -2962,7 +2965,8 @@ pub async fn publish_and_store(
     let base_target_url: url::Url = run
         .target_branch_url
         .as_deref()
-        .unwrap_or(&run.branch_url)
+        .or(run.branch_url.as_deref())
+        .ok_or_else(|| format!("run {} has no target branch URL", run.id))?
         .parse()
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
             format!("invalid target/branch URL for run {}: {}", run.id, e).into()
@@ -3622,7 +3626,7 @@ async fn check_existing_mp(
                     mp_run = Some(crate::state::MergeProposalRun {
                         id: None,
                         campaign: campaign_name,
-                        branch_url: synth_branch_url,
+                        branch_url: Some(synth_branch_url),
                         command: String::new(),
                         value: 0,
                         role: role.to_string(),
@@ -3640,6 +3644,20 @@ async fn check_existing_mp(
     }
 
     let mp_run = mp_run.expect("checked above that mp_run is Some");
+    let mp_run_branch_url = match mp_run.branch_url.as_deref().map(url::Url::parse) {
+        None => None,
+        Some(Ok(url)) => Some(url),
+        Some(Err(e)) => {
+            log::warn!(
+                "{}: run {:?} has an invalid branch URL {:?}: {}",
+                mp_url,
+                mp_run.id,
+                mp_run.branch_url,
+                e
+            );
+            None
+        }
+    };
 
     // Resolve mp_remote_branch_name. Prefer the value the run recorded;
     // if it's empty, fall back to opening the target branch and reading
@@ -3650,9 +3668,7 @@ async fn check_existing_mp(
         Some(mp_run.remote_branch_name.clone())
     };
     if mp_remote_branch_name.is_none() {
-        let candidate_target = target_branch_url
-            .clone()
-            .or_else(|| mp_run.branch_url.parse().ok());
+        let candidate_target = target_branch_url.clone().or(mp_run_branch_url.clone());
         if let Some(target_url) = candidate_target {
             match silver_platter::vcs::open_branch(
                 &target_url,
@@ -3710,9 +3726,7 @@ async fn check_existing_mp(
         }
     };
 
-    let mut target_branch_url = target_branch_url
-        .clone()
-        .or_else(|| mp_run.branch_url.parse().ok());
+    let mut target_branch_url = target_branch_url.clone().or(mp_run_branch_url.clone());
 
     // Closed-as-applied: a follow-up run came in and produced
     // nothing, meaning the changes have already been merged in some
@@ -3899,9 +3913,9 @@ async fn check_existing_mp(
                 // value. Python does the equivalent
                 // `target_branch_url = role_branch_url(mp_run["branch_url"], mp_remote_branch_name)`
                 // right here.
-                if let Ok(base) = mp_run.branch_url.parse::<url::Url>() {
+                if let Some(base) = mp_run_branch_url.as_ref() {
                     target_branch_url =
-                        Some(role_branch_url(&base, Some(&mp_run.remote_branch_name)));
+                        Some(role_branch_url(base, Some(&mp_run.remote_branch_name)));
                 }
             }
             Err(_) => {
@@ -3945,8 +3959,11 @@ async fn check_existing_mp(
     // the latest run for the same codebase/campaign. When the new run
     // points to a different branch, we can't republish the same
     // proposal against it, so skip.
-    let mp_branch = mp_run.branch_url.parse::<url::Url>().ok();
-    let last_run_branch = last_run.branch_url.parse::<url::Url>().ok();
+    let mp_branch = mp_run_branch_url;
+    let last_run_branch = last_run
+        .branch_url
+        .as_deref()
+        .and_then(|u| u.parse::<url::Url>().ok());
     if !branches_match(
         mp_branch.as_ref(),
         last_run_branch.as_ref(),
@@ -5010,14 +5027,19 @@ async fn consider_publish_run(
     }
 
     // Missing branch_url: can't publish anywhere.
-    if run.branch_url.is_empty() {
-        log::warn!(
-            "{}: considering publishing for branch without branch url",
-            run.id
-        );
-        crate::metrics::MISSING_BRANCH_URL_COUNT.inc();
-        return Ok(status_only("missing_branch_url"));
-    }
+    let branch_url = match run.branch_url.as_deref() {
+        // The runner stores '' for a codebase without a branch URL.
+        None | Some("") => {
+            log::warn!(
+                "{}: considering publishing for branch without branch url ({:?})",
+                run.id,
+                run.branch_url
+            );
+            crate::metrics::MISSING_BRANCH_URL_COUNT.inc();
+            return Ok(status_only("missing_branch_url"));
+        }
+        Some(branch_url) => branch_url,
+    };
 
     // Rejected/closed previous MP: the maintainer has explicitly
     // said no, so don't try again for this campaign/codebase.
@@ -5037,7 +5059,7 @@ async fn consider_publish_run(
     // feed into role_branch_url for each role. Python uses
     // `run.target_branch_url or run.branch_url`.
     let target_branch_url_str =
-        resolve_target_branch_url(run.target_branch_url.as_deref(), &run.branch_url);
+        resolve_target_branch_url(run.target_branch_url.as_deref(), branch_url);
     let target_branch_url: url::Url = match target_branch_url_str.parse() {
         Ok(u) => u,
         Err(e) => {

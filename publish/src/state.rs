@@ -472,7 +472,7 @@ pub struct MergeProposalRun {
     /// Campaign name (`run.suite` in the schema).
     pub campaign: Campaign,
     /// URL of the codebase branch the run targeted.
-    pub branch_url: String,
+    pub branch_url: Option<String>,
     /// Command that produced the run.
     pub command: String,
     /// Configured value of the candidate that scheduled this run.
