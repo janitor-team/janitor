@@ -128,3 +128,8 @@ ul.empty-state {
     list-style: none;
     padding-left: 0;
 }
+
+/* Links in a diff keep the colour of their line */
+div.diff div.highlight a {
+    color: inherit;
+}

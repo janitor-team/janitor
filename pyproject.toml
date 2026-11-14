@@ -145,6 +145,9 @@ gcp = [
 janitor-site = "janitor.site.simple:main"
 janitor-webhook = "janitor.site.webhook:main"
 
+[project.entry-points."pygments.formatters"]
+html-links = "janitor.site.pygments_urls:LinkedUrlHtmlFormatter"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 addopts = """

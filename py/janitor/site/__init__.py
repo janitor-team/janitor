@@ -140,10 +140,11 @@ template_loader = PackageLoader("janitor.site")
 
 def highlight_diff(diff):
     from pygments import highlight
-    from pygments.formatters import HtmlFormatter
     from pygments.lexers.diff import DiffLexer
 
-    return highlight(diff, DiffLexer(stripnl=False), HtmlFormatter())
+    from .pygments_urls import LinkedUrlHtmlFormatter
+
+    return highlight(diff, DiffLexer(stripnl=False), LinkedUrlHtmlFormatter())
 
 
 def classify_result_code(result_code, transient: Optional[bool]):
