@@ -11,7 +11,7 @@ span.result-code-bug, span.publish-bug {
     color: darkred;
 }
 
-span.result-code-failure, span.publish-failure {
+span.result-code-failure, span.publish-failure, span.mp-closed, span.mp-rejected {
     color: #ec0000;
 }
 
@@ -19,7 +19,7 @@ span.result-code-transient-failure, span.publish-transient {
     color: #a36900;
 }
 
-span.result-code-success, span.publish-success {
+span.result-code-success, span.publish-success, span.mp-merged, span.mp-applied {
     color: green;
 }
 

@@ -37,7 +37,7 @@
                 <ul>
                     {% for url, status in merge_proposals %}
                         <li>
-                            <a href="{{ url }}">{{ url }}</a> ({{ status }})
+                            <a href="{{ url }}">{{ url }}</a> (<span class="mp-{{ status }}">{{ status }}</span>)
                         </li>
                     {% endfor %}
                 </ul>
