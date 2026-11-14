@@ -106,7 +106,7 @@ campaign {
   # proposal. All optional.
   # merge_proposal {
     # value_threshold: 10
-    # commit_message: "Apply lintian fixes for {package}"
+    # commit_message: "Apply lintian fixes for {{ codebase }}"
     # title: "Fix lintian issues"
   # }
   # Build even if the command made no changes. Optional; defaults to false.
