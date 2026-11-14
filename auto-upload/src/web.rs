@@ -135,7 +135,7 @@ mod tests {
 
         // Force registration of the lazily initialised counter without
         // changing its value; upload::tests asserts on counter deltas.
-        std::sync::LazyLock::force(&crate::DEBSIGN_FAILED_COUNT);
+        lazy_static::initialize(&crate::DEBSIGN_FAILED_COUNT);
 
         let response = create_app()
             .oneshot(

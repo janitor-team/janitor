@@ -19,39 +19,34 @@ pub mod upload;
 pub mod utils;
 pub mod web;
 
-use std::sync::LazyLock;
-
+use lazy_static::lazy_static;
 use prometheus::{register_counter, Counter};
 
 pub use config::Config;
 pub use error::UploadError;
 
-/// Counter for failed package signings.
-pub static DEBSIGN_FAILED_COUNT: LazyLock<Counter> = LazyLock::new(|| {
-    register_counter!(
-        "debsign_failed",
+lazy_static! {
+    /// Counter for failed package signings.
+    pub static ref DEBSIGN_FAILED_COUNT: Counter = register_counter!(
+        "debsign_failed_total",
         "Number of packages for which signing failed."
     )
-    .expect("register debsign_failed counter")
-});
+    .unwrap();
 
-/// Counter for failed package uploads.
-pub static UPLOAD_FAILED_COUNT: LazyLock<Counter> = LazyLock::new(|| {
-    register_counter!(
-        "upload_failed",
+    /// Counter for failed package uploads.
+    pub static ref UPLOAD_FAILED_COUNT: Counter = register_counter!(
+        "upload_failed_total",
         "Number of packages for which uploading failed."
     )
-    .expect("register upload_failed counter")
-});
+    .unwrap();
 
-/// Counter for result messages that could not be handled.
-pub static RESULT_HANDLING_FAILED_COUNT: LazyLock<Counter> = LazyLock::new(|| {
-    register_counter!(
-        "result_handling_failed",
+    /// Counter for result messages that could not be handled.
+    pub static ref RESULT_HANDLING_FAILED_COUNT: Counter = register_counter!(
+        "result_handling_failed_total",
         "Number of result messages that could not be handled."
     )
-    .expect("register result_handling_failed counter")
-});
+    .unwrap();
+}
 
 /// Run the auto-upload service: start the metrics web server and the Redis
 /// listener and wait until one of them exits.

@@ -61,31 +61,17 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 // Metrics tracking
-use prometheus::{register_int_counter, IntCounter, Result as PrometheusResult};
-use std::sync::LazyLock;
+use lazy_static::lazy_static;
+use prometheus::{register_int_counter, IntCounter};
 
-static PRIMARY_LOGFILE_UPLOAD_FAILED_COUNT: LazyLock<PrometheusResult<IntCounter>> =
-    LazyLock::new(|| {
-        register_int_counter!(
-            "primary_logfile_upload_failed",
-            "Number of failed logs to primary logfile target"
-        )
-    });
-
-static LOGFILE_UPLOADED_COUNT: LazyLock<PrometheusResult<IntCounter>> =
-    LazyLock::new(|| register_int_counter!("logfile_uploads", "Number of uploaded log files"));
-
-// Helper functions to safely increment counters
-fn increment_upload_failed() {
-    if let Ok(ref counter) = *PRIMARY_LOGFILE_UPLOAD_FAILED_COUNT {
-        counter.inc();
-    }
-}
-
-fn increment_upload_success() {
-    if let Ok(ref counter) = *LOGFILE_UPLOADED_COUNT {
-        counter.inc();
-    }
+lazy_static! {
+    static ref PRIMARY_LOGFILE_UPLOAD_FAILED_COUNT: IntCounter = register_int_counter!(
+        "primary_logfile_upload_failed_total",
+        "Number of failed logs to primary logfile target"
+    )
+    .unwrap();
+    static ref LOGFILE_UPLOADED_COUNT: IntCounter =
+        register_int_counter!("logfile_uploads_total", "Number of uploaded log files").unwrap();
 }
 
 /// Create a log file manager in the system temporary directory.
@@ -162,16 +148,16 @@ pub async fn import_log(
     {
         Ok(()) => {
             log::info!("Successfully imported log {} to primary manager", path);
-            increment_upload_success();
+            LOGFILE_UPLOADED_COUNT.inc();
             return Ok(());
         }
         Err(Error::ServiceUnavailable) => {
             log::warn!("Unable to upload logfile {}: service unavailable", path);
-            increment_upload_failed();
+            PRIMARY_LOGFILE_UPLOAD_FAILED_COUNT.inc();
             if let Some(backup) = backup_log_manager {
                 match backup.import_log(codebase, run_id, path, basename).await {
                     Ok(()) => {
-                        increment_upload_success();
+                        LOGFILE_UPLOADED_COUNT.inc();
                         return Ok(());
                     }
                     Err(e) => return Err(e),
@@ -180,11 +166,11 @@ pub async fn import_log(
         }
         Err(Error::Timeout) => {
             log::warn!("Timeout uploading logfile {}", path);
-            increment_upload_failed();
+            PRIMARY_LOGFILE_UPLOAD_FAILED_COUNT.inc();
             if let Some(backup) = backup_log_manager {
                 match backup.import_log(codebase, run_id, path, basename).await {
                     Ok(()) => {
-                        increment_upload_success();
+                        LOGFILE_UPLOADED_COUNT.inc();
                         return Ok(());
                     }
                     Err(e) => return Err(e),
@@ -205,16 +191,16 @@ pub async fn import_log(
                 .await
             {
                 Ok(()) => {
-                    increment_upload_success();
+                    LOGFILE_UPLOADED_COUNT.inc();
                     return Ok(());
                 }
                 Err(_) => {
-                    increment_upload_failed();
+                    PRIMARY_LOGFILE_UPLOAD_FAILED_COUNT.inc();
                     // If alternative basename fails, try backup manager
                     if let Some(backup) = backup_log_manager {
                         match backup.import_log(codebase, run_id, path, basename).await {
                             Ok(()) => {
-                                increment_upload_success();
+                                LOGFILE_UPLOADED_COUNT.inc();
                                 return Ok(());
                             }
                             Err(e) => return Err(e),
@@ -225,13 +211,13 @@ pub async fn import_log(
         }
         Err(e) => {
             log::error!("Primary log manager failed: {}", e);
-            increment_upload_failed();
+            PRIMARY_LOGFILE_UPLOAD_FAILED_COUNT.inc();
             // For other errors, try backup if available
             if let Some(backup) = backup_log_manager {
                 log::info!("Trying backup log manager");
                 match backup.import_log(codebase, run_id, path, basename).await {
                     Ok(()) => {
-                        increment_upload_success();
+                        LOGFILE_UPLOADED_COUNT.inc();
                         return Ok(());
                     }
                     Err(e) => return Err(e),
