@@ -107,7 +107,7 @@ for distribution in args.distribution:
             continue
         if campaign.debian_build.base_distribution != distro_config.name:
             continue
-        suites.append(campaign.debian_build.build_distribution)
+        suites.append(campaign.debian_build.build_distribution or campaign.name)
     sbuild_path = os.path.join(args.base_directory, distro_config.chroot + ".tar.xz")
     setup_hooks = []
     if args.user:
