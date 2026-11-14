@@ -312,7 +312,7 @@ pub async fn publish_pending_ready(
                 &state.vcs_managers,
                 &state.bucket_rate_limiter,
                 &run,
-                &rate_limit_bucket,
+                rate_limit_bucket.as_deref(),
                 &unpublished_branches,
                 &policy_command,
                 push_limit.map(|limit| limit - published_count),
