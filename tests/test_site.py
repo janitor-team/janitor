@@ -17,6 +17,7 @@
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock
 
+from bs4 import BeautifulSoup
 from yarl import URL
 
 from janitor.site import (
@@ -24,6 +25,7 @@ from janitor.site import (
     format_debdiff_error,
     format_duration,
     format_timestamp,
+    highlight_diff,
     update_vars_from_request,
 )
 
@@ -92,4 +94,37 @@ def test_update_vars_from_request_uses_external_url():
     assert (
         vs["bzr_vcs_manager"].get_repository_url("mycb")
         == "https://public.example.org/bzr/mycb"
+    )
+
+
+def test_highlight_diff():
+    diff = (
+        "--- a/debian/control\n"
+        "+++ b/debian/control\n"
+        "@@ -1,2 +1,5 @@\n"
+        " Section: misc \n"
+        "-Priority: extra \n"
+        "+Priority: optional  \n"
+        "+Depends: a,\t\n"
+        "+Suggests: b\r\n"
+        "+Homepage: a\rb\n"
+    )
+    soup = BeautifulSoup(highlight_diff(diff), "html.parser")
+    (pre,) = soup.find_all("pre")
+    spans = [(span["class"], span.get_text()) for span in soup.select(".gd, .gi")]
+    assert (pre.get_text(), spans) == (
+        diff.replace("\r", "\N{SYMBOL FOR CARRIAGE RETURN}"),
+        [
+            (["gd"], "--- a/debian/control"),
+            (["gi"], "+++ b/debian/control"),
+            (["gd"], "-Priority: extra"),
+            (["gd", "gd-TrailingWhitespace"], " "),
+            (["gi"], "+Priority: optional"),
+            (["gi", "gi-TrailingWhitespace"], "  "),
+            (["gi"], "+Depends: a,"),
+            (["gi", "gi-TrailingWhitespace"], "\t"),
+            (["gi"], "+Suggests: b"),
+            (["gi", "gi-TrailingWhitespace"], "\N{SYMBOL FOR CARRIAGE RETURN}"),
+            (["gi"], "+Homepage: a\N{SYMBOL FOR CARRIAGE RETURN}b"),
+        ],
     )

@@ -128,3 +128,9 @@ ul.empty-state {
     list-style: none;
     padding-left: 0;
 }
+
+/* Trailing whitespace on the added and removed lines of a diff */
+.gi-TrailingWhitespace,
+.gd-TrailingWhitespace {
+    background-color: #ffb0b0;
+}
