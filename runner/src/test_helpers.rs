@@ -315,6 +315,14 @@ mod tests {
             assert_eq!(run_worker.as_deref(), Some("worker-42"));
             assert_eq!(run_codebase, "finish-run-codebase");
 
+            let vcs_last_revision: Option<String> =
+                sqlx::query_scalar("SELECT vcs_last_revision FROM codebase WHERE name = $1")
+                    .bind("finish-run-codebase")
+                    .fetch_one(test_db.pool())
+                    .await
+                    .unwrap();
+            assert_eq!(vcs_last_revision.as_deref(), Some("base-revision"));
+
             // result_tags is a result_tag[] composite; verify store_run's
             // unnest-based construction actually materialised our tag.
             let tag_count: i64 = sqlx::query_scalar(
@@ -347,6 +355,33 @@ mod tests {
                     .await
                     .unwrap();
             assert_eq!(queue_remaining, 0);
+
+            let older_queue_id: i64 = sqlx::query_scalar(
+                "INSERT INTO queue (codebase, suite, command)
+                 VALUES ($1, $2, $3) RETURNING id::bigint",
+            )
+            .bind("finish-run-codebase")
+            .bind("lintian-fixes")
+            .bind("lintian-brush")
+            .fetch_one(test_db.pool())
+            .await
+            .unwrap();
+            let mut older = result.clone();
+            older.log_id = janitor_types::RunId::new("finish-run-0").unwrap();
+            older.change_set = None;
+            older.start_time = start_time - ChronoDuration::minutes(10);
+            older.main_branch_revision = Some(RevisionId::from(b"older-revision".to_vec()));
+            runner_db
+                .finish_run(&mut older, "lintian-brush", None, older_queue_id)
+                .await
+                .expect("finish_run should succeed");
+            let vcs_last_revision: Option<String> =
+                sqlx::query_scalar("SELECT vcs_last_revision FROM codebase WHERE name = $1")
+                    .bind("finish-run-codebase")
+                    .fetch_one(test_db.pool())
+                    .await
+                    .unwrap();
+            assert_eq!(vcs_last_revision.as_deref(), Some("base-revision"));
         }
     }
 

@@ -704,6 +704,19 @@ INSERT INTO run (
         self.store_run(&mut tx, result, command, instigated_context)
             .await?;
 
+        if let Some(revision) = &result.main_branch_revision {
+            // Keep the revision of a run that started later.
+            sqlx::query(
+                "UPDATE codebase SET vcs_last_revision = $1, last_scanned = $3
+                 WHERE name = $2 AND (last_scanned IS NULL OR last_scanned <= $3)",
+            )
+            .bind(revision.to_string())
+            .bind(&result.codebase)
+            .bind(result.start_time)
+            .execute(&mut *tx)
+            .await?;
+        }
+
         if let Some(builder_result) = &result.builder_result {
             self.store_builder_result_tx(&mut tx, &result.log_id, builder_result)
                 .await?;
