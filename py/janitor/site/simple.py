@@ -38,6 +38,7 @@ from jinja2 import select_autoescape
 
 from .. import state
 from ..config import Config
+from ..review import update_stored_reviews
 from ..vcs import VcsManager, get_vcs_managers_from_config
 from . import (
     TEMPLATE_ENV,
@@ -729,6 +730,12 @@ async def create_app(
         app.router.add_get("/ssh_keys", handle_ssh_keys, name="ssh-keys")
 
     setup_postgres(app)
+
+    async def load_stored_reviews(app):
+        async with app["pool"].acquire() as conn:
+            await update_stored_reviews(conn)
+
+    app.on_startup.append(load_stored_reviews)
 
     app["config"] = config
 
