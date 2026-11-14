@@ -381,4 +381,40 @@ mod tests {
             assert!(result.is_none());
         }
     }
+
+    test_with_database! {
+        schema = Core;
+        async fn test_count_resume_branch_failures(test_db: TestDatabase) {
+            let runner_db = create_test_runner_db(&test_db);
+            for (id, code, url, hours_ago) in [
+                ("run-1", "worker-resume-branch-unavailable", "git+ssh://git@forge.example/a,branch=x", 0),
+                ("run-2", "worker-resume-branch-unavailable", "https://forge.example:8443/b", 0),
+                ("run-3", "worker-resume-branch-unavailable", "https://other.example/c", 0),
+                ("run-4", "worker-resume-branch-unavailable", "https://forge.example/d", 2),
+                ("run-5", "worker-resume-branch-missing", "https://forge.example/e", 0),
+            ] {
+                insert_test_run(&test_db, id, "lintian-fixes", "example-codebase", code, None)
+                    .await
+                    .unwrap();
+                sqlx::query(
+                    "UPDATE run SET failure_details = json_build_object('url', $2::text), \
+                     start_time = start_time - make_interval(hours => $3), \
+                     finish_time = finish_time - make_interval(hours => $3) WHERE id = $1",
+                )
+                .bind(id)
+                .bind(url)
+                .bind(hours_ago)
+                .execute(test_db.pool())
+                .await
+                .unwrap();
+            }
+
+            let since = chrono::Utc::now() - chrono::Duration::hours(1);
+            let mut counts = Vec::new();
+            for host in ["forge.example", "other.example", "unused.example"] {
+                counts.push(runner_db.count_resume_branch_failures(host, since).await.unwrap());
+            }
+            assert_eq!(counts, vec![2, 1, 0]);
+        }
+    }
 }

@@ -2941,6 +2941,62 @@ async fn store_run_artifacts(
     .await
 }
 
+/// Resume branch failures on one host within the window that rate-limit it.
+const RESUME_FAILURE_LIMIT: usize = 3;
+const RESUME_FAILURE_WINDOW: chrono::Duration = chrono::Duration::hours(1);
+
+fn resume_branch_host(url: &str) -> Option<String> {
+    match url::Url::parse(url) {
+        Ok(url) => url.host_str().map(str::to_string),
+        Err(e) => {
+            log::warn!("Invalid resume branch URL {}: {}", url, e);
+            None
+        }
+    }
+}
+
+/// Rate-limit the host of a resume branch that workers keep failing to open.
+async fn rate_limit_failing_resume_host(state: &AppState, result: &crate::JanitorResult) {
+    let Some(url) = result
+        .failure_details
+        .as_ref()
+        .and_then(|details| details.get("url"))
+        .and_then(|url| url.as_str())
+    else {
+        log::warn!("Run {} has no resume branch URL", result.log_id);
+        return;
+    };
+    let Some(host) = resume_branch_host(url) else {
+        log::warn!("No resume branch host to count for run {}", result.log_id);
+        return;
+    };
+    let now = Utc::now();
+    let failures = match state
+        .database
+        .count_resume_branch_failures(&host, now - RESUME_FAILURE_WINDOW)
+        .await
+    {
+        Ok(failures) => failures,
+        Err(e) => {
+            log::warn!("Failed to count resume branch failures on {}: {}", host, e);
+            return;
+        }
+    };
+    if failures < RESUME_FAILURE_LIMIT {
+        return;
+    }
+    let until = now + RESUME_FAILURE_WINDOW;
+    log::warn!(
+        "Workers could not open {} resume branches on {}; not handing out its runs until {}",
+        failures,
+        host,
+        until
+    );
+    if let Err(e) = state.database.rate_limit_host(&host, until).await {
+        log::warn!("Failed to record rate-limit for host {}: {}", host, e);
+    }
+}
+
 async fn finish_run_multipart_internal(
     state: Arc<AppState>,
     run_id: RunId,
@@ -3148,6 +3204,10 @@ async fn finish_run_multipart_internal(
             log::warn!("Failed to set resume information for run {}: {}", run_id, e);
             // Continue anyway, main result was stored
         }
+    }
+
+    if janitor_result.code == "worker-resume-branch-unavailable" {
+        rate_limit_failing_resume_host(&state, &janitor_result).await;
     }
 
     // Publish the completed result to subscribers and tear down the
@@ -3697,12 +3757,31 @@ async fn compute_resume_from(
             None
         }
     };
+    let rate_limit = match &resume {
+        Some(r) => rate_limited_resume_host(state, &r.branch_url).await,
+        None => None,
+    };
     ResumeOutcome {
-        resume,
-        rate_limit: None,
+        resume: if rate_limit.is_some() { None } else { resume },
+        rate_limit,
         main_branch_url,
         additional_colocated_branches,
     }
+}
+
+/// The host of a resume branch and the seconds left, if it is rate-limited.
+async fn rate_limited_resume_host(state: &AppState, url: &str) -> Option<(String, Option<f64>)> {
+    let host = resume_branch_host(url)?;
+    let until = match state.database.get_rate_limited_hosts().await {
+        Ok(hosts) => *hosts.get(&host)?,
+        Err(e) => {
+            log::warn!("Failed to read rate-limited hosts: {}", e);
+            return None;
+        }
+    };
+    log::info!("Not resuming from {}: rate-limited until {}", host, until);
+    let seconds = (until - Utc::now()).num_seconds() as f64;
+    Some((host, Some(seconds)))
 }
 
 /// `active_runs_path` is the path of the active runs collection, used
@@ -3922,7 +4001,7 @@ async fn assign_work_internal(
             &state,
             &assignment,
             "resume-rate-limited",
-            &format!("Forge {} rate-limited us; retry after {}s", host, wait_secs),
+            &format!("Host {} is rate-limited; retry after {}s", host, wait_secs),
         )
         .await;
 

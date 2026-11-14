@@ -873,6 +873,26 @@ INSERT INTO run (
         Ok(result)
     }
 
+    /// Count the runs since `since` that could not open a resume branch on `host`.
+    pub async fn count_resume_branch_failures(
+        &self,
+        host: &str,
+        since: DateTime<Utc>,
+    ) -> Result<usize, sqlx::Error> {
+        let urls: Vec<String> = sqlx::query_scalar(
+            "SELECT failure_details->>'url' FROM run \
+             WHERE result_code = 'worker-resume-branch-unavailable' \
+             AND finish_time > $1 AND failure_details->>'url' IS NOT NULL",
+        )
+        .bind(since)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(urls
+            .iter()
+            .filter(|url| matches!(url::Url::parse(url), Ok(u) if u.host_str() == Some(host)))
+            .count())
+    }
+
     /// Get assigned queue items from Redis.
     pub async fn get_assigned_queue_items(
         &self,
