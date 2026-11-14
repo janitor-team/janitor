@@ -3178,6 +3178,7 @@ dependencies = [
  "janitor",
  "janitor-types",
  "lazy-regex",
+ "lazy_static",
  "log",
  "object_store",
  "opentelemetry",
