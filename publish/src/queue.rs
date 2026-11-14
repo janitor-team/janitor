@@ -95,7 +95,7 @@ const GATE_WAIT_RELOG_SECS: u64 = 60;
 /// a network or lock operation without its own timeout would otherwise
 /// wedge the whole publish loop - and the entire backlog - indefinitely.
 /// A timed-out run stays publish-ready and is retried next cycle.
-const PER_RUN_PUBLISH_TIMEOUT_SECS: u64 = 300;
+pub(crate) const PER_RUN_PUBLISH_TIMEOUT_SECS: u64 = 300;
 
 /// Whether `last` (the completion time of the most recent full
 /// merge-proposal scan, `None` if none has finished) is recent enough to
