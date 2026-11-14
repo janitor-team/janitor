@@ -49,6 +49,7 @@ from . import (
     BuildDiffUnavailable,
     DebdiffRetrievalError,
     RunWithoutArtifacts,
+    backend_url,
     check_admin,
     check_logged_in,
     get_archive_diff,
@@ -101,7 +102,7 @@ async def handle_publish(request):
         check_admin(request)
     if mode not in (None, "push-derived", "push", "propose", "attempt-push"):
         return web.json_response({"error": "Invalid mode", "mode": mode}, status=400)
-    url = URL(publisher_url) / campaign / codebase / "publish"
+    url = backend_url(publisher_url, campaign, codebase, "publish")
     if request["user"]:
         try:
             requester = request["user"]["email"]
@@ -256,7 +257,7 @@ class MergeProposalChangeSchema(Schema):
 async def handle_campaign_merge_proposal_list(request):
     campaign = request.match_info["campaign"]
 
-    url = URL(request.app["publisher_url"]) / campaign / "merge-proposals"
+    url = backend_url(request.app["publisher_url"], campaign, "merge-proposals")
     async with request.app["http_client_session"].get(
         url, raise_for_status=True
     ) as resp:
@@ -268,7 +269,7 @@ async def handle_campaign_merge_proposal_list(request):
 @routes.get("/c/{codebase}/merge-proposals", name="codebase-merge-proposals")
 async def handle_codebase_merge_proposal_list(request):
     codebase = request.match_info["codebase"]
-    url = URL(request.app["publisher_url"]) / "c" / codebase / "merge-proposals"
+    url = backend_url(request.app["publisher_url"], "c", codebase, "merge-proposals")
     async with request.app["http_client_session"].get(
         url, raise_for_status=True
     ) as resp:
@@ -404,7 +405,7 @@ async def handle_diff(request):
 async def serve_run_diff(request, run_id):
     role = request.query.get("role", "main")
     span = aiozipkin.request_span(request)
-    url = URL(request.app["runner_url"]) / "runs" / run_id
+    url = backend_url(request.app["runner_url"], "runs", run_id)
     with span.new_child("runner:get-run"):
         async with request.app["http_client_session"].get(url) as resp:
             if resp.status == 404:
@@ -537,7 +538,7 @@ async def handle_archive_diff(request):
 @routes.get("/run/{run_id}/logs", name="run-logs")
 async def handle_run_logs(request):
     run_id = request.match_info["run_id"]
-    url = URL(request.app["runner_url"]) / "log" / run_id
+    url = backend_url(request.app["runner_url"], "log", run_id)
     try:
         async with request.app["http_client_session"].get(url) as resp:
             if resp.status == 404:
@@ -688,7 +689,7 @@ async def handle_runner_status(request):
 @routes.get("/active-runs/{run_id}/log/", name="run-log-list")
 async def handle_runner_log_index(request):
     run_id = request.match_info["run_id"]
-    url = URL(request.app["runner_url"]) / "log" / run_id
+    url = backend_url(request.app["runner_url"], "log", run_id)
     span = aiozipkin.request_span(request)
     with span.new_child("runner:log-list"):
         try:
@@ -737,7 +738,7 @@ async def handle_runner_kill(request):
         check_admin(request)
     run_id = request.match_info["run_id"]
     with span.new_child("runner:kill"):
-        url = URL(request.app["runner_url"]) / "kill" / run_id
+        url = backend_url(request.app["runner_url"], "kill", run_id)
         try:
             async with request.app["http_client_session"].post(url) as resp:
                 if resp.status == 501:
@@ -778,7 +779,7 @@ async def handle_runner_log(request):
     filename = request.match_info["filename"]
     span = aiozipkin.request_span(request)
     with span.new_child("runner:log"):
-        url = URL(request.app["runner_url"]) / "log" / run_id / filename
+        url = backend_url(request.app["runner_url"], "log", run_id, filename)
         try:
             async with request.app["http_client_session"].get(url) as resp:
                 body = await resp.read()
@@ -812,7 +813,7 @@ async def handle_publish_id(request):
     publish_id = request.match_info["publish_id"]
     span = aiozipkin.request_span(request)
     with span.new_child("publisher:publish"):
-        url = URL(request.app["publisher_url"]) / "publish" / publish_id
+        url = backend_url(request.app["publisher_url"], "publish", publish_id)
         try:
             async with request.app["http_client_session"].get(url) as resp:
                 return web.json_response(await resp.json())

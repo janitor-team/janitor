@@ -193,6 +193,14 @@ async def test_active_runs_and_runner_status(aiohttp_client, db):
     assert resp.status == 404
     assert await resp.json() == {}
 
+    resp = await client.get("/active-runs/run-1/log/..%2F..%2Fstatus")
+    assert resp.status == 404
+    assert await resp.text() == "invalid path segment"
+
+    resp = await client.get("/run/..%2Fstatus/diff")
+    assert resp.status == 404
+    assert await resp.text() == "invalid path segment"
+
 
 async def test_codebase_names(aiohttp_client, db):
     async def handle_codebase_names(request):

@@ -41,6 +41,7 @@ from ..config import Config
 from ..vcs import VcsManager, get_vcs_managers_from_config
 from . import (
     TEMPLATE_ENV,
+    backend_url,
     hide_private_worker_links,
     serve_run_log,
     template_loader,
@@ -280,7 +281,7 @@ async def handle_result_file(request):
 async def serve_artifact(request, run_id, filename):
     if request.app["runner_url"] is None:
         raise web.HTTPServiceUnavailable(text="no runner configured")
-    url = URL(request.app["runner_url"]) / "runs" / run_id / "artifacts" / filename
+    url = backend_url(request.app["runner_url"], "runs", run_id, "artifacts", filename)
     try:
         async with request.app["http_client_session"].get(
             url, allow_redirects=False

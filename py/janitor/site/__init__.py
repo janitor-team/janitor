@@ -158,6 +158,14 @@ def classify_result_code(result_code, transient: Optional[bool]):
     return "failure"
 
 
+def backend_url(base, *segments: str) -> URL:
+    """Join segments to a backend URL, each staying one path segment."""
+    for segment in segments:
+        if "/" in segment or segment in (".", ".."):
+            raise web.HTTPNotFound(text="invalid path segment")
+    return URL(base).joinpath(*segments)
+
+
 class DebdiffRetrievalError(Exception):
     """Error occurred while retrieving debdiff."""
 
@@ -195,9 +203,9 @@ async def get_archive_diff(
     if kind not in ("debdiff", "diffoscope"):
         raise DebdiffRetrievalError(f"invalid diff kind {kind!r}")
     if unchanged_run_id is None:
-        url = URL(differ_url) / kind / run_id
+        url = backend_url(differ_url, kind, run_id)
     else:
-        url = URL(differ_url) / kind / unchanged_run_id / run_id
+        url = backend_url(differ_url, kind, unchanged_run_id, run_id)
     params = {
         "jquery_url": "/_static/jquery.js",
     }
@@ -237,7 +245,7 @@ async def serve_run_log(request: web.Request, run_id: str, filename: str):
     """Serve a log file of a run, as retrieved from the runner."""
     if request.app["runner_url"] is None:
         raise web.HTTPServiceUnavailable(text="no runner configured")
-    url = URL(request.app["runner_url"]) / "log" / run_id / filename
+    url = backend_url(request.app["runner_url"], "log", run_id, filename)
     try:
         async with request.app["http_client_session"].get(url) as resp:
             if resp.status == 404:
