@@ -1219,7 +1219,10 @@ INSERT INTO run (
     ) -> Result<Vec<CandidateRow>, sqlx::Error> {
         let mut query = String::from(
             "SELECT id, codebase, suite AS campaign, command, publish_policy, \
-                    change_set, context, value, success_chance FROM candidate",
+                    change_set, context, value, success_chance, queue_position \
+             FROM candidate LEFT JOIN (\
+                 SELECT codebase, suite, min(position) AS queue_position \
+                 FROM queue_positions GROUP BY codebase, suite) q USING (codebase, suite)",
         );
         let mut conditions = Vec::new();
         let mut idx = 0;
@@ -1253,8 +1256,11 @@ INSERT INTO run (
     ) -> Result<Option<CandidateRow>, sqlx::Error> {
         sqlx::query_as(
             "SELECT id, codebase, suite AS campaign, command, publish_policy, \
-                    change_set, context, value, success_chance \
-             FROM candidate WHERE codebase = $1 AND suite = $2",
+                    change_set, context, value, success_chance, queue_position \
+             FROM candidate LEFT JOIN (\
+                 SELECT codebase, suite, min(position) AS queue_position \
+                 FROM queue_positions GROUP BY codebase, suite) q USING (codebase, suite) \
+             WHERE codebase = $1 AND suite = $2",
         )
         .bind(codebase)
         .bind(campaign)
@@ -1417,6 +1423,8 @@ pub struct CandidateRow {
     pub value: Option<i32>,
     /// Estimated chance of success.
     pub success_chance: Option<f64>,
+    /// Position in the queue, if the candidate is queued.
+    pub queue_position: Option<i64>,
 }
 
 /// Row of the debian_build table.

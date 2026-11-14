@@ -67,8 +67,26 @@ async fn test_get_candidates() {
             "context": "some context",
             "value": 5,
             "success_chance": 0.5,
+            "queue_position": null,
         }])
     );
+
+    sqlx::query(
+        "INSERT INTO queue (codebase, suite, command) \
+         VALUES ('foo', 'fresh-releases', 'deb-new-upstream'), \
+                ('foo', 'lintian-fixes', 'lintian-brush')",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let positions: Vec<Option<i64>> = runner_db
+        .get_candidates(&[], &[])
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|c| c.queue_position)
+        .collect();
+    assert_eq!(positions, vec![Some(2)]);
 }
 
 #[tokio::test]
