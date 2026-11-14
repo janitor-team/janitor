@@ -1,0 +1,37 @@
+---
+# Debian's exporter packages, each on loopback through ARGS in its
+# /etc/default file. roles/host_metrics runs the node exporter.
+monitoring_exporter_settings:
+  postgres:
+    package: prometheus-postgres-exporter
+    port: "{{ postgres_exporter_port }}"
+    args: --web.listen-address={{ janitor_loopback }}:{{ postgres_exporter_port }}
+  redis:
+    package: prometheus-redis-exporter
+    port: "{{ redis_exporter_port }}"
+    args: -web.listen-address {{ janitor_loopback }}:{{ redis_exporter_port }} -redis.addr redis://{{ janitor_loopback }}:6379
+  postfix:
+    package: prometheus-postfix-exporter
+    port: "{{ postfix_exporter_port }}"
+    args: --web.listen-address={{ janitor_loopback }}:{{ postfix_exporter_port }}
+  blackbox:
+    package: prometheus-blackbox-exporter
+    port: "{{ blackbox_exporter_port }}"
+    args: --config.file=/etc/prometheus/janitor-blackbox.yml --web.listen-address={{ janitor_loopback }}:{{ blackbox_exporter_port }}
+  pushgateway:
+    package: prometheus-pushgateway
+    port: "{{ pushgateway_port }}"
+    args: --web.listen-address={{ janitor_loopback }}:{{ pushgateway_port }}
+monitoring_exporters: >-
+  {{ (['postgres'] if enable_postgres_exporter | bool else [])
+     + (['redis'] if enable_redis_exporter | bool else [])
+     + (['postfix'] if enable_postfix_exporter | bool and enable_mta | bool else [])
+     + (['blackbox'] if enable_blackbox_exporter | bool else [])
+     + (['pushgateway'] if enable_pushgateway | bool else []) }}
+# The dashboards this host gets, from files/dashboards/.
+monitoring_dashboards: >-
+  {{ ['overview', 'services', 'host', 'database', 'forge-and-storage']
+     + (['mail'] if enable_mail_filter | bool
+        or (enable_mta | bool and (enable_postfix_exporter | bool or enable_node_exporter | bool)) else [])
+     + (['apt-cache'] if enable_apt_cacher_ng | bool
+        and (enable_blackbox_exporter | bool or enable_node_exporter | bool) else []) }}

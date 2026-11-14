@@ -1,0 +1,15 @@
+---
+# Loopback on a [control] host, janitor_worker_address on a worker-only host.
+host_metrics_address: "{{ janitor_loopback if 'control' in group_names else janitor_worker_url_host }}"
+host_metrics_textfile_dir: /var/lib/janitor-unit-metrics
+# System units the unit state file also covers, as systemctl patterns:
+# on a [control] host Caddy, PostgreSQL, Redis, Postfix, the exporters
+# and the apt cache, on a worker-only host the node exporter and the
+# worker firewall.
+host_metrics_system_units: >-
+  {{ (['caddy.service', 'redis-server.service', 'postgresql@*.service', 'prometheus-*.service']
+      + (['postfix.service'] if enable_mta | bool else [])
+      + (['apt-cacher-ng.service', 'janitor-apt-cacher-ng-*.service'] if enable_apt_cacher_ng | bool else []))
+     if 'control' in group_names
+     else ['prometheus-node-exporter.service']
+          + (['janitor-worker-firewall.service'] if enable_worker_firewall | bool else []) }}

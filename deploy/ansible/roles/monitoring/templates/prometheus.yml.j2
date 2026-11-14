@@ -1,0 +1,93 @@
+# Managed by ansible (roles/monitoring).
+global:
+  scrape_interval: 30s
+rule_files:
+  - /etc/prometheus/rules/*.rules
+{% set worker_urls = [] %}
+{% if 'worker' in group_names %}
+{% for port in janitor_worker_instances.values() %}
+{% set _ = worker_urls.append('http://%s:%s/health' % (janitor_worker_url_host, port)) %}
+{% endfor %}
+{% endif %}
+{% for host, address in monitoring_worker_addresses.items() %}
+{% for n in range(hostvars[host].janitor_worker_concurrency | default(janitor_worker_concurrency) | int) %}
+{% set _ = worker_urls.append('http://%s:%d/health' % ('[%s]' % address if ':' in address else address, 9821 + n)) %}
+{% endfor %}
+{% endfor %}
+{% set probes = {'worker': worker_urls} %}
+{% if enable_ognibuild_dep | bool %}
+{% set _ = probes.update({'ognibuild_dep': [janitor_health_urls.ognibuild_dep]}) %}
+{% endif %}
+{% if enable_apt_cacher_ng | bool %}
+{% set _ = probes.update({'apt_cacher_ng': [apt_cacher_ng_url + 'acng-report.html']}) %}
+{% endif %}
+scrape_configs:
+{% for job in prometheus_jobs %}
+  - job_name: {{ job }}
+    static_configs:
+      - targets: ["{{ janitor_health_urls[job] | urlsplit('netloc') }}"]
+{% endfor %}
+  - job_name: prometheus
+    static_configs:
+      - targets: ["{{ janitor_loopback }}:{{ prometheus_port }}"]
+  - job_name: grafana
+    static_configs:
+      - targets: ["{{ janitor_loopback }}:{{ grafana_port }}"]
+  # Caddy's admin API.
+  - job_name: caddy
+    static_configs:
+      - targets: ["127.0.0.1:2019"]
+{% if enable_gitea | bool %}
+  - job_name: gitea
+    authorization:
+      credentials_file: /etc/prometheus/gitea_metrics_token
+    static_configs:
+      - targets: ["{{ janitor_loopback }}:{{ gitea_http_port }}"]
+{% endif %}
+{% if enable_garage | bool %}
+  - job_name: garage
+    static_configs:
+      - targets: ["{{ janitor_loopback }}:{{ garage_admin_port }}"]
+{% endif %}
+{% if enable_tracing | bool %}
+  - job_name: jaeger
+    static_configs:
+      - targets: ["{{ janitor_loopback }}:{{ jaeger_metrics_port }}"]
+{% endif %}
+{% if enable_node_exporter | bool %}
+  - job_name: node
+    static_configs:
+      - targets: ["{{ janitor_loopback }}:{{ node_exporter_port }}"]
+        labels: {host: "{{ inventory_hostname }}"}
+{% for host, address in monitoring_worker_addresses.items() %}
+      - targets: ["{{ '[%s]' % address if ':' in address else address }}:{{ node_exporter_port }}"]
+        labels: {host: "{{ host }}"}
+{% endfor %}
+{% endif %}
+{% for name in monitoring_exporters %}
+  - job_name: {{ name }}
+{% if name == 'pushgateway' %}
+    # Keeps the job label the worker pushes with (janitor.worker).
+    honor_labels: true
+{% endif %}
+    static_configs:
+      - targets: ["{{ janitor_loopback }}:{{ monitoring_exporter_settings[name].port }}"]
+{% endfor %}
+{% if enable_blackbox_exporter | bool %}
+{% for job, urls in probes.items() if urls %}
+  # {{ job }} has no /metrics: the blackbox exporter probes it.
+  - job_name: {{ job }}
+    metrics_path: /probe
+    params:
+      module: [http_health]
+    static_configs:
+      - targets: {{ urls | to_json }}
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: "{{ janitor_loopback }}:{{ blackbox_exporter_port }}"
+{% endfor %}
+{% endif %}

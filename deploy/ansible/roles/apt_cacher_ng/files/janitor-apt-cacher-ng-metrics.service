@@ -1,0 +1,17 @@
+# Managed by ansible (roles/apt_cacher_ng).
+[Unit]
+Description=Write apt-cacher-ng's transfer counts for the node exporter
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/janitor/apt-cacher-ng-metrics
+# As apt-cacher-ng, which owns the log and the cache.
+User=apt-cacher-ng
+Group=apt-cacher-ng
+CapabilityBoundingSet=
+NoNewPrivileges=true
+PrivateNetwork=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/janitor-apt-cacher-ng-metrics

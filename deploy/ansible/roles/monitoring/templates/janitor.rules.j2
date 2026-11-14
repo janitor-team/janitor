@@ -1,0 +1,96 @@
+# Managed by ansible (roles/monitoring). Prometheus shows these alerts on
+# /alerts and Grafana on its Alerting pages. Nothing sends them on.
+groups:
+  - name: janitor
+    rules:
+      - alert: TargetDown
+        expr: up == 0
+        for: 5m
+        annotations:
+          summary: {% raw %}"Prometheus cannot scrape {{ $labels.job }} on {{ $labels.instance }}"{% endraw %}
+
+      - alert: HealthCheckFailing
+        expr: probe_success == 0
+        for: 5m
+        annotations:
+          summary: {% raw %}"{{ $labels.job }}: {{ $labels.instance }} does not answer 200"{% endraw %}
+
+{% if enable_node_exporter | bool %}
+      - alert: UnitFailed
+        expr: janitor_unit_state{state="failed"} == 1
+        for: 5m
+        annotations:
+          summary: {% raw %}"{{ $labels.unit }} failed on {{ $labels.host }}"{% endraw %}
+
+      - alert: UnitNotActive
+        expr: >-
+          janitor_unit_state{state!="active",
+            unit=~"(janitor-(git_store|bzr_store|differ|archive|runner|publish|site|auto_upload|ognibuild_dep|worker(-[0-9]+)?)|gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|postgresql@.+|postfix|janitor-worker-firewall|apt-cacher-ng|janitor-apt-cacher-ng-firewall)[.]service"} == 1
+        for: 5m
+        annotations:
+          summary: {% raw %}"{{ $labels.unit }} is {{ $labels.state }} on {{ $labels.host }}"{% endraw %}
+
+      - alert: UnitMetricsStale
+        expr: >-
+          time() - node_textfile_mtime_seconds{file=~".*units[.]prom"} > 300
+          or node_textfile_scrape_error == 1
+          or (up{job="node"} == 1 unless on (instance) node_textfile_mtime_seconds{file=~".*units[.]prom"})
+        annotations:
+          summary: {% raw %}"The unit states on {{ $labels.host }} are older than 5 minutes, or a textfile cannot be read"{% endraw %}
+
+      - alert: SbuildChrootStuck
+        expr: janitor_unit_state{unit="janitor-sbuild-chroot.service",state="activating"} == 1
+        for: 2h
+        annotations:
+          summary: {% raw %}"The sbuild chroot rebuild on {{ $labels.host }} has not finished for 2 hours"{% endraw %}
+
+{% if enable_mail_filter | bool %}
+      - alert: MailFilterSocketDown
+        expr: absent(janitor_unit_state{unit="janitor-mail-filter.socket",state="active"})
+        for: 5m
+        annotations:
+          summary: "janitor-mail-filter.socket is not listening"
+
+{% endif %}
+      - alert: DiskAlmostFull
+        expr: >-
+          node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs|fuse.*"}
+          / node_filesystem_size_bytes < 0.1
+        for: 15m
+        annotations:
+          summary: {% raw %}"Less than 10% free on {{ $labels.mountpoint }} of {{ $labels.host }}"{% endraw %}
+
+{% endif %}
+{% if enable_postgres_exporter | bool %}
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 5m
+        annotations:
+          summary: "The PostgreSQL exporter cannot reach PostgreSQL"
+
+{% endif %}
+{% if enable_redis_exporter | bool %}
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 5m
+        annotations:
+          summary: "The Redis exporter cannot reach Redis"
+
+{% endif %}
+{% if enable_postfix_exporter | bool and enable_mta | bool %}
+      - alert: PostfixExporterFailing
+        expr: postfix_up == 0
+        for: 5m
+        annotations:
+          summary: {% raw %}"The Postfix exporter cannot read {{ $labels.path }}"{% endraw %}
+
+{% endif %}
+      - alert: WorkerFailures
+        expr: increase(result_total{result_code="worker-failure"}[1h]) > 0
+        annotations:
+          summary: {% raw %}"{{ $value | printf \"%.0f\" }} runs of {{ $labels.campaign }} ended in worker-failure in the last hour"{% endraw %}
+
+      - alert: RunsLost
+        expr: increase(janitor_runner_watchdog_terminated_runs_total[1h]) > 0
+        annotations:
+          summary: {% raw %}"The runner's watchdog ended {{ $value | printf \"%.0f\" }} runs in the last hour ({{ $labels.reason }})"{% endraw %}

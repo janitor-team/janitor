@@ -1,0 +1,42 @@
+{# Managed by ansible (roles/monitoring). Renders one dashboard of
+   files/dashboards/<name>.yml: panels whose "requires" variables are
+   all true, laid out left to right in rows of 24 columns. #}
+{%- set d = dashboard_spec -%}
+{%- set ns = namespace(x=0, y=0, row_h=0, id=0, panels=[]) -%}
+{%- for p in d.panels -%}
+{%-   set on = namespace(v=true) -%}
+{%-   for r in p.requires | default([]) -%}
+{%-     if not (lookup('vars', r) | bool) %}{% set on.v = false %}{% endif -%}
+{%-   endfor -%}
+{%-   if on.v -%}
+{%-     set w = p.width | default(6 if p.type == 'stat' else 12) | int -%}
+{%-     set h = p.height | default(4 if p.type == 'stat' else 8) | int -%}
+{%-     if ns.x + w > 24 %}{% set ns.y = ns.y + ns.row_h %}{% set ns.x = 0 %}{% set ns.row_h = 0 %}{% endif -%}
+{%-     set ns.id = ns.id + 1 -%}
+{%-     set ds = {'type': 'grafana-postgresql-datasource' if p.datasource | default('prometheus') == 'postgres' else 'prometheus',
+                  'uid': p.datasource | default('prometheus')} -%}
+{%-     set targets = [] -%}
+{%-     for t in p.targets -%}
+{%-       set ref = 'ABCDEFGHIJ'[loop.index0] -%}
+{%-       if t.sql is defined -%}
+{%-         set _ = targets.append({'refId': ref, 'datasource': ds, 'rawSql': t.sql, 'rawQuery': true,
+                                    'editorMode': 'code', 'format': t.format | default('time_series')}) -%}
+{%-       else -%}
+{%-         set _ = targets.append({'refId': ref, 'datasource': ds, 'expr': t.expr,
+                                    'legendFormat': t.legend | default('__auto'), 'instant': p.type in ['stat', 'table', 'bargauge']}) -%}
+{%-       endif -%}
+{%-     endfor -%}
+{%-     set panel = {'id': ns.id, 'type': p.type, 'title': p.title, 'datasource': ds, 'targets': targets,
+                     'gridPos': {'x': ns.x, 'y': ns.y, 'w': w, 'h': h},
+                     'fieldConfig': {'defaults': {'unit': p.unit | default('short')} | combine(p.defaults | default({})), 'overrides': []},
+                     'options': p.options | default({})} -%}
+{%-     if p.description is defined %}{% set _ = panel.update({'description': p.description}) %}{% endif -%}
+{%-     set _ = ns.panels.append(panel) -%}
+{%-     set ns.x = ns.x + w -%}
+{%-     if h > ns.row_h %}{% set ns.row_h = h %}{% endif -%}
+{%-   endif -%}
+{%- endfor -%}
+{{ {'uid': d.uid, 'title': d.title, 'description': d.description | default(''), 'tags': ['janitor'],
+    'timezone': 'utc', 'schemaVersion': 39, 'version': 1, 'editable': false,
+    'time': {'from': d.time_from | default('now-24h'), 'to': 'now'}, 'refresh': '1m',
+    'panels': ns.panels} | to_nice_json(indent=2) }}

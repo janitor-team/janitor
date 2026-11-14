@@ -1,0 +1,193 @@
+---
+- name: Check every worker-only host has its own address
+  ansible.builtin.assert:
+    that:
+      - monitoring_worker_addresses.values() | select('in', ['127.0.0.1', '::1', 'localhost']) | list | length == 0
+    fail_msg: >-
+      Set janitor_worker_address for each host only in [worker] (in its
+      host_vars), or monitoring_worker_addresses, so Prometheus reaches it.
+    quiet: true
+
+- name: Create the Prometheus and Grafana directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0750"
+  loop:
+    - "{{ prometheus_home }}"
+    - "{{ prometheus_home }}/data"
+    - "{{ prometheus_home }}/rules"
+    - "{{ grafana_home }}"
+    - "{{ grafana_home }}/data"
+    - "{{ grafana_home }}/provisioning"
+    - "{{ grafana_home }}/provisioning/datasources"
+    - "{{ grafana_home }}/provisioning/dashboards"
+    # Grafana reads these two at start. They stay empty.
+    - "{{ grafana_home }}/provisioning/alerting"
+    - "{{ grafana_home }}/provisioning/plugins"
+    - "{{ grafana_home }}/upstream"
+    - "{{ grafana_home }}/dashboards"
+
+- name: Install and start the exporters
+  ansible.builtin.include_tasks: exporters.yml
+
+- name: Deploy the alert rules
+  ansible.builtin.template:
+    src: janitor.rules.j2
+    dest: "{{ prometheus_home }}/rules/janitor.rules"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  notify: Restart prometheus
+
+- name: Deploy Prometheus's scrape configuration
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: "{{ prometheus_home }}/prometheus.yml"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  notify: Restart prometheus
+
+- name: Deploy Grafana's admin password
+  ansible.builtin.template:
+    src: grafana.env.j2
+    dest: "{{ grafana_home }}/grafana.env"
+    owner: "{{ ansible_user }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart grafana
+
+- name: Create a PostgreSQL role for Grafana, named after the deploy user
+  # Grafana logs in over PostgreSQL's socket as that user (peer authentication).
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_user:
+    name: "{{ ansible_user }}"
+
+- name: Let Grafana's PostgreSQL role read the tables the dashboards query
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_privs:
+    login_db: janitor
+    type: table
+    objs: candidate,first_run_time,merge_proposal,publish,queue,run
+    schema: public
+    role: "{{ ansible_user }}"
+    privs: SELECT
+    state: present
+
+- name: Deploy Grafana's datasource and dashboard provisioning
+  ansible.builtin.template:
+    src: "{{ item }}.yaml.j2"
+    dest: "{{ grafana_home }}/provisioning/{{ item }}/janitor.yaml"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  loop: [datasources, dashboards]
+  notify: Restart grafana
+
+- name: Fetch janitor.debian.net's dashboards
+  ansible.builtin.get_url:
+    url: "{{ grafana_dashboards_url }}/{{ item.name }}.json"
+    dest: "{{ grafana_home }}/upstream/{{ item.name }}.json"
+    checksum: "{{ item.checksum }}"
+    timeout: 60
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  loop: "{{ grafana_dashboards }}"
+
+- name: Read the fetched dashboards
+  ansible.builtin.slurp:
+    src: "{{ grafana_home }}/upstream/{{ item.name }}.json"
+  register: grafana_upstream
+  loop: "{{ grafana_dashboards }}"
+
+- name: Point the dashboards' panels at this Prometheus and PostgreSQL
+  ansible.builtin.copy:
+    content: >-
+      {{ item.content | b64decode
+         | replace('"${DS_PROMETHEUS}"', '"prometheus"')
+         | replace('"Debian Janitor Prometheus"', '"prometheus"')
+         | replace('"${DS_POSTGRES}"', '"postgres"')
+         | replace('"Debian Janitor PostgreSQL"', '"postgres"') }}
+    dest: "{{ grafana_home }}/dashboards/{{ item.item.name }}.json"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  loop: "{{ grafana_upstream.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Deploy the playbook's own dashboards
+  ansible.builtin.template:
+    src: dashboard.json.j2
+    dest: "{{ grafana_home }}/dashboards/janitor-{{ item }}.json"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  vars:
+    dashboard_spec: "{{ lookup('ansible.builtin.file', 'dashboards/' + item + '.yml') | from_yaml }}"
+  loop: "{{ monitoring_dashboards }}"
+
+- name: Find the playbook's own dashboards on the host
+  ansible.builtin.find:
+    paths: "{{ grafana_home }}/dashboards"
+    patterns: janitor-*.json
+  register: monitoring_dashboard_files
+
+- name: Remove the dashboards of services that are turned off
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: >-
+    {{ monitoring_dashboard_files.files | map(attribute='path')
+       | reject('in', monitoring_dashboards | map('regex_replace', '^', grafana_home + '/dashboards/janitor-')
+                       | map('regex_replace', '$', '.json'))
+       | list }}
+
+- name: Create the quadlet unit directory
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.config/containers/systemd"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0755"
+
+- name: Deploy the Prometheus quadlet unit
+  ansible.builtin.template:
+    src: prometheus.container.j2
+    dest: "/home/{{ ansible_user }}/.config/containers/systemd/prometheus.container"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  notify: Restart prometheus
+
+- name: Deploy the Grafana quadlet unit
+  ansible.builtin.template:
+    src: grafana.container.j2
+    dest: "/home/{{ ansible_user }}/.config/containers/systemd/grafana.container"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  notify: Restart grafana
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Start Prometheus and Grafana
+  # The first start pulls the images.
+  become: true
+  become_user: "{{ ansible_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+  ansible.builtin.systemd:
+    name: "{{ item }}.service"
+    scope: user
+    daemon_reload: true
+    state: started
+  loop: [prometheus, grafana]
+
+- name: Wait for Prometheus and Grafana
+  ansible.builtin.uri:
+    url: "{{ item }}"
+  register: monitoring_health
+  until: monitoring_health.status == 200
+  retries: 30
+  delay: 2
+  loop:
+    - "http://{{ janitor_loopback }}:{{ prometheus_port }}/-/ready"
+    - "http://{{ janitor_loopback }}:{{ grafana_port }}/api/health"

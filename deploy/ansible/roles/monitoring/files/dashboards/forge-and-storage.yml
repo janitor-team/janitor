@@ -1,0 +1,175 @@
+---
+# Rendered by templates/dashboard.json.j2.
+title: Janitor forge and storage
+uid: janitor-forge-and-storage
+description: The git and bzr stores, the archive, Gitea and Garage.
+panels:
+  - title: Git store
+    type: stat
+    unit: short
+    width: 4
+    defaults: &up_down
+      mappings:
+        - type: value
+          options:
+            "0": {text: down, color: red, index: 0}
+            "1": {text: up, color: green, index: 1}
+    options: &background
+      colorMode: background
+      graphMode: none
+    targets:
+      - expr: up{job="git_store"}
+        legend: git_store
+  - title: Bzr store
+    type: stat
+    unit: short
+    width: 4
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: up{job="bzr_store"}
+        legend: bzr_store
+  - title: Archive
+    type: stat
+    unit: short
+    width: 4
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: up{job="archive"}
+        legend: archive
+  - title: Gitea
+    type: stat
+    unit: short
+    width: 4
+    requires: [enable_gitea]
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: up{job="gitea"}
+        legend: gitea
+  - title: Garage
+    type: stat
+    unit: short
+    width: 4
+    requires: [enable_garage]
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: up{job="garage"}
+        legend: garage
+  - title: Store requests per second
+    type: timeseries
+    unit: reqps
+    targets:
+      - expr: sum by (job, status) (rate(http_requests_total{job=~"git_store|bzr_store"}[5m]))
+        legend: "{{job}} {{status}}"
+  - title: Store server errors per second
+    type: timeseries
+    unit: reqps
+    targets:
+      - expr: sum by (job) (rate(http_requests_total{job=~"git_store|bzr_store",status=~"5.."}[5m]))
+        legend: "{{job}}"
+  - title: Store request time, 90th percentile
+    type: timeseries
+    unit: s
+    targets:
+      - expr: >-
+          histogram_quantile(0.9, sum by (le, job)
+          (rate(http_request_duration_seconds_bucket{job=~"git_store|bzr_store"}[5m])))
+        legend: "{{job}}"
+  - title: Store and archive memory
+    type: timeseries
+    unit: bytes
+    requires: [enable_node_exporter]
+    targets:
+      - expr: janitor_unit_memory_bytes{unit=~"janitor-(git_store|bzr_store|archive)[.]service"}
+        legend: "{{unit}}"
+  - title: Store and archive CPU
+    type: timeseries
+    unit: percentunit
+    description: 100% is one core.
+    requires: [enable_node_exporter]
+    targets:
+      - expr: rate(janitor_unit_cpu_seconds_total{unit=~"janitor-(git_store|bzr_store|archive)[.]service"}[5m])
+        legend: "{{unit}}"
+  - title: Gitea
+    type: timeseries
+    unit: short
+    requires: [enable_gitea]
+    targets:
+      - expr: gitea_repositories
+        legend: repositories
+      - expr: gitea_users
+        legend: users
+      - expr: gitea_organizations
+        legend: organisations
+  - title: Gitea issues and webhook deliveries
+    type: timeseries
+    unit: short
+    requires: [enable_gitea]
+    targets:
+      - expr: gitea_issues_open
+        legend: open issues
+      - expr: gitea_issues_closed
+        legend: closed issues
+      - expr: gitea_hooktasks
+        legend: webhook deliveries
+  - title: Gitea memory
+    type: timeseries
+    unit: bytes
+    requires: [enable_gitea, enable_node_exporter]
+    targets:
+      - expr: janitor_unit_memory_bytes{unit="gitea.service"}
+        legend: gitea
+  - title: Gitea CPU
+    type: timeseries
+    unit: percentunit
+    description: 100% is one core.
+    requires: [enable_gitea, enable_node_exporter]
+    targets:
+      - expr: rate(janitor_unit_cpu_seconds_total{unit="gitea.service"}[5m])
+        legend: gitea
+  - title: Garage S3 requests per second
+    type: timeseries
+    unit: reqps
+    requires: [enable_garage]
+    targets:
+      - expr: sum by (api_endpoint) (rate(api_s3_request_counter[5m]))
+        legend: "{{api_endpoint}}"
+  - title: Garage S3 errors per second
+    type: timeseries
+    unit: reqps
+    requires: [enable_garage]
+    targets:
+      - expr: sum by (api_endpoint, status_code) (rate(api_s3_error_counter[5m]))
+        legend: "{{api_endpoint}} {{status_code}}"
+  - title: Garage S3 request time, 90th percentile
+    type: timeseries
+    unit: s
+    requires: [enable_garage]
+    targets:
+      - expr: histogram_quantile(0.9, sum by (le) (rate(api_s3_request_duration_bucket[5m])))
+        legend: 90th percentile
+  - title: Garage disk free
+    type: timeseries
+    unit: bytes
+    requires: [enable_garage]
+    targets:
+      - expr: garage_local_disk_avail
+        legend: "{{volume}}"
+  - title: Garage memory
+    type: timeseries
+    unit: bytes
+    requires: [enable_garage, enable_node_exporter]
+    targets:
+      - expr: janitor_unit_memory_bytes{unit="garage.service"}
+        legend: garage
+  - title: Garage CPU
+    type: timeseries
+    unit: percentunit
+    description: 100% is one core.
+    requires: [enable_garage, enable_node_exporter]
+    targets:
+      - expr: rate(janitor_unit_cpu_seconds_total{unit="garage.service"}[5m])
+        legend: garage

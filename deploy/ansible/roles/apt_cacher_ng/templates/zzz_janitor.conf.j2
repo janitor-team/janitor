@@ -1,0 +1,9 @@
+# Managed by ansible (roles/apt_cacher_ng). Read after acng.conf and
+# zz_debconf.conf, so these win.
+Port: {{ apt_cacher_ng_port }}
+BindAddress: {{ apt_cacher_ng_listen_addresses | map('regex_replace', '^(.*:.*)$', '[\\1]') | join(' ') }}
+{% if apt_cacher_ng_pass_through_hosts | length > 0 %}
+PassThroughPattern: ^({{ apt_cacher_ng_pass_through_hosts | map('regex_escape') | join('|') }}):443$
+{% else %}
+PassThroughPattern: ^$
+{% endif %}

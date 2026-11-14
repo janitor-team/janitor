@@ -1,0 +1,15 @@
+#!/usr/sbin/nft -f
+# Managed by ansible (roles/apt_cacher_ng). Only this table is replaced.
+table inet janitor_apt_cacher_ng
+delete table inet janitor_apt_cacher_ng
+
+table inet janitor_apt_cacher_ng {
+	chain input {
+		type filter hook input priority filter; policy accept;
+		tcp dport {{ apt_cacher_ng_port }} iifname "lo" accept
+{% for family, addresses in [('ip', apt_cacher_ng_addresses | reject('search', ':') | list), ('ip6', apt_cacher_ng_addresses | select('search', ':') | list)] if addresses %}
+		tcp dport {{ apt_cacher_ng_port }} {{ family }} saddr { {{ addresses | join(', ') }} } accept
+{% endfor %}
+		tcp dport {{ apt_cacher_ng_port }} reject with tcp reset
+	}
+}

@@ -1,0 +1,122 @@
+---
+# Rendered by templates/dashboard.json.j2.
+title: Janitor mail
+uid: janitor-mail
+description: Postfix, from Debian's Postfix exporter, and the mail filter.
+panels:
+  - title: Postfix exporter reaches Postfix
+    requires: [enable_mta, enable_postfix_exporter]
+    type: stat
+    unit: short
+    width: 8
+    defaults:
+      mappings:
+        - type: value
+          options:
+            "0": {text: "no", color: red, index: 0}
+            "1": {text: "yes", color: green, index: 1}
+    options: &background
+      colorMode: background
+      graphMode: none
+    targets:
+      - expr: postfix_up
+        legend: "{{path}}"
+  - title: Postfix exporter
+    requires: [enable_mta, enable_postfix_exporter]
+    type: stat
+    unit: short
+    defaults:
+      mappings:
+        - type: value
+          options:
+            "0": {text: down, color: red, index: 0}
+            "1": {text: up, color: green, index: 1}
+    options:
+      colorMode: background
+      graphMode: none
+    targets:
+      - expr: up{job="postfix"}
+        legend: postfix exporter
+  - title: Mail filter socket
+    type: stat
+    unit: short
+    width: 8
+    requires: [enable_mail_filter, enable_node_exporter]
+    defaults:
+      mappings:
+        - type: value
+          options:
+            "0": {text: not active, color: red, index: 0}
+            "1": {text: active, color: green, index: 1}
+    options: *background
+    targets:
+      - expr: max(janitor_unit_state{unit="janitor-mail-filter.socket",state="active"}) or vector(0)
+        legend: janitor-mail-filter.socket
+  - title: Mail in the queue
+    requires: [enable_mta, enable_postfix_exporter]
+    type: timeseries
+    unit: short
+    targets:
+      - expr: sum by (queue) (postfix_showq_message_size_bytes_count)
+        legend: "{{queue}}"
+  - title: SMTP connections per hour
+    requires: [enable_mta, enable_postfix_exporter]
+    type: timeseries
+    unit: short
+    targets:
+      - expr: increase(postfix_smtpd_connects_total[1h])
+        legend: connections
+  - title: Mail received and rejected per hour
+    requires: [enable_mta, enable_postfix_exporter]
+    type: timeseries
+    unit: short
+    targets:
+      - expr: sum(increase(postfix_smtpd_messages_processed_total[1h]))
+        legend: received
+      - expr: sum by (code) (increase(postfix_smtpd_messages_rejected_total[1h]))
+        legend: "rejected {{code}}"
+  - title: Messages queued per hour
+    requires: [enable_mta, enable_postfix_exporter]
+    type: timeseries
+    unit: short
+    targets:
+      - expr: increase(postfix_qmgr_messages_inserted_receipients_count[1h])
+        legend: queued
+  - title: Messages removed from the queue per hour
+    requires: [enable_mta, enable_postfix_exporter]
+    type: timeseries
+    unit: short
+    targets:
+      - expr: increase(postfix_qmgr_messages_removed_total[1h])
+        legend: removed
+  - title: Bounce notices per hour
+    requires: [enable_mta, enable_postfix_exporter]
+    type: timeseries
+    unit: short
+    description: Notices Postfix sent back for mail it could not deliver.
+    targets:
+      - expr: increase(postfix_bounce_non_delivery_notification_total[1h])
+        legend: bounces
+  - title: Status refreshes from the mail filter per hour
+    type: timeseries
+    unit: short
+    description: Requests to publish's /refresh-status.
+    requires: [enable_mail_filter]
+    targets:
+      - expr: sum by (status) (increase(http_requests_total{job="publish",path=~".*refresh-status.*"}[1h]))
+        legend: "{{status}}"
+  - title: Postfix memory
+    type: timeseries
+    unit: bytes
+    requires: [enable_mta, enable_node_exporter]
+    targets:
+      - expr: sum(janitor_unit_memory_bytes{unit="postfix.service"})
+        legend: postfix
+  - title: Postfix CPU
+    type: timeseries
+    unit: percentunit
+    description: 100% is one core.
+    requires: [enable_mta, enable_node_exporter]
+    targets:
+      - expr: sum(rate(janitor_unit_cpu_seconds_total{unit="postfix.service"}[5m]))
+        legend: postfix

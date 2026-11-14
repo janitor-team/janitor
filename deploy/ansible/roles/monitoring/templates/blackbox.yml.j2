@@ -1,0 +1,8 @@
+# Managed by ansible (roles/monitoring).
+modules:
+  http_health:
+    prober: http
+    timeout: 10s
+    http:
+      valid_status_codes: [200]
+      preferred_ip_protocol: "{{ 'ip6' if janitor_ip_family == 'ipv6' else 'ip4' }}"

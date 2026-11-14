@@ -1,0 +1,94 @@
+---
+# Rendered by templates/dashboard.json.j2.
+title: Janitor apt cache
+uid: janitor-apt-cache
+description: apt-cacher-ng, which the sbuild chroots and their builds download through.
+panels:
+  - title: apt cache
+    type: stat
+    unit: short
+    width: 4
+    requires: [enable_blackbox_exporter]
+    defaults:
+      mappings:
+        - type: value
+          options:
+            "0": {text: down, color: red, index: 0}
+            "1": {text: up, color: green, index: 1}
+    options:
+      colorMode: background
+      graphMode: none
+    targets:
+      - expr: probe_success{job="apt_cacher_ng"}
+        legend: up
+  - title: Report page response time
+    type: timeseries
+    unit: s
+    width: 20
+    requires: [enable_blackbox_exporter]
+    targets:
+      - expr: probe_duration_seconds{job="apt_cacher_ng"}
+        legend: response
+  - title: Hit ratio of files, last hour
+    type: timeseries
+    unit: percentunit
+    requires: [enable_node_exporter]
+    targets:
+      - expr: >-
+          clamp(1 - increase(apt_cacher_ng_fetches_total[1h])
+          / (increase(apt_cacher_ng_requests_total[1h]) > 0), 0, 1)
+        legend: hits
+  - title: Bytes sent to clients and fetched from upstream
+    type: timeseries
+    unit: Bps
+    requires: [enable_node_exporter]
+    targets:
+      - expr: rate(apt_cacher_ng_sent_bytes_total[5m])
+        legend: sent to clients
+      - expr: rate(apt_cacher_ng_fetched_bytes_total[5m])
+        legend: fetched from upstream
+  - title: Bytes sent per client
+    type: timeseries
+    unit: Bps
+    requires: [enable_node_exporter]
+    targets:
+      - expr: sum by (client) (rate(apt_cacher_ng_client_sent_bytes_total[5m]))
+        legend: "{{client}}"
+  - title: Files sent per client per minute
+    type: timeseries
+    unit: short
+    requires: [enable_node_exporter]
+    targets:
+      - expr: sum by (client) (rate(apt_cacher_ng_client_requests_total[5m])) * 60
+        legend: "{{client}}"
+  - title: Files served and misses per minute
+    type: timeseries
+    unit: short
+    requires: [enable_node_exporter]
+    targets:
+      - expr: rate(apt_cacher_ng_requests_total[5m]) * 60
+        legend: files served
+      - expr: rate(apt_cacher_ng_fetches_total[5m]) * 60
+        legend: misses
+  - title: Cache size
+    type: timeseries
+    unit: bytes
+    requires: [enable_node_exporter]
+    targets:
+      - expr: apt_cacher_ng_cache_bytes
+        legend: cache
+  - title: apt-cacher-ng memory
+    type: timeseries
+    unit: bytes
+    requires: [enable_node_exporter]
+    targets:
+      - expr: janitor_unit_memory_bytes{unit="apt-cacher-ng.service"}
+        legend: apt-cacher-ng
+  - title: apt-cacher-ng CPU
+    type: timeseries
+    unit: percentunit
+    description: 100% is one core.
+    requires: [enable_node_exporter]
+    targets:
+      - expr: rate(janitor_unit_cpu_seconds_total{unit="apt-cacher-ng.service"}[5m])
+        legend: apt-cacher-ng

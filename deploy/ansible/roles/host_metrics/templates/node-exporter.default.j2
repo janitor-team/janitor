@@ -1,0 +1,3 @@
+# Managed by ansible (roles/host_metrics). The unit states and, with the
+# apt cache, the counts roles/apt_cacher_ng writes.
+ARGS="--web.listen-address={{ host_metrics_address }}:{{ node_exporter_port }} --collector.textfile.directory={{ host_metrics_textfile_dir }}{% if enable_apt_cacher_ng | bool and 'control' in group_names %} --collector.textfile.directory=/var/lib/janitor-apt-cacher-ng-metrics{% endif %}"

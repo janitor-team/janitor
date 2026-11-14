@@ -1,0 +1,7 @@
+# Managed by ansible (roles/host_metrics).
+[Unit]
+Description=Write the unit states for the node exporter
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/janitor-unit-metrics

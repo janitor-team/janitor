@@ -1,0 +1,10 @@
+// Managed by ansible (roles/janitor_quadlet): the apt cache, for the
+// sbuild chroot tarballs and the builds in them.
+Acquire::http::Proxy "{{ apt_cacher_ng_url }}";
+{% for host in apt_cacher_ng_direct_hosts %}
+Acquire::http::Proxy::{{ host }} "DIRECT";
+{% endfor %}
+Acquire::https::Proxy "DIRECT";
+{% for host in apt_cacher_ng_pass_through_hosts %}
+Acquire::https::Proxy::{{ host }} "{{ apt_cacher_ng_url }}";
+{% endfor %}

@@ -1,0 +1,11 @@
+# Managed by ansible (roles/host_metrics).
+[Unit]
+Description=Write the unit states for the node exporter every 30 seconds
+
+[Timer]
+OnActiveSec=0
+OnUnitActiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

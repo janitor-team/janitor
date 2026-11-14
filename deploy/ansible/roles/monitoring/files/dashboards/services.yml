@@ -1,0 +1,289 @@
+---
+# Rendered by templates/dashboard.json.j2.
+title: Janitor services
+uid: janitor-services
+description: Every janitor service, its requests, errors and resource use.
+panels:
+  - title: Git store
+    type: stat
+    unit: short
+    width: 3
+    defaults: &up_down
+      mappings:
+        - type: value
+          options:
+            "0": {text: down, color: red, index: 0}
+            "1": {text: up, color: green, index: 1}
+    options: &background
+      colorMode: background
+      graphMode: none
+    targets:
+      - expr: up{job="git_store"}
+        legend: git_store
+  - title: Bzr store
+    type: stat
+    unit: short
+    width: 3
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: up{job="bzr_store"}
+        legend: bzr_store
+  - title: Differ
+    type: stat
+    unit: short
+    width: 3
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: up{job="differ"}
+        legend: differ
+  - title: Archive
+    type: stat
+    unit: short
+    width: 3
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: up{job="archive"}
+        legend: archive
+  - title: Runner
+    type: stat
+    unit: short
+    width: 3
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: up{job="runner"}
+        legend: runner
+  - title: Publish
+    type: stat
+    unit: short
+    width: 3
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: up{job="publish"}
+        legend: publish
+  - title: Site
+    type: stat
+    unit: short
+    width: 3
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: up{job="site"}
+        legend: site
+  - title: Auto upload
+    type: stat
+    unit: short
+    width: 3
+    requires: [enable_auto_upload]
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: up{job="auto_upload"}
+        legend: auto_upload
+  - title: Workers
+    type: stat
+    unit: short
+    width: 12
+    description: The health check of each worker.
+    requires: [enable_blackbox_exporter]
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: probe_success{job="worker"}
+        legend: "{{instance}}"
+  - title: Dependency server
+    type: stat
+    unit: short
+    width: 4
+    description: The health check of ognibuild_dep.
+    requires: [enable_ognibuild_dep, enable_blackbox_exporter]
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: probe_success{job="ognibuild_dep"}
+        legend: ognibuild_dep
+  - title: Runner requests per second
+    type: timeseries
+    unit: reqps
+    targets:
+      - expr: sum by (status) (rate(janitor_runner_http_requests_total[5m]))
+        legend: "{{status}}"
+  - title: Publish requests per second
+    type: timeseries
+    unit: reqps
+    targets:
+      - expr: sum by (status) (rate(http_requests_total{job="publish"}[5m]))
+        legend: "{{status}}"
+  - title: Site requests per second
+    type: timeseries
+    unit: reqps
+    targets:
+      - expr: sum by (status) (rate(requests_total{job="site"}[5m]))
+        legend: "{{status}}"
+  - title: Store requests per second
+    type: timeseries
+    unit: reqps
+    targets:
+      - expr: sum by (job, status) (rate(http_requests_total{job=~"git_store|bzr_store"}[5m]))
+        legend: "{{job}} {{status}}"
+  - title: Server errors per second
+    type: timeseries
+    unit: reqps
+    description: Responses with a 5xx status, and requests the site failed with an exception.
+    targets:
+      - expr: sum(rate(janitor_runner_http_requests_total{status=~"5.."}[5m])) or vector(0)
+        legend: runner
+      - expr: sum(rate(http_requests_total{job="publish",status=~"5.."}[5m])) or vector(0)
+        legend: publish
+      - expr: sum(rate(requests_total{job="site",status=~"5.."}[5m])) or vector(0)
+        legend: site
+      - expr: sum(rate(request_exceptions_total{job="site"}[5m])) or vector(0)
+        legend: site exceptions
+      - expr: sum by (job) (rate(http_requests_total{job=~"git_store|bzr_store",status=~"5.."}[5m]))
+        legend: "{{job}}"
+  - title: Mean request time
+    type: timeseries
+    unit: s
+    targets:
+      - expr: >-
+          sum(rate(janitor_runner_http_request_duration_seconds_sum[5m]))
+          / sum(rate(janitor_runner_http_request_duration_seconds_count[5m]))
+        legend: runner
+      - expr: >-
+          sum(rate(http_request_duration_seconds_sum{job="publish"}[5m]))
+          / sum(rate(http_request_duration_seconds_count{job="publish"}[5m]))
+        legend: publish
+      - expr: >-
+          sum(rate(request_latency_seconds_sum{job="site"}[5m]))
+          / sum(rate(request_latency_seconds_count{job="site"}[5m]))
+        legend: site
+  - title: Store request time, 90th percentile
+    type: timeseries
+    unit: s
+    targets:
+      - expr: >-
+          histogram_quantile(0.9, sum by (le, job)
+          (rate(http_request_duration_seconds_bucket{job=~"git_store|bzr_store"}[5m])))
+        legend: "{{job}}"
+  - title: Assignments per hour per worker
+    type: timeseries
+    unit: short
+    targets:
+      - expr: sum by (worker) (increase(assignments_total[1h]))
+        legend: "{{worker}}"
+      - expr: increase(queue_empty_total[1h])
+        legend: queue empty
+  - title: Results per hour by campaign
+    type: timeseries
+    unit: short
+    targets:
+      - expr: sum by (campaign) (increase(result_total[1h]))
+        legend: "{{campaign}}"
+  - title: Mean build time per campaign
+    type: timeseries
+    unit: s
+    targets:
+      - expr: >-
+          sum by (campaign) (rate(build_duration_sum[1h]))
+          / sum by (campaign) (rate(build_duration_count[1h]))
+        legend: "{{campaign}}"
+  - title: Runs ended by the watchdog per hour
+    type: timeseries
+    unit: short
+    targets:
+      - expr: sum by (reason) (increase(janitor_runner_watchdog_terminated_runs_total[1h]))
+        legend: "{{reason}}"
+  - title: Merge proposals by status
+    type: timeseries
+    unit: short
+    targets:
+      - expr: merge_proposal_count
+        legend: "{{status}}"
+  - title: New merge proposals per hour
+    type: timeseries
+    unit: short
+    targets:
+      - expr: increase(new_merge_proposal_count[1h])
+        legend: new
+  - title: Mean time from build to publish
+    type: timeseries
+    unit: s
+    targets:
+      - expr: rate(publish_latency_sum[1h]) / rate(publish_latency_count[1h])
+        legend: delay
+  - title: Publishing held back per hour
+    type: timeseries
+    unit: short
+    description: Runs publish left for later.
+    targets:
+      - expr: increase(push_limit_count[1h])
+        legend: push limit
+      - expr: increase(exponential_backoff_count[1h])
+        legend: backoff
+      - expr: sum by (forge) (increase(forge_rate_limited_count[1h]))
+        legend: "rate limited by {{forge}}"
+  - title: Time since publish last finished its loops
+    type: timeseries
+    unit: s
+    targets:
+      - expr: time() - last_publish_pending_success
+        legend: publish pending
+      - expr: time() - last_scan_existing_success
+        legend: scan open proposals
+  - title: Differ requests per second
+    type: timeseries
+    unit: reqps
+    targets:
+      - expr: sum by (op) (rate(differ_requests_total[5m]))
+        legend: "{{op}}"
+  - title: Differ errors per hour
+    type: timeseries
+    unit: short
+    targets:
+      - expr: sum by (op, reason) (increase(differ_errors_total[1h]))
+        legend: "{{op}} {{reason}}"
+      - expr: sum by (op) (increase(differ_cache_write_errors_total[1h]))
+        legend: "{{op}} cache write"
+  - title: Differ cache hits
+    type: timeseries
+    unit: percentunit
+    targets:
+      - expr: sum by (op) (rate(differ_cache_hits_total[1h])) / sum by (op) (rate(differ_requests_total[1h]))
+        legend: "{{op}}"
+  - title: Auto upload failures per hour
+    type: timeseries
+    unit: short
+    requires: [enable_auto_upload]
+    targets:
+      - expr: increase(debsign_failed[1h]) or vector(0)
+        legend: signing
+      - expr: increase(upload_failed[1h]) or vector(0)
+        legend: upload
+      - expr: increase(result_handling_failed[1h]) or vector(0)
+        legend: result handling
+  - title: Worker health check time
+    type: timeseries
+    unit: s
+    requires: [enable_blackbox_exporter]
+    targets:
+      - expr: probe_duration_seconds{job="worker"}
+        legend: "{{instance}}"
+  - title: Memory per unit
+    type: timeseries
+    unit: bytes
+    requires: [enable_node_exporter]
+    targets:
+      - expr: janitor_unit_memory_bytes{unit=~"janitor-.*[.]service"}
+        legend: "{{host}} {{unit}}"
+  - title: CPU per unit
+    type: timeseries
+    unit: percentunit
+    description: 100% is one core.
+    requires: [enable_node_exporter]
+    targets:
+      - expr: rate(janitor_unit_cpu_seconds_total{unit=~"janitor-.*[.]service"}[5m])
+        legend: "{{host}} {{unit}}"

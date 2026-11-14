@@ -1,0 +1,170 @@
+---
+# Rendered by templates/dashboard.json.j2.
+title: Janitor database
+uid: janitor-database
+description: PostgreSQL and Redis.
+panels:
+  - title: PostgreSQL
+    type: stat
+    unit: short
+    width: 4
+    requires: [enable_postgres_exporter]
+    defaults: &up_down
+      mappings:
+        - type: value
+          options:
+            "0": {text: down, color: red, index: 0}
+            "1": {text: up, color: green, index: 1}
+    options: &background
+      colorMode: background
+      graphMode: none
+    targets:
+      - expr: pg_up
+        legend: postgresql
+  - title: Redis
+    type: stat
+    unit: short
+    width: 4
+    requires: [enable_redis_exporter]
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: redis_up
+        legend: redis
+  - title: PostgreSQL exporter
+    type: stat
+    unit: short
+    width: 4
+    requires: [enable_postgres_exporter]
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: up{job="postgres"}
+        legend: postgres exporter
+  - title: Redis exporter
+    type: stat
+    unit: short
+    width: 4
+    requires: [enable_redis_exporter]
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: up{job="redis"}
+        legend: redis exporter
+  - title: Queue by bucket
+    type: bargauge
+    datasource: postgres
+    unit: short
+    width: 8
+    options: &rows
+      displayMode: basic
+      reduceOptions:
+        values: true
+        calcs: []
+        fields: ""
+    targets:
+      - sql: SELECT bucket::text AS bucket, count(*) AS items FROM queue GROUP BY 1 ORDER BY 2 DESC
+        format: table
+  - title: Merge proposals by status
+    type: bargauge
+    datasource: postgres
+    unit: short
+    width: 8
+    options: *rows
+    targets:
+      - sql: >-
+          SELECT coalesce(status::text, 'unknown') AS status, count(*) AS proposals
+          FROM merge_proposal GROUP BY 1 ORDER BY 2 DESC
+        format: table
+  - title: PostgreSQL connections
+    type: timeseries
+    unit: short
+    requires: [enable_postgres_exporter]
+    targets:
+      - expr: sum(pg_stat_database_numbackends)
+        legend: open
+      - expr: pg_settings_max_connections
+        legend: max_connections
+  - title: Transactions per second on janitor
+    type: timeseries
+    unit: short
+    requires: [enable_postgres_exporter]
+    targets:
+      - expr: rate(pg_stat_database_xact_commit{datname="janitor"}[5m])
+        legend: commit
+      - expr: rate(pg_stat_database_xact_rollback{datname="janitor"}[5m])
+        legend: rollback
+  - title: Cache hits on janitor
+    type: timeseries
+    unit: percentunit
+    description: Blocks read from shared buffers, not from disk.
+    requires: [enable_postgres_exporter]
+    targets:
+      - expr: >-
+          rate(pg_stat_database_blks_hit{datname="janitor"}[5m])
+          / (rate(pg_stat_database_blks_hit{datname="janitor"}[5m]) + rate(pg_stat_database_blks_read{datname="janitor"}[5m]))
+        legend: janitor
+  - title: Database size
+    type: timeseries
+    unit: bytes
+    requires: [enable_postgres_exporter]
+    targets:
+      - expr: pg_database_size_bytes{datname="janitor"}
+        legend: janitor
+  - title: Deadlocks per hour
+    type: timeseries
+    unit: short
+    requires: [enable_postgres_exporter]
+    targets:
+      - expr: increase(pg_stat_database_deadlocks{datname="janitor"}[1h])
+        legend: janitor
+  - title: Redis clients
+    type: timeseries
+    unit: short
+    requires: [enable_redis_exporter]
+    targets:
+      - expr: redis_connected_clients
+        legend: clients
+  - title: Redis memory
+    type: timeseries
+    unit: bytes
+    requires: [enable_redis_exporter]
+    targets:
+      - expr: redis_memory_used_bytes
+        legend: used
+  - title: Redis commands per second
+    type: timeseries
+    unit: ops
+    requires: [enable_redis_exporter]
+    targets:
+      - expr: rate(redis_commands_processed_total[5m])
+        legend: commands
+  - title: Redis pub/sub channels
+    type: timeseries
+    unit: short
+    requires: [enable_redis_exporter]
+    targets:
+      - expr: redis_pubsub_channels
+        legend: channels
+  - title: Redis keys
+    type: timeseries
+    unit: short
+    requires: [enable_redis_exporter]
+    targets:
+      - expr: redis_db_keys
+        legend: "{{db}}"
+  - title: PostgreSQL and Redis memory
+    type: timeseries
+    unit: bytes
+    requires: [enable_node_exporter]
+    targets:
+      - expr: janitor_unit_memory_bytes{unit=~"postgresql@.+[.]service|redis-server[.]service"}
+        legend: "{{unit}}"
+  - title: PostgreSQL and Redis CPU
+    type: timeseries
+    unit: percentunit
+    description: 100% is one core.
+    requires: [enable_node_exporter]
+    targets:
+      - expr: rate(janitor_unit_cpu_seconds_total{unit=~"postgresql@.+[.]service|redis-server[.]service"}[5m])
+        legend: "{{unit}}"

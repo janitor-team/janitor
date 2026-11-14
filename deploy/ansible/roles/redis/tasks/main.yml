@@ -1,0 +1,21 @@
+---
+- name: Install redis-server
+  ansible.builtin.apt:
+    name: redis-server
+    state: present
+
+- name: Listen on the loopback addresses of janitor_ip_family
+  ansible.builtin.lineinfile:
+    path: /etc/redis/redis.conf
+    regexp: "^bind "
+    line: "bind {{ janitor_loopback_addresses | join(' ') }}"
+  notify: Restart redis
+
+- name: Start redis
+  ansible.builtin.service:
+    name: redis-server
+    state: started
+    enabled: true
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers
