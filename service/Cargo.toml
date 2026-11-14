@@ -9,6 +9,7 @@ repository = "https://github.com/jelmer/janitor.git"
 homepage = "https://github.com/jelmer/janitor"
 
 [dependencies]
+axum = { workspace = true }
 prometheus = { version = "0.14.0", features = ["reqwest"] }
 reqwest = { workspace = true }
 url = { workspace = true }

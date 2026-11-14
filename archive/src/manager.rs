@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use janitor_types::Campaign;
+use lazy_static::lazy_static;
+use prometheus::{register_gauge_vec, GaugeVec};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
@@ -140,7 +142,17 @@ impl Default for GeneratorManagerConfig {
     }
 }
 
-/// Notify the last-publish observer (if any) that a repository has
+lazy_static! {
+    static ref LAST_CAMPAIGN_PUBLISH_SUCCESS: GaugeVec = register_gauge_vec!(
+        "last_campaign_publish_success",
+        "Last time publishing a campaign succeeded",
+        &["campaign"]
+    )
+    .unwrap();
+}
+
+/// Set the `last_campaign_publish_success` gauge and notify the
+/// last-publish observer (if any) that a repository has
 /// been successfully published. Public within the crate so the
 /// spawn path in `trigger_repository` can invoke it consistently
 /// with any future callers; kept in a helper so it can be unit-
@@ -149,9 +161,13 @@ pub(crate) async fn record_publish_completion(
     observer: &Arc<RwLock<Option<crate::web::LastPublishTimes>>>,
     repo_name: &str,
 ) {
+    let now = chrono::Utc::now();
+    LAST_CAMPAIGN_PUBLISH_SUCCESS
+        .with_label_values(&[repo_name])
+        .set(now.timestamp() as f64);
     if let Some(times) = observer.read().await.as_ref() {
         let mut map = times.write().await;
-        map.insert(repo_name.to_string(), chrono::Utc::now());
+        map.insert(repo_name.to_string(), now);
     }
 }
 
@@ -884,11 +900,23 @@ mod tests {
     async fn record_publish_completion_writes_to_wired_observer() {
         let times = crate::web::new_last_publish_times();
         let observer = Arc::new(RwLock::new(Some(times.clone())));
-        record_publish_completion(&observer, "unstable").await;
+        record_publish_completion(&observer, "experimental").await;
         let map = times.read().await;
         assert!(
-            map.contains_key("unstable"),
-            "expected timestamp for unstable"
+            map.contains_key("experimental"),
+            "expected timestamp for experimental"
+        );
+        let response = janitor_service::prometheus::metrics_handler().await;
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let line = format!(
+            "last_campaign_publish_success{{campaign=\"experimental\"}} {}",
+            map["experimental"].timestamp()
+        );
+        assert!(
+            String::from_utf8_lossy(&body).lines().any(|l| l == line),
+            "expected {line:?} in /metrics"
         );
     }
 

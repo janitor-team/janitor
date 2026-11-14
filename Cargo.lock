@@ -3233,10 +3233,12 @@ dependencies = [
  "janitor",
  "janitor-service",
  "janitor-types",
+ "lazy_static",
  "num_cpus",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "prometheus 0.14.0",
  "redis 1.7.0",
  "serde",
  "serde_json",
@@ -3501,6 +3503,7 @@ dependencies = [
 name = "janitor-service"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "prometheus 0.14.0",
  "reqwest 0.13.5",
  "tokio",
