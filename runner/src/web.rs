@@ -1828,6 +1828,9 @@ async fn get_last_unabsorbed_run(
 /// `POST /runs/{run_id}` -- set the publish_status of a run, then
 /// publish a notification on the Redis `publish-status` channel so
 /// other services can react.
+///
+/// Spawned so a client hangup can't drop the handler future between
+/// storing the publish status and publishing the event.
 #[utoipa::path(
     post,
     path = "/runs/{id}",
@@ -1843,6 +1846,14 @@ async fn update_run(
     State(state): State<Arc<AppState>>,
     Path(id): Path<RunId>,
     Json(request): Json<UpdateRunRequest>,
+) -> Response {
+    spawn_handler("update run", update_run_internal(state, id, request)).await
+}
+
+async fn update_run_internal(
+    state: Arc<AppState>,
+    id: RunId,
+    request: UpdateRunRequest,
 ) -> Response {
     match state
         .database
@@ -2747,7 +2758,7 @@ async fn finish_active_run_multipart(
     Path(id): Path<RunId>,
     multipart: Multipart,
 ) -> Response {
-    finish_run_multipart_internal(state, id, multipart, false).await
+    finish_run_multipart(state, id, multipart, false).await
 }
 
 /// Publish the side effects that follow a committed `finish_run`:
@@ -2937,6 +2948,22 @@ async fn store_run_artifacts(
         staging.path(),
         run_id,
         None,
+    )
+    .await
+}
+
+/// Spawned so a client hangup can't drop the handler future between
+/// storing the run and `publish_finish_events`. A retry only gets a
+/// 409, so those events would never be sent.
+async fn finish_run_multipart(
+    state: Arc<AppState>,
+    run_id: RunId,
+    multipart: Multipart,
+    public: bool,
+) -> Response {
+    spawn_handler(
+        "finish",
+        finish_run_multipart_internal(state, run_id, multipart, public),
     )
     .await
 }
@@ -3262,7 +3289,7 @@ async fn public_assign(
     // from the request body. Workers can't lie about who they are.
     // Python's public app served this under /runner; we rely on the
     // ingress to strip that prefix.
-    assign_work_internal(state, worker_name, request, "/runner/active-runs").await
+    assign_work(state, worker_name, request, "/runner/active-runs").await
 }
 
 /// Unauthenticated assign for the private (intra-cluster) app. No
@@ -3333,7 +3360,38 @@ async fn private_assign(
             return error(StatusCode::INTERNAL_SERVER_ERROR, "worker_lookup_failed");
         }
     }
-    assign_work_internal(state, worker_name, request, "/active-runs").await
+    assign_work(state, worker_name, request, "/active-runs").await
+}
+
+/// Spawned so a client hangup can't drop the handler future between
+/// claiming a queue item in Redis and recording the active run.
+async fn assign_work(
+    state: Arc<AppState>,
+    worker_name: String,
+    request: AssignRequest,
+    active_runs_path: &'static str,
+) -> Response {
+    spawn_handler(
+        "assign",
+        assign_work_internal(state, worker_name, request, active_runs_path),
+    )
+    .await
+}
+
+/// Run a handler body in its own task, so it finishes even if the
+/// client hangs up. A panic is logged and answered with a 500.
+async fn spawn_handler<F>(what: &str, handler: F) -> Response
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: IntoResponse + Send + 'static,
+{
+    match tokio::spawn(handler).await {
+        Ok(response) => response.into_response(),
+        Err(e) => {
+            log::error!("{} task failed: {}", what, e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 /// Generate a fresh run id.
@@ -4175,7 +4233,7 @@ async fn public_finish(
     // Workers POST a multipart body (metadata field + one `file`
     // part per result file) to /finish.
     log::info!("Worker {} finishing run {} (multipart)", worker_name, id);
-    finish_run_multipart_internal(state, id, multipart, true).await
+    finish_run_multipart(state, id, multipart, true).await
 }
 
 /// Get watchdog health information for all active runs.
