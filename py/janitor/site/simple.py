@@ -562,6 +562,7 @@ async def create_app(
             if name == "queue":
                 for entry in data.get("processing", []):
                     hide_private_worker_links(entry)
+                app["runner_status"] = data
             app["topic_notifications"].publish([name, data])
 
         async def forward_redis(app, name):

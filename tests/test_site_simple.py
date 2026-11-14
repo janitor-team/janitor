@@ -112,6 +112,7 @@ async def test_ws_notifications_forwards_redis_channels(
                     break
                 await asyncio.sleep(0.01)
             assert await ws.receive_json(timeout=5) == [channel, expected]
+    assert app["runner_status"] == hidden
 
 
 async def test_codebase_query_redirect_missing_param_returns_400(
