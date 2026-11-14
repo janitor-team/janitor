@@ -1,6 +1,7 @@
 use crate::api_types::{
     AutopublishResponse, EmptyResponse, ErrorResponse, InvalidModeResponse, NotFoundResponse,
-    PublishNothingResponse, PublishStartedResponse, SuccessWithUrlResponse,
+    PublishBadRequestResponse, PublishNothingResponse, PublishStartedResponse,
+    RejectedInReviewResponse, SuccessWithUrlResponse,
 };
 use crate::health::{self, HealthCheckHandler};
 use crate::rate_limiter::RateLimitStatus;
@@ -1364,6 +1365,12 @@ struct PublishQuery {
     role: Option<String>,
 }
 
+/// Whether a manual publish must be refused because a review rejected
+/// the run. A `mode` skips this, as the site only lets admins pass one.
+fn refuse_manual_publish(mode: Option<&str>, verdicts: &[String]) -> bool {
+    mode.is_none() && verdicts.iter().any(|v| v == "rejected")
+}
+
 /// `POST /{campaign}/{codebase}/publish`: operator-initiated publish of
 /// the latest effective run. Loads the last effective run, resolves a
 /// mode per role from either the `mode` form field or the configured
@@ -1388,7 +1395,7 @@ struct PublishQuery {
     responses(
         (status = 200, description = "Nothing to publish", body = PublishNothingResponse),
         (status = 202, description = "Publishing was started", body = PublishStartedResponse),
-        (status = 400, description = "Invalid mode; the body is empty when there is no run to publish", body = InvalidModeResponse),
+        (status = 400, description = "Invalid mode, or no mode and a review rejected the run; the body is empty when there is no run to publish", body = PublishBadRequestResponse),
         (status = 404, description = "No publish policy and no mode", body = NotFoundResponse),
         (status = 500, description = "Database error", body = ErrorResponse),
     )
@@ -1430,6 +1437,29 @@ async fn publish(
             return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
         }
     };
+
+    let verdicts: Vec<String> =
+        match sqlx::query_scalar("SELECT verdict::text FROM review WHERE run_id = $1")
+            .bind(&run.id)
+            .fetch_all(&state.conn)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                log::error!("Error loading reviews of run {}: {}", run.id, e);
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+            }
+        };
+    if refuse_manual_publish(form.mode.as_deref(), &verdicts) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(RejectedInReviewResponse {
+                error: "Run was rejected in review".to_string(),
+                run_id: run.id.clone(),
+            }),
+        )
+            .into_response();
+    }
 
     let policy_lookup = match crate::get_publish_policy(&state.conn, &codebase, &campaign).await {
         Ok(p) => p,
@@ -2684,9 +2714,9 @@ async fn metrics_handler() -> impl IntoResponse {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_mp_status_transition, project_per_branch_policy, BlockerProposeRateLimitDetails,
-        BlockerRateLimitAllowedDetails, BlockerRateLimitExceededDetails, MpStatusTransition,
-        PerBranchPolicy, PolicyDocument,
+        classify_mp_status_transition, project_per_branch_policy, refuse_manual_publish,
+        BlockerProposeRateLimitDetails, BlockerRateLimitAllowedDetails,
+        BlockerRateLimitExceededDetails, MpStatusTransition, PerBranchPolicy, PolicyDocument,
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -2971,5 +3001,14 @@ acIBANPYup0ov/aq2XHOEpmkaaw9B6gSHz4uf1urZs/js/sE
         .unwrap();
         assert_eq!(binary.len(), 228);
         assert_eq!(super::armor_public_key(&binary).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_refuse_manual_publish() {
+        let v = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(!refuse_manual_publish(None, &v(&[])));
+        assert!(!refuse_manual_publish(None, &v(&["approved", "abstained"])));
+        assert!(refuse_manual_publish(None, &v(&["approved", "rejected"])));
+        assert!(!refuse_manual_publish(Some("propose"), &v(&["rejected"])));
     }
 }
