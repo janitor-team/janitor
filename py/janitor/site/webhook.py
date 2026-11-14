@@ -209,7 +209,7 @@ def get_git_changes_from_launchpad_webhook(body):
 
 def get_changes_from_gitlab_webhook(body):
     # https://docs.gitlab.com/ee/user/project/integrations/webhook_events.html#push-events
-    url_keys = ["git_http_url", "git_ssh_url"]
+    url_keys = ["git_http_url", "git_ssh_url", "web_url"]
     urls = []
     for url_key in url_keys:
         url = body["project"][url_key]
@@ -256,8 +256,6 @@ async def parse_webhook(request, db):
         if request.headers["X-Gitlab-Event"] != "Push Hook":
             return
         changes = get_changes_from_gitlab_webhook(body)
-        # TODO(jelmer: If nothing found, then maybe fall back to
-        # urlutils.basename(body['project']['path_with_namespace'])?
     elif "X-GitHub-Event" in request.headers:
         if request.headers["X-GitHub-Event"] not in ("push",):
             return
