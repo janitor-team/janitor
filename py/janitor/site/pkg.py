@@ -109,6 +109,13 @@ async def generate_run_file(
             (queue_position, queue_wait_time) = await queue.get_position(
                 run["suite"], run["codebase"]
             )
+        with span.new_child("sql:last-effective-run"):
+            # Publishing a codebase publishes its last effective run.
+            kwargs["is_last_effective_run"] = run["id"] == await conn.fetchval(
+                "SELECT id FROM last_effective_runs WHERE codebase = $1 AND suite = $2",
+                run["codebase"],
+                run["suite"],
+            )
         with span.new_child("sql:publish-history"):
             publish_history: list[asyncpg.Record]
             if run["revision"] and run["result_code"] in (
