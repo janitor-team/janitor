@@ -29,7 +29,7 @@ pub use backchannel::{
 };
 
 // Re-export watchdog types
-pub use watchdog::{RunHealthStatus, TerminationReason, Watchdog, WatchdogConfig, WatchdogStats};
+pub use watchdog::Watchdog;
 
 /// In-memory active-run tracking, mirroring Python's
 /// `QueueProcessor.active_runs`.
@@ -859,12 +859,9 @@ impl Backchannel {
     /// Ping the worker.
     pub async fn ping(&self, expected_log_id: &RunId) -> Result<(), PingError> {
         match self {
-            Backchannel::None {} => {
-                // No ping available
-                Err(PingError::Retriable(
-                    "No backchannel available for ping".to_string(),
-                ))
-            }
+            Backchannel::None {} => Err(PingError::NotSupported(
+                "No backchannel available for ping".to_string(),
+            )),
             Backchannel::Jenkins { my_url, .. } => {
                 // Implement Jenkins ping by checking job status
                 use reqwest::Client;
