@@ -1289,7 +1289,7 @@ pub async fn refresh_bucket_mp_counts(state: Arc<AppState>) -> Result<(), sqlx::
     let mut per_bucket: HashMap<janitor::publish::MergeProposalStatus, HashMap<String, usize>> =
         HashMap::new();
 
-    let rows = sqlx::query_as::<_, (String, String, i64)>(
+    let rows = sqlx::query_as::<_, (Option<String>, janitor::publish::MergeProposalStatus, i64)>(
         r#"
         SELECT
         rate_limit_bucket AS rate_limit_bucket,
@@ -1302,14 +1302,10 @@ pub async fn refresh_bucket_mp_counts(state: Arc<AppState>) -> Result<(), sqlx::
     .fetch_all(&state.conn)
     .await?;
 
-    for row in rows {
-        if let Ok(status) = row.1.parse() {
-            per_bucket
-                .entry(status)
-                .or_default()
-                .insert(row.0, row.2 as usize);
-        } else {
-            log::warn!("Invalid merge proposal status in database: {}", row.1);
+    for (bucket, status, count) in rows {
+        let counts = per_bucket.entry(status).or_default();
+        if let Some(bucket) = bucket {
+            counts.insert(bucket, count as usize);
         }
     }
     if let Ok(mut limiter) = state.bucket_rate_limiter.lock() {
@@ -4485,26 +4481,18 @@ pub fn iter_all_mps(
     // forge - we want that, since a credential failure is per-forge,
     // not per-MP.
     breezyshim::forge::iter_forge_instances().flat_map(move |forge| {
-        statuses
-            .iter()
-            .filter_map(
-                move |&status| match forge.iter_my_proposals_lazy(Some(status), None) {
-                    Ok(proposals) => {
-                        let forge_for_items = forge.clone();
-                        let forge_for_errors = forge.clone();
-                        Some(proposals.filter_map(move |item| match item {
-                            Ok(proposal) => Some(Ok((forge_for_items.clone(), proposal, status))),
-                            Err(e) => {
-                                log::warn!(
-                                    "Skipping a proposal on forge {} ({}): {}",
-                                    forge_for_errors.forge_name(),
-                                    status,
-                                    e
-                                );
-                                None
-                            }
-                        }))
-                    }
+        statuses.iter().flat_map(move |&status| {
+            let (proposals, failed) = match forge.iter_my_proposals_lazy(Some(status), None) {
+                Ok(proposals) => (Some(proposals), None),
+                Err(e) => (None, Some(Err(e))),
+            };
+            let forge = forge.clone();
+            proposals
+                .into_iter()
+                .flatten()
+                .chain(failed)
+                .filter_map(move |item| match item {
+                    Ok(proposal) => Some(Ok((forge.clone(), proposal, status))),
                     Err(BrzError::ForgeLoginRequired) => {
                         log::info!(
                             "Skipping forge {}, no credentials known",
@@ -4524,16 +4512,16 @@ pub fn iter_all_mps(
                         None
                     }
                     Err(e) => {
-                        log::error!(
-                            "Error iterating proposals for forge {}: {}",
+                        log::warn!(
+                            "Unable to list {} proposals on forge {}: {}",
+                            status,
                             forge.forge_name(),
                             e
                         );
-                        None
+                        Some(Err(e))
                     }
-                },
-            )
-            .flatten()
+                })
+        })
     })
 }
 
@@ -4589,13 +4577,9 @@ async fn check_existing(
     for item in iter_all_mps(None) {
         let (forge, mp, status) = match item {
             Ok(t) => t,
-            Err(e) => {
+            // Already logged by iter_all_mps, with the forge name.
+            Err(_) => {
                 iter_errors += 1;
-                if iter_errors <= 5 {
-                    log::warn!("iter_all_mps yielded error (continuing): {}", e);
-                } else if iter_errors == 6 {
-                    log::warn!("iter_all_mps: further errors suppressed; will summarise at end");
-                }
                 continue;
             }
         };
@@ -4772,7 +4756,9 @@ async fn check_existing(
     // successful scan" only care about the timestamp.
     crate::metrics::LAST_SCAN_EXISTING_SUCCESS.set(chrono::Utc::now().timestamp() as f64);
 
-    if !was_forge_ratelimited {
+    // A forge we could not list leaves the counts incomplete, so keep the last known ones.
+    let complete = !was_forge_ratelimited && iter_errors == 0;
+    if complete {
         // Push the fresh bucket counts into the rate limiter so future
         // publish attempts see an up-to-date view of open proposals
         // per bucket. Python does this at publish.py:3328 after the
@@ -4807,18 +4793,23 @@ async fn check_existing(
         }
         crate::metrics::OPEN_PROPOSAL_COUNT.set(total_open as f64);
         log::debug!("Total open merge proposals across buckets: {}", total_open);
-    } else {
+    } else if was_forge_ratelimited {
         log::info!(
             "Rate-Limited for forges {:?}. Not updating stats",
             forge_rate_limiter
         );
+    } else {
+        log::warn!(
+            "Unable to list all forges ({} errors). Not updating stats",
+            iter_errors
+        );
     }
 
     // A pass counts as complete only when we walked the whole
-    // enumeration without a forge rate-limit cutting it short; only then
-    // is `mps_per_bucket` a full picture the rate limiter (and the
-    // publish gate) can trust.
-    !was_forge_ratelimited
+    // enumeration without a forge rate-limit or a failed listing cutting
+    // it short; only then is `mps_per_bucket` a full picture the rate
+    // limiter (and the publish gate) can trust.
+    complete
 }
 
 /// Decide whether to publish a single publish-ready run, then dispatch
