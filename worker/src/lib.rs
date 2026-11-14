@@ -8,7 +8,6 @@ pub use breezyshim::RevisionId;
 use reqwest::header::{HeaderMap, HeaderValue};
 use std::collections::HashMap;
 
-use std::net::IpAddr;
 use tokio::net::lookup_host;
 
 use janitor::api::worker::{Metadata, TargetDetails, WorkerFailure};
@@ -40,19 +39,12 @@ pub struct AppState {
     pub metadata: Option<Metadata>,
 }
 
-pub async fn is_gce_instance() -> bool {
-    match lookup_host("metadata.google.internal").await {
-        Ok(lookup_result) => {
-            for addr in lookup_result {
-                if let IpAddr::V4(ipv4) = addr.ip() {
-                    if ipv4.is_private() {
-                        return true;
-                    }
-                }
-            }
-            false
-        }
-        Err(_) => false,
+pub async fn is_gce_instance() -> std::io::Result<bool> {
+    match lookup_host(("metadata.google.internal", 80)).await {
+        Ok(mut lookup_result) => Ok(lookup_result.next().is_some()),
+        // A resolver failure (no OS error code) means the name does not resolve.
+        Err(e) if e.raw_os_error().is_none() => Ok(false),
+        Err(e) => Err(e),
     }
 }
 
