@@ -43,6 +43,11 @@
                         <a class="reference internal" href="reprocess-logs">Reprocess logs</a>
                     </li>
                 {% endif %}
+                {% if user %}
+                    <li class="toctree-l1">
+                        <a class="reference internal" href="/api-tokens">API tokens</a>
+                    </li>
+                {% endif %}
                 {% for title, url in extra_cupboard_links %}
                     <li class="toctree-l1">
                         <a class="reference internal" href="{{ url }}">{{ title }}</a>
