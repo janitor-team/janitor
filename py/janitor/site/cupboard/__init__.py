@@ -42,7 +42,7 @@ from .. import (
     is_qa_reviewer,
     worker_link_is_global,
 )
-from ..common import html_template
+from ..common import html_template, log_page, wants_log_page
 from ..pkg import MergeProposalUserUrlResolver
 from ..setup import setup_postgres
 
@@ -585,6 +585,7 @@ async def handle_result_file(request):
         if not re.match("^[+a-z0-9\\.]+$", filename) or len(filename) < 3:
             raise web.HTTPNotFound(text=f"No log file {filename} for run {run_id}")
 
+        page = wants_log_page(request)
         try:
             logfile = await request.app["logfile_manager"].get_log(
                 codebase, run_id, filename
@@ -598,10 +599,18 @@ async def handle_result_file(request):
             raise web.HTTPBadGateway(
                 text=f"Unable to read log file {filename} for run {run_id}"
             ) from e
+        if page:
+            run_url = request.app.router["cupboard-run"].url_for(
+                codebase=codebase, run_id=run_id
+            )
+            return await log_page(
+                request, run_id, filename, run_url, await logfile.read()
+            )
         return web.Response(
             content_type="text/plain",
             charset="utf-8",
             body=logfile,
+            headers={"Vary": "Accept"},
         )
     else:
         try:

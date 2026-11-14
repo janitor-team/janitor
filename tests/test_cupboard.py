@@ -23,6 +23,7 @@ import aiohttp_jinja2
 import pytest
 from aiohttp import ClientSession, web
 from aiohttp.test_utils import make_mocked_request
+from bs4 import BeautifulSoup
 from jinja2 import Environment
 from yarl import URL
 
@@ -55,7 +56,7 @@ def _user_middleware(user):
 
 
 async def create_client(
-    aiohttp_client, db, *, user=None, config="", publisher_url=None
+    aiohttp_client, db, *, user=None, config="", publisher_url=None, logs=None
 ):
     config = read_config_string(config)
     app = create_app(
@@ -70,6 +71,8 @@ async def create_client(
     # caller is py/janitor/site/simple.py.
     aiohttp_jinja2.get_env(app).globals.update(TEMPLATE_ENV)
     app.middlewares.insert(0, _user_middleware(user))
+    if logs is not None:
+        app["logfile_manager"] = get_log_manager(logs)
     return await aiohttp_client(app)
 
 
@@ -821,6 +824,31 @@ async def test_result_file_unreadable_log_returns_502(tmp_path):
     with pytest.raises(web.HTTPBadGateway) as e:
         await handle_result_file(request)
     assert str(e.value.__cause__) == "Unable to read build.log"
+
+
+async def test_result_file_log_page(aiohttp_client, db, tmp_path):
+    log = tmp_path / "pkg" / "run-id" / "build.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("first\nsecond\n")
+    client = await create_client(aiohttp_client, db, logs=str(tmp_path))
+    got = []
+    for accept in ["text/html", "text/plain"]:
+        resp = await client.get(
+            "/cupboard/c/pkg/run-id/build.log", headers={"Accept": accept}
+        )
+        got.append((resp.status, resp.content_type, await resp.text()))
+    soup = BeautifulSoup(got[0][2], "html.parser")
+    assert (
+        got[0][:2],
+        [line.get_text() for line in soup.select("#log-lines > span > span")],
+        soup.select("#log a")[0]["href"],
+        got[1],
+    ) == (
+        (200, "text/html"),
+        ["1 first\n", "2 second\n"],
+        "/cupboard/c/pkg/run-id/",
+        (200, "text/plain", "first\nsecond\n"),
+    )
 
 
 async def test_api_swagger_documents_all_routes(aiohttp_client, db):

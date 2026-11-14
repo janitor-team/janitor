@@ -25,6 +25,9 @@ check:: ruff
 
 check:: check-format
 
+test-js:
+	node --test tests/test_log.js
+
 check-format:: check-ruff-format
 
 check-ruff-format:
