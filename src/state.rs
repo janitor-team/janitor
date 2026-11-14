@@ -45,7 +45,7 @@ pub struct Run {
     pub result: Option<serde_json::Value>,
     pub suite: Campaign,
     pub instigated_context: Option<String>,
-    pub vcs_type: String,
+    pub vcs_type: Option<crate::vcs::VcsType>,
     pub branch_url: String,
     pub logfilenames: Option<Vec<String>>,
     // Column in the schema is `worker` (name of the worker); keep the
@@ -166,7 +166,7 @@ mod tests {
             result: Some(serde_json::json!({"applied": 3})),
             suite: Campaign::new("lintian-fixes").unwrap(),
             instigated_context: None,
-            vcs_type: "git".to_string(),
+            vcs_type: Some(crate::vcs::VcsType::Git),
             branch_url: "https://salsa.debian.org/foo/bar".to_string(),
             logfilenames: Some(vec!["build.log".to_string(), "worker.log".to_string()]),
             worker_name: Some("worker-1".to_string()),

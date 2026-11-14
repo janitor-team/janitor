@@ -23,7 +23,7 @@ fn make_run(role: &str, revision: Option<&str>) -> janitor::state::Run {
         result: None,
         suite: Campaign::new("lintian-fixes").unwrap(),
         instigated_context: None,
-        vcs_type: "git".to_string(),
+        vcs_type: Some(janitor::vcs::VcsType::Git),
         branch_url: "https://example.invalid/cb-1".to_string(),
         logfilenames: None,
         worker_name: None,
@@ -114,6 +114,6 @@ test_with_database! {
     async fn publish_and_store_errors_without_vcs_manager(test_db: TestDatabase) {
         let run = make_run("main", Some("rev-tip"));
         let err = publish_main_role(test_db.pool(), &run).await.unwrap_err();
-        assert_eq!(err.to_string(), "no VcsManager registered for vcs_type Git");
+        assert_eq!(err.to_string(), "no VcsManager registered for vcs_type Some(Git)");
     }
 }

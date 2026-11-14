@@ -2711,24 +2711,12 @@ pub async fn publish_from_policy(
 
     let derived_name = derived_branch_name(conn, campaign_config, run, role).await?;
 
-    let vcs_type_parsed = match <VcsType as std::str::FromStr>::from_str(&run.vcs_type) {
-        Ok(v) => v,
-        Err(e) => {
-            log::warn!(
-                "publish_from_policy: unknown vcs_type {:?} for run {}: {}",
-                run.vcs_type,
-                run.id,
-                e
-            );
-            return Ok(None);
-        }
-    };
-    let vcs_manager = match vcs_managers.get(&vcs_type_parsed) {
+    let vcs_manager = match run.vcs_type.and_then(|v| vcs_managers.get(&v)) {
         Some(m) => m.as_ref(),
         None => {
             log::warn!(
                 "publish_from_policy: no VcsManager registered for vcs_type {:?}",
-                vcs_type_parsed
+                run.vcs_type
             );
             return Ok(None);
         }
@@ -2996,15 +2984,10 @@ pub async fn publish_and_store(
 
     let derived_name = derived_branch_name(conn, campaign_config, run, role).await?;
 
-    let vcs_type: VcsType = run.vcs_type.parse().map_err(|e| {
-        format!(
-            "unknown vcs_type {:?} for run {}: {}",
-            run.vcs_type, run.id, e
-        )
-    })?;
-    let vcs_manager = vcs_managers
-        .get(&vcs_type)
-        .ok_or_else(|| format!("no VcsManager registered for vcs_type {:?}", vcs_type))?
+    let vcs_manager = run
+        .vcs_type
+        .and_then(|v| vcs_managers.get(&v))
+        .ok_or_else(|| format!("no VcsManager registered for vcs_type {:?}", run.vcs_type))?
         .as_ref();
 
     let tags: Option<Vec<(String, RevisionId)>> = run.result_tags.as_ref().map(|t| {
@@ -4044,27 +4027,13 @@ async fn check_existing_mp(
             };
 
         // Resolve the right VcsManager for the new run's vcs_type.
-        let vcs_type_for_publish =
-            match <VcsType as std::str::FromStr>::from_str(&last_run.vcs_type) {
-                Ok(v) => v,
-                Err(e) => {
-                    log::warn!(
-                        "{}: unknown vcs_type {:?} for new run {}: {}",
-                        mp_url,
-                        last_run.vcs_type,
-                        last_run.id,
-                        e
-                    );
-                    return Ok(false);
-                }
-            };
-        let vcs_manager_for_publish = match vcs_managers.get(&vcs_type_for_publish) {
+        let vcs_manager_for_publish = match last_run.vcs_type.and_then(|v| vcs_managers.get(&v)) {
             Some(m) => m.as_ref(),
             None => {
                 log::warn!(
                     "{}: no VcsManager registered for vcs_type {:?}",
                     mp_url,
-                    vcs_type_for_publish
+                    last_run.vcs_type
                 );
                 return Ok(false);
             }

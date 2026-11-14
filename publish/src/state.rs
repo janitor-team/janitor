@@ -547,7 +547,7 @@ SELECT
     description,
     result_code,
     value, main_branch_revision, revision, context, result, suite,
-    instigated_context, vcs_type::text AS vcs_type, branch_url, logfilenames,
+    instigated_context, vcs_type, branch_url, logfilenames,
     worker,
     array(SELECT row(role, remote_name, base_revision,
      revision) FROM new_result_branch WHERE run_id = id) AS result_branches,
@@ -588,7 +588,7 @@ SELECT
     description,
     result_code,
     value, main_branch_revision, revision, context, result, suite,
-    instigated_context, vcs_type::text AS vcs_type, branch_url, logfilenames,
+    instigated_context, vcs_type, branch_url, logfilenames,
     worker,
     array(SELECT row(role, remote_name, base_revision,
      revision) FROM new_result_branch WHERE run_id = id) AS result_branches,
@@ -695,12 +695,8 @@ pub async fn iter_publish_ready(
 ) -> Result<Vec<(janitor::state::Run, String, String, Vec<UnpublishedBranch>)>, sqlx::Error> {
     // Explicit column list with the same casts the other Run-returning
     // queries (`get_last_effective_run`, `get_run`) apply: TIMESTAMPTZ
-    // for start/finish_time and `vcs_type::text` for the enum, since
-    // `janitor::state::Run` decodes those as `DateTime<Utc>` and
-    // `String` respectively. `SELECT *` here used to crash the
-    // publish_pending_ready loop with `column "vcs_type": mismatched
-    // types; Rust type alloc::string::String (as SQL type TEXT) is
-    // not compatible with SQL type vcs_type`.
+    // for start/finish_time, since `janitor::state::Run` decodes
+    // those as `DateTime<Utc>`.
     // Two type adapters needed to keep `janitor::state::Run::FromRow`
     // happy against `publish_ready`:
     // 1. `failure_details` is dropped from the view (a publishable
@@ -718,7 +714,7 @@ pub async fn iter_publish_ready(
             (finish_time AT TIME ZONE 'UTC') AS finish_time, \
             description, result_code, \
             value, main_branch_revision, revision, context, result, suite::text AS suite, \
-            instigated_context, vcs_type::text AS vcs_type, branch_url, logfilenames, \
+            instigated_context, vcs_type, branch_url, logfilenames, \
             worker, \
             array(SELECT row(role, remote_name, base_revision, revision) \
                   FROM new_result_branch WHERE run_id = id) AS result_branches, \
@@ -792,34 +788,6 @@ pub async fn iter_publish_ready(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Regression: `run.vcs_type` is a Postgres ENUM
-    /// (`vcs_type`). Decoding it as `String` without a `::text`
-    /// cast errors with `mismatched types; Rust type 'String' (as
-    /// SQL type 'TEXT') is not compatible with SQL type vcs_type`,
-    /// which made every `check_existing_mp` call that needed a Run
-    /// 500 with `Database error checking merge proposal` and stalled
-    /// the publisher's MP refresh loop. This is a static check of
-    /// the SQL strings - full roundtrip would need a live DB plus
-    /// a populated `run` row.
-    #[test]
-    fn run_select_queries_cast_vcs_type_to_text() {
-        // Build the canonical query bodies we use in
-        // get_last_effective_run / get_run by re-reading the
-        // module source at compile time. Cheap regression: the
-        // moment someone "cleans up" the cast we'll catch it here.
-        let src = include_str!("state.rs");
-        // Both SELECTs must mention the cast. We don't grep for
-        // bare `vcs_type` because that would trip on column
-        // definitions / variable names.
-        let cast_count = src.matches("vcs_type::text AS vcs_type").count();
-        assert!(
-            cast_count >= 2,
-            "expected at least two `vcs_type::text AS vcs_type` casts \
-             (one in get_last_effective_run, one in get_run); found {}",
-            cast_count
-        );
-    }
 
     #[test]
     fn guess_codebase_query_sql_has_no_quoted_identifier_artifact() {
