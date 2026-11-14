@@ -128,3 +128,11 @@ ul.empty-state {
     list-style: none;
     padding-left: 0;
 }
+
+/* Sidebar logo */
+.logo img {
+    width: 1em;
+    height: 1em;
+    margin-right: 0.2em;
+    vertical-align: -0.15em;
+}
