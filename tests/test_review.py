@@ -161,7 +161,7 @@ async def test_review_ignores_host_header(aiohttp_client, aiohttp_server, db):
     server = await aiohttp_server(attacker_app)
     client = await create_publishable_client(aiohttp_client, db)
     async with db.acquire() as conn:
-        await insert_build_only_run(conn, "somerun")
+        await insert_review_run(conn, "somerun")
 
     resp = await client.get(
         "/cupboard/review?publishable_only=false&required_only=false",
