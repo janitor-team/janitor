@@ -9,8 +9,8 @@
 //!
 //! * `GET /bzr/` content-negotiation (JSON, plain text, and HTML).
 //! * Smart protocol `POST /bzr/{codebase}/.bzr/smart` for a codebase
-//!   that exists in the `codebase` table — asserts a 200 and the
-//!   on-disk shared repo gets created under `<vcs_path>/{codebase}`.
+//!   that exists in the `codebase` table: asserts a 200, and that an
+//!   anonymous read creates no shared repo at `<vcs_path>/{codebase}/.bzr`.
 //! * Smart protocol `POST /bzr/{codebase}/.bzr/smart` for an unknown
 //!   codebase — asserts a 404.
 
@@ -280,9 +280,9 @@ test_with_database! {
 // smart protocol runs to completion, even if the client's payload is
 // malformed — Breezy's factory returns a smart-protocol-framed error
 // body rather than surfacing as an HTTP error. This proves (1) the
-// PyO3 → Breezy happy path runs without panicking, (2) the shared bzr
-// repo is created on demand under `<vcs_path>/foo`, and (3) unknown
-// protocol payloads round-trip as smart-protocol error responses.
+// PyO3 → Breezy happy path runs without panicking, (2) a read-only
+// (anonymous) request creates nothing under `<vcs_path>/foo`, and (3)
+// unknown protocol payloads round-trip as smart-protocol error responses.
 test_with_database! {
     schema = Core;
     async fn test_public_smart_protocol_runs_to_completion(test_db: TestDatabase) {
@@ -307,11 +307,106 @@ test_with_database! {
         let prefix = b"error\x01";
         assert_eq!(&body[..prefix.len()], prefix, "body did not start with smart-protocol error framing: {:?}", body);
 
-        // The shared repo directory should have been created on demand.
-        assert!(
-            tmp.path().join("foo").join(".bzr").exists(),
-            "expected on-demand creation of shared repo at {}/foo/.bzr",
-            tmp.path().display()
+        // An anonymous request is read-only and must create nothing on disk.
+        assert_eq!(dir_names(tmp.path()), Vec::<String>::new());
+
+        handle.abort();
+    }
+}
+
+/// Sorted names of the entries in `dir`.
+fn dir_names(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    names
+}
+
+/// Lay out `store/{foo,two}` and `canary/secret.txt` next to the store.
+fn make_store_with_canary(tmp: &std::path::Path) -> std::path::PathBuf {
+    let store = tmp.join("store");
+    std::fs::create_dir_all(store.join("foo")).unwrap();
+    std::fs::write(store.join("foo").join("README"), "hello\n").unwrap();
+    std::fs::create_dir_all(store.join("two")).unwrap();
+    std::fs::write(store.join("two").join("t"), "SIBLING\n").unwrap();
+    std::fs::create_dir_all(tmp.join("canary")).unwrap();
+    std::fs::write(tmp.join("canary").join("secret.txt"), "CANARY\n").unwrap();
+    store
+}
+
+/// POST a raw smart request; return the status and the body.
+async fn smart_post(client: &reqwest::Client, url: &str, body: &[u8]) -> (u16, String) {
+    let resp = client.post(url).body(body.to_vec()).send().await.unwrap();
+    let status = resp.status().as_u16();
+    (status, resp.text().await.unwrap())
+}
+
+test_with_database! {
+    schema = Core;
+    async fn test_public_smart_protocol_get_stays_in_codebase(test_db: TestDatabase) {
+        seed_codebase(test_db.pool(), "foo").await;
+
+        let tmp = TempDir::new().unwrap();
+        let store = make_store_with_canary(tmp.path());
+        let cfg = build_config(&store, test_db_url(&test_db));
+        let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
+            .await
+            .unwrap();
+        let (addr, handle) = spawn_public(public).await;
+
+        let client = reqwest::Client::new();
+        let url = format!("http://{}/bzr/foo/.bzr/smart", addr);
+        let mut answers = Vec::new();
+        for req in [
+            &b"get\x01./README\n"[..],
+            b"get\x01./%2e%2e/two/t\n",
+            b"get\x01./%2e%2e/%2e%2e/canary/secret.txt\n",
+        ] {
+            answers.push(smart_post(&client, &url, req).await);
+        }
+        let foo = store.join("foo");
+        assert_eq!(
+            answers,
+            vec![
+                (200, "ok\n6\nhello\ndone\n".to_string()),
+                (200, format!("NoSuchFile\x01{}/two/t\n", foo.display())),
+                (200, format!("NoSuchFile\x01{}/canary/secret.txt\n", foo.display())),
+            ]
+        );
+
+        handle.abort();
+    }
+}
+
+test_with_database! {
+    schema = Core;
+    async fn test_admin_smart_protocol_mkdir_stays_in_codebase(test_db: TestDatabase) {
+        seed_codebase(test_db.pool(), "foo").await;
+
+        let tmp = TempDir::new().unwrap();
+        let store = make_store_with_canary(tmp.path());
+        let cfg = build_config(&store, test_db_url(&test_db));
+        let (admin, _public) = create_applications(cfg, janitor_config_with_campaign())
+            .await
+            .unwrap();
+        let (addr, handle) = spawn_public(admin).await;
+
+        let client = reqwest::Client::new();
+        let answer = smart_post(
+            &client,
+            &format!("http://{}/foo/.bzr/smart", addr),
+            b"mkdir\x01./%2e%2e/%2e%2e/canary/evildir\x01\n",
+        )
+        .await;
+        let foo = store.join("foo");
+        assert_eq!(
+            (answer, dir_names(&tmp.path().join("canary"))),
+            (
+                (200, format!("NoSuchFile\x01{}/canary/evildir\n", foo.display())),
+                vec!["secret.txt".to_string()]
+            )
         );
     }
 }
