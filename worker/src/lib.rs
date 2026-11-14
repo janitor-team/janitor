@@ -179,6 +179,7 @@ pub fn run_worker(
     command: &str,
     output_directory: &std::path::Path,
     metadata: &mut Metadata,
+    report: &dyn Fn(&Metadata),
     target_repo_url: &Url,
     vendor: &str,
     target: &str,
@@ -276,6 +277,7 @@ pub fn run_worker(
             .with_details(serde_json::json!({"vcs_type": vcs_type})));
         };
     }
+    report(metadata);
 
     let cached_branch = if let Some(cached_branch_url) = cached_branch_url {
         let probers =
@@ -627,6 +629,7 @@ pub fn run_worker(
     if let Some(main_branch) = ws.main_branch() {
         metadata.add_remote("origin".to_string(), main_branch.get_user_url());
     }
+    report(metadata);
 
     let r = build_target.make_changes(
         ws.local_tree(),
@@ -769,6 +772,7 @@ pub fn run_worker(
     for (n, r) in changer_result.tags().iter() {
         metadata.add_tag(n.to_string(), r.clone());
     }
+    report(metadata);
 
     let should_build = if force_build {
         true
@@ -955,7 +959,10 @@ pub async fn process_single_item(
 
     let output_directory_ = output_directory.path().to_path_buf();
 
+    let job_state = state.clone();
     let metadata = tokio::task::spawn_blocking(move || {
+        let report =
+            |metadata: &Metadata| job_state.write().unwrap().metadata = Some(metadata.clone());
         let mut metadata = Metadata {
             queue_id: Some(assignment.queue_id),
             start_time: Some(start_time),
@@ -963,8 +970,6 @@ pub async fn process_single_item(
             vcs_type: Some(assignment.branch.vcs_type),
             ..Metadata::default()
         };
-
-        // TODO: Update metadata in appstate while working
 
         let result = run_worker(
             &assignment_.codebase,
@@ -976,6 +981,7 @@ pub async fn process_single_item(
             &assignment_.codemod.command,
             output_directory_.as_path(),
             &mut metadata,
+            &report,
             &assignment_.target_repository.url,
             &vendor,
             &assignment_.build.target,
@@ -1033,8 +1039,9 @@ pub async fn process_single_item(
 
         metadata
     })
-    .await
-    .map_err(|e| SingleItemError::JobPanicked(e.to_string()))?;
+    .await;
+    state.write().unwrap().metadata = None;
+    let metadata = metadata.map_err(|e| SingleItemError::JobPanicked(e.to_string()))?;
 
     let result = client
         .upload_results(&assignment.id, &metadata, Some(output_directory.path()))
@@ -1241,6 +1248,7 @@ check:
         let output_dir = tmp_path.join("output");
         std::fs::create_dir(&output_dir).unwrap();
         let mut metadata = Metadata::default();
+        let reported = std::cell::RefCell::new(vec![]);
         run_worker(
             &CodebaseName::new("mycodebase").unwrap(),
             &Campaign::new("mycampaign").unwrap(),
@@ -1254,6 +1262,7 @@ check:
             "sh -c 'echo foo > bar'",
             &output_dir,
             &mut metadata,
+            &|m| reported.borrow_mut().push(m.clone()),
             &Url::from_directory_path(tmp_path.join("target")).unwrap(),
             "foo",
             "generic",
@@ -1306,6 +1315,11 @@ check:
             }
             other => unreachable!("test only parameterizes over git/bzr, got {other:?}"),
         };
+        let revisions: Vec<_> = reported.take().into_iter().map(|m| m.revision).collect();
+        assert_eq!(
+            revisions,
+            vec![None, Some(old_revid.clone()), Some(b.last_revision())]
+        );
         assert_eq!(
             metadata,
             Metadata {
@@ -1397,6 +1411,7 @@ check:
             "sh -c 'echo foo > bar'",
             &output_dir,
             &mut metadata,
+            &|_| {},
             &Url::from_directory_path(tmp_path.join("target")).unwrap(),
             "foo",
             "generic",
