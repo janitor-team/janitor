@@ -195,7 +195,10 @@ fn test_check_mp_error_display() {
         "No run for merge proposal: https://example.com/mp/1"
     );
 
-    let err = CheckMpError::BranchRateLimited { retry_after: None };
+    let err = CheckMpError::BranchRateLimited {
+        url: url::Url::parse("https://github.com/foo/bar").unwrap(),
+        retry_after: None,
+    };
     assert_eq!(err.to_string(), "Branch is rate limited");
 
     let err = CheckMpError::UnexpectedHttpStatus;
