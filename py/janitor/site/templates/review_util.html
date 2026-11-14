@@ -36,8 +36,8 @@
                 <td><label for="verdict">Your review</label></td>
                 <td>
                     <select id="verdict" name="verdict" onchange="submit_review(this.value)">
-                        <option value="unreviewed"
-                                {% if ns.my_review and ns.my_review.verdict == 'unreviewed' %}selected="true"{% endif %}>
+                        <option value="unreviewed" disabled
+                                {% if not ns.my_review %}selected="true"{% endif %}>
                             Unreviewed
                         </option>
                         <option value="approved"
@@ -55,7 +55,7 @@
                     </select>
                     <div id="review-status" role="status"></div>
                     <script>
-	var saved_verdict = $("#verdict").val();
+	var saved_verdict = document.getElementById("verdict").value;
 	function submit_review(verdict) {
 	    var comment = undefined;
 	    if (verdict == 'rejected') {

@@ -297,7 +297,9 @@ def parse_review_form(post: Mapping[str, str]) -> tuple[str, Optional[str]]:
         "reject": "rejected",
         "reschedule": "reschedule",
         "abstain": "abstained",
-    }[post["verdict"].lower()]
+    }.get(post["verdict"].lower())
+    if verdict is None:
+        raise web.HTTPBadRequest(text=f"unknown verdict: {post['verdict']}")
     # Browsers always submit the textarea, empty or not.
     return verdict, post.get("review_comment") or None
 

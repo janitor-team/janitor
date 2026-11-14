@@ -108,6 +108,20 @@ def test_display_reviews_table():
         ["third@example.com", "approved", ""],
         ["Your review", ["rejected"], ("too big", "too big")],
     ]
+    soup = BeautifulSoup(
+        str(
+            template.make_module({"config": read_string("")}).display_reviews_table(  # type: ignore
+                [], "me@example.com"
+            )
+        ),
+        "html.parser",
+    )
+    assert [option.attrs for option in soup.select("#verdict option")] == [
+        {"value": "unreviewed", "disabled": "", "selected": "true"},
+        {"value": "approved"},
+        {"value": "abstained"},
+        {"value": "rejected"},
+    ]
 
 
 def _render_local_command(vcs, **context):
