@@ -20,7 +20,7 @@ use axum::{
     http::StatusCode,
     middleware,
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, MethodRouter},
     Extension, Json, Router,
 };
 use chrono::Utc;
@@ -4319,8 +4319,34 @@ async fn readiness(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }
 }
 
+/// The name of a route in the request metrics.
+#[derive(Clone, Copy)]
+struct RouteName(&'static str);
+
+/// Give `route` a name for the request metrics.
+fn named<S: Clone + Send + Sync + 'static>(
+    name: &'static str,
+    route: MethodRouter<S>,
+) -> MethodRouter<S> {
+    route.layer(axum::middleware::map_response(
+        move |mut response: Response| async move {
+            response.extensions_mut().insert(RouteName(name));
+            response
+        },
+    ))
+}
+
+/// Give a route of the OpenAPI document a name for the request metrics.
+fn named_api(
+    name: &'static str,
+    (schemas, paths, method_router): UtoipaMethodRouter<Arc<AppState>>,
+) -> UtoipaMethodRouter<Arc<AppState>> {
+    (schemas, paths, named(name, method_router))
+}
+
 /// Axum middleware: record request count and duration by
-/// method/path/status.
+/// method/route name/status. A request without a named route, such as
+/// one for an unknown path, is counted as `unnamed`.
 async fn record_http_metrics(
     req: axum::extract::Request,
     next: axum::middleware::Next,
@@ -4328,16 +4354,19 @@ async fn record_http_metrics(
     use std::time::Instant;
     let start = Instant::now();
     let method = req.method().to_string();
-    let path = req.uri().path().to_string();
 
     let response = next.run(req).await;
     let status = response.status().as_u16().to_string();
+    let endpoint = response
+        .extensions()
+        .get::<RouteName>()
+        .map_or("unnamed", |n| n.0);
 
     crate::metrics::HTTP_REQUEST_DURATION
-        .with_label_values(&[&method, &path])
+        .with_label_values(&[&method, endpoint])
         .observe(start.elapsed().as_secs_f64());
     crate::metrics::HTTP_REQUESTS_TOTAL
-        .with_label_values(&[&method, &path, &status])
+        .with_label_values(&[&method, endpoint, &status])
         .inc();
 
     response
@@ -4381,12 +4410,15 @@ fn openapi_router() -> OpenApiRouter<Arc<AppState>> {
 /// Unauthenticated routes of the public app.
 fn public_routes() -> OpenApiRouter<Arc<AppState>> {
     openapi_router()
-        .routes(routes!(public_root))
-        .routes(routes!(health))
-        .routes(routes!(liveness))
-        .routes(routes!(readiness))
-        .routes(routes!(public_queue_stats))
-        .routes(routes!(public_watchdog_health))
+        .routes(named_api("root", routes!(public_root)))
+        .routes(named_api("health", routes!(health)))
+        .routes(named_api("health-live", routes!(liveness)))
+        .routes(named_api("health-ready", routes!(readiness)))
+        .routes(named_api("queue-stats", routes!(public_queue_stats)))
+        .routes(named_api(
+            "watchdog-health",
+            routes!(public_watchdog_health),
+        ))
 }
 
 /// Routes of the public app that require worker credentials. The
@@ -4399,12 +4431,18 @@ fn public_routes() -> OpenApiRouter<Arc<AppState>> {
 /// gated by authenticate_worker.
 fn worker_routes() -> OpenApiRouter<Arc<AppState>> {
     let mut router = openapi_router()
-        .routes(routes!(public_assign))
-        .routes(without_body_limit(routes!(public_finish)))
-        .routes(routes!(get_active_run))
+        .routes(named_api("assign", routes!(public_assign)))
+        .routes(named_api(
+            "finish",
+            without_body_limit(routes!(public_finish)),
+        ))
+        .routes(named_api("get-active-run", routes!(get_active_run)))
         .route(
             "/active-runs/{id}/finish-multipart",
-            post(public_finish).layer(DefaultBodyLimit::disable()),
+            named(
+                "finish",
+                post(public_finish).layer(DefaultBodyLimit::disable()),
+            ),
         );
     for item in router.get_openapi_mut().paths.paths.values_mut() {
         for operation in [
@@ -4458,7 +4496,10 @@ fn with_openapi_json<S: Clone + Send + Sync + 'static>(
         .expect("OpenAPI document can be serialized");
     router.route(
         "/openapi.json",
-        get(move || async move { ([("content-type", "application/json")], spec) }),
+        named(
+            "openapi",
+            get(move || async move { ([("content-type", "application/json")], spec) }),
+        ),
     )
 }
 
@@ -4490,62 +4531,93 @@ pub fn public_app(state: Arc<AppState>) -> Router<Arc<AppState>> {
         authenticate_worker,
     ));
     let (router, _) = public_routes().merge(worker_routes).split_for_parts();
-    with_openapi_json(router, &public_openapi()).with_state(state)
+    with_openapi_json(router, &public_openapi())
+        .layer(axum::middleware::from_fn(record_http_metrics))
+        .with_state(state)
 }
 
 /// Routes of the private app.
 fn private_routes() -> OpenApiRouter<Arc<AppState>> {
     openapi_router()
-        .routes(routes!(queue_position))
-        .routes(routes!(schedule_control))
-        .routes(routes!(schedule))
-        .routes(routes!(status))
-        .routes(routes!(log_index))
-        .routes(routes!(kill))
-        .routes(routes!(log))
-        .routes(routes!(artifact))
-        .routes(routes!(get_codebases, update_codebases))
-        .routes(routes!(get_codebase_names))
-        .routes(routes!(get_candidates, upload_candidates))
-        .routes(routes!(get_candidate))
-        .routes(routes!(delete_candidate))
-        .routes(routes!(list_runs))
-        .routes(routes!(get_run, update_run))
-        .routes(routes!(get_run_followups))
-        .routes(routes!(get_last_unabsorbed_run))
+        .routes(named_api("queue-position", routes!(queue_position)))
+        .routes(named_api("schedule-control", routes!(schedule_control)))
+        .routes(named_api("schedule", routes!(schedule)))
+        .routes(named_api("status", routes!(status)))
+        .routes(named_api("log-index", routes!(log_index)))
+        .routes(named_api("kill", routes!(kill)))
+        .routes(named_api("log", routes!(log)))
+        .routes(named_api("artifact", routes!(artifact)))
+        .routes(named_api("download-codebases", routes!(get_codebases)))
+        .routes(named_api("upload-codebases", routes!(update_codebases)))
+        .routes(named_api("codebase-names", routes!(get_codebase_names)))
+        .routes(named_api("download-candidates", routes!(get_candidates)))
+        .routes(named_api("upload-candidates", routes!(upload_candidates)))
+        .routes(named_api("get-candidate", routes!(get_candidate)))
+        .routes(named_api("delete-candidate", routes!(delete_candidate)))
+        .routes(named_api("list-runs", routes!(list_runs)))
+        .routes(named_api("get-run", routes!(get_run)))
+        .routes(named_api("update-run", routes!(update_run)))
+        .routes(named_api("get-run-followups", routes!(get_run_followups)))
+        .routes(named_api(
+            "get-last-unabsorbed-run",
+            routes!(get_last_unabsorbed_run),
+        ))
         // The unauthenticated POST is for intra-cluster admin tools
         // (e.g. schedule-codebases CronJob). Body must include
         // `worker`/`node`. Workers themselves should hit
         // /runner/active-runs on the public app, which uses
         // authenticated identity.
-        .routes(routes!(get_active_runs, private_assign))
-        .routes(routes!(get_active_run))
-        .routes(routes!(current_stage))
+        .routes(named_api("get-active-runs", routes!(get_active_runs)))
+        .routes(named_api("assign", routes!(private_assign)))
+        .routes(named_api("get-active-run", routes!(get_active_run)))
+        .routes(named_api("current-stage", routes!(current_stage)))
         // Workers POST `/active-runs/{id}/finish` with a multipart
         // body (metadata field + one `file` part per result file).
         // The `-multipart` alias exists for callers that use the
         // explicit path.
-        .routes(without_body_limit(routes!(finish_active_run_multipart)))
+        .routes(named_api(
+            "finish",
+            without_body_limit(routes!(finish_active_run_multipart)),
+        ))
         .route(
             "/active-runs/{id}/finish-multipart",
-            post(finish_active_run_multipart).layer(DefaultBodyLimit::disable()),
+            named(
+                "finish",
+                post(finish_active_run_multipart).layer(DefaultBodyLimit::disable()),
+            ),
         )
-        .routes(routes!(peek_active_run))
-        .routes(routes!(get_queue))
-        .routes(routes!(health))
-        .routes(routes!(liveness))
-        .routes(routes!(readiness))
-        .route("/ready", get(readiness))
-        .routes(routes!(metrics))
-        .routes(routes!(list_workers))
-        .routes(routes!(admin_list_workers, admin_create_worker))
-        .routes(routes!(admin_delete_worker))
-        .routes(routes!(admin_security_stats))
-        .routes(routes!(admin_cleanup_runs))
-        .routes(routes!(check_resume_info))
-        .routes(routes!(get_resume_chain))
-        .routes(routes!(get_resume_descendants))
-        .routes(routes!(validate_resume_consistency))
+        .routes(named_api("peek", routes!(peek_active_run)))
+        .routes(named_api("queue", routes!(get_queue)))
+        .routes(named_api("health", routes!(health)))
+        .routes(named_api("health-live", routes!(liveness)))
+        .routes(named_api("health-ready", routes!(readiness)))
+        .route("/ready", named("ready", get(readiness)))
+        .routes(named_api("metrics", routes!(metrics)))
+        .routes(named_api("workers", routes!(list_workers)))
+        .routes(named_api("admin-list-workers", routes!(admin_list_workers)))
+        .routes(named_api(
+            "admin-create-worker",
+            routes!(admin_create_worker),
+        ))
+        .routes(named_api(
+            "admin-delete-worker",
+            routes!(admin_delete_worker),
+        ))
+        .routes(named_api(
+            "admin-security-stats",
+            routes!(admin_security_stats),
+        ))
+        .routes(named_api("admin-cleanup-runs", routes!(admin_cleanup_runs)))
+        .routes(named_api("resume-check", routes!(check_resume_info)))
+        .routes(named_api("resume-chain", routes!(get_resume_chain)))
+        .routes(named_api(
+            "resume-descendants",
+            routes!(get_resume_descendants),
+        ))
+        .routes(named_api(
+            "resume-validate",
+            routes!(validate_resume_consistency),
+        ))
 }
 
 /// OpenAPI document for the private API.
