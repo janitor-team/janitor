@@ -185,7 +185,7 @@ pub fn create_offline_test_app_state_with_config(
 }
 
 /// Build a test `AppState` around `test_db` whose Redis is never
-/// reachable, so no run is ever active.
+/// reachable, so anything that looks up active runs fails.
 pub fn create_test_app_state_without_redis(test_db: TestDatabase) -> Arc<AppState> {
     let runner_db = RunnerDatabase::from_database(into_janitor_database(test_db));
     let redis_client = redis::Client::open("redis://127.0.0.1:1").expect("static redis URL parses");

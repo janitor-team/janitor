@@ -155,14 +155,6 @@ impl QueueRowJoined {
     }
 }
 
-/// Value stored per queue id in the `assigned-queue-items` Redis hash.
-#[derive(Serialize, Deserialize)]
-struct AssignmentInfo {
-    worker_name: String,
-    log_id: RunId,
-    assigned_at: String,
-}
-
 // Re-export from main crate
 use crate::{QueueAssignment, QueueItem};
 pub use janitor::state::{create_pool, Run};
@@ -843,7 +835,11 @@ INSERT INTO run (
         if let Some(redis_client) = self.redis() {
             let mut conn = redis_client.get_multiplexed_async_connection().await?;
             let _: () = conn
-                .hset("rate-limit-hosts", host, retry_after.to_rfc3339())
+                .hset(
+                    "rate-limit-hosts",
+                    host,
+                    crate::active_runs::format_python_datetime(retry_after),
+                )
                 .await?;
         }
         Ok(())
@@ -861,11 +857,9 @@ INSERT INTO run (
 
             let now = Utc::now();
             for (host, time_str) in hosts {
-                if let Ok(retry_time) = DateTime::parse_from_rfc3339(&time_str) {
-                    let retry_time = retry_time.with_timezone(&Utc);
-                    if retry_time > now {
-                        result.insert(host, retry_time);
-                    }
+                let retry_time = crate::active_runs::parse_python_datetime(&time_str)?;
+                if retry_time > now {
+                    result.insert(host, retry_time);
                 }
             }
         }
@@ -884,57 +878,37 @@ INSERT INTO run (
             let items: Vec<String> = conn.hkeys("assigned-queue-items").await?;
 
             for item in items {
-                if let Ok(id) = item.parse::<i64>() {
-                    result.push(id);
-                }
+                result.push(item.parse::<i64>()?);
             }
         }
 
         Ok(result)
     }
 
-    /// Assign a queue item to a worker in Redis.
+    /// Claim a queue item for run `log_id` in Redis. The
+    /// `assigned-queue-items` hash maps queue ids to run ids, as in the
+    /// Python runner; like there, it never expires and entries are
+    /// removed by [`Self::unassign_queue_item`].
     pub async fn assign_queue_item(
         &self,
         queue_id: i64,
-        worker_name: &str,
         log_id: &RunId,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if let Some(redis_client) = self.redis() {
             let mut conn = redis_client.get_multiplexed_async_connection().await?;
 
-            // Store assignment with worker info and timestamp
-            let assignment_info = AssignmentInfo {
-                worker_name: worker_name.to_string(),
-                log_id: log_id.clone(),
-                assigned_at: Utc::now().to_rfc3339(),
-            };
-
-            // Atomically claim the queue item. HSETNX only writes the field
-            // when it does not already exist, so two concurrent assigns for
-            // the same queue_id can never both win. The previous
-            // hget-then-hset check was racy: both callers could observe the
-            // slot unclaimed and both proceed to hset.
+            // HSETNX makes the claim atomic, so two concurrent assigns for
+            // the same queue_id can never both win.
             let claimed: bool = conn
                 .hset_nx(
                     "assigned-queue-items",
                     queue_id.to_string(),
-                    serde_json::to_string(&assignment_info)?,
+                    log_id.as_str(),
                 )
                 .await?;
             if !claimed {
                 return Err(format!("Queue item {} already assigned", queue_id).into());
             }
-            let _: () = conn
-                .sadd(format!("worker-queue-items:{}", worker_name), queue_id)
-                .await?;
-
-            // Do not EXPIRE the `assigned-queue-items` hash. The
-            // previous 3600s TTL nuked the whole hash every hour --
-            // which silently freed long-running runs' claims and
-            // undermined the double-assignment guard around them.
-            // Python never sets a TTL; stale entries are removed
-            // explicitly via `finish_run` / `unassign_queue_item`.
         }
 
         Ok(())
@@ -963,20 +937,6 @@ INSERT INTO run (
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if let Some(redis_client) = self.redis() {
             let mut conn = redis_client.get_multiplexed_async_connection().await?;
-
-            if let Ok(assignment_info_str) = conn
-                .hget::<&str, String, String>("assigned-queue-items", queue_id.to_string())
-                .await
-            {
-                if let Ok(info) = serde_json::from_str::<AssignmentInfo>(&assignment_info_str) {
-                    // Remove from worker's set
-                    let _: () = conn
-                        .srem(format!("worker-queue-items:{}", info.worker_name), queue_id)
-                        .await?;
-                }
-            }
-
-            // Remove from assignments hash
             let _: () = conn
                 .hdel("assigned-queue-items", queue_id.to_string())
                 .await?;
@@ -992,15 +952,16 @@ INSERT INTO run (
         codebase: Option<&CodebaseName>,
         campaign: Option<&Campaign>,
         avoid_hosts: &[String],
-    ) -> Result<Option<QueueAssignment>, sqlx::Error> {
-        let rate_limited_hosts = self.get_rate_limited_hosts().await.unwrap_or_default();
+    ) -> Result<Option<QueueAssignment>, Box<dyn std::error::Error + Send + Sync>> {
+        let rate_limited_hosts = self.get_rate_limited_hosts().await?;
         let mut exclude_hosts = avoid_hosts.to_vec();
         exclude_hosts.extend(rate_limited_hosts.keys().cloned());
 
-        let assigned_items = self.get_assigned_queue_items().await.unwrap_or_default();
+        let assigned_items = self.get_assigned_queue_items().await?;
 
-        self.next_queue_item_with_scoring(codebase, campaign, &exclude_hosts, &assigned_items)
-            .await
+        Ok(self
+            .next_queue_item_with_scoring(codebase, campaign, &exclude_hosts, &assigned_items)
+            .await?)
     }
 
     /// Assign the next queue item using a computed score (candidate
@@ -1133,8 +1094,7 @@ INSERT INTO run (
                 let now = Utc::now();
 
                 for (host, time_str) in hosts.into_iter() {
-                    if let Ok(retry_time) = DateTime::parse_from_rfc3339(&time_str) {
-                        let retry_time = retry_time.with_timezone(&Utc);
+                    if let Ok(retry_time) = crate::active_runs::parse_python_datetime(&time_str) {
                         if retry_time <= now {
                             let _: () = conn.hdel("rate-limit-hosts", &host).await.unwrap_or(());
                         }
