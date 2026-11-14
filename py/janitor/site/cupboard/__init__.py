@@ -311,7 +311,7 @@ async def handle_review_post(request):
 
     post = await request.post()
     # An unchecked checkbox is not part of the form data.
-    publishable_only = post.get("publishable_only", "false") == "true"
+    publishable_only = _bool_param(post, "publishable_only", False)
     async with request.app["pool"].acquire() as conn:
         if "verdict" in post:
             verdict, review_comment = parse_review_form(post)
@@ -345,15 +345,20 @@ async def handle_review_post(request):
         )
 
 
+def _bool_param(mapping, name, default):
+    if name not in mapping:
+        return default
+    if mapping[name] not in ("true", "false"):
+        raise web.HTTPBadRequest(text=f"{name} must be true or false")
+    return mapping[name] == "true"
+
+
 @routes.get("/cupboard/review", name="cupboard-review")
 async def handle_review(request):
     from .review import generate_review
 
-    publishable_only = request.query.get("publishable_only", "true") == "true"
-    if "required_only" in request.query:
-        required_only = request.query["required_only"] == "true"
-    else:
-        required_only = True
+    publishable_only = _bool_param(request.query, "publishable_only", True)
+    required_only = _bool_param(request.query, "required_only", True)
 
     campaigns = request.query.getall("suite", None)
     async with request.app["pool"].acquire() as conn:
