@@ -288,27 +288,10 @@ impl ApplicationBuilder {
             None => (None, None),
         };
 
-        // Initialize upload processor. The storage dir is shared with
-        // the site pod (mounted via PV at the same path) so logs the
-        // worker uploads here can be served straight off disk by the
-        // site's FileSystemLogFileManager. Default to
-        // `/var/log/janitor` to match the FS log manager default;
-        // overridable via UPLOAD_STORAGE_DIR for unit tests / dev.
+        // Initialize upload processor. Each upload is kept in a
+        // temporary directory until /finish has stored it.
         log::info!("Initializing upload processor...");
-        let upload_storage_dir = std::env::var("UPLOAD_STORAGE_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| std::path::PathBuf::from("/var/log/janitor"));
-        // Fail startup if we can't materialise the upload dir --
-        // continuing on a warn leaves the process healthy at
-        // /health/live but every worker /finish upload will 500 with
-        // an opaque write error.
-        std::fs::create_dir_all(&upload_storage_dir).map_err(|e| {
-            ApplicationError::Configuration(format!(
-                "Could not create upload storage dir {:?}: {}",
-                upload_storage_dir, e
-            ))
-        })?;
-        let upload_processor = Arc::new(crate::upload::UploadProcessor::new(upload_storage_dir));
+        let upload_processor = Arc::new(crate::upload::UploadProcessor::new(std::env::temp_dir()));
 
         // Initialize authentication and security services
         log::info!("Initializing authentication and security services...");

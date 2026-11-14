@@ -3,6 +3,7 @@
 use crate::{BuilderResult, WorkerResult};
 use axum::extract::Multipart;
 use chrono::{DateTime, Utc};
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -28,8 +29,8 @@ pub struct UploadedFile {
 pub struct UploadedWorkerResult {
     /// Worker result metadata.
     pub worker_result: WorkerResult,
-    /// Log files uploaded.
-    pub log_files: Vec<UploadedFile>,
+    /// Names of the log files uploaded.
+    pub log_files: Vec<String>,
     /// Artifact files uploaded.
     pub artifact_files: Vec<UploadedFile>,
     /// Build output files (for builder results).
@@ -40,7 +41,7 @@ pub struct UploadedWorkerResult {
 
 /// Processor for multipart uploads from workers.
 pub struct UploadProcessor {
-    /// Base directory for storing uploaded files.
+    /// Directory to make each upload's temporary directory in.
     storage_dir: PathBuf,
 }
 
@@ -52,36 +53,34 @@ impl UploadProcessor {
 
     /// Process a multipart upload from a worker.
     ///
-    /// `codebase` is the codebase name for this run; logs are stored
-    /// under `{storage_dir}/{codebase}/{run_id}/{filename}` so the
-    /// site's `FileSystemLogFileManager` (which expects the
-    /// `{root}/{codebase}/{run_id}/{name}` layout) can read them
-    /// straight off a shared volume -- no separate proxy needed.
-    /// Other categories (artifacts/build/metadata) keep the
-    /// `{storage_dir}/{run_id}/{category}/{filename}` layout.
+    /// Logs are streamed compressed into `log_manager` as they arrive.
+    /// Other categories (artifacts/build/metadata) go into a new
+    /// temporary directory under `storage_dir`, as
+    /// `{run_id}/{category}/{filename}`; it is returned with the result
+    /// and removed when dropped.
     pub async fn process_upload(
         &self,
         mut multipart: Multipart,
         run_id: &janitor_types::RunId,
         codebase: &janitor_types::CodebaseName,
-    ) -> Result<UploadedWorkerResult, UploadError> {
+        log_manager: &janitor::logs::LogFileManager,
+    ) -> Result<(UploadedWorkerResult, tempfile::TempDir), UploadError> {
         let mut worker_result: Option<WorkerResult> = None;
         let mut log_files = Vec::new();
         let mut artifact_files = Vec::new();
         let mut build_files = Vec::new();
         let mut metadata_files = Vec::new();
 
-        // Per-category directory layout. Logs follow the FS log
-        // manager layout so `LOG_URL=file://{storage_dir}` on the
-        // site pod can find them.
-        let run_dir = self.storage_dir.join(run_id);
+        let staging = tempfile::Builder::new()
+            .prefix("janitor-upload-")
+            .tempdir_in(&self.storage_dir)
+            .map_err(|e| {
+                UploadError::Storage(format!("Failed to create temporary directory: {}", e))
+            })?;
+        let run_dir = staging.path().join(run_id);
         tokio::fs::create_dir_all(&run_dir)
             .await
             .map_err(|e| UploadError::Storage(format!("Failed to create directory: {}", e)))?;
-        let logs_dir = self.storage_dir.join(codebase).join(run_id);
-        tokio::fs::create_dir_all(&logs_dir)
-            .await
-            .map_err(|e| UploadError::Storage(format!("Failed to create logs directory: {}", e)))?;
 
         while let Some(field) = multipart
             .next_field()
@@ -143,10 +142,10 @@ impl UploadProcessor {
                     let filename = field.file_name().unwrap_or_default().to_string();
                     let is_log = filename.ends_with(".log") || filename == "worker.log";
                     if is_log {
-                        // Logs land in `{storage_dir}/{codebase}/{run_id}/<name>`
-                        // -- the layout the FS log manager expects.
-                        let file = self.save_field_flat(field, &logs_dir).await?;
-                        log_files.push(file);
+                        let name = self
+                            .store_log_field(field, log_manager, codebase, run_id)
+                            .await?;
+                        log_files.push(name);
                     } else {
                         let file = self
                             .save_field_to_file(field, &run_dir, "artifacts")
@@ -156,8 +155,10 @@ impl UploadProcessor {
                 }
                 field_name if field_name.starts_with("log_") => {
                     // Process log file
-                    let file = self.save_field_to_file(field, &run_dir, "logs").await?;
-                    log_files.push(file);
+                    let name = self
+                        .store_log_field(field, log_manager, codebase, run_id)
+                        .await?;
+                    log_files.push(name);
                 }
                 field_name if field_name.starts_with("artifact_") => {
                     // Process artifact file
@@ -186,44 +187,71 @@ impl UploadProcessor {
         let worker_result = worker_result
             .ok_or_else(|| UploadError::Validation("Missing worker_result field".to_string()))?;
 
-        Ok(UploadedWorkerResult {
-            worker_result,
-            log_files,
-            artifact_files,
-            build_files,
-            metadata_files,
-        })
+        Ok((
+            UploadedWorkerResult {
+                worker_result,
+                log_files,
+                artifact_files,
+                build_files,
+                metadata_files,
+            },
+            staging,
+        ))
     }
 
-    /// Save a multipart field straight into `dir/<filename>` --
-    /// no category subfolder. Used for log files which already get
-    /// a per-codebase/per-run directory upstream.
-    async fn save_field_flat<'a>(
+    /// Stream a log field compressed into `log_manager` and return its name.
+    async fn store_log_field<'a>(
         &self,
         field: axum::extract::multipart::Field<'a>,
-        dir: &PathBuf,
-    ) -> Result<UploadedFile, UploadError> {
+        log_manager: &janitor::logs::LogFileManager,
+        codebase: &janitor_types::CodebaseName,
+        run_id: &janitor_types::RunId,
+    ) -> Result<String, UploadError> {
         let filename = field
             .file_name()
             .ok_or_else(|| UploadError::Validation("Part without filename".to_string()))?
             .to_string();
         validate_filename(&filename)?;
-        let content_type = field.content_type().map(|ct| ct.to_string());
-        let file_path = dir.join(&filename);
-        let file_size = stream_field_to_disk(field, &file_path, &filename).await?;
-        log::info!(
-            "Uploaded log: {} ({} bytes) -> {:?}",
-            filename,
-            file_size,
-            file_path
-        );
-        Ok(UploadedFile {
-            filename,
-            content_type,
-            size: file_size,
-            stored_path: file_path,
-            uploaded_at: Utc::now(),
-        })
+        let mut size = 0u64;
+        let mut failure = None;
+        let mut chunks = field.map(|chunk| {
+            let chunk = chunk
+                .map_err(|e| UploadError::Multipart(format!("Failed to read file data: {}", e)))
+                .map(|chunk| {
+                    size += chunk.len() as u64;
+                    chunk
+                });
+            chunk.map_err(|e| {
+                let err = std::io::Error::other(e.to_string());
+                failure = Some(e);
+                err
+            })
+        });
+        let stored = match janitor_types::LogFilename::new(filename.as_str()) {
+            Ok(name) => Some(
+                janitor::logs::import_log_stream(log_manager, codebase, run_id, &name, &mut chunks)
+                    .await,
+            ),
+            Err(_) => None,
+        };
+        // Read what a failed store left, so a broken upload still fails.
+        while let Some(Ok(_)) = chunks.next().await {}
+        drop(chunks);
+        // A failed read aborts the upload; a failed store only loses this log.
+        if let Some(e) = failure {
+            return Err(e);
+        }
+        match stored {
+            Some(Ok(())) => log::info!("Uploaded log: {} ({} bytes)", filename, size),
+            Some(Err(e)) => log::warn!(
+                "Failed to store log file {} from run {}: {}",
+                filename,
+                run_id,
+                e
+            ),
+            None => log::warn!("Invalid log file name {:?} from run {}", filename, run_id),
+        }
+        Ok(filename)
     }
 
     /// Save a multipart field to a file.

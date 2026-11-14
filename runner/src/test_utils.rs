@@ -214,8 +214,7 @@ fn assemble_app_state(
     ));
     let metrics = Arc::new(MetricsCollector);
 
-    let temp_dir = std::env::temp_dir().join("janitor_test_uploads");
-    let upload_processor = Arc::new(UploadProcessor::new(temp_dir));
+    let upload_processor = Arc::new(UploadProcessor::new(std::env::temp_dir()));
 
     let auth_service = Arc::new(WorkerAuthService::new(runner_db_arc.clone()));
 

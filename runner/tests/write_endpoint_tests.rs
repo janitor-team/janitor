@@ -1780,9 +1780,8 @@ async fn end_to_end_assignment_lifecycle() {
     );
     let run_id = assignment["id"].as_str().expect("id must be a string");
 
-    // Step 3: POST /active-runs/{id}/finish with a minimal multipart
-    // body containing just the JSON metadata. The upload processor
-    // accepts a bare `metadata` field with the worker result JSON.
+    // Step 3: POST /active-runs/{id}/finish with the JSON metadata
+    // and a log in each of the two log field forms.
     let boundary = "e2e-boundary";
     let worker_result = r#"{"code":"success","description":"e2e"}"#;
     let multipart_body = format!(
@@ -1790,6 +1789,12 @@ async fn end_to_end_assignment_lifecycle() {
          Content-Disposition: form-data; name=\"metadata\"; filename=\"result.json\"\r\n\
          Content-Type: application/json\r\n\r\n\
          {worker_result}\r\n\
+         --{boundary}\r\n\
+         Content-Disposition: form-data; name=\"file\"; filename=\"worker.log\"\r\n\r\n\
+         worker output\n\r\n\
+         --{boundary}\r\n\
+         Content-Disposition: form-data; name=\"log_build\"; filename=\"build.log\"\r\n\r\n\
+         build output\n\r\n\
          --{boundary}--\r\n"
     );
     let req = Request::builder()
@@ -1808,18 +1813,45 @@ async fn end_to_end_assignment_lifecycle() {
         status == StatusCode::CREATED || status == StatusCode::OK,
         "finish should succeed, got {status} with body {body}"
     );
+    assert_eq!(body["logs"], json!(["worker.log", "build.log"]));
 
     // The run row is now in the database; verify the code we sent
     // in the worker result landed in `run.result_code`.
-    let (result_code, codebase, campaign): (String, String, String) =
-        sqlx::query_as("SELECT result_code, codebase, suite::text FROM run WHERE id = $1")
-            .bind(run_id)
-            .fetch_one(&pool)
-            .await
-            .expect("run row must exist after finish");
+    let (result_code, codebase, campaign, logfilenames): (String, String, String, Vec<String>) =
+        sqlx::query_as(
+            "SELECT result_code, codebase, suite::text, logfilenames FROM run WHERE id = $1",
+        )
+        .bind(run_id)
+        .fetch_one(&pool)
+        .await
+        .expect("run row must exist after finish");
     assert_eq!(result_code, "success");
     assert_eq!(codebase, "e2e-cb");
     assert_eq!(campaign, "test-campaign");
+    assert_eq!(logfilenames, vec!["worker.log", "build.log"]);
+
+    // The logs are in the log store.
+    let mut logs = Vec::new();
+    for name in ["worker.log", "build.log"] {
+        let log = state
+            .log_manager
+            .get_log(
+                &janitor_types::CodebaseName::new("e2e-cb").unwrap(),
+                &janitor_types::RunId::new(run_id).unwrap(),
+                &janitor_types::LogFilename::new(name).unwrap(),
+            )
+            .await
+            .expect("log must be stored")
+            .map_ok(|chunk| chunk.to_vec())
+            .try_concat()
+            .await
+            .unwrap();
+        logs.push(log);
+    }
+    assert_eq!(
+        logs,
+        vec![b"worker output\n".to_vec(), b"build output\n".to_vec()]
+    );
 
     // ActiveRun should be gone from Redis after finish -- the run is
     // no longer in-flight, so /kill and /active-runs/{id} must 404.
