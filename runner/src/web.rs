@@ -139,6 +139,11 @@ fn db_error() -> Response {
     error(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
 }
 
+/// Response for a failed Redis operation; the caller logs the cause.
+fn redis_error() -> Response {
+    error(StatusCode::INTERNAL_SERVER_ERROR, "Redis error")
+}
+
 /// Extract avoided hosts from configuration: any archive mirror URI
 /// that looks restricted/internal has its host added to the block
 /// list, so the assignment loop skips codebases hosted there.
@@ -544,9 +549,26 @@ async fn schedule(
 #[utoipa::path(
     get,
     path = "/status",
-    responses((status = 200, description = "Queue processor status", body = StatusResponse))
+    responses(
+        (status = 200, description = "Queue processor status", body = StatusResponse),
+        (status = 500, description = "Redis error", body = ErrorResponse),
+    )
 )]
-async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
+async fn status(State(state): State<Arc<AppState>>) -> Response {
+    match status_response(&state).await {
+        Ok(status) => Json(status).into_response(),
+        Err(e) => {
+            log::error!("Failed to read rate-limited hosts: {}", e);
+            redis_error()
+        }
+    }
+}
+
+/// The queue processor status, as returned by `/status` and published on
+/// the `queue` channel.
+async fn status_response(
+    state: &AppState,
+) -> Result<StatusResponse, Box<dyn std::error::Error + Send + Sync>> {
     let processing: Vec<ActiveRunResponse> = state
         .active_runs
         .list()
@@ -557,19 +579,15 @@ async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
 
     // Rate-limited hosts come from Redis; emit an ISO-8601 timestamp
     // per host so downstream tooling can compare to `now()`.
-    let rate_limit_hosts: BTreeMap<String, String> =
-        match state.database.get_rate_limited_hosts().await {
-            Ok(map) => map
-                .into_iter()
-                .map(|(host, until)| (host, until.to_rfc3339()))
-                .collect(),
-            Err(e) => {
-                log::debug!("status: failed to read rate-limited hosts: {}", e);
-                BTreeMap::new()
-            }
-        };
+    let rate_limit_hosts: BTreeMap<String, String> = state
+        .database
+        .get_rate_limited_hosts()
+        .await?
+        .into_iter()
+        .map(|(host, until)| (host, until.to_rfc3339()))
+        .collect();
 
-    Json(StatusResponse {
+    Ok(StatusResponse {
         processing,
         avoid_hosts: state.avoid_hosts.clone(),
         rate_limit_hosts,
@@ -1827,7 +1845,8 @@ async fn get_last_unabsorbed_run(
 
 /// `POST /runs/{run_id}` -- set the publish_status of a run, then
 /// publish a notification on the Redis `publish-status` channel so
-/// other services can react.
+/// other services can react. As in Python, a failed publish is a 500 even
+/// though the run has already been updated.
 #[utoipa::path(
     post,
     path = "/runs/{id}",
@@ -1836,7 +1855,7 @@ async fn get_last_unabsorbed_run(
     responses(
         (status = 200, description = "Publish status was updated", body = PublishStatusUpdate),
         (status = 404, description = "No such run", body = ReasonResponse),
-        (status = 500, description = "Database error", body = ErrorResponse),
+        (status = 500, description = "Database or Redis error", body = ErrorResponse),
     )
 )]
 async fn update_run(
@@ -1857,15 +1876,12 @@ async fn update_run(
                 campaign: suite,
             };
             let payload = serde_json::to_value(&update).expect("PublishStatusUpdate is plain data");
-            // Best-effort fanout to subscribers. A failed publish
-            // shouldn't fail the HTTP request -- the DB row is already
-            // updated. Alert on `janitor_runner_redis_operations_total
-            // {operation="publish_publish_status",status="error"}`.
             if let Err(e) = state.database.publish("publish-status", &payload).await {
                 log::error!("Failed to publish publish-status event: {}", e);
                 crate::metrics::REDIS_OPERATIONS_TOTAL
                     .with_label_values(&["publish_publish_status", "error"])
                     .inc();
+                return redis_error();
             }
             Json(update).into_response()
         }
@@ -2739,7 +2755,7 @@ fn finish_conflict_body(
         (status = 400, description = "Invalid upload", body = ErrorResponse),
         (status = 404, description = "Run is not active", body = ReasonResponse),
         (status = 409, description = "Run result was already stored", body = FinishConflictResponse),
-        (status = 500, description = "Run result could not be stored", body = ReasonResponse),
+        (status = 500, description = "Run result could not be stored or published", body = ReasonResponse),
     )
 )]
 async fn finish_active_run_multipart(
@@ -2755,61 +2771,42 @@ async fn finish_active_run_multipart(
 /// queue-item assignment, pub/sub `queue`, bump the last-success
 /// Prometheus gauge, and spawn a follow-up
 /// [`janitor::schedule::do_schedule_regular`] for the same
-/// `(codebase, campaign)`. Errors are logged but not propagated: the
-/// run has already been persisted and the caller's HTTP response
-/// should reflect that, not a transient pub/sub or follow-up
-/// scheduling failure.
+/// `(codebase, campaign)`. Redis errors are propagated, like in
+/// Python: the run has already been persisted, but the remaining
+/// side effects are skipped.
 async fn publish_finish_events(
     state: &Arc<AppState>,
     run_id: &RunId,
     janitor_result: &crate::JanitorResult,
     queue_id: i64,
-) {
-    // The DB writes already committed. If any of these Redis side
-    // effects fails we can't roll back, so we log at error, bump the
-    // redis-operations counter, and continue -- dashboards/alerts
-    // should key off `janitor_runner_redis_operations_total{status=
-    // "error"}`. Python surfaces the same failures as a 500 back to
-    // the worker; Rust deliberately swallows them because the run is
-    // already persisted and the worker would just get 409 on retry.
-    if let Err(e) = state
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    fn count_error(operation: &str) {
+        crate::metrics::REDIS_OPERATIONS_TOTAL
+            .with_label_values(&[operation, "error"])
+            .inc();
+    }
+
+    state
         .database
         .publish("result", &janitor_result.to_json())
         .await
-    {
-        log::error!("Failed to publish result event for {}: {}", run_id, e);
-        crate::metrics::REDIS_OPERATIONS_TOTAL
-            .with_label_values(&["publish_result", "error"])
-            .inc();
-    }
+        .inspect_err(|_| count_error("publish_result"))?;
 
     state.active_runs.remove(run_id).await;
 
-    if let Err(e) = state.database.unassign_queue_item(queue_id).await {
-        log::error!("Failed to unassign queue item from Redis: {}", e);
-        crate::metrics::REDIS_OPERATIONS_TOTAL
-            .with_label_values(&["unassign_queue_item", "error"])
-            .inc();
-    }
+    state
+        .database
+        .unassign_queue_item(queue_id)
+        .await
+        .inspect_err(|_| count_error("unassign_queue_item"))?;
 
-    let status_payload = serde_json::to_value(StatusResponse {
-        processing: state
-            .active_runs
-            .list()
-            .await
-            .iter()
-            .map(ActiveRun::to_response)
-            .collect(),
-        avoid_hosts: vec![],
-        rate_limit_hosts: BTreeMap::new(),
-    })
-    .expect("StatusResponse is plain data");
-    if let Err(e) = state.database.publish("queue", &status_payload).await {
-        log::error!("Failed to publish queue status event: {}", e);
-        crate::metrics::REDIS_OPERATIONS_TOTAL
-            .with_label_values(&["publish_queue_status", "error"])
-            .inc();
-    }
+    let status_payload =
+        serde_json::to_value(status_response(state).await?).expect("StatusResponse is plain data");
+    state
+        .database
+        .publish("queue", &status_payload)
+        .await
+        .inspect_err(|_| count_error("publish_queue_status"))?;
 
     crate::metrics::LAST_SUCCESS_GAUGE.set(chrono::Utc::now().timestamp() as f64);
 
@@ -2916,6 +2913,7 @@ async fn publish_finish_events(
             }
         }
     });
+    Ok(())
 }
 
 /// Store the artifacts of a run, falling back to the backup artifact
@@ -3152,7 +3150,12 @@ async fn finish_run_multipart_internal(
 
     // Publish the completed result to subscribers and tear down the
     // active-run state.
-    publish_finish_events(&state, &run_id, &janitor_result, active_run.queue_id).await;
+    if let Err(e) =
+        publish_finish_events(&state, &run_id, &janitor_result, active_run.queue_id).await
+    {
+        log::error!("Failed to publish finish events for {}: {}", run_id, e);
+        return reason(StatusCode::INTERNAL_SERVER_ERROR, "Redis error");
+    }
     crate::metrics::MetricsCollector::set_active_runs(
         &active_run.worker_name,
         state
@@ -3248,7 +3251,7 @@ async fn authenticate_worker(
     responses(
         (status = 201, description = "Work was assigned", body = AssignmentResponse,
          headers(("Location" = String, description = "URL of the new active run"))),
-        (status = 500, description = "Database error", body = ErrorResponse),
+        (status = 500, description = "Database or Redis error", body = ErrorResponse),
         (status = 503, description = "Queue is empty, or a forge rate-limited the runner \
                                      (body is then a `RateLimitedResponse`)", body = ReasonResponse),
     )
@@ -3285,7 +3288,7 @@ async fn public_assign(
         (status = 201, description = "Work was assigned", body = AssignmentResponse,
          headers(("Location" = String, description = "URL of the new active run"))),
         (status = 400, description = "Worker is missing or not registered", body = AssignRejectedResponse),
-        (status = 500, description = "Database error", body = ErrorResponse),
+        (status = 500, description = "Database or Redis error", body = ErrorResponse),
         (status = 503, description = "Queue is empty, or a forge rate-limited the runner \
                                      (body is then a `RateLimitedResponse`)", body = ReasonResponse),
     )
@@ -3835,15 +3838,12 @@ async fn assign_work_internal(
                     validation_retries += 1;
                     continue;
                 }
-                // Non-conflict Redis error (connection lost etc.) --
-                // don't spin forever; fall through without the
-                // distributed lock, same as the previous behaviour.
-                log::warn!(
-                    "Failed to reserve queue item {} in Redis, proceeding without lock: {}",
+                log::error!(
+                    "Failed to reserve queue item {} in Redis: {}",
                     assignment.queue_item.id,
                     e
                 );
-                break (assignment, candidate_log_id);
+                return redis_error();
             }
         }
     };
@@ -3914,9 +3914,7 @@ async fn assign_work_internal(
         crate::metrics::RATE_LIMITED_COUNT
             .with_label_values(&[&host])
             .inc();
-        if let Err(e) = state.database.rate_limit_host(&host, until).await {
-            log::warn!("Failed to record rate-limit for host {}: {}", host, e);
-        }
+        let rate_limit_result = state.database.rate_limit_host(&host, until).await;
 
         abort_assignment(
             &state,
@@ -3925,6 +3923,14 @@ async fn assign_work_internal(
             &format!("Forge {} rate-limited us; retry after {}s", host, wait_secs),
         )
         .await;
+
+        // Python doesn't abort the run when recording the rate limit fails,
+        // but leaves it for the watchdog. We don't have an active run yet,
+        // so abort before reporting the error.
+        if let Err(e) = rate_limit_result {
+            log::error!("Failed to record rate-limit for host {}: {}", host, e);
+            return redis_error();
+        }
 
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -4144,7 +4150,7 @@ async fn assign_work_internal(
         (status = 403, description = "Run is assigned to a different worker", body = ErrorResponse),
         (status = 404, description = "Run is not active", body = ErrorResponse),
         (status = 409, description = "Run result was already stored", body = FinishConflictResponse),
-        (status = 500, description = "Run result could not be stored", body = ReasonResponse),
+        (status = 500, description = "Run result could not be stored or published", body = ReasonResponse),
     )
 )]
 async fn public_finish(

@@ -2672,11 +2672,21 @@ async fn post_update_run_publishes_publish_status_event() {
             return;
         }
         let mut stream = pubsub_conn.on_message();
-        let payload = tokio::time::timeout(std::time::Duration::from_secs(3), stream.next())
-            .await
-            .ok()
-            .flatten()
-            .and_then(|msg| msg.get_payload::<String>().ok());
+        // Other tests publish on the same channel concurrently, so skip
+        // their messages.
+        let payload = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while let Some(msg) = stream.next().await {
+                let payload: String = msg.get_payload().ok()?;
+                let parsed: Value = serde_json::from_str(&payload).ok()?;
+                if parsed["run_id"] == "run-pubsub-1" {
+                    return Some(payload);
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten();
         let _ = tx.send(payload);
     });
 
