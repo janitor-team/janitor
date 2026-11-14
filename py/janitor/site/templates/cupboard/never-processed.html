@@ -17,16 +17,40 @@
                 {% if campaign %}<input type="hidden" name="campaign" value="{{ campaign }}" />{% endif %}
                 <input type="hidden" name="result_code" value="never-processed" />
                 <input type="submit" value="Reschedule matching" />
+                <span id="mass-reschedule-result" role="status"></span>
+                <button type="button" id="mass-reschedule-confirm" hidden></button>
             </form>
             <script>
-                window.mass_reschedule.onsubmit = function(e) {
-                    $('form').submit(function(e) {
-                        e.preventDefault();
-                        $.post("/cupboard/api/mass-reschedule", $('form').serializeArray(), function(receivedData) {
-                            alert('Rescheduled ' + receivedData);
-                        });
+                function codebaseCount(runs) {
+                    return runs.length + (runs.length == 1 ? ' codebase' : ' codebases');
+                }
+
+                function massReschedule(data, done) {
+                    $.post($('#mass_reschedule').attr('action'), data, done, 'json').fail(function(response) {
+                        $('#mass-reschedule-result').text('Failed to reschedule: ' + response.responseText);
                     });
-                };
+                }
+
+                $('#mass_reschedule').on('input change', function() {
+                    $('#mass-reschedule-result').text('');
+                    $('#mass-reschedule-confirm').prop('hidden', true);
+                });
+
+                $('#mass_reschedule').submit(function(e) {
+                    e.preventDefault();
+                    var data = $(this).serialize();
+                    massReschedule(data + '&dry_run=1', function(runs) {
+                        $('#mass-reschedule-result').text(runs.length ? codebaseCount(runs) + (runs.length == 1 ? ' matches.' : ' match.') : 'No codebases match.');
+                        $('#mass-reschedule-confirm').text('Reschedule ' + codebaseCount(runs)).data('form', data).prop('hidden', !runs.length);
+                    });
+                });
+
+                $('#mass-reschedule-confirm').click(function() {
+                    $(this).prop('hidden', true);
+                    massReschedule($(this).data('form'), function(runs) {
+                        $('#mass-reschedule-result').text('Rescheduling ' + codebaseCount(runs) + '.');
+                    });
+                });
             </script>
         {% endif %}
         <table id="never-processed-table" class="display docutils" border="1">
