@@ -3026,10 +3026,7 @@ async fn finish_run_multipart_internal(
             .collect()
     });
     janitor_result.failure_details = worker_result.details;
-    janitor_result.failure_stage = worker_result
-        .stage
-        .as_deref()
-        .map(|s| s.split('/').map(|p| p.to_string()).collect());
+    janitor_result.failure_stage = worker_result.stage;
     janitor_result.builder_result = builder_result;
     janitor_result.transient = worker_result.transient;
     janitor_result.target_branch_url = worker_result.target_branch_url;
@@ -3381,7 +3378,7 @@ async fn abort_assignment(
         remotes: None,
         branches: None,
         failure_details: None,
-        failure_stage: None,
+        failure_stage: Some("assign".to_string()),
         resume: None,
         target: None,
         worker_name: None,
