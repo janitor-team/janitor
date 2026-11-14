@@ -352,8 +352,8 @@ cd {{ codebase }}
                         unknown publish status {{ d.status }}
                     {%- endif -%}
                 {%- elif k == 'backoff' -%}
-                    {{ d.attempt_count }} publish attempts so far.
-                    {%- if r -%}
+                    {{ d.attempt_count }} publish attempts so far,
+                    {% if r -%}
                         not currently attempting to back off
                     {%- else -%}
                         next attempt after {{ d.next_try_time }}
@@ -365,10 +365,13 @@ cd {{ codebase }}
                         command changed from <code>{{ d.actual }}</code> to <code>{{ d.correct }}</code>
                     {%- endif -%}
                 {%- elif k == 'propose_rate_limit' -%}
-                    {%- if r -%}
+                    {%- if r and d.bucket -%}
                         proposals not currently being rate-limited for maintainer {{ d.bucket }}
+                    {%- elif r -%}
+                        no rate limit for merge proposals
                     {%- else -%}
-                        merge proposals for the package maintainer {{ d.bucket }} are currently being rate-limited (open: {{ d.open }}, max open: {{ d.max_open }})
+                        merge proposals are currently being rate-limited
+                        {%- if d.open is not none %} (open: {{ d.open }}, max open: {{ d.max_open }}){% endif %}
                     {%- endif -%}
                 {%- elif k == 'success' -%}
                     {%- if r -%}
@@ -386,19 +389,17 @@ cd {{ codebase }}
                     {%- if r -%}
                         {%- if not d -%}no relevant previous merge proposals
                         {%- else -%}merge proposals for previous run were not rejected:
-                            {% for (url, status) in d %}
-                                <a href="{{ url }}">{{ status }}</a>
-                                {% if not loop.last %},{% endif %}
-                            {% endfor %}
-                            .
+                            {% for mp in d %}
+                                <a href="{{ mp.url }}">{{ mp.status }}</a>
+                                {%- if not loop.last %},{% endif %}
+                            {%- endfor %}.
                         {%- endif -%}
                     {%- else -%}
                         merge proposals for previous run were rejected:
-                        {% for (url, status) in d %}
-                            <a href="{{ url }}">{{ status }}</a>
-                            {% if not loop.last %},{% endif %}
-                        {% endfor %}
-                        .
+                        {% for mp in d %}
+                            <a href="{{ mp.url }}">{{ mp.status }}</a>
+                            {%- if not loop.last %},{% endif %}
+                        {%- endfor %}.
                     {%- endif -%}
                 {%- else -%}
                     {{ k }}
