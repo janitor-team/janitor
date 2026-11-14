@@ -36,6 +36,7 @@ from yarl import URL
 from janitor import CAMPAIGN_REGEX, utcnow, version_string
 
 from .. import check_admin, worker_link_is_global
+from ..common import ROW_COUNT, load_query
 from ..setup import setup_logfile_manager, setup_postgres
 
 BUILD_LOG_FILENAME = "build.log"
@@ -193,7 +194,7 @@ class NeedsReviewQuerySchema(Schema):
     reviewer = fields.Str(metadata={"description": "defaults to the current user"})
     publishable_only = fields.Str(load_default="true")
     required_only = fields.Str()
-    limit = fields.Int(load_default=200)
+    limit = fields.Int(load_default=200, validate=ROW_COUNT)
 
 
 class NeedsReviewSchema(Schema):
@@ -219,11 +220,7 @@ async def handle_needs_review(request):
         required_only = request.query["required_only"] == "true"
     else:
         required_only = None
-    limit = request.query.get("limit", "200")
-    if limit:
-        limit = int(limit)
-    else:
-        limit = None
+    limit = load_query(NeedsReviewQuerySchema(), request)["limit"]
     ret = []
     async with request.app["pool"].acquire() as conn:
         with span.new_child("sql:needs-review"):

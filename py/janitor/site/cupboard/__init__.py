@@ -42,7 +42,7 @@ from .. import (
     is_qa_reviewer,
     worker_link_is_global,
 )
-from ..common import html_template
+from ..common import PageQuerySchema, html_template, load_query
 from ..pkg import MergeProposalUserUrlResolver
 from ..setup import setup_postgres
 
@@ -62,8 +62,9 @@ async def handle_rejected(request):
 @routes.get("/cupboard/history", name="history")
 @html_template("cupboard/history.html", headers={"Vary": "Cookie"})
 async def handle_history(request):
-    limit = int(request.query.get("limit", "100"))
-    offset = int(request.query.get("offset", "0"))
+    query_args = load_query(PageQuerySchema(), request)
+    limit = query_args["limit"]
+    offset = query_args["offset"]
 
     query = """\
 SELECT finish_time, codebase, suite, worker_link,
@@ -106,7 +107,7 @@ async def handle_workers(request):
 @routes.get("/cupboard/queue", name="queue")
 @html_template("cupboard/queue.html", headers={"Vary": "Cookie"})
 async def handle_queue(request):
-    limit = int(request.query.get("limit", "100"))
+    limit = load_query(PageQuerySchema(only=["limit"]), request)["limit"]
     from .queue import write_queue
 
     return await write_queue(
@@ -280,7 +281,7 @@ async def handle_publish(request):
 @routes.get("/cupboard/publish/", name="publish-history")
 @html_template("cupboard/publish-history.html", headers={"Vary": "Cookie"})
 async def handle_publish_history(request):
-    limit = int(request.query.get("limit", "100"))
+    limit = load_query(PageQuerySchema(only=["limit"]), request)["limit"]
     from .publish import write_history
 
     return await write_history(

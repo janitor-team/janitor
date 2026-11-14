@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -9,6 +10,7 @@ import aiohttp_jinja2
 import asyncpg
 from aiohttp import ClientConnectorError, ClientResponseError, web
 from breezy.revision import NULL_REVISION
+from marshmallow import EXCLUDE, Schema, ValidationError, fields, validate
 from yarl import URL
 
 from janitor import splitout_env, state
@@ -20,6 +22,23 @@ from janitor.site import (
     get_archive_diff,
     update_vars_from_request,
 )
+
+# LIMIT and OFFSET take a PostgreSQL bigint.
+ROW_COUNT = validate.Range(min=0, max=2**63 - 1)
+
+
+class PageQuerySchema(Schema):
+    limit = fields.Int(load_default=100, validate=ROW_COUNT)
+    offset = fields.Int(load_default=0, validate=ROW_COUNT)
+
+
+def load_query(schema: Schema, request) -> dict[str, Any]:
+    try:
+        return schema.load(request.query, unknown=EXCLUDE)
+    except ValidationError as e:
+        raise web.HTTPBadRequest(
+            text=json.dumps(e.messages), content_type="application/json"
+        ) from e
 
 
 async def get_previous_runs(client, runner_url: str, codebase: str, campaign: str):
