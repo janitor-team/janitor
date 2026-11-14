@@ -213,7 +213,7 @@ async def handle_failure_stages(request):
                 "run.suite = candidate.suite AND "
                 "(run.change_set = candidate.change_set OR candidate.change_set is NULL))"
             )
-        query += " group by 1"
+        query += " group by 1 having count(failure_stage) > 0"
         return {
             "include_transient": include_transient,
             "include_historical": include_historical,
