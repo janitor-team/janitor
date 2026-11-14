@@ -3061,6 +3061,7 @@ async fn finish_with_artifact(
     run_id: &str,
     codebase: &str,
     worker: &str,
+    change_set: Option<&str>,
 ) -> (StatusCode, Value) {
     let pool = state.database.pool().clone();
     insert_codebase(&pool, codebase).await;
@@ -3080,7 +3081,7 @@ async fn finish_with_artifact(
             finish_time: None,
             estimated_duration: None,
             campaign: janitor_types::Campaign::new("test-campaign").unwrap(),
-            change_set: None,
+            change_set: change_set.map(|c| janitor_types::ChangeSetId::new(c).unwrap()),
             command: "true".to_string(),
             codebase: janitor_types::CodebaseName::new(codebase).unwrap(),
             backchannel: Backchannel::None {},
@@ -3151,6 +3152,7 @@ async fn finish_marks_artifact_upload_failed() {
         "run-upload-fails",
         "upload-fails-cb",
         "uf-worker",
+        None,
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body: {body}");
@@ -3163,6 +3165,119 @@ async fn finish_marks_artifact_upload_failed() {
         .await
         .expect("run row must exist after finish");
     assert_eq!(result_code, "artifact-upload-failed");
+}
+
+/// Insert a change set with one `test-campaign` candidate for `codebase`.
+async fn insert_change_set_candidate(pool: &sqlx::PgPool, change_set: &str, codebase: &str) {
+    insert_codebase(pool, codebase).await;
+    sqlx::query("INSERT INTO change_set (id, campaign) VALUES ($1, 'test-campaign')")
+        .bind(change_set)
+        .execute(pool)
+        .await
+        .expect("insert change_set");
+    sqlx::query(
+        "INSERT INTO candidate (codebase, suite, command, change_set)
+         VALUES ($1, 'test-campaign', 'true', $2)",
+    )
+    .bind(codebase)
+    .bind(change_set)
+    .execute(pool)
+    .await
+    .expect("insert candidate");
+}
+
+async fn change_set_state(pool: &sqlx::PgPool, change_set: &str) -> String {
+    sqlx::query_scalar("SELECT state::text FROM change_set WHERE id = $1")
+        .bind(change_set)
+        .fetch_one(pool)
+        .await
+        .expect("change_set row")
+}
+
+/// A change set is `ready` once the run of its only candidate is finished.
+#[tokio::test]
+async fn finish_moves_candidate_change_set_to_ready() {
+    let Some((app, state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let pool = state.database.pool().clone();
+    insert_change_set_candidate(&pool, "cs-ready", "cs-ready-cb").await;
+
+    let (status, body) = finish_with_artifact(
+        app,
+        &state,
+        "run-cs-ready",
+        "cs-ready-cb",
+        "cs-ready-worker",
+        Some("cs-ready"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    assert_eq!(change_set_state(&pool, "cs-ready").await, "ready");
+}
+
+/// The same holds for a successful run written straight into `run`.
+#[tokio::test]
+async fn run_insert_moves_candidate_change_set_to_ready() {
+    let Some((_app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let pool = state.database.pool().clone();
+    insert_change_set_candidate(&pool, "cs-direct", "cs-direct-cb").await;
+
+    insert_success_run(&pool, "run-cs-direct", "cs-direct-cb", "cs-direct").await;
+    assert_eq!(change_set_state(&pool, "cs-direct").await, "ready");
+}
+
+async fn insert_success_run(pool: &sqlx::PgPool, id: &str, codebase: &str, change_set: &str) {
+    sqlx::query(
+        "INSERT INTO run (id, command, result_code, suite, codebase, change_set,
+                          logfilenames, start_time, finish_time)
+         VALUES ($1, 'true', 'success', 'test-campaign', $2, $3, '{}', now(), now())",
+    )
+    .bind(id)
+    .bind(codebase)
+    .bind(change_set)
+    .execute(pool)
+    .await
+    .expect("insert run");
+}
+
+/// Every result branch write keeps `last_unabsorbed_run_id` of its run current.
+#[tokio::test]
+async fn result_branch_writes_refresh_last_unabsorbed_run() {
+    let Some((_app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    let pool = state.database.pool().clone();
+    insert_change_set_candidate(&pool, "cs-branch", "cs-branch-cb").await;
+    insert_success_run(&pool, "run-cs-branch", "cs-branch-cb", "cs-branch").await;
+
+    let last_unabsorbed = || async {
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT last_unabsorbed_run_id FROM last_run
+             WHERE codebase = 'cs-branch-cb' AND campaign = 'test-campaign'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("last_run row")
+    };
+    let mut seen = vec![last_unabsorbed().await];
+    for sql in [
+        "INSERT INTO new_result_branch (run_id, role) VALUES ('run-cs-branch', 'main')",
+        "UPDATE new_result_branch SET absorbed = true WHERE run_id = 'run-cs-branch'",
+        "UPDATE new_result_branch SET absorbed = false WHERE run_id = 'run-cs-branch'",
+        "DELETE FROM new_result_branch WHERE run_id = 'run-cs-branch'",
+        "INSERT INTO new_result_branch (run_id, role, absorbed) VALUES ('run-cs-branch', 'main', true)",
+    ] {
+        sqlx::query(sql).execute(&pool).await.expect(sql);
+        seen.push(last_unabsorbed().await);
+    }
+    let run = Some("run-cs-branch".to_string());
+    assert_eq!(seen, vec![None, run.clone(), None, run, None, None]);
 }
 
 /// When the main artifact manager fails, artifacts go to the backup
@@ -3185,8 +3300,15 @@ async fn finish_stores_artifacts_in_backup() {
         return;
     };
 
-    let (status, body) =
-        finish_with_artifact(app, &state, "run-backup", "backup-cb", "backup-worker").await;
+    let (status, body) = finish_with_artifact(
+        app,
+        &state,
+        "run-backup",
+        "backup-cb",
+        "backup-worker",
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body: {body}");
     assert_eq!(body["artifacts"], json!(["foo.deb"]));
     assert_eq!(body["result"]["code"], "success");
