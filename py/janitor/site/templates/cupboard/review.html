@@ -8,6 +8,7 @@
 {% block body %}
     <div class="section" id="review">
         <h1>Review</h1>
+        <p id="review-status" role="status"></p>
         <p>
             <a href="/cupboard/c/{{ codebase }}/{{ run_id }}/" id="full-run-link">Full run</a>
             {% if review_instructions_url %}<a href="{{ review_instructions_url }}">Review instructions</a>{% endif %}
@@ -124,11 +125,14 @@
                        },
                        200: function() {
                            $('#review-comment').val('');
+                           var saved = {'approved': 'Approved', 'rejected': 'Rejected', 'reschedule': 'Rescheduled', 'abstained': 'Abstained on'};
+                           $('#review-status').text(saved[verdict] + ' ' + codebase + '.');
                            if (todo.length == 0) {
                                 refreshData(loadNewJob);
                            } else {
                                 loadNewJob();
                            }
+                           document.getElementById('review').scrollIntoView();
                        },
                        500: function(response) {
 			   alert('500 error submitting review: ' + response.responseText);
