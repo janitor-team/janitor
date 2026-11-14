@@ -213,13 +213,12 @@ pub async fn handle_publish_failure(
 
     let main_branch_revision_str = run.main_branch_revision.as_ref().map(|r| r.to_string());
 
-    // Lookup the most recent successful unchanged/control run for this
-    // codebase at the same upstream revision, used by the
-    // missing-build-diff-control branch below.
+    // Look up the control run for this codebase at the same upstream
+    // revision, used by the missing-build-diff-control branch below.
     let unchanged_run: Option<(String, String)> = if let Some(rev) = &main_branch_revision_str {
         sqlx::query_as::<_, (String, String)>(
             "SELECT result_code, revision FROM last_runs \
-             WHERE revision = $2 AND codebase = $1 AND result_code = 'success'",
+             WHERE revision = $2 AND codebase = $1 AND suite = 'control'",
         )
         .bind(&run.codebase)
         .bind(rev)
@@ -2700,12 +2699,19 @@ pub async fn publish_from_policy(
         None
     };
 
-    // Scoped hack: skip the binary diff requirement when the control run
-    // failed with the metadata-invalid error on the lintian-fixes campaign.
+    // No binary diff for lintian-fixes when the control run failed on invalid upstream metadata.
     let mut require_binary_diff = require_binary_diff;
-    if let Some((_, ref code)) = unchanged_run {
-        if code == "debian-upstream-metadata-invalid" && run.suite == "lintian-fixes" {
-            require_binary_diff = false;
+    if require_binary_diff && run.suite == "lintian-fixes" && unchanged_run.is_none() {
+        if let Some(br) = base_revision.as_ref() {
+            require_binary_diff = !sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS (SELECT 1 FROM last_runs \
+                 WHERE codebase = $1 AND revision = $2 AND suite = 'control' \
+                 AND result_code = 'debian-upstream-metadata-invalid')",
+            )
+            .bind(&run.codebase)
+            .bind(br.to_string())
+            .fetch_one(conn)
+            .await?;
         }
     }
 
