@@ -225,7 +225,6 @@ fn assemble_app_state(
     );
 
     let security_service = Arc::new(SecurityService::new(
-        crate::auth::SecurityConfig::default(),
         runner_db_arc.clone(),
         active_runs.clone(),
     ));
