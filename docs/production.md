@@ -105,6 +105,31 @@ unset:
 For a Janitor instance, you probably want a custom website in combination with
 the Janitor API. See the existing instances for inspiration.
 
+## Forge webhooks
+
+A webhook lets a forge tell the Janitor about each push. Use
+`<external_url>/webhook` as the webhook URL, called `$WEBHOOK_URL` below.
+
+After a push to the branch at a codebase's URL, the Janitor updates its merge
+proposals for that codebase if necessary.
+
+GitHub: in the repository's Settings, open Webhooks and choose Add webhook.
+Set the Payload URL to `$WEBHOOK_URL` and pick "Just the push event".
+
+GitLab: in the project's Settings, open Webhooks and choose Add new webhook.
+Set the URL to `$WEBHOOK_URL` and tick "Push events".
+
+Gitea: in the repository's Settings, open Webhooks, choose Add Webhook and
+then Gitea. Set the Target URL to `$WEBHOOK_URL` and pick "Push Events" under
+Trigger On.
+
+`janitor.site.webhook` adds the webhook to every codebase's repository on
+GitHub or GitLab at once:
+
+```console
+$ python3 -m janitor.site.webhook --runner-url http://localhost:9911 $WEBHOOK_URL
+```
+
 ## Worker images
 
 The published worker image carries Debian's build tooling, but it carries no
