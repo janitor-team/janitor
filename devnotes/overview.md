@@ -4,12 +4,16 @@ The janitor can manage automated changes to a set of
 projects in version control.
 
 It does this through a number of interconnected
-services, each of which provides some basic features:
+services, most of which provide some basic features:
 
  * a rest service
  * /metrics target for use with prometheus
  * /ready and /health targets for use with kubernetes or other
    health-checking services
+
+The site has no /ready. The worker has only /health, and pushes its metrics
+to the Prometheus push gateway given with `--prometheus`. The auto-uploader
+has only /metrics.
 
 Access to the rest services is unauthenticated and is meant to be restricted
 to the other services and administrators.
@@ -21,6 +25,7 @@ for exposure to the internet. In particular:
  * janitor-git-store: /git
  * janitor-bzr-store: /bzr
  * janitor-archive: /dists
+ * janitor-site: the web site and its API under /api
 
 ## The runner
 
@@ -140,6 +145,25 @@ Each also provide an endpoint for getting the diff between two arbitrary runs.
 The (binary) differ takes the artifacts from two runs and compares them using a particular
 diffing tool. It can cache the results. Currently supported are diffoscope and
 debdiff.
+
+## The site
+
+The site (`janitor-site`) is the web front end, and the only service written
+in Python (aiohttp, in py/janitor/site/). It listens on the address given
+with `--host`, on two ports:
+
+ * the public port (`--public-port`) serves the web pages (the cupboard
+   too), the API under /api, forge webhooks at /webhook and live updates
+   at /ws/notifications
+ * the private port (`--port`) serves only /health and /metrics
+
+It reads the database, the logs and artifacts, and the VCS stores. It calls
+the runner, publisher, differ and archive over HTTP: a forge webhook makes it
+ask the runner to reschedule the codebases the push touched. For live
+updates it forwards the `publish`, `merge-proposal`, `queue` and `result`
+Redis channels to the browser. Logins go through the OAuth2 provider set in
+`oauth2_provider`, which sends people back to the address given with
+`--external-url`.
 
 ## The Worker
 
