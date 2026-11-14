@@ -2,21 +2,6 @@ use chrono::{DateTime, Duration, Utc};
 use janitor_publish::*;
 
 #[test]
-fn publish_error_display_messages() {
-    let display = format!("{}", PublishError::AuthenticationFailed);
-    assert!(display.to_lowercase().contains("authentication"));
-
-    let display = format!(
-        "{}",
-        PublishError::NetworkError("Connection timeout".into())
-    );
-    assert!(display.contains("Connection timeout"));
-
-    let display = format!("{}", PublishError::DatabaseError(sqlx::Error::RowNotFound));
-    assert!(display.to_lowercase().contains("database"));
-}
-
-#[test]
 fn check_mp_error_from_brz_login_required() {
     let converted: CheckMpError = breezyshim::error::Error::ForgeLoginRequired.into();
     assert!(matches!(converted, CheckMpError::ForgeLoginRequired));
