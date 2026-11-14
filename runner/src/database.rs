@@ -288,7 +288,7 @@ impl RunnerDatabase {
             branches: run.result_branches.map(|branches| {
                 branches
                     .into_iter()
-                    .map(|(fn_name, name, br, r)| (Some(fn_name), Some(name), br, r))
+                    .map(|(fn_name, name, br, r)| (Some(fn_name), name, br, r))
                     .collect()
             }),
             failure_details: run.failure_details,
@@ -296,7 +296,7 @@ impl RunnerDatabase {
             resume,
             target,
             worker_name: run.worker_name,
-            vcs_type: Some(run.vcs_type),
+            vcs_type: run.vcs_type,
             target_branch_url: run.target_branch_url,
             context: run.context.and_then(|s| serde_json::from_str(&s).ok()),
             builder_result,
@@ -591,7 +591,7 @@ INSERT INTO run (
         .bind(result.codemod.as_ref())
         .bind(&result.campaign)
         .bind(result.vcs_type.as_deref())
-        .bind(result.branch_url.as_str())
+        .bind(result.branch_url.as_deref())
         .bind(result.subpath.as_deref())
         .bind(&logfilenames)
         .bind(result.value.map(|v| v as i32))

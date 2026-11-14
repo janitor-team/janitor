@@ -441,7 +441,7 @@ pub struct JanitorResult {
     /// Unique identifier for the log.
     pub log_id: RunId,
     /// URL of the branch that was processed.
-    pub branch_url: String,
+    pub branch_url: Option<String>,
     /// Optional subpath within the repository.
     pub subpath: Option<String>,
     /// Result code.
@@ -758,7 +758,7 @@ impl ActiveRun {
     pub fn create_result(&self, code: String, description: Option<String>) -> JanitorResult {
         JanitorResult {
             log_id: self.log_id.clone(),
-            branch_url: self.vcs_info.branch_url.clone().unwrap_or_default(),
+            branch_url: self.vcs_info.branch_url.clone(),
             subpath: self.vcs_info.subpath.clone(),
             code,
             transient: None,
@@ -2254,7 +2254,7 @@ mod tests {
     fn test_janitor_result_serde() {
         let result = JanitorResult {
             log_id: RunId::new("log-123").unwrap(),
-            branch_url: "https://example.com/repo".to_string(),
+            branch_url: Some("https://example.com/repo".to_string()),
             subpath: Some("debian/".to_string()),
             code: "success".to_string(),
             transient: Some(false),
@@ -2296,7 +2296,7 @@ mod tests {
     fn test_janitor_result_with_failure() {
         let result = JanitorResult {
             log_id: RunId::new("log-456").unwrap(),
-            branch_url: "https://example.com/repo".to_string(),
+            branch_url: Some("https://example.com/repo".to_string()),
             subpath: None,
             code: "build-failed".to_string(),
             transient: Some(true),
@@ -2336,7 +2336,7 @@ mod tests {
     fn test_janitor_result_with_resume() {
         let result = JanitorResult {
             log_id: RunId::new("log-789").unwrap(),
-            branch_url: "https://example.com/repo".to_string(),
+            branch_url: Some("https://example.com/repo".to_string()),
             subpath: None,
             code: "success".to_string(),
             transient: None,

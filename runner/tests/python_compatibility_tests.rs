@@ -166,7 +166,7 @@ fn janitor_result_serialises_expected_field_names() {
 
     let result = JanitorResult {
         log_id: janitor_types::RunId::new("test-log-123").unwrap(),
-        branch_url: "https://github.com/example/repo.git".to_string(),
+        branch_url: Some("https://github.com/example/repo.git".to_string()),
         subpath: None,
         code: "success".to_string(),
         transient: Some(false),
