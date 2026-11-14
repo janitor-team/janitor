@@ -249,17 +249,23 @@ impl RedisSubscriber {
         // Same gate as the periodic publish loop: don't create proposals
         // until a full merge-proposal scan has refreshed the bucket
         // counts, or the rate limiter would act on an incomplete view of
-        // what we already own and could over-create. Skipping here is
-        // safe - the run stays approved and publish-ready, so the
-        // periodic `publish_pending_ready` loop publishes it once the
-        // scan gate opens.
+        // what we already own and could over-create. The run stays
+        // approved and publish-ready until the scan gate opens.
         if !crate::queue::scan_ts_is_recent(*state.last_full_scan_at.borrow()) {
+            if state.auto_publish {
+                log::info!(
+                    "Deferring publish of approved run {} until a merge-proposal scan completes; \
+                     the periodic publish loop will pick it up",
+                    message.run_id
+                );
+                return Ok(());
+            }
+            // No periodic publish loop runs with --no-auto-publish, so wait here.
             log::info!(
-                "Deferring publish of approved run {} until a merge-proposal scan completes; \
-                 the periodic publish loop will pick it up",
+                "Waiting for a merge-proposal scan to complete before publishing approved run {}",
                 message.run_id
             );
-            return Ok(());
+            crate::queue::await_recent_scan(&mut state.last_full_scan_at.subscribe()).await;
         }
 
         // Fetch the full run + result branches so publish_from_policy

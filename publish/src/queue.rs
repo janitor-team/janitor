@@ -189,7 +189,7 @@ async fn run_scan_loop(
 /// incomplete view of the proposals we already own (which would let the
 /// rate limiter under-count and over-create). Wakes as soon as the scan
 /// loop records a fresh pass.
-async fn await_recent_scan(
+pub(crate) async fn await_recent_scan(
     scan_rx: &mut tokio::sync::watch::Receiver<Option<chrono::DateTime<Utc>>>,
 ) {
     loop {
