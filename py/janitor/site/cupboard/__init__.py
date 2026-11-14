@@ -655,6 +655,8 @@ async def handle_done_proposals(request):
 
     async with request.app["pool"].acquire() as conn:
         oldest = await conn.fetchval("SELECT MIN(absorbed_at) FROM absorbed_runs")
+        if not since_str and oldest is not None and oldest > since:
+            since = oldest
 
         if since:
             orig_runs = await conn.fetch(

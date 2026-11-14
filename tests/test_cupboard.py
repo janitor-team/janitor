@@ -180,6 +180,74 @@ async def test_publish_history(aiohttp_client, aiohttp_server, db):
     assert resp.status == 200
 
 
+async def test_done(aiohttp_client, db):
+    from bs4 import BeautifulSoup
+
+    now = utcnow()
+    async with db.acquire() as conn:
+        await _insert_codebase(conn, "foo")
+        await _insert_run(
+            conn,
+            run_id="somerun",
+            codebase="foo",
+            start_time=now - timedelta(minutes=30),
+            finish_time=now,
+        )
+        await conn.execute(
+            "INSERT INTO publish (id, change_set, mode, result_code, revision, "
+            "codebase, timestamp) "
+            "VALUES ('pub', 'somerun', 'push', 'success', 'revid', 'foo', $1)",
+            now,
+        )
+    client = await create_client(aiohttp_client, db)
+
+    resp = await client.get("/cupboard/done")
+    assert resp.status == 200
+    soup = BeautifulSoup(await resp.text(), "html.parser")
+    today = now.date().isoformat()
+    since = [(i["value"], i["min"]) for i in soup.select("input#since")]
+    assert since == [(today, today)]
+    links = [a["href"] for a in soup.select("#history li > a")]
+    assert links == ["c/foo/somerun/"]
+
+
+async def test_generate_done_list(aiohttp_server):
+    from janitor.site.pkg import generate_done_list
+
+    captured = {}
+
+    async def handle_absorbed(request):
+        captured.update(request.query)
+        return web.json_response(
+            {
+                "runs": [{"id": "run-1", "absorbed_at": "2026-11-12T14:11:00Z"}],
+                "oldest": "2026-11-01T09:00:00Z",
+            }
+        )
+
+    app = web.Application()
+    app.router.add_get("/absorbed", handle_absorbed)
+    server = await aiohttp_server(app)
+
+    async with ClientSession() as client:
+        result = await generate_done_list(
+            client, str(server.make_url("/")), "foo", datetime(2026, 11, 12)
+        )
+
+    assert captured == {"campaign": "foo", "since": "2026-11-12T00:00:00+00:00"}
+    assert result == {
+        "oldest": datetime(2026, 11, 1, 9, 0, tzinfo=timezone.utc),
+        "runs": [
+            {
+                "id": "run-1",
+                "absorbed_at": datetime(2026, 11, 12, 14, 11, tzinfo=timezone.utc),
+            }
+        ],
+        "campaign": "foo",
+        "since": datetime(2026, 11, 12, tzinfo=timezone.utc),
+    }
+
+
 ADMIN_GROUP_CONFIG = 'oauth2_provider { admin_group: "admins" }\n'
 
 
