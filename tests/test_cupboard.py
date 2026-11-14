@@ -23,6 +23,7 @@ import aiohttp_jinja2
 import pytest
 from aiohttp import ClientSession, web
 from aiohttp.test_utils import make_mocked_request
+from bs4 import BeautifulSoup
 from jinja2 import Environment
 from yarl import URL
 
@@ -578,6 +579,174 @@ async def test_history_limit_zero_lists_no_runs(aiohttp_client, db):
     resp = await client.get("/cupboard/history?limit=0")
     assert resp.status == 200
     assert "somerun" not in await resp.text()
+
+
+async def _history_client(aiohttp_client, db):
+    async with db.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO worker (name, password) VALUES ('w1', 'x'), ('w2', 'x')"
+        )
+        now = utcnow()
+        for i, (campaign, result_code, worker, transient, minutes) in enumerate(
+            [
+                ("alpha", "success", "w1", None, 10),
+                ("beta", "build-failed", "w2", True, 30),
+                ("alpha", "worker-timeout", "w1", None, 20),
+                ("beta", "success", "w2", None, 40),
+                ("alpha", "nothing-to-do", "w1", None, 50),
+                ("beta", "nothing-new-to-do", "w2", None, 5),
+            ]
+        ):
+            await _insert_codebase(conn, f"cb{i}")
+            await _insert_run(
+                conn,
+                run_id=f"run-{i}",
+                codebase=f"cb{i}",
+                campaign=campaign,
+                start_time=now - timedelta(hours=i, minutes=minutes),
+                finish_time=now - timedelta(hours=i),
+            )
+            # nothing-new-to-do needs the run it resumed from
+            await conn.execute(
+                "UPDATE run SET worker = $1, failure_transient = $2, result_code = $3, "
+                "resume_from = CASE WHEN $3 = 'nothing-new-to-do' THEN 'run-0' END "
+                "WHERE id = $4",
+                worker,
+                transient,
+                result_code,
+                f"run-{i}",
+            )
+    config = 'campaign { name: "alpha" }\ncampaign { name: "beta" }\n'
+    client = await create_client(aiohttp_client, db, config=config)
+
+    async def get(query):
+        resp = await client.get("/cupboard/history?" + query)
+        assert resp.status == 200, await resp.text()
+        soup = BeautifulSoup(await resp.text(), "html.parser")
+        rows = soup.select("#history tbody tr")
+        return soup, [row.select("td")[1].get_text(strip=True) for row in rows]
+
+    return client, get
+
+
+async def test_history_filters(aiohttp_client, db):
+    _client, get = await _history_client(aiohttp_client, db)
+
+    async def codebases(query):
+        return (await get(query))[1]
+
+    everything = ["cb0", "cb1", "cb2", "cb3", "cb4", "cb5"]
+    soup, rows = await get("")
+    assert rows == everything
+    intro = [p.get_text(" ", strip=True) for p in soup.select("#history > p")]
+    assert intro[0] == "A log of runs the Janitor has processed, most recent first."
+    assert intro[-1] == "Last 100 runs:"
+    assert await codebases("campaign=alpha") == ["cb0", "cb2", "cb4"]
+    assert await codebases("campaign=gamma") == []
+    assert await codebases("result_code=success") == ["cb0", "cb3"]
+    assert await codebases("codebase=cb1") == ["cb1"]
+    assert await codebases("worker=w2") == ["cb1", "cb3", "cb5"]
+    assert await codebases("transient=true") == ["cb1", "cb2"]
+    assert await codebases("transient=false") == ["cb0", "cb3", "cb4", "cb5"]
+    assert await codebases("hide_success=true") == ["cb1", "cb2"]
+    assert await codebases("hide_success=true&campaign=beta") == ["cb1"]
+    empty = "campaign=&result_code=&codebase=&worker=&transient=&hide_success="
+    assert await codebases(empty) == everything
+
+    soup, _ = await get("campaign=gamma&codebase=%22it%27s%22&transient=false")
+    form = {
+        "campaign": [o["value"] for o in soup.select("#filter-campaign [selected]")],
+        "codebase": [i["value"] for i in soup.select("#filter-codebase")],
+        "transient": [o["value"] for o in soup.select("#filter-transient [selected]")],
+        "hide_success": soup.select("#filter-hide-success[checked]"),
+    }
+    assert form == {
+        "campaign": ["gamma"],
+        "codebase": ['"it\'s"'],
+        "transient": ["false"],
+        "hide_success": [],
+    }
+
+
+async def test_history_sort(aiohttp_client, db):
+    _client, get = await _history_client(aiohttp_client, db)
+
+    async def codebases(query):
+        return (await get(query))[1]
+
+    newest = ["cb0", "cb1", "cb2", "cb3", "cb4", "cb5"]
+    assert await codebases("sort=finish_time&order=asc") == newest[::-1]
+    assert await codebases("sort=campaign") == [
+        "cb0",
+        "cb2",
+        "cb4",
+        "cb1",
+        "cb3",
+        "cb5",
+    ]
+    by_duration = ["cb4", "cb3", "cb1", "cb2", "cb0", "cb5"]
+    assert await codebases("sort=duration") == by_duration
+    assert await codebases("sort=duration&order=asc") == by_duration[::-1]
+    assert await codebases("sort=result_code") == [
+        "cb1",
+        "cb5",
+        "cb4",
+        "cb0",
+        "cb3",
+        "cb2",
+    ]
+
+    soup, _ = await get("hide_success=true&campaign=&sort=duration&offset=1")
+    headers = {a.get_text(): a["href"] for a in soup.select("#history thead th a")}
+    assert headers == {
+        "Finish time": "/cupboard/history?hide_success=true&sort=finish_time&order=desc",
+        "Codebase": "/cupboard/history?hide_success=true&sort=codebase&order=asc",
+        "Campaign": "/cupboard/history?hide_success=true&sort=campaign&order=asc",
+        "Duration": "/cupboard/history?hide_success=true&sort=duration&order=asc",
+        "Result": "/cupboard/history?hide_success=true&sort=result_code&order=asc",
+    }
+    arrows = [th.get_text(" ", strip=True) for th in soup.select("#history thead th")]
+    assert arrows == [
+        "Finish time",
+        "Codebase",
+        "Campaign",
+        "Worker",
+        "Duration \u25bc",
+        "Result",
+        "Description",
+    ]
+    hidden = soup.select("#history-filters input[type=hidden]")
+    assert {i["name"]: i["value"] for i in hidden} == {"sort": "duration"}
+    clear = soup.find("a", string="Clear filters")
+    assert clear["href"] == "/cupboard/history?sort=duration"
+    intro = [p.get_text(" ", strip=True) for p in soup.select("#history > p")]
+    assert intro[0] == "A log of runs the Janitor has processed."
+    assert intro[-1] == "Up to 100 runs:"
+
+    soup, _ = await get("sort=finish_time&order=asc")
+    assert soup.select("#history thead th")[0].get_text(" ", strip=True) == (
+        "Finish time \u25b2"
+    )
+
+
+async def test_history_bad_parameters(aiohttp_client, db):
+    client, _get = await _history_client(aiohttp_client, db)
+    answers = {}
+    for query in ["sort=id", "order=up", "transient=maybe"]:
+        resp = await client.get("/cupboard/history?" + query)
+        answers[query] = (resp.status, await resp.json())
+    assert answers == {
+        "sort=id": (
+            400,
+            {
+                "sort": [
+                    "Must be one of: finish_time, codebase, campaign, duration, result_code."
+                ]
+            },
+        ),
+        "order=up": (400, {"order": ["Must be one of: asc, desc."]}),
+        "transient=maybe": (400, {"transient": ["Not a valid boolean."]}),
+    }
 
 
 async def test_write_history_shapes_publisher_rows_for_the_template(aiohttp_server):

@@ -16,6 +16,7 @@
 
 """Serve the Janitor cupboard site."""
 
+import json
 import logging
 import re
 from collections.abc import Mapping
@@ -28,6 +29,7 @@ import asyncpg
 from aiohttp import ClientSession, web
 from aiohttp.web_middlewares import normalize_path_middleware
 from jinja2 import select_autoescape
+from marshmallow import Schema, ValidationError, fields, validate
 from yarl import URL
 
 from janitor.artifacts import ArtifactsMissing
@@ -36,6 +38,7 @@ from janitor.site import template_loader
 from janitor.vcs import get_vcs_managers_from_config
 
 from .. import (
+    TRANSIENT_ERROR_RESULT_CODES,
     check_admin,
     check_logged_in,
     is_admin,
@@ -59,20 +62,125 @@ async def handle_rejected(request):
         return await generate_rejected(conn, request.app["config"], campaign=campaign)
 
 
+# Sort key: (SQL expression, order of the first click on its header)
+HISTORY_SORT_COLUMNS = {
+    "finish_time": ("finish_time", "desc"),
+    "codebase": ("codebase", "asc"),
+    "campaign": ("suite", "asc"),
+    "duration": ("finish_time - start_time", "desc"),
+    "result_code": ("result_code", "asc"),
+}
+
+HISTORY_FILTERS = [
+    "campaign",
+    "result_code",
+    "codebase",
+    "worker",
+    "transient",
+    "hide_success",
+]
+
+
+class HistoryQuerySchema(Schema):
+    sort = fields.Str(
+        load_default="finish_time", validate=validate.OneOf(HISTORY_SORT_COLUMNS)
+    )
+    order = fields.Str(validate=validate.OneOf(["asc", "desc"]))
+    campaign = fields.Str()
+    result_code = fields.Str()
+    codebase = fields.Str()
+    worker = fields.Str()
+    transient = fields.Bool()
+    hide_success = fields.Bool()
+
+
 @routes.get("/cupboard/history", name="history")
 @html_template("cupboard/history.html", headers={"Vary": "Cookie"})
 async def handle_history(request):
     limit = int(request.query.get("limit", "100"))
     offset = int(request.query.get("offset", "0"))
+    schema = HistoryQuerySchema()
+    # The filter form sends empty fields, so an empty value is no filter.
+    given = {
+        name: request.query[name] for name in schema.fields if request.query.get(name)
+    }
+    try:
+        params = schema.load(given)
+    except ValidationError as e:
+        raise web.HTTPBadRequest(
+            text=json.dumps(e.messages), content_type="application/json"
+        ) from e
+    sort = params["sort"]
+    sort_expr, first_order = HISTORY_SORT_COLUMNS[sort]
+    order = params.get("order", first_order)
+
+    conditions = []
+    args: list[Any] = []
+    for name, column in [
+        ("campaign", "suite"),
+        ("result_code", "result_code"),
+        ("codebase", "codebase"),
+        ("worker", "worker"),
+    ]:
+        if name in params:
+            args.append(params[name])
+            conditions.append(f"{column} = ${len(args)}")
+    if "transient" in params:
+        # With no transient flag, fall back to the codes classify_result_code uses.
+        args.append(TRANSIENT_ERROR_RESULT_CODES)
+        transient = (
+            "(failure_transient IS TRUE OR (failure_transient IS NULL"
+            f" AND result_code = ANY(${len(args)}::text[])))"
+        )
+        conditions.append(transient if params["transient"] else f"NOT {transient}")
+    if params.get("hide_success"):
+        conditions.append(
+            "result_code NOT IN ('success', 'nothing-to-do', 'nothing-new-to-do')"
+        )
+    order_by = [f"{sort_expr} {order.upper()}"]
+    if sort != "finish_time":
+        order_by.append("finish_time DESC")
 
     query = """\
 SELECT finish_time, codebase, suite, worker_link,
 worker as worker_name, finish_time - start_time AS duration,
-result_code, id, description, failure_transient FROM run
-ORDER BY finish_time DESC LIMIT $1 OFFSET $2"""
+result_code, id, description, failure_transient FROM run"""
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    args.extend([limit, offset])
+    query += (
+        f" ORDER BY {', '.join(order_by)} LIMIT ${len(args) - 1} OFFSET ${len(args)}"
+    )
     async with request.app["pool"].acquire() as conn:
-        runs = await conn.fetch(query, limit, offset)
-    return {"count": limit, "history": runs}
+        runs = await conn.fetch(query, *args)
+
+    unset = [name for name in HISTORY_FILTERS if name not in given]
+    sort_url = request.rel_url.without_query_params("offset", *unset)
+    sort_links = {}
+    for name, (_expr, first) in HISTORY_SORT_COLUMNS.items():
+        if name == sort:
+            next_order = "asc" if order == "desc" else "desc"
+        else:
+            next_order = first
+        sort_links[name] = {
+            "url": str(sort_url.update_query(sort=name, order=next_order)),
+            "order": order if name == sort else None,
+        }
+    return {
+        "count": limit,
+        "history": runs,
+        "newest_first": sort == "finish_time" and order == "desc",
+        "filters": {name: params.get(name) for name in HISTORY_FILTERS},
+        "kept_params": {
+            name: request.query[name]
+            for name in ["sort", "order", "limit"]
+            if name in request.query
+        },
+        "clear_filters_url": str(
+            request.rel_url.without_query_params("offset", *HISTORY_FILTERS)
+        ),
+        "sort_links": sort_links,
+    }
 
 
 @routes.get("/cupboard/reprocess-logs", name="reprocess-logs")
