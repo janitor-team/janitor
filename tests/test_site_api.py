@@ -14,15 +14,18 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import logging
 from datetime import timedelta
 
 import aiozipkin
 import pytest
 from aiohttp import web
+from aiohttp.test_utils import unused_port
 
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
 from janitor.site.api import create_app
+from janitor.vcs import RemoteGitVcsManager
 
 from .conftest import _insert_codebase, _insert_run
 
@@ -45,12 +48,13 @@ async def create_client(
     differ_url=None,
     user=None,
     config="",
+    vcs_managers=None,
 ):
     config = read_config_string(config)
     app = create_app(
         publisher_url=publisher_url,
         runner_url=runner_url,
-        vcs_managers={},
+        vcs_managers=vcs_managers or {},
         differ_url=differ_url,
         config=config,
         db=db,
@@ -366,6 +370,86 @@ async def test_reschedule_returns_runner_result(aiohttp_client, db):
     body = await resp.json()
     assert body["codebase"] == "foo"
     assert body["campaign"] == "mycampaign"
+
+
+async def _diff_store(aiohttp_server, status, text):
+    store_app = web.Application()
+
+    async def _handle_diff(request):
+        return web.Response(status=status, text=text)
+
+    store_app.router.add_get("/{codebase}/diff", _handle_diff)
+    return await aiohttp_server(store_app)
+
+
+async def _diff_runner(aiohttp_client):
+    runner_app = web.Application()
+
+    async def _handle_run(request):
+        branch = {
+            "role": "main",
+            "base_revision": "git-v1:" + "1" * 40,
+            "revision": "git-v1:" + "2" * 40,
+        }
+        return web.json_response(
+            {"codebase": "foo", "vcs_type": "git", "result_branches": [branch]}
+        )
+
+    runner_app.router.add_get("/runs/r1", _handle_run)
+    runner_client = await aiohttp_client(runner_app)
+    return str(runner_client.make_url("/"))
+
+
+@pytest.mark.parametrize(
+    "store_status,store_text,status,text,logged",
+    [
+        (200, "diff --git a/x b/x\n", 200, "diff --git a/x b/x\n", []),
+        (
+            500,
+            "git diff failed: fatal: bad object 1111",
+            502,
+            "Unable to retrieve diff",
+            ["Unable to retrieve diff"],
+        ),
+    ],
+    ids=["ok", "error-status"],
+)
+async def test_run_diff(
+    aiohttp_client,
+    aiohttp_server,
+    db,
+    caplog,
+    store_status,
+    store_text,
+    status,
+    text,
+    logged,
+):
+    store = await _diff_store(aiohttp_server, store_status, store_text)
+    client = await create_client(
+        aiohttp_client,
+        db,
+        runner_url=await _diff_runner(aiohttp_client),
+        vcs_managers={"git": RemoteGitVcsManager(str(store.make_url("/")))},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        resp = await client.get("/run/r1/diff", headers={"Accept": "text/plain"})
+        assert (resp.status, await resp.text()) == (status, text)
+    assert [m.partition(": ")[0] for m in caplog.messages] == logged
+
+
+async def test_run_diff_store_unreachable(aiohttp_client, db):
+    store_url = f"http://127.0.0.1:{unused_port()}/"
+    client = await create_client(
+        aiohttp_client,
+        db,
+        runner_url=await _diff_runner(aiohttp_client),
+        vcs_managers={"git": RemoteGitVcsManager(store_url)},
+    )
+
+    resp = await client.get("/run/r1/diff", headers={"Accept": "text/plain"})
+    assert (resp.status, await resp.text()) == (502, "Unable to retrieve diff")
 
 
 async def test_admin_action_without_oauth2_provider_is_unauthorized(aiohttp_client, db):
