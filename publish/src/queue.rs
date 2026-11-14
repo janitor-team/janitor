@@ -65,16 +65,21 @@ pub async fn process_queue_loop(
     // on a *recent completed* scan (see `run_publish_loop`): it never
     // creates proposals against a stale or incomplete view of what we
     // already own, which is exactly what the rate limiter depends on.
-    tokio::spawn(run_scan_loop(state.clone(), interval, modify_mp_limit));
+    let scan = tokio::spawn(run_scan_loop(state.clone(), interval, modify_mp_limit));
 
     if auto_publish {
-        run_publish_loop(state, interval, push_limit, require_binary_diff).await;
+        tokio::select! {
+            Err(e) = scan => std::panic::resume_unwind(e.into_panic()),
+            () = run_publish_loop(state, interval, push_limit, require_binary_diff) => {}
+        }
     } else {
         log::info!("Auto-publish disabled; running merge-proposal scan loop only");
         // Nothing to publish, but keep the process on the scan loop so a
         // no-auto-publish deployment still maintains merge proposals -
         // matching the previous single-loop behaviour.
-        std::future::pending::<()>().await;
+        if let Err(e) = scan.await {
+            std::panic::resume_unwind(e.into_panic());
+        }
     }
 }
 
