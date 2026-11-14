@@ -879,13 +879,14 @@ async fn get_codebase_names(State(state): State<Arc<AppState>>) -> Response {
 }
 
 /// `POST /codebases` -- bulk upsert codebases. Returns 200 with an
-/// empty object on success.
+/// empty object on success, or 400 with a reason for an invalid entry.
 #[utoipa::path(
     post,
     path = "/codebases",
     request_body = Vec<crate::database::CodebaseUpload>,
     responses(
         (status = 200, description = "Codebases were stored", body = EmptyResponse),
+        (status = 400, description = "Invalid codebase entry", body = ReasonResponse),
         (status = 500, description = "Database error", body = ErrorResponse),
     )
 )]
@@ -893,8 +894,25 @@ async fn update_codebases(
     State(state): State<Arc<AppState>>,
     Json(codebases): Json<Vec<crate::database::CodebaseUpload>>,
 ) -> Response {
+    // The schema needs a name or a branch_url, so this cannot be stored.
+    if codebases
+        .iter()
+        .any(|c| c.name.is_none() && c.branch_url.is_none() && c.url.is_none())
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ReasonResponse::new(
+                "Codebase with no branch_url or url must have a name",
+            )),
+        )
+            .into_response();
+    }
+
     match state.database.upload_codebases(&codebases).await {
         Ok(()) => Json(EmptyResponse {}).into_response(),
+        Err(crate::database::UploadCodebasesError::Invalid(reason)) => {
+            (StatusCode::BAD_REQUEST, Json(ReasonResponse::new(reason))).into_response()
+        }
         Err(e) => {
             log::error!("Failed to upload codebases: {}", e);
             db_error()
