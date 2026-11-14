@@ -66,6 +66,12 @@ struct Args {
     tee: bool,
 }
 
+/// The host Breezy asks credential stores for: IPv6 addresses go without brackets.
+fn breezy_host(url: &url::Url) -> Option<&str> {
+    url.host_str()
+        .map(|host| host.trim_start_matches('[').trim_end_matches(']'))
+}
+
 /// The URL the runner reaches this worker on: a host name, or an IPv4 or IPv6 address.
 fn worker_url(host: &str, port: u16) -> Result<url::Url, url::ParseError> {
     match host.parse::<std::net::Ipv6Addr>() {
@@ -142,7 +148,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         janitor_worker::client::Credentials::from_url(&base_url)
     };
 
-    let Some(host) = base_url.host_str() else {
+    let Some(host) = breezy_host(&base_url) else {
         eprintln!("Base URL {} has no host", base_url);
         std::process::exit(1);
     };
@@ -301,6 +307,19 @@ mod tests {
             ("worker.example.com", "http://worker.example.com:9821/"),
         ] {
             assert_eq!(worker_url(host, 9821).unwrap().as_str(), url);
+        }
+    }
+
+    #[test]
+    fn test_breezy_host() {
+        for (base_url, host) in [
+            ("http://192.0.2.1:9919/", "192.0.2.1"),
+            ("http://[2001:db8::1]:9919/", "2001:db8::1"),
+            ("http://[::ffff:192.0.2.1]:9919/", "::ffff:c000:201"),
+            ("http://runner.example.com:9919/", "runner.example.com"),
+        ] {
+            let base_url: url::Url = base_url.parse().unwrap();
+            assert_eq!(breezy_host(&base_url), Some(host));
         }
     }
 }
