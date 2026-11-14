@@ -68,7 +68,7 @@
                         <a href="/api/run/{{ run_id }}/debdiff?filter_boring=true">raw debdiff</a>,
                         <a href="/api/run/{{ run_id }}/diffoscope?filter_boring=true">diffoscope</a> (<a href="/api/run/{{ run_id }}/diffoscope">unfiltered</a>)
                     {% else %}
-                        binary diffs are not available (missing control run - {{ schedule_control_button(run.id, "schedule control run", id="schedule-control") }})
+                        binary diffs are not available (missing control run - {{ schedule_control_button(run.id, "schedule control run", id="schedule-control-diff", accesskey=None) }})
                     {% endif %}
                 </li>
             {% endif %}
