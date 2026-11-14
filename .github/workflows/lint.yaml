@@ -68,6 +68,21 @@ jobs:
             codespell
           codespell
 
+  shellcheck:
+    name: Shell script lint
+    runs-on: ubuntu-latest
+
+    # Steps to perform in job
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Shell script checks (shellcheck)
+        if: always()
+        run: |
+          set -x
+          make shellcheck
+
   dco:
     name: DCO sign-off check
     runs-on: ubuntu-latest
