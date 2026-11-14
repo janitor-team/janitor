@@ -182,7 +182,52 @@ fn test_role_branch_url_with_special_characters() {
     assert!(result_str.contains("feature") && result_str.contains("branch-name"));
 }
 
-// Skip branches_match tests as they require opening actual branches with breezyshim
+/// Serve /old (redirects to /new), /new and /other; record each User-Agent.
+async fn serve_redirect() -> (String, Arc<Mutex<Vec<String>>>) {
+    use axum::{http::HeaderMap, response::Redirect, routing::get, Router};
+    let agents = Arc::new(Mutex::new(Vec::new()));
+    let seen = agents.clone();
+    let app = Router::new()
+        .route("/old", get(|| async { Redirect::permanent("/new") }))
+        .route("/new", get(|| async { "" }))
+        .route("/other", get(|| async { "" }))
+        .layer(axum::middleware::from_fn(
+            move |headers: HeaderMap, req: axum::extract::Request, next: axum::middleware::Next| {
+                let seen = seen.clone();
+                async move {
+                    let agent = headers.get("user-agent").map(|v| v.to_str().unwrap());
+                    seen.lock().unwrap().push(agent.unwrap_or("").to_string());
+                    next.run(req).await
+                }
+            },
+        ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (base, agents)
+}
+
+#[tokio::test]
+async fn test_resolve_redirects_follows_http_redirect() {
+    let (base, agents) = serve_redirect().await;
+    let old = url::Url::parse(&format!("{}/old", base)).unwrap();
+    let client = http_client().unwrap();
+    assert_eq!(
+        resolve_redirects(&client, &old).await.as_str(),
+        format!("{}/new", base)
+    );
+    let agent = janitor::utils::service_user_agent("publish");
+    assert_eq!(*agents.lock().unwrap(), vec![agent.clone(), agent]);
+}
+
+#[tokio::test]
+async fn test_branches_match_different_http_branches() {
+    let (base, _agents) = serve_redirect().await;
+    let old = url::Url::parse(&format!("{}/old", base)).unwrap();
+    let other = url::Url::parse(&format!("{}/other", base)).unwrap();
+    let client = http_client().unwrap();
+    assert!(!branches_match(Some(&old), Some(&other), None, &client).await);
+}
 
 // Skip get_merged_by_user_url tests as they require breezyshim forge operations
 
