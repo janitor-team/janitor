@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS merge_proposal (
    codebase text references codebase(name) on delete set null,
    url text not null,
    target_branch_url text,
-   status merge_proposal_status NULL DEFAULT NULL,
+   status merge_proposal_status NOT NULL,
    revision text,
    merged_by text,
    merged_at timestamp,
