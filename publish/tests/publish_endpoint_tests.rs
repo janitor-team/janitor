@@ -1099,6 +1099,12 @@ test_with_database! {
         seed_absorbed_run(test_db.pool(), "r-early-lf", "alpha", "lintian-fixes", "rev-early", early).await;
         seed_absorbed_run(test_db.pool(), "r-mid-lf", "beta", "lintian-fixes", "rev-mid", mid).await;
         seed_absorbed_run(test_db.pool(), "r-late-other", "gamma", "other-campaign", "rev-late", late).await;
+        seed_absorbed_run(test_db.pool(), "r-open-lf", "delta", "lintian-fixes", "rev-open", late).await;
+        // A proposal that is still open is not absorbed.
+        sqlx::query("UPDATE merge_proposal SET status = 'open', merged_at = NULL, merged_by = NULL WHERE revision = 'rev-open'")
+            .execute(test_db.pool())
+            .await
+            .unwrap();
 
         let app = build_app(test_db.pool().clone()).await;
 
