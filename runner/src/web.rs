@@ -1,15 +1,14 @@
 use crate::api_types::{
     ActiveRunResponse, AssignRejectedResponse, AssignmentBranch, AssignmentBuild,
     AssignmentCodemod, AssignmentResponse, AssignmentTargetRepository, BuildAssignmentConfig,
-    CleanupRunsResponse, CurrentStageResponse, DebianBuildAssignment, EmptyResponse, ErrorResponse,
-    FinishConflictResponse, FinishResponse, GenericBuildAssignment, MessageResponse, PeekResponse,
-    PublishStatusUpdate, QueueEntry, QueuePositionResponse, QueueStatsResponse,
-    RateLimitedResponse, ReasonResponse, ResultBranchEntry, ResumeAssignment, ResumeChainResponse,
-    ResumeCheckResponse, ResumeDescendantsResponse, ResumeValidationResponse, RunDetailResponse,
-    RunFollowup, RunFollowupsResponse, RunHealthSummary, RunListResponse, RunSummary,
-    ScheduleControlResponse, ScheduleResponse, ScheduledCandidate, StatusResponse,
-    UploadCandidatesResponse, WatchdogHealthResponse, WorkerInfo, WorkerListResponse,
-    WorkerSummary,
+    CleanupRunsResponse, CurrentStageResponse, EmptyResponse, ErrorResponse,
+    FinishConflictResponse, FinishResponse, MessageResponse, PeekResponse, PublishStatusUpdate,
+    QueueEntry, QueuePositionResponse, QueueStatsResponse, RateLimitedResponse, ReasonResponse,
+    ResultBranchEntry, ResumeAssignment, ResumeChainResponse, ResumeCheckResponse,
+    ResumeDescendantsResponse, ResumeValidationResponse, RunDetailResponse, RunFollowup,
+    RunFollowupsResponse, RunHealthSummary, RunListResponse, RunSummary, ScheduleControlResponse,
+    ScheduleResponse, ScheduledCandidate, StatusResponse, UploadCandidatesResponse,
+    WatchdogHealthResponse, WorkerInfo, WorkerListResponse, WorkerSummary,
 };
 use crate::{
     get_builder, metrics::MetricsCollector, ActiveRun, AppState, Backchannel, BuilderResult,
@@ -3705,6 +3704,28 @@ async fn compute_resume_from(
     }
 }
 
+/// Build target, build environment and build config for a queue item,
+/// as Python's `builder.kind`, `builder.build_env()` and `builder.config()`.
+async fn builder_config(
+    state: &AppState,
+    campaign: &janitor::config::Campaign,
+    queue_item: &QueueItem,
+) -> Result<
+    (&'static str, HashMap<String, String>, BuildAssignmentConfig),
+    crate::config_generator::Error,
+> {
+    let generator = crate::config_generator::get_config_generator(
+        &state.config,
+        campaign,
+        state.public_apt_archive_location.as_deref(),
+        state.public_dep_server_url.as_deref(),
+    )?;
+    let pool = state.database.pool();
+    let build_env = generator.build_env(pool, campaign, queue_item).await?;
+    let config = generator.config(pool, campaign, queue_item).await?;
+    Ok((generator.kind(), build_env, config))
+}
+
 /// `active_runs_path` is the path of the active runs collection, used
 /// for the `Location` header of the new run.
 async fn assign_work_internal(
@@ -4008,83 +4029,33 @@ async fn assign_work_internal(
         vcs_type: assignment.vcs_info.vcs_type.clone(),
     };
 
-    // Environment merged from config committer + command prefix
-    // (DEB_UPDATE_CHANGELOG=auto ...). Copy into both codemod and
-    // build environments so each execution context has a consistent
-    // view.
-    let mut env: BTreeMap<String, String> = crate::committer_env(Some(state.config.committer()))
-        .into_iter()
-        .collect();
-    env.extend(extra_env);
-
-    // The worker's `DebianBuildConfig` reads these hyphen-cased keys,
-    // and a missing `build-command` causes
-    // `worker/src/debian/build.rs::build` to silently fall through to
-    // a no-op (no debian_build row, no debdiffs) -- every run since
-    // this Rust port stood up has hit that path.
-    //
-    // The fields of `DebianBuildAssignment` match
-    // `janitor::api::worker::DebianBuildConfig`'s serde-renamed names so
-    // the JSON the worker sees deserialises directly.
-    let (build_target, build_cfg) = if let Some(dcfg) = campaign_config.debian_build.as_ref() {
-        let dist = state
-            .config
-            .distribution
-            .iter()
-            .find(|d| d.name.as_deref() == Some(dcfg.base_distribution.as_str()));
-
-        let build_assignment = DebianBuildAssignment {
-            // Python: `campaign_config.debian_build.build_distribution
-            //          or campaign_config.name`.
-            build_distribution: dcfg
-                .build_distribution
-                .clone()
-                .unwrap_or_else(|| assignment.queue_item.campaign.to_string()),
-            build_suffix: dcfg.build_suffix.clone().unwrap_or_default(),
-            build_command: dcfg
-                .build_command
-                .clone()
-                .or_else(|| dist.and_then(|d| d.build_command.clone())),
-            chroot: dcfg
-                .chroot
-                .clone()
-                .or_else(|| dist.and_then(|d| d.chroot.clone())),
-            // When the runner has a `--public-apt-archive-location`,
-            // expand each campaign's `extra_build_distribution` (plus
-            // a `cs/{change_set}` entry, if any) into a fully formed
-            // `deb [trusted=yes] {url} {suite} main` line. The worker
-            // writes those verbatim into
-            // `/etc/apt/sources.list.d/sbuild-extra-repositories.list`;
-            // passing bare campaign names instead produces
-            // `Malformed line 1 in source list ... (type)` and aborts
-            // the build. Empty list when the URL isn't set.
-            extra_repositories: state
-                .public_apt_archive_location
-                .as_deref()
-                .map(|base| {
-                    let trimmed = base.trim_end_matches('/');
-                    let mut suites: Vec<String> = dcfg.extra_build_distribution.clone();
-                    if let Some(cs) = assignment.queue_item.change_set.as_deref() {
-                        suites.push(format!("cs/{}", cs));
-                    }
-                    suites
-                        .into_iter()
-                        .map(|suite| format!("deb [trusted=yes] {} {} main", trimmed, suite))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            dep_server_url: state.public_dep_server_url.clone(),
-        };
-
-        ("debian", BuildAssignmentConfig::Debian(build_assignment))
-    } else {
-        (
-            "generic",
-            BuildAssignmentConfig::Generic(GenericBuildAssignment {
-                dep_server_url: state.public_dep_server_url.clone(),
-            }),
-        )
+    let Some(campaign) = state.config.get_campaign(&assignment.queue_item.campaign) else {
+        log::error!(
+            "Campaign {} disappeared from the configuration",
+            assignment.queue_item.campaign
+        );
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "Unknown campaign");
     };
+    // TODO(jelmer): Release the claimed run on failure; Python didn't either.
+    let (build_target, build_env, build_cfg) =
+        match builder_config(&state, campaign, &assignment.queue_item).await {
+            Ok(v) => v,
+            Err(e) => {
+                log::error!(
+                    "Unable to generate build configuration for {}: {}",
+                    campaign.name(),
+                    e
+                );
+                return error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+            }
+        };
+    let build_env: BTreeMap<String, String> = build_env.into_iter().collect();
+
+    let mut env = build_env.clone();
+    if !state.config.committer().is_empty() {
+        env.extend(crate::committer_env(Some(state.config.committer())));
+    }
+    env.extend(extra_env);
 
     let codemod = AssignmentCodemod {
         command: clean_command.clone(),
@@ -4094,7 +4065,7 @@ async fn assign_work_internal(
     let build = AssignmentBuild {
         target: build_target.to_string(),
         config: build_cfg,
-        environment: env.clone(),
+        environment: build_env,
     };
 
     let skip_setup_validation = state
