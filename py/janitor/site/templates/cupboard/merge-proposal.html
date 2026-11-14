@@ -6,7 +6,7 @@
         {% include [campaign + "-sidebar.html", "generic/sidebar.html"] %}
     {% endif %}
 {% endblock sidebar %}
-{% from "run_util.html" import display_publish_result_code %}
+{% from "run_util.html" import display_publish_result_code, login_on_401 with context %}
 {% block page_title %}
     Cupboard - Merge proposal status - {{ proposal.url }}
 {% endblock page_title %}
@@ -14,7 +14,16 @@
     <script>
 $(document).ready(function() {
     $("#refresh").click(function() {
-       $.post("/api/refresh-proposal-status", { url: {{ proposal.url | tojson }} } );
+       function showStatus(text) {
+           $("#refresh").closest("li").after($("<li />").append($("<span role=\"status\" />").text(text)));
+           $("#refresh").remove();
+       }
+       $.post("/api/refresh-proposal-status", { url: {{ proposal.url | tojson }} }, function() {
+           showStatus("Refresh started.");
+       }).fail(function(response) {
+           {{ login_on_401() }}
+           showStatus("Failed to refresh: " + response.responseText);
+       });
     });
 });
     </script>
