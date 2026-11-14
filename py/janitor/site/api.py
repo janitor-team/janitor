@@ -63,8 +63,31 @@ from .setup import setup_postgres
 routes = web.RouteTableDef()
 
 
+async def request_backend(request, method, url, backend, **kwargs):
+    try:
+        async with request.app["http_client_session"].request(
+            method, url, **kwargs
+        ) as resp:
+            return web.Response(
+                body=await resp.read(),
+                status=resp.status,
+                content_type=resp.content_type,
+                charset=resp.charset,
+            )
+    except ClientConnectorError:
+        return web.json_response({"reason": f"unable to contact {backend}"}, status=502)
+    except asyncio.TimeoutError:
+        return web.json_response(
+            {"reason": f"timeout contacting {backend}"}, status=502
+        )
+
+
 class ReasonSchema(Schema):
     reason = fields.Str()
+
+
+class ErrorSchema(Schema):
+    error = fields.Str()
 
 
 class PublishRequestSchema(Schema):
@@ -297,10 +320,13 @@ async def handle_merge_proposal_change(request):
     post = await request.post()
 
     url = URL(request.app["publisher_url"]) / "merge-proposal"
-    async with request.app["http_client_session"].post(
-        url, data={"url": post["url"], "status": post["status"]}, raise_for_status=True
-    ):
-        return web.json_response({})
+    return await request_backend(
+        request,
+        "POST",
+        url,
+        "publisher",
+        data={"url": post["url"], "status": post["status"]},
+    )
 
 
 class RefreshProposalStatusSchema(Schema):
@@ -728,8 +754,9 @@ async def handle_runner_log_index(request):
 
 @docs(summary="Kill an active run")
 @response_schema(ActiveRunSchema(), 200, description="the killed run")
-@response_schema(ReasonSchema(), 410, description="worker has no active run")
-@response_schema(ReasonSchema(), 501, description="kill not supported")
+@response_schema(ReasonSchema(), 404, description="run is not active")
+@response_schema(ErrorSchema(), 410, description="worker has no active run")
+@response_schema(ErrorSchema(), 501, description="kill not supported")
 @routes.post("/active-runs/{run_id}/kill", name="run-kill")
 async def handle_runner_kill(request):
     span = aiozipkin.request_span(request)
@@ -738,33 +765,7 @@ async def handle_runner_kill(request):
     run_id = request.match_info["run_id"]
     with span.new_child("runner:kill"):
         url = URL(request.app["runner_url"]) / "kill" / run_id
-        try:
-            async with request.app["http_client_session"].post(url) as resp:
-                if resp.status == 501:
-                    return web.json_response(
-                        {
-                            "reason": await resp.text()
-                            or "kill not supported for this type of run"
-                        },
-                        status=501,
-                    )
-                if resp.status == 410:
-                    return web.json_response(
-                        {"reason": await resp.text() or "worker has no active run"},
-                        status=410,
-                    )
-                resp.raise_for_status()
-                return web.json_response(await resp.json(), status=resp.status)
-        except ContentTypeError as e:
-            return web.json_response(
-                {"reason": f"runner returned error {e}"}, status=400
-            )
-        except ClientConnectorError:
-            return web.json_response({"reason": "unable to contact runner"}, status=502)
-        except asyncio.TimeoutError:
-            return web.Response(text="timeout contacting runner", status=502)
-        except ClientResponseError as e:
-            return web.json_response({"reason": str(e)}, status=502)
+        return await request_backend(request, "POST", url, "runner")
 
 
 @docs(
@@ -813,15 +814,7 @@ async def handle_publish_id(request):
     span = aiozipkin.request_span(request)
     with span.new_child("publisher:publish"):
         url = URL(request.app["publisher_url"]) / "publish" / publish_id
-        try:
-            async with request.app["http_client_session"].get(url) as resp:
-                return web.json_response(await resp.json())
-        except ContentTypeError as e:
-            return web.Response(text=f"runner returned error {e}", status=400)
-        except ClientConnectorError:
-            return web.Response(text="unable to contact runner", status=502)
-        except asyncio.TimeoutError:
-            return web.Response(text="timeout contacting runner", status=502)
+        return await request_backend(request, "GET", url, "publisher")
 
 
 class QueueAssignmentItemSchema(Schema):
