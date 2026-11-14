@@ -358,6 +358,20 @@ pub struct RunFollowupsResponse {
     pub followups: Vec<RunFollowup>,
 }
 
+/// Response for `POST /runs/{id}/reprocess-logs`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ReprocessLogsResponse {
+    /// Whether the new analysis differs from the stored result.
+    pub changed: bool,
+    /// Description of the new analysis, or the stored one if unchanged.
+    pub description: Option<String>,
+    /// Failure details of the new analysis, or the stored ones if unchanged.
+    #[schema(value_type = Option<Object>)]
+    pub failure_details: Option<serde_json::Value>,
+    /// Result code of the new analysis, or the stored one if unchanged.
+    pub result_code: String,
+}
+
 /// Response for `POST /runs/{id}`; also sent on the `publish-status`
 /// pub/sub channel.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
