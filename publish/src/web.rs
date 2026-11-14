@@ -26,6 +26,11 @@ fn error_response(status: StatusCode, msg: impl Into<String>) -> Response {
     (status, Json(ErrorResponse::new(msg))).into_response()
 }
 
+/// The response for a failed database operation.
+fn db_error() -> Response {
+    error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
+}
+
 /// Build a 404 response.
 fn not_found(body: NotFoundResponse) -> Response {
     (StatusCode::NOT_FOUND, Json(body)).into_response()
@@ -48,14 +53,24 @@ pub struct MergeProposalListEntry {
 }
 
 /// Shared helper for the three `/merge-proposals` listing endpoints.
-/// Runs a `SELECT ... FROM merge_proposal LEFT JOIN run` scoped by the
-/// optional codebase and campaign filters.
-async fn fetch_merge_proposal_list(
+/// Lists merge proposals, optionally restricted to those from runs of a
+/// codebase and/or campaign.
+async fn merge_proposal_list(
     conn: &sqlx::PgPool,
     codebase: Option<&CodebaseName>,
     campaign: Option<&Campaign>,
-) -> Result<Vec<MergeProposalListEntry>, sqlx::Error> {
-    let mut query = String::from(
+) -> Response {
+    // DISTINCT ON needs finish_time in the select list to order by it.
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            Option<String>,
+            Option<CodebaseName>,
+            Option<Campaign>,
+            Option<chrono::DateTime<chrono::Utc>>,
+        ),
+    >(
         "SELECT DISTINCT ON (merge_proposal.url) \
             merge_proposal.url AS url, \
             merge_proposal.status::text AS status, \
@@ -65,52 +80,39 @@ async fn fetch_merge_proposal_list(
          FROM merge_proposal \
          LEFT JOIN run \
             ON merge_proposal.revision = run.revision \
-            AND run.result_code = 'success'",
-    );
-    let mut conditions = Vec::new();
-    if codebase.is_some() {
-        conditions.push(format!("run.codebase = ${}", conditions.len() + 1));
-    }
-    if campaign.is_some() {
-        conditions.push(format!("run.suite = ${}", conditions.len() + 1));
-    }
-    if !conditions.is_empty() {
-        query.push_str(" WHERE ");
-        query.push_str(&conditions.join(" AND "));
-    }
-    query.push_str(" ORDER BY merge_proposal.url, run.finish_time DESC");
-
-    // The DISTINCT ON requires we select finish_time so we can sort
-    // by it inside the same query, but we don't return it. Use a
-    // FromRow-friendly tuple and project.
-    let mut q = sqlx::query_as::<
-        _,
-        (
-            String,
-            Option<String>,
-            Option<CodebaseName>,
-            Option<Campaign>,
-            Option<chrono::DateTime<chrono::Utc>>,
-        ),
-    >(sqlx::AssertSqlSafe(&*query));
-    if let Some(cb) = codebase {
-        q = q.bind(cb);
-    }
-    if let Some(c) = campaign {
-        q = q.bind(c);
-    }
-    let rows = q.fetch_all(conn).await?;
-    Ok(rows
-        .into_iter()
-        .map(
-            |(url, status, codebase, campaign, _)| MergeProposalListEntry {
-                url,
-                status,
+            AND run.result_code = 'success' \
+         WHERE ($1::text IS NULL OR run.codebase = $1) \
+            AND ($2::text IS NULL OR run.suite = $2) \
+         ORDER BY merge_proposal.url, run.finish_time DESC",
+    )
+    .bind(codebase)
+    .bind(campaign)
+    .fetch_all(conn)
+    .await;
+    match rows {
+        Ok(rows) => Json(
+            rows.into_iter()
+                .map(
+                    |(url, status, codebase, campaign, _)| MergeProposalListEntry {
+                        url,
+                        status,
+                        codebase,
+                        campaign,
+                    },
+                )
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Err(e) => {
+            log::error!(
+                "Error fetching merge proposals (codebase: {:?}, campaign: {:?}): {}",
                 codebase,
                 campaign,
-            },
-        )
-        .collect())
+                e
+            );
+            db_error()
+        }
+    }
 }
 
 #[utoipa::path(
@@ -126,17 +128,7 @@ async fn get_merge_proposals_by_campaign(
     State(state): State<Arc<AppState>>,
     Path(campaign): Path<Campaign>,
 ) -> Response {
-    match fetch_merge_proposal_list(&state.conn, None, Some(&campaign)).await {
-        Ok(rows) => Json(rows).into_response(),
-        Err(e) => {
-            log::error!(
-                "Error fetching merge proposals for campaign {}: {}",
-                campaign,
-                e
-            );
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
-        }
-    }
+    merge_proposal_list(&state.conn, None, Some(&campaign)).await
 }
 
 /// Query parameters for `GET /c/{codebase}/merge-proposals`.
@@ -164,17 +156,7 @@ async fn get_merge_proposals_by_codebase(
     Path(codebase): Path<CodebaseName>,
     Query(params): Query<CodebaseMergeProposalsQuery>,
 ) -> Response {
-    match fetch_merge_proposal_list(&state.conn, Some(&codebase), params.campaign.as_ref()).await {
-        Ok(rows) => Json(rows).into_response(),
-        Err(e) => {
-            log::error!(
-                "Error fetching merge proposals for codebase {}: {}",
-                codebase,
-                e
-            );
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
-        }
-    }
+    merge_proposal_list(&state.conn, Some(&codebase), params.campaign.as_ref()).await
 }
 
 #[utoipa::path(
@@ -186,13 +168,7 @@ async fn get_merge_proposals_by_codebase(
     )
 )]
 async fn list_merge_proposals(State(state): State<Arc<AppState>>) -> Response {
-    match fetch_merge_proposal_list(&state.conn, None, None).await {
-        Ok(rows) => Json(rows).into_response(),
-        Err(e) => {
-            log::error!("Error fetching merge proposals: {}", e);
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
-        }
-    }
+    merge_proposal_list(&state.conn, None, None).await
 }
 
 /// Response structure for absorbed runs.
@@ -260,7 +236,7 @@ async fn absorbed(
         None => None,
     };
 
-    let mut query = String::from(
+    let query_result = sqlx::query_as::<_, AbsorbedRun>(
         r#"
         SELECT
             mode,
@@ -274,33 +250,16 @@ async fn absorbed(
             merged_by,
             merge_proposal_url
         FROM absorbed_runs
+        WHERE ($1::timestamptz IS NULL OR absorbed_at >= $1)
+            AND ($2::text IS NULL OR campaign = $2)
+        ORDER BY absorbed_at DESC
         "#,
-    );
-
-    let mut conditions = Vec::new();
-    let mut idx = 0;
-    if since.is_some() {
-        idx += 1;
-        conditions.push(format!("absorbed_at >= ${}", idx));
-    }
-    if params.campaign.is_some() {
-        idx += 1;
-        conditions.push(format!("campaign = ${}", idx));
-    }
-    if !conditions.is_empty() {
-        query.push_str(" WHERE ");
-        query.push_str(&conditions.join(" AND "));
-    }
-    query.push_str(" ORDER BY absorbed_at DESC");
-
-    let mut q = sqlx::query_as::<_, AbsorbedRun>(sqlx::AssertSqlSafe(&*query));
-    if let Some(since) = since {
-        q = q.bind(since);
-    }
-    if let Some(campaign) = params.campaign.as_ref() {
-        q = q.bind(campaign);
-    }
-    let runs = match q.fetch_all(&state.conn).await {
+    )
+    .bind(since)
+    .bind(params.campaign.as_ref())
+    .fetch_all(&state.conn)
+    .await;
+    let runs = match query_result {
         Ok(rows) => rows,
         Err(e) => {
             log::error!("Failed to fetch absorbed runs: {}", e);
@@ -317,20 +276,13 @@ async fn absorbed(
     let oldest = if runs.is_empty() {
         None
     } else {
-        let oldest_result: Result<Option<chrono::DateTime<chrono::Utc>>, _> =
-            if let Some(campaign) = params.campaign.as_ref() {
-                sqlx::query_scalar(
-                    "SELECT MIN(absorbed_at) AT TIME ZONE 'UTC' \
-                     FROM absorbed_runs WHERE campaign = $1",
-                )
-                .bind(campaign)
-                .fetch_one(&state.conn)
-                .await
-            } else {
-                sqlx::query_scalar("SELECT MIN(absorbed_at) AT TIME ZONE 'UTC' FROM absorbed_runs")
-                    .fetch_one(&state.conn)
-                    .await
-            };
+        let oldest_result: Result<Option<chrono::DateTime<chrono::Utc>>, _> = sqlx::query_scalar(
+            "SELECT MIN(absorbed_at) AT TIME ZONE 'UTC' FROM absorbed_runs \
+             WHERE $1::text IS NULL OR campaign = $1",
+        )
+        .bind(params.campaign.as_ref())
+        .fetch_one(&state.conn)
+        .await;
         match oldest_result {
             Ok(oldest) => oldest,
             Err(e) => {
@@ -483,7 +435,7 @@ async fn get_policy(State(state): State<Arc<AppState>>, Path(name): Path<String>
             Ok(row) => row,
             Err(e) => {
                 log::error!("Error fetching policy {}: {}", name, e);
-                return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+                return db_error();
             }
         };
 
@@ -502,7 +454,7 @@ async fn get_policy(State(state): State<Arc<AppState>>, Path(name): Path<String>
         Ok(map) => map,
         Err(e) => {
             log::error!("Error reading per-branch policy for {}: {}", name, e);
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+            return db_error();
         }
     };
 
@@ -680,7 +632,7 @@ async fn put_policy(
         }
         Err(e) => {
             log::error!("Error creating/updating policy {}: {}", name, e);
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
+            db_error()
         }
     }
 }
@@ -705,7 +657,7 @@ async fn put_policies(
         Ok(tx) => tx,
         Err(e) => {
             log::error!("Failed to begin transaction: {}", e);
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+            return db_error();
         }
     };
 
@@ -730,12 +682,12 @@ async fn put_policies(
     {
         log::error!("Failed to prune obsolete policies: {}", e);
         let _ = tx.rollback().await;
-        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+        return db_error();
     }
 
     if let Err(e) = tx.commit().await {
         log::error!("Failed to commit transaction: {}", e);
-        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+        return db_error();
     }
 
     Json(EmptyResponse {}).into_response()
@@ -909,7 +861,7 @@ async fn update_merge_proposal(
                 form.url,
                 e
             );
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+            return db_error();
         }
     };
 
@@ -926,7 +878,7 @@ async fn update_merge_proposal(
                     form.url,
                     e
                 );
-                return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+                return db_error();
             }
         };
 
@@ -1053,12 +1005,12 @@ async fn update_merge_proposal(
             .await
     {
         log::error!("Error updating merge proposal {} status: {}", form.url, e);
-        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+        return db_error();
     }
 
     if let Err(e) = tx.commit().await {
         log::error!("Error committing merge proposal {} update: {}", form.url, e);
-        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+        return db_error();
     }
 
     log::info!("Successfully updated merge proposal: {}", form.url);
@@ -1427,7 +1379,7 @@ async fn publish(
                 campaign,
                 e
             );
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+            return db_error();
         }
     };
 
@@ -1440,7 +1392,7 @@ async fn publish(
                 campaign,
                 e
             );
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+            return db_error();
         }
     };
     if policy_lookup.is_none() && form.mode.is_none() {
@@ -1816,7 +1768,7 @@ async fn check_stragglers(
         Ok(urls) => urls,
         Err(e) => {
             log::error!("Failed to load outdated proposal info URLs: {}", e);
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+            return db_error();
         }
     };
 
@@ -2064,13 +2016,7 @@ async fn get_rate_limit(
         }
     };
 
-    let remaining = crate::rate_limit_remaining(current_open, max_open);
-    Json(BucketRateLimit {
-        open: current_open,
-        max_open,
-        remaining,
-    })
-    .into_response()
+    Json(BucketRateLimit::new(current_open, max_open)).into_response()
 }
 
 #[derive(serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
@@ -2078,6 +2024,16 @@ struct BucketRateLimit {
     open: Option<usize>,
     max_open: Option<usize>,
     remaining: Option<usize>,
+}
+
+impl BucketRateLimit {
+    fn new(open: Option<usize>, max_open: Option<usize>) -> Self {
+        Self {
+            open,
+            max_open,
+            remaining: crate::rate_limit_remaining(open, max_open),
+        }
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
@@ -2103,36 +2059,34 @@ struct RateLimitsInfo {
     )
 )]
 async fn get_all_rate_limits(State(state): State<Arc<AppState>>) -> Response {
-    let proposals_per_bucket: HashMap<String, BucketRateLimit> =
-        match state.bucket_rate_limiter.lock() {
-            Ok(limiter) => {
-                let stats = limiter.get_stats();
-                let mut out = HashMap::new();
-                if let Some(stats) = stats {
-                    for (bucket, current_open) in stats.per_bucket.iter() {
-                        let max_open = limiter.get_max_open(bucket);
-                        let remaining = max_open.map(|m| m.saturating_sub(*current_open));
-                        out.insert(
+    let proposals_per_bucket: HashMap<String, BucketRateLimit> = match state
+        .bucket_rate_limiter
+        .lock()
+    {
+        Ok(limiter) => limiter
+            .get_stats()
+            .map(|stats| {
+                stats
+                    .per_bucket
+                    .iter()
+                    .map(|(bucket, current_open)| {
+                        (
                             bucket.clone(),
-                            BucketRateLimit {
-                                open: Some(*current_open),
-                                max_open,
-                                remaining,
-                            },
-                        );
-                    }
-                }
-                out
-            }
-            Err(e) => {
-                error!("Failed to acquire rate limiter lock: {}", e);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse::internal_server_error()),
-                )
-                    .into_response();
-            }
-        };
+                            BucketRateLimit::new(Some(*current_open), limiter.get_max_open(bucket)),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Err(e) => {
+            error!("Failed to acquire rate limiter lock: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::internal_server_error()),
+            )
+                .into_response();
+        }
+    };
 
     Json(RateLimitsInfo {
         proposals_per_bucket,
@@ -2372,7 +2326,7 @@ WHERE run.id = $1
         }
         Err(e) => {
             log::error!("Failed to load run {} for blockers: {}", id, e);
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+            return db_error();
         }
     };
 
@@ -2395,7 +2349,7 @@ WHERE run.id = $1
         Ok(rows) => rows,
         Err(e) => {
             log::error!("Failed to load reviews for run {}: {}", id, e);
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+            return db_error();
         }
     };
 
@@ -2410,7 +2364,7 @@ WHERE run.id = $1
             Ok(c) => c,
             Err(e) => {
                 log::error!("Failed to load publish attempt count for run {}: {}", id, e);
-                return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+                return db_error();
             }
         }
     } else {
@@ -2428,7 +2382,7 @@ WHERE run.id = $1
                     run.campaign,
                     e
                 );
-                return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Database error");
+                return db_error();
             }
         };
 
