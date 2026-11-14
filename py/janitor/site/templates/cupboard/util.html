@@ -6,13 +6,13 @@
             $("#{{ id }}").click(function() {
                 $.post('/cupboard/api/run/{{ run_id }}/reprocess-logs', {}, function(data) {
                         if (data['changed']) {
-                            $("#{{ id }}").replaceWith("<span>Logs reprocessed and analysis updated.</span>");
+                            replaceWithStatus("#{{ id }}", "Logs reprocessed and analysis updated.");
                         } else {
-                            $("#{{ id }}").replaceWith("<span>Logs reprocessed but no changes made.</span>");
+                            replaceWithStatus("#{{ id }}", "Logs reprocessed but no changes made.");
                         }
                     }, 'json')
                     .fail(function(response) {
-                        $("#{{ id }}").replaceWith("<span>Failed to reprocess logs: " + response.responseText + "</span>");
+                        replaceWithStatus("#{{ id }}", "Failed to reprocess logs: " + response.responseText);
                     });
             });
         });

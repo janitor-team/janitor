@@ -64,3 +64,10 @@ window.chartColors = {
    purple: 'rgb(153, 102, 255)',
    grey: 'rgb(201, 203, 207)'
 };
+
+// Swap an action button for its result and move focus there, so it is read out.
+replaceWithStatus = function(selector, text) {
+  var status = $('<span role="status" tabindex="-1"></span>').text(text);
+  $(selector).replaceWith(status);
+  status.focus();
+};
