@@ -38,6 +38,27 @@ impl std::str::FromStr for DebUpdateChangelog {
     }
 }
 
+impl DebUpdateChangelog {
+    /// Read `DEB_UPDATE_CHANGELOG`, defaulting to `Auto` when it is
+    /// unset or invalid.
+    fn from_env(env: &HashMap<String, String>) -> Self {
+        match env
+            .get("DEB_UPDATE_CHANGELOG")
+            .map_or("auto", |x| x.as_str())
+            .parse()
+        {
+            Ok(x) => x,
+            Err(e) => {
+                log::warn!(
+                    "Invalid value for DEB_UPDATE_CHANGELOG: {}, defaulting to auto.",
+                    e
+                );
+                DebUpdateChangelog::Auto
+            }
+        }
+    }
+}
+
 impl std::fmt::Display for DebUpdateChangelog {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
@@ -162,21 +183,12 @@ pub fn debian_make_changes(
             ),
             ["codemod"],
         )),
-        Err(DebianCodemodError::Detailed(f)) => {
-            let mut stage = vec!["codemod".to_string()];
-            if let Some(extra_stage) = f.stage {
-                stage.extend(extra_stage);
-            }
-            Err(WorkerFailure {
-                code: f.result_code,
-                description: f
-                    .description
-                    .unwrap_or_else(|| "Codemod failed".to_string()),
-                details: f.details,
-                stage,
-                transient: None,
-            })
-        }
+        Err(DebianCodemodError::Detailed(f)) => Err(crate::detailed_codemod_failure(
+            f.result_code,
+            f.description,
+            f.stage,
+            f.details,
+        )),
         Err(DebianCodemodError::Io(e)) => Err(WorkerFailure::new(
             "io-error",
             format!("IO error: {}", e),
@@ -212,29 +224,9 @@ pub fn build_from_config(
     config: &serde_json::Value,
     env: &std::collections::HashMap<String, String>,
 ) -> Result<serde_json::Value, WorkerFailure> {
-    let config: DebianBuildConfig = serde_json::from_value(config.clone()).map_err(|e| {
-        WorkerFailure::new(
-            "build-config-parse-failure",
-            format!("Failed to parse config: {}", e),
-            ["build"],
-        )
-        .with_transient(false)
-    })?;
+    let config: DebianBuildConfig = crate::parse_build_config(config, "build")?;
     let committer = env.get("COMMITTER");
-    let update_changelog: DebUpdateChangelog = match env
-        .get("DEB_UPDATE_CHANGELOG")
-        .map_or("auto", |x| x.as_str())
-        .parse()
-    {
-        Ok(x) => x,
-        Err(e) => {
-            log::warn!(
-                "Invalid value for DEB_UPDATE_CHANGELOG: {}, defaulting to auto.",
-                e
-            );
-            DebUpdateChangelog::Auto
-        }
-    };
+    let update_changelog = DebUpdateChangelog::from_env(env);
     crate::debian::build::build(
         local_tree,
         subpath,
@@ -265,20 +257,7 @@ pub struct DebianTarget {
 impl DebianTarget {
     pub fn new(env: HashMap<String, String>) -> Self {
         let committer = env.get("COMMITTER").cloned();
-        let update_changelog = match env
-            .get("DEB_UPDATE_CHANGELOG")
-            .map_or("auto", |x| x.as_str())
-            .parse()
-        {
-            Ok(x) => x,
-            Err(e) => {
-                log::warn!(
-                    "Invalid value for DEB_UPDATE_CHANGELOG: {}, defaulting to auto.",
-                    e
-                );
-                DebUpdateChangelog::Auto
-            }
-        };
+        let update_changelog = DebUpdateChangelog::from_env(&env);
         Self {
             env,
             update_changelog,
@@ -420,14 +399,7 @@ fn validate_from_config(
     subpath: &std::path::Path,
     config: &serde_json::Value,
 ) -> Result<(), WorkerFailure> {
-    let config: DebianBuildConfig = serde_json::from_value(config.clone()).map_err(|e| {
-        WorkerFailure::new(
-            "build-config-parse-failure",
-            format!("Failed to parse config: {}", e),
-            ["validate"],
-        )
-        .with_transient(false)
-    })?;
+    let config: DebianBuildConfig = crate::parse_build_config(config, "validate")?;
     if let Some(apt_repository) = config.apt_repository.as_ref() {
         let apt = breezyshim::debian::apt::RemoteApt::from_string(
             apt_repository,
