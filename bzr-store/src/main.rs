@@ -33,9 +33,13 @@ struct Cli {
     #[arg(long, default_value_t = 9930)]
     public_port: u16,
 
-    /// Listen address bound by both admin and public servers.
+    /// Listen address of the admin server, and of the public one by default.
     #[arg(long, default_value = "127.0.0.1")]
     listen_address: std::net::IpAddr,
+
+    /// Listen address of the public port; defaults to --listen-address.
+    #[arg(long)]
+    public_listen_address: Option<std::net::IpAddr>,
 
     /// Path to the janitor configuration file. Must parse with the
     /// same protobuf-text format `janitor::config::read_file` expects.
@@ -86,8 +90,9 @@ async fn main() -> Result<()> {
         .await
         .unwrap_or_else(|_| BzrStoreConfig::default());
 
+    let public_listen_address = cli.public_listen_address.unwrap_or(cli.listen_address);
     let admin_addr = SocketAddr::new(cli.listen_address, cli.port);
-    let public_addr = SocketAddr::new(cli.listen_address, cli.public_port);
+    let public_addr = SocketAddr::new(public_listen_address, cli.public_port);
 
     config.bzr = BzrConfig {
         repository_path: vcs_path,
@@ -113,7 +118,7 @@ async fn main() -> Result<()> {
     info!("Admin interface:  {}:{}", cli.listen_address, cli.port);
     info!(
         "Public interface: {}:{}",
-        cli.listen_address, cli.public_port
+        public_listen_address, cli.public_port
     );
     info!("Repository path:  {}", config.repository_path.display());
     info!(
