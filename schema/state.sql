@@ -54,7 +54,7 @@ CREATE DOMAIN campaign_name AS TEXT check (value similar to '[a-z0-9][a-z0-9+.-]
 CREATE TYPE verdict AS ENUM('approved', 'rejected', 'abstained');
 CREATE TABLE result_tag (
  actual_name text,
- revision text not null
+ revision text
 );
 
 CREATE TABLE IF NOT EXISTS worker (

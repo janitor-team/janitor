@@ -309,7 +309,7 @@ cd {{ codebase }}
             {% if branches|length > 1 %}<h3>Branch: {{ role }}</h3>{% endif %}
             {% if tags %}
                 {% for tagname, tagrev in tags %}
-                    {% if tagrev == rev %}Tag: {{ tagname }}{% endif %}
+                    {% if tagrev is not none and tagrev == rev %}Tag: {{ tagname }}{% endif %}
                 {% endfor %}
             {% endif %}
             {% set diff = show_diff(role) %}

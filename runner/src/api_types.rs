@@ -223,9 +223,9 @@ pub struct ResultBranchEntry {
 pub struct RunResultTag {
     /// Actual tag name created in the VCS.
     pub actual_name: String,
-    /// Revision the tag points at.
-    #[schema(value_type = String)]
-    pub revision: RevisionId,
+    /// Revision the tag points at, or none if the run removed the tag.
+    #[schema(value_type = Option<String>)]
+    pub revision: Option<RevisionId>,
 }
 
 /// Debian-specific fields for a run, from the `debian_build` table.
