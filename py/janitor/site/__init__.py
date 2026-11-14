@@ -320,8 +320,11 @@ def worker_link_is_global(url):
     try:
         return ipaddress.ip_address(parsed_url.hostname).is_global
     except ValueError:
-        # Assume yes
-        return True
+        # Single-label names and names under local-only domains are not global
+        host = parsed_url.hostname.rstrip(".")
+        return "." in host and not host.endswith(
+            (".localhost", ".local", ".internal", ".home.arpa")
+        )
 
 
 TEMPLATE_ENV = {
