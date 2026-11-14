@@ -150,8 +150,7 @@ impl ActiveRunStore {
         }
     }
 
-    /// Count the number of active runs for a given worker. Used by the
-    /// concurrency-limit check in `auth::SecurityService::can_start_run`.
+    /// Count the number of active runs for a given worker.
     pub async fn count_for_worker(&self, worker_name: &str) -> usize {
         self.list()
             .await
