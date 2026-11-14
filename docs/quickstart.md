@@ -154,6 +154,7 @@ $ curl -H 'Accept: text/x-diff' http://localhost:8090/api/run/$RUN_ID/diff
 
 ## What happens next
 
-The publisher handles each successful run as the candidate's publish policy
-says. [scheduling.md](scheduling.md) describes how the janitor schedules
-more runs by itself.
+A successful run may need to be approved before it is published, see
+[review.md](review.md). The publisher handles it as the candidate's
+publish policy says. [scheduling.md](scheduling.md) describes how the
+janitor schedules more runs by itself.
