@@ -52,11 +52,13 @@
             {% endif %}
         {% else %}
             {% if run.result_branches %}
+                {% if result_code == 'success' or not campaign.publish_successful_only %}
                 <div class="section" id="ready-changes">
                     <h2>Ready changes</h2>
                     {% if run.result_branches %}{{ publish_buttons(suite, run.codebase) }}{% endif %}
                     {{ merge_command(run.codebase, suite, run.result_branches, vcs_type) }}
                 </div>
+                {% endif %}
                 {{ display_vcs_diffs(show_diff, run.result_branches, run.result_tags) }}
                 {% if debdiff %}
                     <h2>Debdiff</h2>
