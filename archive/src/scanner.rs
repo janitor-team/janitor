@@ -157,7 +157,7 @@ impl PackageScanner {
     ) -> ArchiveResult<Vec<(String, Vec<String>)>> {
         let run_id = &build_info.run_id;
         if let Some(cache_path) = self.contents_cache_path(run_id, arch) {
-            if let Ok(bytes) = tokio::fs::read(&cache_path).await {
+            if let Some(bytes) = read_cache(&cache_path).await? {
                 debug!(
                     "loaded contents cache for run={} arch={} from {:?}",
                     run_id, arch, cache_path
@@ -172,7 +172,7 @@ impl PackageScanner {
         }
         let artifact_dir = self.download_build_artifacts(run_id).await?;
         let contents = list_contents(artifact_dir.path(), arch).await?;
-        self.write_contents_cache(run_id, arch, &contents).await;
+        self.write_contents_cache(run_id, arch, &contents).await?;
         Ok(contents)
     }
 
@@ -186,19 +186,12 @@ impl PackageScanner {
         run_id: &RunId,
         arch: &str,
         contents: &[(String, Vec<String>)],
-    ) {
+    ) -> ArchiveResult<()> {
         let Some(cache_path) = self.contents_cache_path(run_id, arch) else {
-            return;
+            return Ok(());
         };
         let bytes = serde_json::to_vec(contents).expect("contents listing is plain data");
-        if let Some(parent) = cache_path.parent() {
-            if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                warn!("cache parent create failed for {:?}: {}", parent, e);
-            }
-        }
-        if let Err(e) = tokio::fs::write(&cache_path, &bytes).await {
-            warn!("cache write failed for {:?}: {}", cache_path, e);
-        }
+        write_cache(&cache_path, &bytes).await
     }
 
     /// Retrieve raw `dpkg-scanpackages` bytes for a run, using the
@@ -209,8 +202,9 @@ impl PackageScanner {
         run_id: &RunId,
         arch: Option<&str>,
     ) -> ArchiveResult<Vec<u8>> {
-        if let Some(cache_path) = self.packages_cache_path(run_id, arch) {
-            if let Ok(bytes) = tokio::fs::read(&cache_path).await {
+        let cache_path = self.packages_cache_path(run_id, arch);
+        if let Some(cache_path) = &cache_path {
+            if let Some(bytes) = read_cache(cache_path).await? {
                 debug!(
                     "loaded scan cache for run={} arch={:?} from {:?}",
                     run_id, arch, cache_path
@@ -225,18 +219,11 @@ impl PackageScanner {
         if let Some(arch) = arch {
             if self.contents_cache_path(run_id, arch).is_some() {
                 let contents = list_contents(artifact_dir.path(), arch).await?;
-                self.write_contents_cache(run_id, arch, &contents).await;
+                self.write_contents_cache(run_id, arch, &contents).await?;
             }
         }
-        if let Some(cache_path) = self.packages_cache_path(run_id, arch) {
-            if let Some(parent) = cache_path.parent() {
-                if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                    warn!("cache parent create failed for {:?}: {}", parent, e);
-                }
-            }
-            if let Err(e) = tokio::fs::write(&cache_path, &raw).await {
-                warn!("cache write failed for {:?}: {}", cache_path, e);
-            }
+        if let Some(cache_path) = &cache_path {
+            write_cache(cache_path, &raw).await?;
         }
         Ok(raw)
     }
@@ -271,8 +258,9 @@ impl PackageScanner {
     }
 
     async fn load_or_scan_sources(&self, run_id: &RunId) -> ArchiveResult<Vec<u8>> {
-        if let Some(cache_path) = self.sources_cache_path(run_id) {
-            if let Ok(bytes) = tokio::fs::read(&cache_path).await {
+        let cache_path = self.sources_cache_path(run_id);
+        if let Some(cache_path) = &cache_path {
+            if let Some(bytes) = read_cache(cache_path).await? {
                 debug!(
                     "loaded scan cache for run={} sources from {:?}",
                     run_id, cache_path
@@ -282,15 +270,8 @@ impl PackageScanner {
         }
         let artifact_dir = self.download_build_artifacts(run_id).await?;
         let raw = run_dpkg_scansources(artifact_dir.path()).await?;
-        if let Some(cache_path) = self.sources_cache_path(run_id) {
-            if let Some(parent) = cache_path.parent() {
-                if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                    warn!("cache parent create failed for {:?}: {}", parent, e);
-                }
-            }
-            if let Err(e) = tokio::fs::write(&cache_path, &raw).await {
-                warn!("cache write failed for {:?}: {}", cache_path, e);
-            }
+        if let Some(cache_path) = &cache_path {
+            write_cache(cache_path, &raw).await?;
         }
         Ok(raw)
     }
@@ -459,6 +440,24 @@ async fn run_dpkg_scan(program: &str, args: &[&str], td: &Path) -> Result<Vec<u8
         ));
     }
     Ok(output.stdout)
+}
+
+/// Read a scan cache entry, returning `None` if there is none yet.
+async fn read_cache(path: &Path) -> ArchiveResult<Option<Vec<u8>>> {
+    match tokio::fs::read(path).await {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(ArchiveError::Io(e)),
+    }
+}
+
+async fn write_cache(path: &Path, raw: &[u8]) -> ArchiveResult<()> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(ArchiveError::Io)?;
+    }
+    tokio::fs::write(path, raw).await.map_err(ArchiveError::Io)
 }
 
 /// Invoke `dpkg-scanpackages` against a directory and return its
@@ -706,6 +705,117 @@ mod tests {
             .is_none());
     }
 
+    /// Scanner over an artifact store holding a run `run-1` without
+    /// packages, caching under the returned tempdir's `cache` directory.
+    async fn scanner_with_cache() -> (super::PackageScanner, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("artifacts/run-1")).unwrap();
+        std::fs::write(tmp.path().join("artifacts/run-1/build.txt"), b"").unwrap();
+        let scanner = super::PackageScanner::with_cache(
+            tmp.path().join("artifacts").to_str().unwrap(),
+            Some(tmp.path().join("cache")),
+        )
+        .await
+        .unwrap();
+        (scanner, tmp)
+    }
+
+    #[tokio::test]
+    async fn scanner_cache_write_errors_are_raised() {
+        use std::os::unix::fs::PermissionsExt;
+        let (scanner, tmp) = scanner_with_cache().await;
+        for dir in ["binary-amd64", "source"] {
+            let path = tmp.path().join("cache").join(dir);
+            std::fs::create_dir(&path).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o500)).unwrap();
+        }
+
+        let packages = scanner
+            .load_or_scan_packages(&RunId::new("run-1").unwrap(), Some("amd64"))
+            .await;
+        let sources = scanner
+            .load_or_scan_sources(&RunId::new("run-1").unwrap())
+            .await;
+
+        for dir in ["binary-amd64", "source"] {
+            let path = tmp.path().join("cache").join(dir);
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert!(
+            matches!(packages, Err(super::ArchiveError::Io(_))),
+            "{:?}",
+            packages
+        );
+        assert!(
+            matches!(sources, Err(super::ArchiveError::Io(_))),
+            "{:?}",
+            sources
+        );
+    }
+
+    /// Only a missing cache entry falls back to scanning the artifacts.
+    #[tokio::test]
+    async fn scanner_cache_read_errors_are_raised() {
+        let (scanner, tmp) = scanner_with_cache().await;
+        std::fs::create_dir_all(tmp.path().join("cache/binary-amd64/run-1")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("cache/source/run-1")).unwrap();
+
+        let packages = scanner
+            .load_or_scan_packages(&RunId::new("run-1").unwrap(), Some("amd64"))
+            .await;
+        assert!(
+            matches!(packages, Err(super::ArchiveError::Io(_))),
+            "{:?}",
+            packages
+        );
+        let sources = scanner
+            .load_or_scan_sources(&RunId::new("run-1").unwrap())
+            .await;
+        assert!(
+            matches!(sources, Err(super::ArchiveError::Io(_))),
+            "{:?}",
+            sources
+        );
+    }
+
+    #[tokio::test]
+    async fn scanner_cache_is_written_and_read() {
+        let (scanner, tmp) = scanner_with_cache().await;
+        assert_eq!(
+            scanner
+                .load_or_scan_packages(&RunId::new("run-1").unwrap(), Some("amd64"))
+                .await
+                .unwrap(),
+            b""
+        );
+        assert_eq!(
+            scanner
+                .load_or_scan_sources(&RunId::new("run-1").unwrap())
+                .await
+                .unwrap(),
+            b""
+        );
+
+        std::fs::write(tmp.path().join("cache/binary-amd64/run-1"), b"Package: x\n").unwrap();
+        std::fs::write(tmp.path().join("cache/source/run-1"), b"Package: y\n").unwrap();
+        std::fs::remove_dir_all(tmp.path().join("artifacts/run-1")).unwrap();
+        assert_eq!(
+            scanner
+                .load_or_scan_packages(&RunId::new("run-1").unwrap(), Some("amd64"))
+                .await
+                .unwrap(),
+            b"Package: x\n"
+        );
+        assert_eq!(
+            scanner
+                .load_or_scan_sources(&RunId::new("run-1").unwrap())
+                .await
+                .unwrap(),
+            b"Package: y\n"
+        );
+    }
+
+    /// Suite/source names may contain dashes; the layout must
     /// Campaign/source names may contain dashes; the layout must
     /// pass them through unchanged (no encoding). Regression
     /// guard against a future "sanitize" helper.
