@@ -1382,9 +1382,11 @@ async fn candidate_pairs(
     if msg.revision == msg.main_branch_revision {
         let rows = sqlx::query_as::<_, (RunId,)>(
             r#"SELECT id FROM run
-               WHERE result_code = 'success' AND main_branch_revision = $1"#,
+               WHERE result_code = 'success' AND main_branch_revision = $1
+                 AND revision != main_branch_revision AND codebase = $2"#,
         )
         .bind(&msg.revision)
+        .bind(&msg.codebase)
         .fetch_all(pool)
         .await?;
         Ok(rows
@@ -2135,6 +2137,45 @@ mod tests {
                         "message": "no unchanged run for run r3",
                     })
                 )
+            );
+        }
+    }
+
+    janitor::test_with_database! {
+        schema = Core;
+        async fn control_result_is_only_paired_with_changed_runs(db: TestDatabase) {
+            sqlx::raw_sql(
+                "INSERT INTO codebase (name, branch_url, url, vcs_type) \
+                 VALUES ('pkg', 'https://example.com/pkg', 'https://example.com/pkg', 'git'), \
+                        ('other', 'https://example.com/other', 'https://example.com/other', 'git'); \
+                 INSERT INTO change_set (id, campaign) \
+                 VALUES ('control-old', 'control'), ('control-run', 'control'), \
+                        ('lint-run', 'lintian-fixes'), ('other-run', 'lintian-fixes'); \
+                 INSERT INTO run (id, codebase, suite, change_set, result_code, revision, \
+                                  main_branch_revision, logfilenames) \
+                 VALUES ('control-old', 'pkg', 'control', 'control-old', 'success', 'base-rev', \
+                         'base-rev', '{}'), \
+                        ('control-run', 'pkg', 'control', 'control-run', 'success', 'base-rev', \
+                         'base-rev', '{}'), \
+                        ('lint-run', 'pkg', 'lintian-fixes', 'lint-run', 'success', 'new-rev', \
+                         'base-rev', '{}'), \
+                        ('other-run', 'other', 'lintian-fixes', 'other-run', 'success', \
+                         'other-rev', 'base-rev', '{}')",
+            )
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+            let msg = ResultMessage {
+                code: "success".to_string(),
+                log_id: run_id("control-run"),
+                revision: "base-rev".to_string(),
+                main_branch_revision: "base-rev".to_string(),
+                codebase: CodebaseName::new("pkg").unwrap(),
+            };
+            assert_eq!(
+                candidate_pairs(db.pool(), &msg).await.unwrap(),
+                vec![(run_id("control-run"), run_id("lint-run"))]
             );
         }
     }
