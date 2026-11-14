@@ -163,7 +163,7 @@ pub struct CurrentStageResponse {
 }
 
 /// A candidate that was scheduled by `POST /candidates`.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ScheduledCandidate {
     /// Campaign of the candidate.
     pub campaign: Campaign,
@@ -185,7 +185,7 @@ pub struct ScheduledCandidate {
 }
 
 /// Response for `POST /candidates`.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct UploadCandidatesResponse {
     /// Candidates that were stored and scheduled.
     pub success: Vec<ScheduledCandidate>,
@@ -199,6 +199,8 @@ pub struct UploadCandidatesResponse {
     pub unknown_codebases: Vec<CodebaseName>,
     /// Publish policies that are not known.
     pub unknown_publish_policies: Vec<String>,
+    /// Change sets that are not known.
+    pub unknown_change_sets: Vec<ChangeSetId>,
 }
 
 /// One entry in a run's `result_branches`, mirroring the

@@ -10,9 +10,11 @@ use axum::http::{Method, Request, StatusCode};
 use chrono::Utc;
 use futures::TryStreamExt;
 use janitor::queue::VcsInfo;
+use janitor_runner::api_types::{ScheduledCandidate, UploadCandidatesResponse};
 use janitor_runner::database::{CodebaseRow, CodebaseUpload};
+use janitor_runner::web::CandidateUpload;
 use janitor_runner::{test_utils, ActiveRun, AppState, Backchannel};
-use janitor_types::CodebaseName;
+use janitor_types::{Campaign, ChangeSetId, CodebaseName};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -516,6 +518,7 @@ async fn post_candidates_empty_list_returns_success_envelope() {
     assert_eq!(body["invalid_command"], json!([]));
     assert_eq!(body["invalid_value"], json!([]));
     assert_eq!(body["unknown_publish_policies"], json!([]));
+    assert_eq!(body["unknown_change_sets"], json!([]));
 }
 
 /// `POST /candidates` with a candidate for an unknown campaign
@@ -1398,6 +1401,103 @@ async fn post_candidates_records_unknown_codebase_via_fk_violation() {
         body["unknown_codebases"],
         json!(["codebase-that-does-not-exist"]),
         "candidate for missing codebase FK must land in unknown_codebases, got {body}"
+    );
+}
+
+/// `POST /candidates` stores the known candidate and lists every unknown name.
+#[tokio::test]
+async fn post_candidates_records_unknowns() {
+    let Some((app, state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let pool = state.database.pool().clone();
+    for codebase in ["cand-unk-a", "cand-unk-b", "cand-unk-c"] {
+        insert_codebase(&pool, codebase).await;
+    }
+    sqlx::query(
+        "INSERT INTO change_set (id, campaign) VALUES ($1, $2)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind("cand-unk-known")
+    .bind("test-campaign")
+    .execute(&pool)
+    .await
+    .expect("insert change_set");
+
+    let candidate = |codebase: &str, campaign: &str| CandidateUpload {
+        codebase: CodebaseName::new(codebase).unwrap(),
+        campaign: Campaign::new(campaign).unwrap(),
+        command: None,
+        change_set: None,
+        value: None,
+        success_chance: None,
+        context: None,
+        publish_policy: None,
+        bucket: None,
+        requester: None,
+        followup_for: None,
+    };
+    let body = vec![
+        CandidateUpload {
+            change_set: Some(ChangeSetId::new("cand-unk-known").unwrap()),
+            ..candidate("cand-unk-a", "test-campaign")
+        },
+        candidate("cand-unk-a", "no-such-campaign"),
+        candidate("cand-unk-missing", "test-campaign"),
+        CandidateUpload {
+            publish_policy: Some("no-such-policy".to_string()),
+            ..candidate("cand-unk-b", "test-campaign")
+        },
+        CandidateUpload {
+            change_set: Some(ChangeSetId::new("no-such-change-set").unwrap()),
+            ..candidate("cand-unk-c", "test-campaign")
+        },
+    ];
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/candidates")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let response: UploadCandidatesResponse =
+        serde_json::from_value(get_body(response).await).unwrap();
+    assert_eq!(
+        response,
+        UploadCandidatesResponse {
+            success: vec![ScheduledCandidate {
+                campaign: Campaign::new("test-campaign").unwrap(),
+                codebase: CodebaseName::new("cand-unk-a").unwrap(),
+                bucket: "default".to_string(),
+                change_set: Some(ChangeSetId::new("cand-unk-known").unwrap()),
+                offset: 35000.0,
+                estimated_duration: 15,
+                queue_id: 1,
+                refresh: false,
+            }],
+            invalid_command: vec![],
+            invalid_value: vec![],
+            unknown_campaigns: vec![Campaign::new("no-such-campaign").unwrap()],
+            unknown_codebases: vec![CodebaseName::new("cand-unk-missing").unwrap()],
+            unknown_publish_policies: vec!["no-such-policy".to_string()],
+            unknown_change_sets: vec![ChangeSetId::new("no-such-change-set").unwrap()],
+        }
+    );
+
+    let candidates: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT codebase, change_set FROM candidate
+         WHERE starts_with(codebase, 'cand-unk-') ORDER BY codebase",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("candidate lookup");
+    assert_eq!(
+        candidates,
+        vec![("cand-unk-a".to_string(), Some("cand-unk-known".to_string()))]
     );
 }
 

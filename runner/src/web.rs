@@ -25,7 +25,7 @@ use axum::{
 };
 use chrono::Utc;
 use janitor_types::{ArtifactName, Campaign, ChangeSetId, CodebaseName, LogFilename, RunId};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
@@ -1149,31 +1149,31 @@ pub(crate) enum CandidatePreflight {
 }
 
 /// Entry in a `POST /candidates` request body.
-#[derive(Debug, Deserialize, ToSchema)]
-struct CandidateUpload {
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct CandidateUpload {
     /// Codebase to run on.
-    codebase: CodebaseName,
+    pub codebase: CodebaseName,
     /// Campaign to run.
-    campaign: Campaign,
+    pub campaign: Campaign,
     /// Codemod command; defaults to the campaign's command.
-    command: Option<String>,
+    pub command: Option<String>,
     /// Change set the candidate belongs to.
-    change_set: Option<ChangeSetId>,
+    pub change_set: Option<ChangeSetId>,
     /// Value of the candidate; must not be 0.
-    value: Option<i64>,
+    pub value: Option<i64>,
     /// Estimated chance of success, between 0 and 1.
-    success_chance: Option<f64>,
+    pub success_chance: Option<f64>,
     /// Free-form context.
-    context: Option<String>,
+    pub context: Option<String>,
     /// Name of the publish policy.
     #[serde(rename = "publish-policy")]
-    publish_policy: Option<String>,
+    pub publish_policy: Option<String>,
     /// Queue bucket to schedule in.
-    bucket: Option<String>,
+    pub bucket: Option<String>,
     /// Who is requesting the run; appended to the generated requester.
-    requester: Option<String>,
+    pub requester: Option<String>,
     /// Ids of candidates that this one is a followup for.
-    followup_for: Option<Vec<i32>>,
+    pub followup_for: Option<Vec<i32>>,
 }
 
 /// Pure preflight for a single candidate upload entry. Takes the
@@ -1229,9 +1229,9 @@ fn candidate_preflight(
 ///   `command`; if neither is present the entry is rejected into
 ///   `invalid_command`.
 /// - `value == 0` -> rejected into `invalid_value`.
-/// - FK violation on `candidate_codebase_fkey` ->
-///   `unknown_codebases`. FK violation on
-///   `candidate_publish_policy_fkey` -> `unknown_publish_policies`.
+/// - Unknown codebase, publish policy or change set -> collected in
+///   `unknown_codebases`, `unknown_publish_policies` or
+///   `unknown_change_sets`, skipped.
 ///
 /// After a successful candidate INSERT we look for an open merge
 /// proposal on the same codebase+campaign with a *different*
@@ -1251,7 +1251,8 @@ fn candidate_preflight(
 ///   "invalid_value": [...],
 ///   "unknown_campaigns": [...],
 ///   "unknown_codebases": [...],
-///   "unknown_publish_policies": [...]
+///   "unknown_publish_policies": [...],
+///   "unknown_change_sets": [...]
 /// }
 /// ```
 #[utoipa::path(
@@ -1277,6 +1278,7 @@ async fn upload_candidates(
     let mut invalid_command = std::collections::BTreeSet::<String>::new();
     let mut invalid_value = std::collections::BTreeSet::<i64>::new();
     let mut unknown_publish_policies = std::collections::BTreeSet::<String>::new();
+    let mut unknown_change_sets = std::collections::BTreeSet::<ChangeSetId>::new();
 
     let known_campaign_names: std::collections::HashSet<String> = state
         .config
@@ -1383,6 +1385,19 @@ async fn upload_candidates(
                 log::warn!("unknown publish policy {:?}", publish_policy);
                 if let Some(pp) = publish_policy {
                     unknown_publish_policies.insert(pp);
+                }
+                let _ = tx.rollback().await;
+                continue;
+            }
+            Err(sqlx::Error::Database(db_err))
+                if db_err
+                    .constraint()
+                    .map(|c| c == "candidate_change_set_fkey")
+                    .unwrap_or(false) =>
+            {
+                log::warn!("unknown change set {:?}", change_set);
+                if let Some(cs) = change_set {
+                    unknown_change_sets.insert(cs);
                 }
                 let _ = tx.rollback().await;
                 continue;
@@ -1538,6 +1553,7 @@ async fn upload_candidates(
         unknown_campaigns: unknown_campaigns.into_iter().collect(),
         unknown_codebases: unknown_codebases.into_iter().collect(),
         unknown_publish_policies: unknown_publish_policies.into_iter().collect(),
+        unknown_change_sets: unknown_change_sets.into_iter().collect(),
     })
     .into_response()
 }

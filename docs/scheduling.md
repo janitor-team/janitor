@@ -29,8 +29,8 @@ Candidates include information like:
 POST candidates as a JSON list to `/candidates` on the same port. Each
 candidate needs a `codebase` and a `campaign`, and can have `value`,
 `success_chance`, `context`, `command`, `publish-policy` and `change_set`. The
-runner skips candidates for a codebase or campaign it does not know, and lists
-them in its response. Upload the codebases first.
+runner skips candidates for a codebase, campaign, publish policy or change set
+it does not know, and lists them in its response. Upload the codebases first.
 
 The candidate list can be complex, for a better schedule, or simple, e.g. one
 candidate for each codebase in a campaign with a fixed value and success_chance.
