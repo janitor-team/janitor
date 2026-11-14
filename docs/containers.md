@@ -49,7 +49,14 @@ FROM ghcr.io/jelmer/janitor/worker:latest
 RUN apt-get update && apt-get install -y lintian-brush && apt-get clean
 ```
 
-Save it as `Dockerfile` in an empty directory, then build it and run it in place of the published image:
+To add a codemod script such as [`examples/strip-trailing-whitespace`](../examples/strip-trailing-whitespace), copy it into the image:
+
+```dockerfile
+FROM ghcr.io/jelmer/janitor/worker:latest
+COPY strip-trailing-whitespace /usr/local/bin/
+```
+
+Save your `Dockerfile` in a new directory with any script it copies (from your janitor checkout), then build it and run the image in place of the published one:
 
 ```console
 $ podman build -t my-janitor-worker .
