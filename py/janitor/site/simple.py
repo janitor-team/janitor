@@ -470,6 +470,17 @@ async def handle_webhook(request):
     return await process_webhook(request, request.app.database)
 
 
+def site_root_of(external_url: URL) -> str:
+    """Return the path on external_url's host that the site is served under."""
+    if not external_url.absolute:
+        raise ValueError(f"external URL {external_url} has no host")
+    root = external_url.raw_path.rstrip("/")
+    # The templates put it into links and scripts as it is.
+    if not re.fullmatch(r"(/[A-Za-z0-9._~-]+)*", root):
+        raise ValueError(f"unsupported path in external URL {external_url}")
+    return root
+
+
 async def create_app(
     config: Config,
     *,
@@ -506,6 +517,13 @@ async def create_app(
     )
     jinja_env = aiohttp_jinja2.get_env(app)
     jinja_env.globals.update(TEMPLATE_ENV)
+    if external_url:
+        root = site_root_of(URL(external_url))
+        app["external_url"] = URL(external_url).with_path(root + "/", encoded=True)
+    else:
+        root = ""
+        app["external_url"] = None
+    app["site_root"] = jinja_env.globals["site_root"] = root
     app.router.add_routes(routes)
     private_app = web.Application(
         middlewares=[
@@ -716,11 +734,6 @@ async def create_app(
             name="archive-keyring",
         )
 
-    if external_url:
-        app["external_url"] = URL(external_url)
-    else:
-        app["external_url"] = None
-
     if publisher_url:
         app.router.add_get("/credentials", handle_credentials, name="credentials")
         app.router.add_get(
@@ -768,6 +781,10 @@ async def create_app(
         aiohttp_debugtoolbar.setup(app, hosts=debugtoolbar)
 
     setup_logfile_manager(app)
+    if root:
+        site = web.Application()
+        site.add_subapp(root, app)
+        return private_app, site
     return private_app, app
 
 
@@ -803,7 +820,12 @@ async def main_async(argv=None):
         default="http://localhost:9920/",
         help="URL for differ",
     )
-    parser.add_argument("--external-url", type=str, default=None, help="External URL")
+    parser.add_argument(
+        "--external-url",
+        type=str,
+        default=None,
+        help="External URL. The site serves its pages under the path of this URL.",
+    )
     parser.add_argument(
         "--publisher-url",
         type=str,

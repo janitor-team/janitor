@@ -21,7 +21,7 @@
         </form>
         {% set ns = namespace(last_date=None, run_date=None) %}
         {% if not runs %}
-            <p>No changes have been merged or pushed yet. See what is <a href="/cupboard/ready">ready to publish</a> or currently <a href="/cupboard/queue">queued</a>.</p>
+            <p>No changes have been merged or pushed yet. See what is <a href="{{ site_root }}/cupboard/ready">ready to publish</a> or currently <a href="{{ site_root }}/cupboard/queue">queued</a>.</p>
         {% else %}
         <ul>
             {% for run in runs %}

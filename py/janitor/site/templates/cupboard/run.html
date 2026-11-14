@@ -27,7 +27,7 @@
                 Codebase: <a class="reference external" href="..">{{ run.codebase }}</a>
             </li>
             <li>
-                Changeset: <a href="/cupboard/cs/{{ run.change_set }}/">{{ run.change_set }}</a>
+                Changeset: <a href="{{ site_root }}/cupboard/cs/{{ run.change_set }}/">{{ run.change_set }}</a>
             </li>
             {% if vcs_url %}<li>Branch URL: {{ display_branch_url(vcs_browse, vcs_url) }}</li>{% endif %}
             {% if run.result and 'upstream_branch_url' in run.result %}
@@ -39,17 +39,17 @@
             <li>
                 Status: {{ display_result_code(result_code, failure_transient) |safe }}
                 {% if unchanged_run and suite not in ('unchanged', 'control') %}
-                    (<a href="/cupboard/c/{{ unchanged_run.codebase }}/{{ unchanged_run.id }}/">run</a> without changes: {{ display_result_code(unchanged_run.result_code, unchanged_run.failure_transient) |safe }})
+                    (<a href="{{ site_root }}/cupboard/c/{{ unchanged_run.codebase }}/{{ unchanged_run.id }}/">run</a> without changes: {{ display_result_code(unchanged_run.result_code, unchanged_run.failure_transient) |safe }})
                 {% elif suite not in ('unchanged', 'control') %}
                     ({{ schedule_control_button(run.id, "schedule control run", id="schedule-control") }})
                 {% endif %}
-                {% if run.resume_from %}(<a href="/cupboard/c/{{ run.codebase }}/{{ run.resume_from }}/">base run</a>){% endif %}
+                {% if run.resume_from %}(<a href="{{ site_root }}/cupboard/c/{{ run.codebase }}/{{ run.resume_from }}/">base run</a>){% endif %}
             </li>
             <li>Description: {% if description %}{{ description }}{% else %}<span class="missing-description">no description</span>{% endif %}</li>
             <li>Publish status: {{ run.publish_status }}</li>
             {% if queue_position %}
                 <li class="queue-position.{{ run.codebase }}">
-                    <a href="/cupboard/queue">Queue</a> position: {{ queue_position }}
+                    <a href="{{ site_root }}/cupboard/queue">Queue</a> position: {{ queue_position }}
                     {% if queue_wait_time %}(a {{ format_duration(queue_wait_time) }} wait){% endif %}
                 </li>
             {% else %}
@@ -63,10 +63,10 @@
             {% endif %}
             {% if revision and suite not in ('unchanged', 'control') %}
                 <li>
-                    Diff: <a href="/api/run/{{ run_id }}/diff">raw diff</a>,
+                    Diff: <a href="{{ site_root }}/api/run/{{ run_id }}/diff">raw diff</a>,
                     {% if debdiff %}
-                        <a href="/api/run/{{ run_id }}/debdiff?filter_boring=true">raw debdiff</a>,
-                        <a href="/api/run/{{ run_id }}/diffoscope?filter_boring=true">diffoscope</a> (<a href="/api/run/{{ run_id }}/diffoscope">unfiltered</a>)
+                        <a href="{{ site_root }}/api/run/{{ run_id }}/debdiff?filter_boring=true">raw debdiff</a>,
+                        <a href="{{ site_root }}/api/run/{{ run_id }}/diffoscope?filter_boring=true">diffoscope</a> (<a href="{{ site_root }}/api/run/{{ run_id }}/diffoscope">unfiltered</a>)
                     {% else %}
                         binary diffs are not available (missing control run - {{ schedule_control_button(run.id, "schedule control run", id="schedule-control") }})
                     {% endif %}
@@ -137,7 +137,7 @@
                 {{ debdiff|safe }}
             {% else %}
                 <p>
-                    Debdiff is too long (more than 200 lines). Download the <a href="/api/run/{{ run_id }}/debdiff?filter_boring=1">raw debdiff</a>.
+                    Debdiff is too long (more than 200 lines). Download the <a href="{{ site_root }}/api/run/{{ run_id }}/debdiff?filter_boring=1">raw debdiff</a>.
                 </p>
             {% endif %}
         {% endif %}
@@ -170,7 +170,7 @@
             <ul>
                 {% for followup in followups %}
                     <li>
-                        <a href="/cupboard/c/{{ followup['campaign'] }}/{{ followup['package'] }}">
+                        <a href="{{ site_root }}/cupboard/c/{{ followup['campaign'] }}/{{ followup['package'] }}">
                         {{ followup['campaign'] }} for {{ followup['package'] }}</a>
                     </li>
                 {% endfor %}

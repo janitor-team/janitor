@@ -77,11 +77,16 @@ async def generate_review(
         campaign,
     ) = entries.pop(0)
 
-    evaluate_url = str(request.url.join(request.app["evaluate_url"]))
+    evaluate_url = request.app["evaluate_url"]
+    if evaluate_url is None:
+        evaluate_url = request.app.router["cupboard-default-evaluate"].url_for(
+            run_id="RUN_ID"
+        )
 
     try:
         async with request.app["http_client_session"].get(
-            evaluate_url.replace("RUN_ID", run_id), raise_for_status=True
+            str(request.url.join(evaluate_url)).replace("RUN_ID", run_id),
+            raise_for_status=True,
         ) as resp:
             evaluate = await resp.text()
     except (ClientConnectorError, ClientResponseError) as e:
@@ -96,7 +101,7 @@ async def generate_review(
         "campaign": campaign,
         "campaigns": campaigns,
         "evaluate": evaluate,
-        "evaluate_url": str(request.app["evaluate_url"]),
+        "evaluate_url": str(evaluate_url),
         "publishable_only": publishable_only,
         "required_only": required_only,
         "todo": [
@@ -111,7 +116,7 @@ async def generate_review(
 
 
 async def generate_evaluate(
-    db, vcs_managers, http_client_session, differ_url, run_id, span
+    db, vcs_managers, http_client_session, differ_url, run_id, span, *, root=""
 ):
     async with db.acquire() as conn:
         run = await conn.fetchrow(
@@ -130,7 +135,7 @@ async def generate_evaluate(
             )
         except KeyError:
             return ""
-        external_url = f"/api/run/{run_id}/diff?role={role}"
+        external_url = f"{root}/api/run/{run_id}/diff?role={role}"
         if run["vcs_type"] is None:
             return "no vcs known"
         if revid is None:

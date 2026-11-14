@@ -83,7 +83,7 @@
                         <tr id="active-{{ entry['id'] }}"
                             {% if entry['mia'] %}class="old-keepalive"{% endif %}>
                             <td>
-                                <a href="/cupboard/c/{{ entry['codebase'] }}/">{{ entry['codebase'] }}</a>
+                                <a href="{{ site_root }}/cupboard/c/{{ entry['codebase'] }}/">{{ entry['codebase'] }}</a>
                             </td>
                             <td>{{ entry['campaign'] }}</td>
                             <td>{{ format_duration(entry['estimated_duration']) if entry['estimated_duration'] else 'unknown' }}</td>
@@ -97,7 +97,7 @@
                             </td>
                             <td>
                                 {% for name in entry['logfilenames'] %}
-                                    <a href="/api/active-runs/{{ entry['id'] }}/log/{{ name }}">{{ name }}</a>
+                                    <a href="{{ site_root }}/api/active-runs/{{ entry['id'] }}/log/{{ name }}">{{ name }}</a>
                                     {% if not loop.last %}{% endif %}
                                 {% endfor %}
                             </td>
@@ -122,7 +122,7 @@
         <script>
             kill = function(run_id) {
                 console.log("Killing job " + run_id);
-                $.post("/api/active-runs/" + run_id + "/kill");
+                $.post("{{ site_root }}/api/active-runs/" + run_id + "/kill");
             }
         </script>
         <div name="coming-up">
@@ -142,14 +142,14 @@
                         <tr id="queue-{{ queue_item.id }}"
                             {% if queue_item.id in active_queue_ids %}class="active"{% endif %}>
                             <td>
-                                <a class="reference external" href="/cupboard/c/{{ queue_item.codebase }}/">{{ queue_item.codebase }}</a>
+                                <a class="reference external" href="{{ site_root }}/cupboard/c/{{ queue_item.codebase }}/">{{ queue_item.codebase }}</a>
                             </td>
                             <td>{{ description }}</td>
                             <td>{{ format_duration(queue_item.estimated_duration) if queue_item.estimated_duration else 'unknown' }}</td>
                             <td>{{ queue_item.requester }}</td>
                             <td>
                                 {% if last_run.id %}
-                                    <a href="/cupboard/c/{{ last_run.codebase }}/{{ last_run.id }}/">{{ display_result_code(last_run.result_code, last_run.failure_transient) }}</a>
+                                    <a href="{{ site_root }}/cupboard/c/{{ last_run.codebase }}/{{ last_run.id }}/">{{ display_result_code(last_run.result_code, last_run.failure_transient) }}</a>
                                 {% endif %}
                             </td>
                         </tr>
@@ -167,13 +167,13 @@
                         var existing = 'active-' + p['id'];
                         if (!$('#' + existing).length) {
                             tr = $('<tr id="active-' + p['id'] + '" />');
-                            tr.append('<td><a href="/cupboard/c/' + p['codebase'] + '/">' + p['codebase'] + '</a></td>');
+                            tr.append('<td><a href="{{ site_root }}/cupboard/c/' + p['codebase'] + '/">' + p['codebase'] + '</a></td>');
                             tr.append('<td>' + p['campaign'] + '</td>');
                             tr.append('<td>' + format_duration(p['estimated_duration']) + '</td>');
                             tr.append('<td>' + format_duration(p['current_duration']) + '</td>');
                             tr.append('<td>' + p['worker'] + '</td>');
                             tr.append('<td>' + $.map(p['logfilenames'], function(n, i) {
-                                return '<a href="/api/active-runs/' + p['id'] + '/log/' + n + '">' + n + '</a>';
+                                return '<a href="{{ site_root }}/api/active-runs/' + p['id'] + '/log/' + n + '">' + n + '</a>';
                             }).join(' ') + '</td>');
                             if ('last-keepalive' in p) {
                                 tr.append('<td>' + format_duration(p['keepalive_age']) + '</td>');

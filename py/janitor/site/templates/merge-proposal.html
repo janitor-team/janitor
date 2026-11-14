@@ -19,7 +19,7 @@
             </li>
             {% if proposal.codebase %}
                 <li>
-                    Codebase: <a href="/cupboard/c/{{ proposal.codebase }}/">{{ proposal.codebase }}</a>
+                    Codebase: <a href="{{ site_root }}/cupboard/c/{{ proposal.codebase }}/">{{ proposal.codebase }}</a>
                 </li>
             {% endif %}
             {% if proposal.can_be_merged is not none %}
@@ -46,7 +46,7 @@
                     <script>
                         function submit_status(status) {
                             console.log("Changing of merge proposal " + {{ proposal.url | tojson }} + " to " + status);
-                            $.post('/api/merge-proposal', {
+                            $.post('{{ site_root }}/api/merge-proposal', {
                                 'status': status,
                                 'url': {{ proposal.url | tojson }}
                             });
@@ -64,7 +64,7 @@
             </li>
             {% if proposal.campaign %}
                 <li>
-                    <a href="/{{ proposal.campaign }}/c/{{ proposal.codebase }}/">Run details</a>
+                    <a href="{{ site_root }}/{{ proposal.campaign }}/c/{{ proposal.codebase }}/">Run details</a>
                 </li>
             {% endif %}
         </ul>

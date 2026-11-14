@@ -2,14 +2,14 @@
 <div class="sphinxsidebar" role="navigation" aria-label="main navigation">
     <div class="sphinxsidebarwrapper">
         <h1 class="logo">
-            <a href="/">Janitor</a>
+            <a href="{{ site_root }}/">Janitor</a>
         </h1>
         <h3>
-            <a href="/cupboard/">Cupboard</a>
+            <a href="{{ site_root }}/cupboard/">Cupboard</a>
         </h3>
         {% if user %}
             Logged in as {{ user['name'] }}
-            <form action="/logout" method="post">
+            <form action="{{ site_root }}/logout" method="post">
                 <input type="submit" value="Log out" />
             </form>
         {% else %}
@@ -17,47 +17,47 @@
         {% endif %}
         <ul class="current">
             <li class="toctree-l1">
-                <a class="reference internal" href="/cupboard/queue">Queue</a>
+                <a class="reference internal" href="{{ site_root }}/cupboard/queue">Queue</a>
             </li>
             <li class="toctree-l1">
-                <a class="reference internal" href="/cupboard/history">History</a>
+                <a class="reference internal" href="{{ site_root }}/cupboard/history">History</a>
             </li>
             <li class="toctree-l1">
-                <a class="reference internal" href="/cupboard/result-codes/">Result codes</a>
+                <a class="reference internal" href="{{ site_root }}/cupboard/result-codes/">Result codes</a>
             </li>
             <li class="toctree-l1">
-                <a class="reference internal" href="/cupboard/failure-stages/">Failure stages</a>
+                <a class="reference internal" href="{{ site_root }}/cupboard/failure-stages/">Failure stages</a>
             </li>
             <li class="toctree-l1">
-                <a class="reference internal" href="/cupboard/ready">Ready changes</a>
+                <a class="reference internal" href="{{ site_root }}/cupboard/ready">Ready changes</a>
             </li>
             <li class="toctree-l1">
-                <a class="reference internal" href="/cupboard/done">Merged or pushed changes</a>
+                <a class="reference internal" href="{{ site_root }}/cupboard/done">Merged or pushed changes</a>
             </li>
             <li class="toctree-l1">
-                <a class="reference internal" href="/cupboard/workers">Workers</a>
+                <a class="reference internal" href="{{ site_root }}/cupboard/workers">Workers</a>
             </li>
             <li class="toctree-l1">
-                <a class="reference internal" href="/cupboard/review">Review</a>
+                <a class="reference internal" href="{{ site_root }}/cupboard/review">Review</a>
             </li>
             <li class="toctree-l1">
-                <a class="reference internal" href="/cupboard/rejected">Rejected runs during review</a>
+                <a class="reference internal" href="{{ site_root }}/cupboard/rejected">Rejected runs during review</a>
             </li>
             <li class="toctree-l1">
-                <a class="reference internal" href="/cupboard/publish/">Publish history</a>
+                <a class="reference internal" href="{{ site_root }}/cupboard/publish/">Publish history</a>
             </li>
             <li class="toctree-l1">
-                <a class="reference internal" href="/cupboard/merge-proposals">Merge proposals</a>
+                <a class="reference internal" href="{{ site_root }}/cupboard/merge-proposals">Merge proposals</a>
             </li>
             <li class="toctree-l1">
-                <a class="reference internal" href="/cupboard/broken-merge-proposals">Merge proposals with broken runs</a>
+                <a class="reference internal" href="{{ site_root }}/cupboard/broken-merge-proposals">Merge proposals with broken runs</a>
             </li>
             <li class="toctree-l1">
-                <a class="reference internal" href="/cupboard/cs/">Changesets</a>
+                <a class="reference internal" href="{{ site_root }}/cupboard/cs/">Changesets</a>
             </li>
             {% if is_admin %}
                 <li class="toctree-l1">
-                    <a class="reference internal" href="/cupboard/reprocess-logs">Reprocess logs</a>
+                    <a class="reference internal" href="{{ site_root }}/cupboard/reprocess-logs">Reprocess logs</a>
                 </li>
             {% endif %}
             {% for title, url in extra_cupboard_links %}
@@ -69,7 +69,7 @@
         <p>
             <label for="sidebar-codebase">See the status for a specific codebase:</label>
             <div class="sidebar-packages" style="width:300px;">
-                <form autocomplete="off" action="/cupboard/c/">
+                <form autocomplete="off" action="{{ site_root }}/cupboard/c/">
                     {{ codebase_input(name="codebase") }}
                     <input type="submit" style="display: none" />
                 </form>

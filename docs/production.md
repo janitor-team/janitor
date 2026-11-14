@@ -105,6 +105,24 @@ unset:
 For a Janitor instance, you probably want a custom website in combination with
 the Janitor API. See the existing instances for inspiration.
 
+## Serving the site under a path
+
+The site serves its pages under the path of `--external-url`. With
+`--external-url https://example.com/janitor/`, the pages, the API, the
+static files and the login are all under `/janitor/`, so the reverse
+proxy must pass that path on unchanged. The links in the pages and the
+login cookies use the path too, and the OAuth callback is
+`https://example.com/janitor/oauth/callback`.
+
+The apt lines and the clone URLs the site shows are under the path as
+well, so the proxy also needs to send `/janitor/dists/` to the archiver
+as `/dists/`, and `/janitor/git/` and `/janitor/bzr/` to `git_store`
+and `bzr_store` as `/git/` and `/bzr/`. The admin port (`/health` and
+`/metrics`) is not under the path.
+
+Start `janitor-git-store` with `--path-prefix /janitor`, so that its web
+pages link back under `/janitor/git/`.
+
 ## Worker images
 
 The published worker image carries Debian's build tooling, but it carries no

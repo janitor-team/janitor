@@ -34,7 +34,7 @@
                 {% for candidate in candidates %}
                     <tr class="row-even">
                         <td>
-                            <a href="/{{ candidate.campaign }}/c/{{ codebase.name }}/">{{ candidate.campaign }}</a>
+                            <a href="{{ site_root }}/{{ candidate.campaign }}/c/{{ codebase.name }}/">{{ candidate.campaign }}</a>
                         </td>
                         <td>
                             <code>{{ candidate.command }}</code>
@@ -62,7 +62,7 @@
         <ul>
             {% for run in runs %}
                 <li>
-                    <a href="/cupboard/c/{{ codebase.name }}/{{ run.id }}/">{{ format_timestamp(run.finish_time) }} {{ run.campaign }}</a>: {{ display_result_code(run.result_code, run.failure_transient) }}
+                    <a href="{{ site_root }}/cupboard/c/{{ codebase.name }}/{{ run.id }}/">{{ format_timestamp(run.finish_time) }} {{ run.campaign }}</a>: {{ display_result_code(run.result_code, run.failure_transient) }}
                 </li>
             {% endfor %}
         </ul>

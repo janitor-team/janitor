@@ -13,7 +13,7 @@
         {% if is_admin %}
             <form id="mass_reschedule"
                   method="post"
-                  action="/cupboard/api/mass-reschedule">
+                  action="{{ site_root }}/cupboard/api/mass-reschedule">
                 {% if campaign %}<input type="hidden" name="campaign" value="{{ campaign }}" />{% endif %}
                 <input type="hidden" name="result_code" value="never-processed" />
                 <input type="submit" value="Reschedule matching" />
@@ -22,7 +22,7 @@
                 window.mass_reschedule.onsubmit = function(e) {
                     $('form').submit(function(e) {
                         e.preventDefault();
-                        $.post("/cupboard/api/mass-reschedule", $('form').serializeArray(), function(receivedData) {
+                        $.post("{{ site_root }}/cupboard/api/mass-reschedule", $('form').serializeArray(), function(receivedData) {
                             alert('Rescheduled ' + receivedData);
                         });
                     });
@@ -44,10 +44,10 @@
                 {% for codebase, campaign in never_processed %}
                     <tr>
                         <td>
-                            <a class="reference external" href="/cupboard/c/{{ codebase }}/">{{ codebase }}</a>
+                            <a class="reference external" href="{{ site_root }}/cupboard/c/{{ codebase }}/">{{ codebase }}</a>
                         </td>
                         <td>
-                            <a href="/{{ campaign }}/c/{{ codebase }}/">{{ campaign }}</a>
+                            <a href="{{ site_root }}/{{ campaign }}/c/{{ codebase }}/">{{ campaign }}</a>
                         </td>
                     </tr>
                 {% endfor %}

@@ -6,22 +6,22 @@
             {% block page_title %}
             {% endblock page_title %}
         </title>
-        <link rel="stylesheet" href="/_static/alabaster.css" type="text/css" />
-        <link rel="stylesheet" href="/_static/lintian.css" type="text/css" />
-        <link rel="author" title="About these documents" href="/about" />
-        <link rel="stylesheet" href="/_static/typeahead.css" type="text/css" />
-        <link rel="stylesheet" href="/_static/pygments.css" type="text/css" />
-        <link rel="stylesheet" href="/_static/datatables.css" type="text/css" />
+        <link rel="stylesheet" href="{{ site_root }}/_static/alabaster.css" type="text/css" />
+        <link rel="stylesheet" href="{{ site_root }}/_static/lintian.css" type="text/css" />
+        <link rel="author" title="About these documents" href="{{ site_root }}/about" />
+        <link rel="stylesheet" href="{{ site_root }}/_static/typeahead.css" type="text/css" />
+        <link rel="stylesheet" href="{{ site_root }}/_static/pygments.css" type="text/css" />
+        <link rel="stylesheet" href="{{ site_root }}/_static/datatables.css" type="text/css" />
         <meta name="viewport"
               content="width=device-width, initial-scale=0.9, maximum-scale=0.9" />
     </head>
     <body>
-        <script src="/_static/jquery.js"></script>
-        <script src="/_static/jquery.typeahead.js"></script>
-        <script src="/_static/jquery.datatables.js"></script>
-        <script src="/_static/moment.js"></script>
-        <script src="/_static/chart.js"></script>
-        <script src="/_static/janitor.js"></script>
+        <script src="{{ site_root }}/_static/jquery.js"></script>
+        <script src="{{ site_root }}/_static/jquery.typeahead.js"></script>
+        <script src="{{ site_root }}/_static/jquery.datatables.js"></script>
+        <script src="{{ site_root }}/_static/moment.js"></script>
+        <script src="{{ site_root }}/_static/chart.js"></script>
+        <script src="{{ site_root }}/_static/janitor.js"></script>
         {% include "analytics.html" ignore missing without context %}
         <div class="{% if layout != 'plain' %}document{% else %}plain-document{% endif %}">
             {% block sidebar %}

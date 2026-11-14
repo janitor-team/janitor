@@ -16,10 +16,10 @@
             <script>
                 $(document).ready(function() {
                     $("#scan").click(function() {
-                        $.post("/cupboard/api/publish/scan");
+                        $.post("{{ site_root }}/cupboard/api/publish/scan");
                     });
                     $("#autopublish").click(function() {
-                        $.post("/cupboard/api/publish/autopublish");
+                        $.post("{{ site_root }}/cupboard/api/publish/autopublish");
                     });
                 });
             </script>
@@ -49,7 +49,7 @@
                             <a href="{{ id }}">{{ format_timestamp(timestamp) }}</a>
                         </td>
                         <td>
-                            <a class="reference external" href="/cupboard/c/{{ codebase }}/">{{ codebase }}</a>
+                            <a class="reference external" href="{{ site_root }}/cupboard/c/{{ codebase }}/">{{ codebase }}</a>
                         </td>
                         <td>{{ branch_name }}</td>
                         <td>{{ mode }}</td>

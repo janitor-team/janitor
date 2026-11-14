@@ -2,6 +2,7 @@ from datetime import timedelta
 
 import aiohttp_jinja2
 import aiozipkin
+from aiohttp import web
 from bs4 import BeautifulSoup
 from yarl import URL
 
@@ -15,7 +16,7 @@ from .test_cupboard import _insert_codebase, _insert_run, _user_middleware
 REVIEWER = {"email": "reviewer@example.com", "name": "Reviewer", "groups": []}
 
 
-async def create_publishable_client(aiohttp_client, db):
+async def create_publishable_client(aiohttp_client, db, root=""):
     app = create_app(
         config=read_config_string("oauth2_provider {}\n"),
         publisher_url=None,
@@ -28,6 +29,10 @@ async def create_publishable_client(aiohttp_client, db):
     app.middlewares.insert(0, _user_middleware(REVIEWER))
     endpoint = aiozipkin.create_endpoint("janitor.site", ipv4="127.0.0.1", port=80)
     aiozipkin.setup(app, await aiozipkin.create_custom(endpoint))
+    if root:
+        site = web.Application()
+        site.add_subapp(root, app)
+        return await aiohttp_client(site)
     return await aiohttp_client(app)
 
 
@@ -95,3 +100,18 @@ def test_parse_review_form_empty_comment():
         "approved",
         None,
     )
+
+
+async def test_review_evaluates_under_the_site_root(aiohttp_client, db):
+    client = await create_publishable_client(aiohttp_client, db, root="/janitor")
+    async with db.acquire() as conn:
+        await insert_build_only_run(conn, "somerun")
+
+    resp = await client.post("/janitor/cupboard/review", data={"run_id": "somerun"})
+    text = await resp.text()
+    assert (
+        resp.status,
+        shown_run(text),
+        "Unable to retrieve evaluation" in text,
+        '"/janitor/cupboard/evaluate/RUN_ID"' in text,
+    ) == (200, ["somerun"], False, True)

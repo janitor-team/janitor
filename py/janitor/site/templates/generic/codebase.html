@@ -64,7 +64,7 @@
                         {{ debdiff|safe }}
                     {% else %}
                         <p>
-                            Debdiff is too long (more than 200 lines). Download the <a href="/api/run/{{ run_id }}/debdiff?filter_boring=1">raw debdiff</a>.
+                            Debdiff is too long (more than 200 lines). Download the <a href="{{ site_root }}/api/run/{{ run_id }}/debdiff?filter_boring=1">raw debdiff</a>.
                         </p>
                     {% endif %}
                 {% endif %}
@@ -76,7 +76,7 @@
             {% endif %}
             <h2>More details</h2>
             <p>
-                <a href="/cupboard/c/{{ run.codebase }}/{{ run_id }}/">Full run details</a>
+                <a href="{{ site_root }}/cupboard/c/{{ run.codebase }}/{{ run_id }}/">Full run details</a>
             </p>
         {% endif %}
         {% if previous_runs and result_code not in ('nothing-to-do', 'success') %}
@@ -84,7 +84,7 @@
             <ul>
                 {% for previous_run in previous_runs %}
                     <li>
-                        <a href="/cupboard/c/{{ previous_run.codebase }}/{{ previous_run.id }}/">{{ display_result_code(previous_run.result_code, previous_run.failure_transient) |safe }}: {% if previous_run.description %}{{ previous_run.description }}{% else %}<span class="missing-description">no description</span>{% endif %}</a>
+                        <a href="{{ site_root }}/cupboard/c/{{ previous_run.codebase }}/{{ previous_run.id }}/">{{ display_result_code(previous_run.result_code, previous_run.failure_transient) |safe }}: {% if previous_run.description %}{{ previous_run.description }}{% else %}<span class="missing-description">no description</span>{% endif %}</a>
                     </li>
                 {% endfor %}
             </ul>
