@@ -10,6 +10,7 @@ use axum::http::{Method, Request, StatusCode};
 use chrono::Utc;
 use futures::TryStreamExt;
 use janitor::queue::VcsInfo;
+use janitor_runner::api_types::ReasonResponse;
 use janitor_runner::database::{CodebaseRow, CodebaseUpload};
 use janitor_runner::{test_utils, ActiveRun, AppState, Backchannel};
 use janitor_types::CodebaseName;
@@ -132,42 +133,88 @@ async fn post_codebases_upserts_and_is_visible_via_get() {
         return;
     };
 
-    let body = json!([
-        {
-            "name": "test-codebase-a",
-            "branch_url": "https://example.invalid/a",
-            "vcs_type": "git"
+    let codebase = |name: &str, web_url: Option<&str>| CodebaseUpload {
+        name: Some(CodebaseName::new(name).unwrap()),
+        web_url: web_url.map(str::to_string),
+        ..Default::default()
+    };
+    let body = vec![
+        CodebaseUpload {
+            branch_url: Some("https://example.invalid/a".to_string()),
+            vcs_type: Some("git".to_string()),
+            ..codebase("test-codebase-a", Some("https://example.invalid/a/browse"))
         },
-        {
-            "name": "test-codebase-b",
-            "branch_url": "https://example.invalid/b",
-            "vcs_type": "git"
-        }
-    ]);
+        CodebaseUpload {
+            branch_url: Some("https://example.invalid/b".to_string()),
+            vcs_type: Some("git".to_string()),
+            ..codebase("test-codebase-b", None)
+        },
+        codebase("test-codebase-c", Some("ftp://example.invalid/c")),
+    ];
 
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/codebases")
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    let response = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        post_codebases(&app, &body).await,
+        (StatusCode::OK, json!({}))
+    );
 
     // Confirm the rows landed via a direct query, not via
     // `GET /codebases` -- the latter would just re-run the same code
     // path we already exercised in the POST.
-    let names: Vec<String> = sqlx::query_scalar(
-        "SELECT name FROM codebase WHERE name IN ('test-codebase-a', 'test-codebase-b')
-         ORDER BY name",
+    #[derive(Debug, PartialEq, sqlx::FromRow)]
+    struct NameAndWebUrl {
+        name: String,
+        web_url: Option<String>,
+    }
+    let rows: Vec<NameAndWebUrl> = sqlx::query_as(
+        "SELECT name, web_url FROM codebase WHERE name LIKE 'test-codebase-%' ORDER BY name",
     )
     .fetch_all(state.database.pool())
     .await
     .expect("query codebases");
-    assert_eq!(
-        names,
-        vec!["test-codebase-a".to_string(), "test-codebase-b".to_string()]
-    );
+    let expected = vec![
+        NameAndWebUrl {
+            name: "test-codebase-a".to_string(),
+            web_url: Some("https://example.invalid/a/browse".to_string()),
+        },
+        NameAndWebUrl {
+            name: "test-codebase-b".to_string(),
+            web_url: None,
+        },
+        NameAndWebUrl {
+            name: "test-codebase-c".to_string(),
+            web_url: Some("ftp://example.invalid/c".to_string()),
+        },
+    ];
+    assert_eq!(rows, expected);
+
+    for web_url in [
+        "javascript:alert(1)",
+        "JavaScript:alert(1)",
+        "data:text/html,hi",
+    ] {
+        let body = vec![
+            codebase("test-codebase-d", Some("https://example.invalid/d")),
+            codebase("test-codebase-e", Some(web_url)),
+        ];
+        assert_eq!(
+            post_codebases(&app, &body).await,
+            (
+                StatusCode::BAD_REQUEST,
+                serde_json::to_value(ReasonResponse::new(format!(
+                    "web_url {} cannot be linked to",
+                    web_url
+                )))
+                .unwrap()
+            )
+        );
+    }
+    let rows: Vec<NameAndWebUrl> = sqlx::query_as(
+        "SELECT name, web_url FROM codebase WHERE name LIKE 'test-codebase-%' ORDER BY name",
+    )
+    .fetch_all(state.database.pool())
+    .await
+    .expect("query codebases");
+    assert_eq!(rows, expected);
 }
 
 fn some(s: &str) -> Option<String> {
