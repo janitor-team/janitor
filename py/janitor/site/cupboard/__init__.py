@@ -563,11 +563,14 @@ async def handle_merge_proposal(request):
         url = request.query["url"]
     except KeyError as e:
         raise web.HTTPBadRequest(text="no url specified") from e
-    return await write_merge_proposal(
+    ret = await write_merge_proposal(
         request.app["http_client_session"],
         request.app["publisher_url"],
         url,
     )
+    if ret["proposal"] is None:
+        raise web.HTTPNotFound(text=f"No merge proposal {url}")
+    return ret
 
 
 @routes.get(
@@ -606,7 +609,7 @@ async def handle_result_file(request):
     else:
         try:
             f = await request.app["artifact_manager"].get_artifact(run_id, filename)
-        except ArtifactsMissing as e:
+        except (ArtifactsMissing, ValueError) as e:
             raise web.HTTPNotFound(
                 text=f"No artifact {filename} for run {run_id}"
             ) from e

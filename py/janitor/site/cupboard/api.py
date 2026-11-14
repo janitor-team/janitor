@@ -78,9 +78,15 @@ async def handle_mass_reschedule(request):
         raise web.HTTPBadRequest(text="result_code not specified") from e
     campaign = post.get("campaign")
     description_re = post.get("description_re")
-    min_age = int(post.get("min_age", "0"))
+    try:
+        min_age = int(post.get("min_age", "0"))
+    except ValueError as e:
+        raise web.HTTPBadRequest(text="min_age must be an integer") from e
     rejected = "rejected" in post
-    offset = int(post.get("offset", "0"))
+    try:
+        offset = int(post.get("offset", "0"))
+    except ValueError as e:
+        raise web.HTTPBadRequest(text="offset must be an integer") from e
     refresh = "refresh" in post
     config = request.app["config"]
     all_campaigns = [c.name for c in config.campaign]
