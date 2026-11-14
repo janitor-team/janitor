@@ -46,7 +46,7 @@ logging.basicConfig()
 async def main(base_url, result_code, campaign, description_re, rejected, min_age=0):
     params = {"result_code": result_code}
     if campaign:
-        params["suite"] = campaign
+        params["campaign"] = campaign
     if description_re:
         params["description_re"] = description_re
     if rejected:

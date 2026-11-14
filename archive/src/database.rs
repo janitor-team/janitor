@@ -30,7 +30,7 @@ pub struct BuildRecord {
     pub codebase: CodebaseName,
     /// `debian_build.distribution` (the build target).
     pub suite: String,
-    /// `run.suite`, the campaign that made the build.
+    /// `run.campaign`, the campaign that made the build.
     pub campaign: String,
     /// `debian_build.source` (used as `package` in the projection too).
     pub package: String,
@@ -97,10 +97,10 @@ impl ArchiveDatabase {
         // distribution, source, binary_packages, lintian_result).
         // Select on `debian_build.distribution` (the build-target
         // distribution, usually the campaign's `build_distribution`),
-        // not on `run.suite`. This is the query that decides which
+        // not on `run.campaign`. This is the query that decides which
         // .deb files are considered for an apt_repository, so getting
         // it wrong silently ships stale binaries into the wrong suite.
-        // `run.suite` (the campaign) only sets the pool path.
+        // `run.campaign` only sets the pool path.
         //
         // `DISTINCT ON (source) ... ORDER BY source, version DESC`
         // picks the newest version per source. Without it, multiple
@@ -117,7 +117,7 @@ impl ArchiveDatabase {
                 debian_build.run_id,
                 r.codebase,
                 debian_build.distribution AS suite,
-                r.suite AS campaign,
+                r.campaign,
                 debian_build.source AS package,
                 debian_build.source AS source_package,
                 'amd64' AS architecture,
@@ -162,7 +162,7 @@ impl ArchiveDatabase {
                 debian_build.run_id,
                 r.codebase,
                 debian_build.distribution AS suite,
-                r.suite AS campaign,
+                r.campaign,
                 debian_build.source AS package,
                 debian_build.source AS source_package,
                 'amd64' AS architecture,
@@ -199,7 +199,7 @@ impl ArchiveDatabase {
                 debian_build.run_id,
                 r.codebase,
                 debian_build.distribution AS suite,
-                r.suite AS campaign,
+                r.campaign,
                 debian_build.source AS package,
                 debian_build.source AS source_package,
                 'amd64' AS architecture,

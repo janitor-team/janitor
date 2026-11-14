@@ -46,7 +46,7 @@ async fn seed(pool: &PgPool) {
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO run (id, codebase, suite, change_set, command, \
+        "INSERT INTO run (id, codebase, campaign, change_set, command, \
                           start_time, finish_time, result_code, \
                           revision, main_branch_revision, vcs_type, \
                           logfilenames, branch_url, worker) \
@@ -73,7 +73,7 @@ async fn run_from_row_decodes_worker_column() {
     // zone).
     let run: Run = sqlx::query_as(
         "SELECT id, command, description, result_code, main_branch_revision, \
-                revision, context, result, suite::text AS suite, \
+                revision, context, result, campaign::text AS campaign, \
                 instigated_context, vcs_type::text AS vcs_type, branch_url, \
                 logfilenames, worker, target_branch_url, change_set, \
                 failure_details, failure_transient, failure_stage, codebase, \

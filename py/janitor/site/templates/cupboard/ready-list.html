@@ -21,7 +21,7 @@
                         <a href="c/{{ run.codebase }}/{{ run.id }}/">{{ run.codebase }}</a>
                         {% set command = run.command -%}
                         {% set result = run.result -%}
-                        {% include [run.suite + "/summary.html", "generic/summary.html"] %}
+                        {% include [run.campaign + "/summary.html", "generic/summary.html"] %}
                     </li>
                 {% endfor %}
             </ul>

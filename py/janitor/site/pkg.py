@@ -107,7 +107,7 @@ async def generate_run_file(
         with span.new_child("sql:queue-position"):
             queue = Queue(conn)
             (queue_position, queue_wait_time) = await queue.get_position(
-                run["suite"], run["codebase"]
+                run["campaign"], run["codebase"]
             )
         with span.new_child("sql:publish-history"):
             publish_history: list[asyncpg.Record]
@@ -130,13 +130,13 @@ async def generate_run_file(
                 kwargs["estimated_duration"],
                 kwargs["total_previous_runs"],
             ) = await estimate_success_probability_and_duration(
-                conn, run["codebase"], run["suite"]
+                conn, run["codebase"], run["campaign"]
             )
         with span.new_child("sql:followups"):
             kwargs["followups"] = await conn.fetch(
                 """SELECT \
     candidate.codebase AS codebase,
-    candidate.suite AS campaign
+    candidate.campaign
 FROM followup
 LEFT JOIN candidate ON candidate.id = followup.candidate
 WHERE followup.origin = $1""",
@@ -230,9 +230,9 @@ WHERE followup.origin = $1""",
 
     kwargs["show_debdiff"] = show_debdiff
     kwargs["max"] = max
-    kwargs["suite"] = run["suite"]
+    kwargs["campaign_name"] = run["campaign"]
     try:
-        kwargs["campaign"] = get_campaign_config(config, run["suite"])
+        kwargs["campaign"] = get_campaign_config(config, run["campaign"])
     except KeyError:
         kwargs["campaign"] = None
     kwargs["resume_from"] = run["resume_from"]
@@ -379,10 +379,10 @@ class MergeProposalUserUrlResolver:
 
 
 async def generate_ready_list(
-    db, suite: Optional[str], publish_status: Optional[str] = None
+    db, campaign: Optional[str], publish_status: Optional[str] = None
 ):
     async with db.acquire() as conn:
-        query = "SELECT codebase, suite, id, command, result FROM publish_ready"
+        query = "SELECT codebase, campaign, id, command, result FROM publish_ready"
 
         conditions = [
             "EXISTS (SELECT * FROM unnest(unpublished_branches) upb "
@@ -394,9 +394,9 @@ async def generate_ready_list(
         ]
 
         args = []
-        if suite:
-            args.append(suite)
-            conditions.append(f"suite = ${len(args)}")
+        if campaign:
+            args.append(campaign)
+            conditions.append(f"campaign = ${len(args)}")
         if publish_status:
             args.append(publish_status)
             conditions.append(f"publish_status = ${len(args)}")
@@ -406,4 +406,4 @@ async def generate_ready_list(
         query += " ORDER BY codebase ASC"
 
         runs = await conn.fetch(query, *args)
-    return {"runs": runs, "suite": suite, "campaign": suite}
+    return {"runs": runs, "campaign": campaign}

@@ -58,7 +58,7 @@ reformat:: reformat-ruff
 reformat::
 	cargo fmt --all
 
-suite-references:
+campaign-references:
 	git grep "\\(lintian-brush\|lintian-fixes\|debianize\|fresh-releases\|fresh-snapshots\\)" | grep -v .example
 
 test:: build-inplace

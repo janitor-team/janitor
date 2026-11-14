@@ -44,7 +44,7 @@ async def process_build(db_location, run_id, role, format):
         query = """
 SELECT
   package.name AS package,
-  suite AS campaign,
+  campaign,
   id AS log_id,
   result AS _result
 FROM run
@@ -60,7 +60,7 @@ WHERE
         vs["external_url"] = "https://janitor.debian.net/"
         vs["markdownify_debdiff"] = markdownify_debdiff
         vs["debdiff_is_empty"] = debdiff_is_empty
-        print(template_env.get_template(vs["suite"] + "." + format).render(vs))
+        print(template_env.get_template(vs["campaign"] + "." + format).render(vs))
 
 
 loop.run_until_complete(

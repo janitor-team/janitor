@@ -15,7 +15,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 __all__ = [
-    "iter_publishable_suites",
+    "iter_publishable_campaigns",
 ]
 
 import datetime
@@ -66,7 +66,7 @@ class Run:
     revision: Optional[bytes]
     context: Optional[str]
     result: Optional[Any]
-    suite: str
+    campaign: str
     instigated_context: Optional[str]
     vcs_type: str
     branch_url: str
@@ -92,7 +92,7 @@ class Run:
         "revision",
         "context",
         "result",
-        "suite",
+        "campaign",
         "instigated_context",
         "vcs_type",
         "branch_url",
@@ -121,7 +121,7 @@ class Run:
         revision,
         context,
         result,
-        suite,
+        campaign,
         instigated_context,
         vcs_type,
         branch_url,
@@ -146,7 +146,7 @@ class Run:
         self.revision = revision
         self.context = context
         self.result = result
-        self.suite = suite
+        self.campaign = campaign
         self.instigated_context = instigated_context
         self.vcs_type = vcs_type
         self.branch_url = branch_url
@@ -181,10 +181,6 @@ class Run:
     def get_result_branch(self, role):
         return get_result_branch(self.result_branches, role)
 
-    @property
-    def campaign(self):
-        return self.suite
-
     @classmethod
     def from_row(cls, row) -> "Run":
         return cls(
@@ -203,7 +199,7 @@ class Run:
             context=row["context"],
             result=row["result"],
             value=row["value"],
-            suite=row["suite"],
+            campaign=row["campaign"],
             instigated_context=row["instigated_context"],
             vcs_type=row["vcs_type"],
             branch_url=row["branch_url"],
@@ -229,9 +225,11 @@ class Run:
         return self.id < other.id
 
 
-async def iter_publishable_suites(conn: asyncpg.Connection, codebase: str) -> list[str]:
+async def iter_publishable_campaigns(
+    conn: asyncpg.Connection, codebase: str
+) -> list[str]:
     query = """
-SELECT DISTINCT suite
+SELECT DISTINCT campaign
 FROM publish_ready
 WHERE codebase = $1
 """

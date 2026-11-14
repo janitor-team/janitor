@@ -33,7 +33,7 @@ use janitor_types::{CodebaseName, RunId};
 ///   * `suite` -- `debian_build.distribution` (the build target
 ///     distribution, i.e. `campaign_config.debian_build.build_distribution`),
 ///     which selects the apt_repository the build lands in.
-///   * `campaign` -- `run.suite`, the campaign that produced the
+///   * `campaign` -- `run.campaign`, the campaign that produced the
 ///     build, used verbatim as the leading path segment of the pool.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(missing_docs)]
