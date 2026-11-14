@@ -505,7 +505,7 @@ div.sphinxsidebar {
 
     body {
         margin: 0;
-        padding: 20px 30px;
+        padding: 16px;
     }
 
     div.sphinxsidebar {
@@ -513,24 +513,30 @@ div.sphinxsidebar {
         float: initial;
         width: auto;
         margin-left: 0;
-        color: #FFF;
         font-size: medium;
         line-height: normal;
+        border-bottom: 1px solid #EEE;
+        padding-bottom: 8px;
+        margin-bottom: 16px;
     }
 
-    li.toctree-l1 { display: inline; font-size: small;  }
-
-    div.sphinxsidebar h3, div.sphinxsidebar h4, div.sphinxsidebar p,
-    div.sphinxsidebar h3 a {
-        color: white;
+    div.sphinxsidebar li.toctree-l1 {
+        display: inline-block;
+        font-size: small;
+        margin-right: 12px;
     }
 
-    div.sphinxsidebar a {
-        color: #AAA;
+    li.toctree-l1 > a {
+        display: inline-block;
+        padding: 7px 0;
     }
 
     div.sphinxsidebar p.logo {
         display: none;
+    }
+
+    div.sphinxsidebar ul, div.sphinxsidebar p {
+        margin: 4px 0;
     }
 
     div.document {
@@ -547,15 +553,21 @@ div.sphinxsidebar {
     }
 
     div.footer {
-        display: none;
+        width: auto;
     }
 
     div.bodywrapper {
         margin: 0;
     }
 
+    div.documentwrapper {
+        float: none;
+        width: auto;
+    }
+
     div.body {
         min-height: 0;
+        min-width: 0;
         padding: 0;
     }
 
@@ -563,7 +575,91 @@ div.sphinxsidebar {
         width: auto;
     }
 
-    .footer {
+    div.plain-document {
         width: auto;
+    }
+
+    div.body h1 { font-size: 180%; }
+    div.body h2 { font-size: 150%; }
+    div.body h3 { font-size: 125%; }
+    div.body h4 { font-size: 110%; }
+
+    div.body p, div.body li, div.body dd {
+        overflow-wrap: break-word;
+    }
+
+    pre, dl pre, blockquote pre, li pre {
+        padding: 7px 10px;
+    }
+
+    ul.metadata, blockquote {
+        margin-left: 0;
+    }
+
+    div.body ul:not(.metadata) > li {
+        padding: 4px 0;
+    }
+
+    div.body ul ul {
+        margin-left: 1.2em;
+    }
+
+    div.revisions ul {
+        margin-left: 0;
+        list-style-position: inside;
+    }
+
+    div.sidebar-packages {
+        max-width: 100%;
+    }
+
+    div.sidebar-packages input {
+        width: 100%;
+        box-sizing: border-box;
+    }
+
+    div.body table.docutils {
+        display: block;
+        width: fit-content;
+        max-width: 100%;
+        overflow-x: auto;
+        background:
+            linear-gradient(to right, #fff 30%, rgba(255, 255, 255, 0)) left / 40px 100% no-repeat local,
+            linear-gradient(to left, #fff 30%, rgba(255, 255, 255, 0)) right / 40px 100% no-repeat local,
+            linear-gradient(to right, rgba(0, 0, 0, .2), rgba(0, 0, 0, 0)) left / 14px 100% no-repeat scroll,
+            linear-gradient(to left, rgba(0, 0, 0, .2), rgba(0, 0, 0, 0)) right / 14px 100% no-repeat scroll;
+    }
+
+    /* long text in the last column of wide tables; the queue's current runs end in short values */
+    div.body table.docutils td:last-child:nth-child(n+6):not(#queue-table td) {
+        overflow-wrap: anywhere;
+        min-width: 18em;
+    }
+
+    div.body td > a {
+        display: inline-block;
+        padding: 4px 0;
+    }
+
+    div.revisions pre, div.highlight-default pre {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+    }
+
+    div.body div:has(> canvas) {
+        max-width: 100%;
+        max-height: 400px;
+    }
+
+    button, select, input[type=submit], input[type=button],
+    input[type=text], input[type=search], input[type=date] {
+        min-height: 40px;
+        margin: 4px 8px 4px 0;
+    }
+
+    input[type=checkbox] {
+        width: 20px;
+        height: 20px;
+        vertical-align: middle;
     }
 }
