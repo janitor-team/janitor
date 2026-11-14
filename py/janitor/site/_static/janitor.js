@@ -4,6 +4,13 @@ registerHandler = function(kind, cb) {
   handlers.push({'kind': kind, 'callback': cb});
 };
 
+// Close the sidebar menu on phones and open it again on wider screens.
+foldOnNarrowScreens = function(menu) {
+  var narrow = window.matchMedia('(max-width: 600px)');
+  menu.open = !narrow.matches;
+  narrow.addEventListener('change', function(e) { menu.open = !e.matches; });
+};
+
 var ws_url;
 window.onload = function() {
 if(location.protocol == 'http:') {

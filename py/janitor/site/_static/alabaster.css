@@ -324,6 +324,24 @@ div.sphinxsidebar ul li.toctree-l2 > a {
     font-size: 110%;
 }
 
+div.sphinxsidebar details.sidebar-menu > summary {
+    display: none;
+}
+
+@media screen and (max-width: 600px) {
+    div.sphinxsidebar details.sidebar-menu > summary {
+        display: list-item;
+        padding: 7px 0;
+        color: #3E4349;
+        cursor: pointer;
+    }
+
+    div.sphinxsidebarwrapper > a {
+        display: inline-block;
+        padding: 14px 0 0;
+    }
+}
+
 div.sphinxsidebar input {
     border: 1px solid #949494;
     font-family: 'goudy old style', 'minion pro', 'bell mt', Georgia, 'Hiragino Mincho Pro', serif;
