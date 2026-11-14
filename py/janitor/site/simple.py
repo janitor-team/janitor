@@ -36,7 +36,7 @@ from aiohttp.web_urldispatcher import URL
 from aiohttp_openmetrics import metrics, metrics_middleware
 from jinja2 import select_autoescape
 
-from .. import state
+from .. import CODEBASE_REGEX, state
 from ..config import Config
 from ..vcs import VcsManager, get_vcs_managers_from_config
 from . import (
@@ -261,11 +261,8 @@ async def handle_static_file(path, request):
 
 
 async def handle_result_file(request):
-    pkg = request.match_info["pkg"]
     filename = request.match_info["filename"]
     run_id = request.match_info["run_id"]
-    if not re.match("^[a-z0-9+-\\.]+$", pkg) or len(pkg) < 2:
-        raise web.HTTPNotFound(text=f"Invalid package {pkg} for run {run_id}")
     if not re.match("^[a-z0-9-]+$", run_id) or len(run_id) < 5:
         raise web.HTTPNotFound(text=f"Invalid run run id {run_id}")
     if filename.endswith(".log") or re.match(r".*\.log\.[0-9]+", filename):
@@ -628,7 +625,11 @@ async def create_app(
         trace_configs=trace_configs,
     )
     app.router.add_get(
-        "/{suite:" + CAMPAIGN_REGEX + "}/pkg/{pkg}/{run_id}/{filename:.+}",
+        "/{suite:"
+        + CAMPAIGN_REGEX
+        + "}/pkg/{pkg:"
+        + CODEBASE_REGEX
+        + "}/{run_id}/{filename:.+}",
         handle_result_file,
         name="result-file",
     )

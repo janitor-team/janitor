@@ -30,6 +30,7 @@ from aiohttp.web_middlewares import normalize_path_middleware
 from jinja2 import select_autoescape
 from yarl import URL
 
+from janitor import CODEBASE_REGEX
 from janitor.artifacts import ArtifactsMissing
 from janitor.logs import LogRetrievalError
 from janitor.site import template_loader
@@ -571,14 +572,13 @@ async def handle_merge_proposal(request):
 
 
 @routes.get(
-    "/cupboard/c/{codebase}/{run_id}/{filename:.+}", name="cupboard-result-file"
+    "/cupboard/c/{codebase:" + CODEBASE_REGEX + "}/{run_id}/{filename:.+}",
+    name="cupboard-result-file",
 )
 async def handle_result_file(request):
     codebase = request.match_info["codebase"]
     filename = request.match_info["filename"]
     run_id = request.match_info["run_id"]
-    if not re.match("^[a-z0-9+-\\.]+$", codebase) or len(codebase) < 2:
-        raise web.HTTPNotFound(text=f"Invalid codebase {codebase} for run {run_id}")
     if not re.match("^[a-z0-9-]+$", run_id) or len(run_id) < 5:
         raise web.HTTPNotFound(text=f"Invalid run run id {run_id}")
     if filename.endswith(".log") or re.match(r".*\.log\.[0-9]+", filename):
