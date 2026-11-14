@@ -585,6 +585,17 @@ pub struct RateLimitedResponse {
     pub retry_after: Option<f64>,
 }
 
+/// Response when a forge sent a `Retry-After` the runner cannot use.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct InvalidRetryAfterResponse {
+    /// Always `invalid Retry-After from forge`.
+    pub error: String,
+    /// Host that sent the value.
+    pub host: String,
+    /// The value as sent.
+    pub retry_after: String,
+}
+
 /// Response when the private `/active-runs` endpoint rejects the worker.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AssignRejectedResponse {
