@@ -60,6 +60,10 @@
 	    var comment = undefined;
 	    if (verdict == 'rejected') {
 		comment = window.prompt('Please specify a comment for the rejection');
+		if (comment === null) {
+		    $("#verdict").val(saved_verdict);
+		    return;
+		}
 	    }
 	    console.log("Submitting review " + verdict + " for run {{ run_id }} ");
 	    $("#review-status").text("Saving...");
