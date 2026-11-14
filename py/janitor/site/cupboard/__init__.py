@@ -42,7 +42,7 @@ from .. import (
     is_qa_reviewer,
     worker_link_is_global,
 )
-from ..common import html_template
+from ..common import html_template, page_links
 from ..pkg import MergeProposalUserUrlResolver
 from ..setup import setup_postgres
 
@@ -69,10 +69,10 @@ async def handle_history(request):
 SELECT finish_time, codebase, suite, worker_link,
 worker as worker_name, finish_time - start_time AS duration,
 result_code, id, description, failure_transient FROM run
-ORDER BY finish_time DESC LIMIT $1 OFFSET $2"""
+ORDER BY finish_time DESC, id LIMIT $1 OFFSET $2"""
     async with request.app["pool"].acquire() as conn:
         runs = await conn.fetch(query, limit, offset)
-    return {"count": limit, "history": runs}
+    return {"history": runs, **page_links(request, limit, offset, len(runs))}
 
 
 @routes.get("/cupboard/reprocess-logs", name="reprocess-logs")
@@ -107,13 +107,17 @@ async def handle_workers(request):
 @html_template("cupboard/queue.html", headers={"Vary": "Cookie"})
 async def handle_queue(request):
     limit = int(request.query.get("limit", "100"))
+    offset = int(request.query.get("offset", "0"))
     from .queue import write_queue
 
-    return await write_queue(
+    ret = await write_queue(
         request.app["pool"],
         queue_status=request.app["runner_status"],
         limit=limit,
+        offset=offset,
     )
+    ret.update(page_links(request, limit, offset, len(ret["queue"])))
+    return ret
 
 
 @routes.get("/cupboard/never-processed", name="never-processed")

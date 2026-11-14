@@ -39,13 +39,13 @@ def get_processing(answer: dict[str, Any]) -> Iterator[dict[str, Any]]:
 
 
 async def iter_queue_items_with_last_run(
-    db: asyncpg.pool.Pool, queue: Queue, limit: int
+    db: asyncpg.pool.Pool, queue: Queue, limit: int, offset: int = 0
 ):
     async with db.acquire() as conn:
         items = []
         qs = []
         vals = []
-        async for item in queue.iter_queue(limit=limit):
+        async for item in queue.iter_queue(limit=limit, offset=offset):
             items.append(item)
             vals.append(item.codebase)
             vals.append(item.campaign)
@@ -65,9 +65,11 @@ async def iter_queue_items_with_last_run(
 
 
 async def get_queue(
-    db: asyncpg.pool.Pool, queue: Queue, limit: int
+    db: asyncpg.pool.Pool, queue: Queue, limit: int, offset: int = 0
 ) -> AsyncIterator[tuple[QueueItem, Any, str]]:
-    async for queue_item, row in iter_queue_items_with_last_run(db, queue, limit=limit):
+    async for queue_item, row in iter_queue_items_with_last_run(
+        db, queue, limit=limit, offset=offset
+    ):
         command = shlex.split(queue_item.command)
         while command and "=" in command[0]:
             command.pop(0)
@@ -87,6 +89,7 @@ async def write_queue(
     db: asyncpg.pool.Pool,
     limit=None,
     queue_status=None,
+    offset=0,
 ):
     if queue_status:
         processing = get_processing(queue_status)
@@ -104,7 +107,7 @@ async def write_queue(
     async with db.acquire() as conn:
         queue = Queue(conn)
         return {
-            "queue": [x async for x in get_queue(db, queue, limit)],
+            "queue": [x async for x in get_queue(db, queue, limit, offset)],
             "buckets": await queue.get_buckets(),
             "active_queue_ids": active_queue_ids,
             "processing": processing,

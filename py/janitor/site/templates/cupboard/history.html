@@ -13,7 +13,11 @@
         <p>
             For what's coming up, see the <a href="queue">queue</a>.
         </p>
-        <p>Last {{ count }} runs:</p>
+        {% if history %}
+            <p>Runs {{ offset + 1 }} to {{ offset + history|length }}:</p>
+        {% else %}
+            <p>{{ "No more runs." if offset else "No runs." }}</p>
+        {% endif %}
         <table class="docutils" border="1">
             <colgroup>
                 <col width="10%" />
@@ -63,5 +67,11 @@
                 {% endfor %}
             </tbody>
         </table>
+        {% if previous_url or next_url %}
+            <p>
+                {% if previous_url %}<a href="{{ previous_url }}">Newer runs</a>{% endif %}
+                {% if next_url %}<a href="{{ next_url }}">Older runs</a>{% endif %}
+            </p>
+        {% endif %}
     </div>
 {% endblock body %}

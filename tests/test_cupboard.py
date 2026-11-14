@@ -23,12 +23,14 @@ import aiohttp_jinja2
 import pytest
 from aiohttp import ClientSession, web
 from aiohttp.test_utils import make_mocked_request
+from bs4 import BeautifulSoup
 from jinja2 import Environment
 from yarl import URL
 
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
 from janitor.logs import LogRetrievalError, get_log_manager
+from janitor.queue import Queue
 from janitor.site import (
     TEMPLATE_ENV,
     classify_result_code,
@@ -159,6 +161,136 @@ def test_classify_result_code_debian_validate():
         classify_result_code("vcs-up-to-date-check-failed", None) == "transient-failure"
     )
     assert classify_result_code("missing-dependency", None) == "bug"
+
+
+def _codebases_and_page_links(html, rows, column):
+    soup = BeautifulSoup(html, "html.parser")
+    codebases = [
+        tr.find_all("td")[column].get_text(strip=True) for tr in soup.select(rows)
+    ]
+    links = {
+        a.get_text(): a["href"]
+        for a in soup.find_all("a")
+        if a.get_text() in ("Newer runs", "Older runs", "Previous page", "Next page")
+    }
+    return codebases, links
+
+
+async def test_history_pages(aiohttp_client, db):
+    async with db.acquire() as conn:
+        now = utcnow()
+        for i in range(5):
+            await _insert_codebase(conn, f"cb{i}")
+            await _insert_run(
+                conn,
+                run_id=f"run-{i}",
+                codebase=f"cb{i}",
+                start_time=now - timedelta(hours=i + 1),
+                finish_time=now - timedelta(hours=i),
+            )
+    client = await create_client(aiohttp_client, db)
+
+    async def get(path):
+        resp = await client.get(path)
+        assert resp.status == 200
+        return _codebases_and_page_links(await resp.text(), "#history tbody tr", 1)
+
+    assert await get("/cupboard/history") == (
+        ["cb0", "cb1", "cb2", "cb3", "cb4"],
+        {},
+    )
+    assert await get("/cupboard/history?limit=2") == (
+        ["cb0", "cb1"],
+        {"Older runs": "/cupboard/history?limit=2&offset=2"},
+    )
+    assert await get("/cupboard/history?limit=2&offset=2") == (
+        ["cb2", "cb3"],
+        {
+            "Newer runs": "/cupboard/history?limit=2",
+            "Older runs": "/cupboard/history?limit=2&offset=4",
+        },
+    )
+    assert await get("/cupboard/history?offset=3&limit=2") == (
+        ["cb3", "cb4"],
+        {
+            "Newer runs": "/cupboard/history?offset=1&limit=2",
+            "Older runs": "/cupboard/history?offset=5&limit=2",
+        },
+    )
+    assert await get("/cupboard/history?limit=2&offset=4") == (
+        ["cb4"],
+        {"Newer runs": "/cupboard/history?limit=2&offset=2"},
+    )
+    assert await get("/cupboard/history?limit=0&offset=2") == ([], {})
+    for path, summary in [
+        ("/cupboard/history?limit=2&offset=2", "Runs 3 to 4:"),
+        ("/cupboard/history?limit=2&offset=6", "No more runs."),
+        ("/cupboard/history?limit=0", "No runs."),
+    ]:
+        resp = await client.get(path)
+        soup = BeautifulSoup(await resp.text(), "html.parser")
+        paragraphs = [p.get_text(strip=True) for p in soup.select("#history > p")]
+        assert paragraphs[2] == summary
+
+
+async def test_history_pages_keep_runs_with_the_same_finish_time(aiohttp_client, db):
+    async with db.acquire() as conn:
+        now = utcnow()
+        for name in ["z", "y"]:
+            await _insert_codebase(conn, f"cb{name}")
+            await _insert_run(
+                conn,
+                run_id=f"run-{name}",
+                codebase=f"cb{name}",
+                start_time=now - timedelta(hours=1),
+                finish_time=now,
+            )
+    client = await create_client(aiohttp_client, db)
+    pages = []
+    for offset in [0, 1]:
+        resp = await client.get(f"/cupboard/history?limit=1&offset={offset}")
+        assert resp.status == 200
+        pages.append(
+            _codebases_and_page_links(await resp.text(), "#history tbody tr", 1)[0]
+        )
+    assert pages == [["cby"], ["cbz"]]
+
+
+async def test_queue_pages(aiohttp_client, db):
+    async with db.acquire() as conn:
+        queue = Queue(conn)
+        for name in ["cb0", "cb1", "cb2"]:
+            await _insert_codebase(conn, name)
+            await queue.add(codebase=name, campaign="mycampaign", command="true")
+    client = await create_client(aiohttp_client, db)
+
+    async def get(path):
+        resp = await client.get(path)
+        assert resp.status == 200
+        return _codebases_and_page_links(
+            await resp.text(), "div[name=coming-up] tbody tr", 0
+        )
+
+    assert await get("/cupboard/queue") == (["cb0", "cb1", "cb2"], {})
+    assert await get("/cupboard/queue?limit=2") == (
+        ["cb0", "cb1"],
+        {"Next page": "/cupboard/queue?limit=2&offset=2"},
+    )
+    assert await get("/cupboard/queue?limit=2&offset=2") == (
+        ["cb2"],
+        {"Previous page": "/cupboard/queue?limit=2"},
+    )
+    assert await get("/cupboard/queue?limit=2&offset=1") == (
+        ["cb1", "cb2"],
+        {
+            "Previous page": "/cupboard/queue?limit=2",
+            "Next page": "/cupboard/queue?limit=2&offset=3",
+        },
+    )
+    assert await get("/cupboard/queue?limit=2&offset=3") == (
+        ["No more entries."],
+        {"Previous page": "/cupboard/queue?limit=2&offset=1"},
+    )
 
 
 async def test_history(aiohttp_client, db):

@@ -22,6 +22,29 @@ from janitor.site import (
 )
 
 
+def query_url(request, **changes) -> str:
+    """This page's URL with some query parameters set, or removed when None."""
+    query = dict(request.query)
+    for name, value in changes.items():
+        if value is None:
+            query.pop(name, None)
+        else:
+            query[name] = str(value)
+    return str(request.rel_url.with_query(query))
+
+
+def page_links(request, limit: int, offset: int, count: int) -> dict[str, Any]:
+    """Links to the pages before and after this one."""
+    previous_url = next_url = None
+    if offset > 0 and limit > 0:
+        previous_url = query_url(
+            request, offset=offset - limit if offset > limit else None
+        )
+    if limit > 0 and count >= limit:
+        next_url = query_url(request, offset=offset + limit)
+    return {"offset": offset, "previous_url": previous_url, "next_url": next_url}
+
+
 async def get_previous_runs(client, runner_url: str, codebase: str, campaign: str):
     url = URL(runner_url) / "runs"
     async with client.get(
