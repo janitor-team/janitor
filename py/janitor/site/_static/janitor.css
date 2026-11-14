@@ -27,6 +27,14 @@ span.missing-description {
     color: #ec0000;
 }
 
+span.review-approved {
+    color: green;
+}
+
+span.review-rejected {
+    color: #ec0000;
+}
+
 span.result-code-nothing-new-to-do, span.publish-nothing-to-do {
     color: #4e814e;
 }

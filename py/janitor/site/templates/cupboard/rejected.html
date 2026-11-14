@@ -18,7 +18,7 @@
                         <ul>
                             {% for review in reviews[run.id] %}
                                 <li>
-                                    {{ display_reviewer(review.reviewer) }}: <b>{{ review.verdict }}</b>{% if review.comment %}: {{ review.comment }}{% endif %}
+                                    {{ display_reviewer(review.reviewer) }}: <b><span class="review-{{ review.verdict }}">{{ review.verdict }}</span></b>{% if review.comment %}: {{ review.comment }}{% endif %}
                                 </li>
                             {% endfor %}
                         </ul>
