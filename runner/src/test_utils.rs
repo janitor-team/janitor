@@ -18,10 +18,10 @@ use sqlx::PgPool;
 use std::sync::Arc;
 
 /// Turn `test_db` into a janitor [`Database`]. The underlying
-/// per-test database is leaked so the pool stays usable for the rest
-/// of the test (the `AppState` typically owns it until the test ends).
+/// per-test database is dropped once the pool is gone, so it stays usable
+/// for the rest of the test (the `AppState` typically owns it until the test ends).
 fn into_janitor_database(test_db: TestDatabase) -> Database {
-    Database::from_pool(test_db.leak_pool())
+    Database::from_pool(test_db.into_pool())
 }
 
 /// Build a test-flavoured `janitor::config::Config` with sensible

@@ -165,18 +165,7 @@ impl TestDatabase {
 
 impl Drop for TestDatabase {
     fn drop(&mut self) {
-        // Detach the pool so DROP DATABASE isn't blocked by open
-        // connections; Drop can't await so spawn the cleanup.
-        let admin_pool = self.admin_pool.clone();
-        let name = self.name.clone();
-        let pool = self.pool.clone();
-        tokio::spawn(async move {
-            pool.close().await;
-            let drop = format!("DROP DATABASE IF EXISTS \"{}\"", name);
-            let _ = sqlx::query(sqlx::AssertSqlSafe(drop))
-                .execute(&admin_pool)
-                .await;
-        });
+        janitor::test_utils::drop_test_database(&self.admin_pool.connect_options(), &self.name);
     }
 }
 
