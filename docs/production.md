@@ -1,6 +1,7 @@
 # Running Janitor in production
 
 There are [containers](containers.md) available for each of the Janitor services.
+See [how the janitor works](how-it-works.md) for how the services handle a package.
 
 [pre-built containers](https://github.com/jelmer?tab=packages&repo_name=janitor) are
 available, but you can also create them yourself:
