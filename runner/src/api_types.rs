@@ -573,18 +573,6 @@ pub struct FinishConflictResponse {
     pub reason: String,
 }
 
-/// Response when an assignment was refused because a forge rate-limited
-/// the runner.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct RateLimitedResponse {
-    /// Always `rate limited`.
-    pub reason: String,
-    /// Host that rate-limited the runner.
-    pub host: String,
-    /// Seconds until the host can be retried, if the forge said.
-    pub retry_after: Option<f64>,
-}
-
 /// Response when the private `/active-runs` endpoint rejects the worker.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AssignRejectedResponse {
