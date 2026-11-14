@@ -103,6 +103,7 @@ async def generate_review(
             {
                 "codebase": entry["codebase"],
                 "id": entry["id"],
+                "campaign": entry["suite"],
             }
             for entry in entries
         ],
