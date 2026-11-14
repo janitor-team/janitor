@@ -2,7 +2,7 @@ use crate::api_types::{
     AutopublishResponse, EmptyResponse, ErrorResponse, InvalidModeResponse, NotFoundResponse,
     PublishNothingResponse, PublishStartedResponse, SuccessWithUrlResponse,
 };
-use crate::health::{self, HealthCheckHandler};
+use crate::health;
 use crate::rate_limiter::RateLimitStatus;
 use crate::AppState;
 use axum::extract::{Path, Query, State};
