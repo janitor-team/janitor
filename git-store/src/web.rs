@@ -124,14 +124,11 @@ pub fn create_admin_app(state: AppState, client_max_size: usize) -> Router {
         .expect("OpenAPI document can be serialized");
     let health = health_routes().with_state(state.health_checker.clone());
     let (router, _) = admin_routes()
-        // Smart-protocol: GET for the handshake, POST for the pack
-        // transfer. Dumb-HTTP metadata lives under {*path} with a
-        // whitelist enforced in `git_backend`.
+        // Smart protocol: GET for the handshake, POST for the pack
+        // transfer.
         .route("/{codebase}/git-upload-pack", post(git_backend))
         .route("/{codebase}/git-receive-pack", post(git_backend))
         .route("/{codebase}/info/refs", get(git_backend))
-        .route("/{codebase}/HEAD", get(git_backend))
-        .route("/{codebase}/{*path}", get(git_backend))
         .with_state(state)
         .merge(health)
         .split_for_parts();
