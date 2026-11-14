@@ -24,7 +24,10 @@ pub struct DatabaseManager {
 impl DatabaseManager {
     /// Create a new database manager
     pub async fn new(config: &Config) -> Result<Self> {
-        info!("Connecting to database: {}", config.database_url());
+        info!(
+            "Connecting to database: {}",
+            janitor::utils::url_without_password(&config.database_url())
+        );
 
         let db_config = DatabaseConfig::new(config.database_url())
             .with_max_connections(config.max_connections());

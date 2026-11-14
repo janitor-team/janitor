@@ -175,7 +175,10 @@ async fn main() -> Result<(), i32> {
     let (redis_async_connection, redis_manager) = if let Some(redis_location) =
         config.redis_location.as_ref()
     {
-        log::info!("creating RedisManager for {}", redis_location);
+        log::info!(
+            "creating RedisManager for {}",
+            janitor::utils::url_without_password(redis_location)
+        );
         let redis_config = janitor::redis::RedisConfig::new(redis_location.to_string());
         let manager = janitor::redis::RedisManager::new(redis_config).map_err(|e| {
             log::error!("Failed to create redis manager: {}", e);
