@@ -186,7 +186,7 @@ def test_display_publish_blockers():
 
     <ul>
         
-            <li>☑
+            <li class="blocker-passed">☑
                 codebase is not inactive</li>
         
     </ul>
@@ -202,7 +202,7 @@ def test_display_publish_blockers():
     items = BeautifulSoup(html, "html.parser").find_all("li")
     assert [li.get("class") for li in items] == [
         ["blocker-fatal"],
-        None,
+        ["blocker-passed"],
         ["blocker-waiting"],
         ["blocker-waiting"],
     ]

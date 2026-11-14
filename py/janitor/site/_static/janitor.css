@@ -24,7 +24,7 @@ span.result-code-success, span.publish-success {
 }
 
 span.missing-description {
-    color: #ec0000;
+    color: #757575;
 }
 
 span.result-code-nothing-new-to-do, span.publish-nothing-to-do {
@@ -36,6 +36,10 @@ span.result-code-nothing-to-do, span.publish-missing {
 }
 
 /* -- publish blockers: only a failed run is fatal */
+li.blocker-passed {
+    color: green;
+}
+
 li.blocker-waiting {
     color: #9a6700;
 }
