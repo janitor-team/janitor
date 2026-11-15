@@ -1,7 +1,8 @@
 //! Prometheus metrics for the publisher.
 //!
 //! Metric names are the contract with the existing Grafana dashboards
-//! and alerting rules, so they are unprefixed (no `janitor_publish_`).
+//! and alerting rules, so the existing ones are unprefixed (no
+//! `janitor_publish_`).
 //!
 //! Not every counter has a call site wired up yet. [`install`] registers
 //! the unlabelled ones at zero so dashboards see the metric rather than
@@ -66,6 +67,9 @@ pub const FORGE_RATE_LIMITED_COUNT: &str = "forge_rate_limited_count";
 /// Unexpected HTTP responses during checks of existing proposals.
 pub const UNEXPECTED_HTTP_RESPONSE_COUNT: &str = "unexpected_http_response_count";
 
+/// Reviews in the review table (labelled by `reviewer` and `verdict`).
+pub const REVIEWS: &str = "janitor_publish_reviews";
+
 fn describe() {
     describe_histogram!(PUBLISH_LATENCY, "Delay between build finish and publish.");
     describe_gauge!(OPEN_PROPOSAL_COUNT, "Number of open proposals.");
@@ -124,6 +128,10 @@ fn describe() {
         UNEXPECTED_HTTP_RESPONSE_COUNT,
         "Number of unexpected HTTP responses during checks of existing proposals"
     );
+    describe_gauge!(
+        REVIEWS,
+        "Reviews in the review table, by verdict and reviewer."
+    );
 }
 
 /// Install the metrics recorder and register the publisher's metrics.
@@ -157,9 +165,42 @@ fn register() {
     }
 }
 
+/// Verdict and reviewer pairs set by the last [`refresh_review_metrics`].
+static EXPORTED_REVIEW_LABELS: std::sync::Mutex<Vec<(String, String)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Export the review counts from the review table to the metrics.
+pub async fn refresh_review_metrics(conn: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+    export_review_counts_to_metrics(count_reviews_per_reviewer(conn).await?);
+    Ok(())
+}
+
+async fn count_reviews_per_reviewer(
+    conn: &sqlx::PgPool,
+) -> Result<Vec<(String, String, i64)>, sqlx::Error> {
+    sqlx::query_as::<_, (String, String, i64)>(
+        "SELECT verdict::text, reviewer, count(*) FROM review GROUP BY verdict, reviewer",
+    )
+    .fetch_all(conn)
+    .await
+}
+
+fn export_review_counts_to_metrics(rows: Vec<(String, String, i64)>) {
+    let mut labels = EXPORTED_REVIEW_LABELS.lock().unwrap();
+    for (verdict, reviewer) in labels.drain(..) {
+        gauge!(REVIEWS, "reviewer" => reviewer, "verdict" => verdict).set(0.0);
+    }
+    for (verdict, reviewer, count) in rows {
+        gauge!(REVIEWS, "reviewer" => reviewer.clone(), "verdict" => verdict.clone())
+            .set(count as f64);
+        labels.push((verdict, reviewer));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use janitor::test_with_database;
     use janitor_service::testing::{capture, Snapshot, Value};
 
     #[test]
@@ -183,5 +224,58 @@ mod tests {
                 counter("unexpected_http_response_count"),
             ])
         );
+    }
+
+    test_with_database! {
+        schema = Core;
+        async fn test_review_metrics(test_db: TestDatabase) {
+            let pool = test_db.pool();
+            for query in [
+                "INSERT INTO codebase (name) VALUES ('cb')",
+                "INSERT INTO change_set (id, campaign) VALUES ('cs-1', 'lintian-fixes')",
+                "INSERT INTO run (
+                    id, codebase, campaign, command, result_code, change_set, logfilenames
+                 ) VALUES
+                    ('run-1', 'cb', 'lintian-fixes', 'noop', 'success', 'cs-1', '{}'),
+                    ('run-2', 'cb', 'lintian-fixes', 'noop', 'success', 'cs-1', '{}')",
+                "INSERT INTO review (run_id, reviewer, verdict) VALUES
+                    ('run-1', 'a@example.com', 'approved'),
+                    ('run-2', 'a@example.com', 'approved'),
+                    ('run-1', 'b@example.com', 'rejected')",
+            ] {
+                sqlx::query(query).execute(pool).await.unwrap();
+            }
+            let reviews = |name: &str, n: f64| {
+                (format!("{}{{{}}}", REVIEWS, name), Value::Gauge(n))
+            };
+            let rows = count_reviews_per_reviewer(pool).await.unwrap();
+            capture(|| export_review_counts_to_metrics(rows));
+            sqlx::query("UPDATE review SET verdict = 'rejected' WHERE run_id = 'run-2'")
+                .execute(pool)
+                .await
+                .unwrap();
+            let rows = count_reviews_per_reviewer(pool).await.unwrap();
+            assert_eq!(
+                capture(|| export_review_counts_to_metrics(rows)),
+                Snapshot::from([
+                    reviews(r#"reviewer="a@example.com",verdict="approved""#, 1.0),
+                    reviews(r#"reviewer="a@example.com",verdict="rejected""#, 1.0),
+                    reviews(r#"reviewer="b@example.com",verdict="rejected""#, 1.0),
+                ])
+            );
+            sqlx::query("UPDATE review SET verdict = 'rejected' WHERE run_id = 'run-1'")
+                .execute(pool)
+                .await
+                .unwrap();
+            let rows = count_reviews_per_reviewer(pool).await.unwrap();
+            assert_eq!(
+                capture(|| export_review_counts_to_metrics(rows)),
+                Snapshot::from([
+                    reviews(r#"reviewer="a@example.com",verdict="approved""#, 0.0),
+                    reviews(r#"reviewer="a@example.com",verdict="rejected""#, 2.0),
+                    reviews(r#"reviewer="b@example.com",verdict="rejected""#, 1.0),
+                ])
+            );
+        }
     }
 }
