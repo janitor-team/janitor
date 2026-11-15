@@ -256,15 +256,6 @@ pub async fn is_fresh(release_path: &Path, max_finish_time: Option<DateTime<Utc>
     max_finish_time < stamp
 }
 
-/// Builds whose artifacts are missing are left out of the indices;
-/// any other scan error fails the whole publish.
-fn warn_artifacts_missing(build: &BuildInfo) {
-    warn!(
-        "Artifacts missing for {} ({}), skipping",
-        build.source_package, build.run_id
-    );
-}
-
 /// Package provider backed by a precomputed list of `BuildInfo`,
 /// plus the scanner that downloads & parses the artifacts. Unlike
 /// [`crate::repository::ArchivePackageProvider`], this does not
@@ -300,8 +291,13 @@ impl AsyncPackageProvider for PrecomputedPackageProvider {
             while let Some(result) = stream.next().await {
                 match result {
                     Ok(pkg) => file.add_package(pkg),
+                    // Builds with missing artifacts are left out of the indices;
+                    // any other scan error fails the whole publish.
                     Err(ArchiveError::ArtifactsMissing { .. }) => {
-                        warn_artifacts_missing(build);
+                        warn!(
+                            "Artifacts missing for {} ({}), skipping",
+                            build.source_package, build.run_id
+                        );
                         break;
                     }
                     Err(e) => return Err(AptRepositoryError::Provider(Box::new(e))),
@@ -335,8 +331,13 @@ impl AsyncSourceProvider for PrecomputedSourceProvider {
             while let Some(result) = stream.next().await {
                 match result {
                     Ok(src) => file.add_source(src),
+                    // Builds with missing artifacts are left out of the indices;
+                    // any other scan error fails the whole publish.
                     Err(ArchiveError::ArtifactsMissing { .. }) => {
-                        warn_artifacts_missing(build);
+                        warn!(
+                            "Artifacts missing for {} ({}), skipping",
+                            build.source_package, build.run_id
+                        );
                         break;
                     }
                     Err(e) => return Err(AptRepositoryError::Provider(Box::new(e))),
