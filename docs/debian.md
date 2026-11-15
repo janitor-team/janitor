@@ -51,5 +51,8 @@ $ sudo apt update
 $ sudo apt install -t lintian-fixes <package>
 ```
 
+The site shows the sources lines for each suite at `/<suite>`, e.g.
+`/lintian-fixes`.
+
 Each changeset's page, `/cupboard/cs/<id>/`, shows the lines for a suite
 with only that changeset's packages.

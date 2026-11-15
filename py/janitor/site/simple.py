@@ -109,6 +109,11 @@ async def handle_generic_start(request):
     }
 
 
+@html_template("apt-repository.html", headers={"Vary": "Cookie"})
+async def handle_apt_repository(request):
+    return {"repository": request.match_info["repository"]}
+
+
 @html_template("generic/candidates.html", headers={"Vary": "Cookie"})
 async def handle_generic_candidates(request):
     from .common import generate_candidates
@@ -644,6 +649,15 @@ async def create_app(
         handle_generic_start,
         name="generic-start",
     )
+    APT_REPOSITORY_REGEX = "|".join(
+        [re.escape(repository.name) for repository in config.apt_repository]
+    )
+    if APT_REPOSITORY_REGEX:
+        app.router.add_get(
+            "/{repository:" + APT_REPOSITORY_REGEX + "}",
+            handle_apt_repository,
+            name="apt-repository",
+        )
     app.router.add_get(
         "/{campaign:" + CAMPAIGN_REGEX + "}/candidates",
         handle_generic_candidates,

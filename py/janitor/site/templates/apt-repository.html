@@ -1,0 +1,22 @@
+{% extends "layout.html" %}
+{% block page_title %}
+    {{ repository }}
+{% endblock page_title %}
+{% block body %}
+    <div class="section" id="apt-repository">
+        <h1>{{ repository }}</h1>
+        <p>
+            To install packages from this apt repository, use the following
+            sources configuration (with <a href="/archive-keyring.gpg">archive keyring</a> stored in
+            /etc/apt/keyrings/debian-janitor.gpg):
+        </p>
+        <div class="highlight-default notranslate">
+            <div class="highlight">
+                <pre>
+deb [arch=amd64 signed-by=/etc/apt/keyrings/debian-janitor.gpg] {{ url.join(URL('/')) }} {{ repository }} main
+deb-src [arch=amd64 signed-by=/etc/apt/keyrings/debian-janitor.gpg] {{ url.join(URL('/')) }} {{ repository }} main
+</pre>
+            </div>
+        </div>
+    </div>
+{% endblock body %}
