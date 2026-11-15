@@ -512,6 +512,18 @@ mod tests {
         }
     }
 
+    /// True when 0o000-permission tricks are useless (typical for root
+    /// in CI containers). The permission bits are advisory for root,
+    /// so skip tests that rely on reads failing because of them.
+    fn mode_000_is_bypassed() -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let probe = tmp.path().join("probe");
+        std::fs::write(&probe, b"").unwrap();
+        std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o000)).unwrap();
+        std::fs::read(&probe).is_ok()
+    }
+
     /// Artifact store with no artifacts for `missing` and an artifact
     /// for `broken` that cannot be retrieved because it is unreadable.
     async fn scanner_with_broken_run() -> (Arc<PackageScanner>, tempfile::TempDir) {
@@ -545,6 +557,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_precomputed_providers_fail_on_other_errors() {
+        if mode_000_is_bypassed() {
+            eprintln!("skipping: running as root, 0o000 permissions are ignored");
+            return;
+        }
         let (scanner, _tmp) = scanner_with_broken_run().await;
         let builds = vec![build_info("missing"), build_info("broken")];
         assert!(
