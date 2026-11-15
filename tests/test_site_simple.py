@@ -586,7 +586,7 @@ async def test_api_tokens(aiohttp_client, aiohttp_server, database_location):
         await call("POST", f"/api-tokens/{token_hash}/delete", cookies=alice_session),
         await call("POST", review, token=token),
     ] == [
-        (200, '{"verdict": null, "review-comment": null}'),
+        (400, "no verdict in the form"),
         (401, "token expired"),
         (401, "invalid token"),
         (401, "401: Unauthorized"),
