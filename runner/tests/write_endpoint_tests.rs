@@ -3572,6 +3572,87 @@ async fn get_run_followups_returns_candidate_pairs() {
     assert!(body["followups"].as_array().unwrap().is_empty());
 }
 
+/// `GET /runs/{id}/reviews` returns the review rows for a run ordered
+/// by `reviewed_at` ascending. An empty list is returned when the run
+/// has no reviews recorded.
+#[tokio::test]
+async fn get_run_reviews_returns_rows_in_order() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let pool = state.database.pool().clone();
+    insert_codebase(&pool, "alpha").await;
+    sqlx::query(
+        "INSERT INTO run (id, command, campaign, codebase, result_code, \
+                          start_time, finish_time, logfilenames) \
+         VALUES ('run-review', '', 'test-campaign', 'alpha', 'success', \
+                 NOW() - INTERVAL '2 minute', NOW() - INTERVAL '1 minute', '{}')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert run");
+    sqlx::query(
+        "INSERT INTO run (id, command, campaign, codebase, result_code, \
+                          start_time, finish_time, logfilenames) \
+         VALUES ('run-empty', '', 'test-campaign', 'alpha', 'success', \
+                 NOW() - INTERVAL '2 minute', NOW() - INTERVAL '1 minute', '{}')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert empty run");
+
+    sqlx::query(
+        "INSERT INTO review (run_id, verdict, comment, reviewer, reviewed_at) VALUES \
+         ('run-review', 'approved', 'lgtm', 'alice', '2024-01-15 10:00:00'), \
+         ('run-review', 'rejected', NULL, 'bob', '2024-01-15 11:00:00')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert reviews");
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/runs/run-review/reviews")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    assert_eq!(
+        body,
+        json!({
+            "reviews": [
+                {
+                    "run_id": "run-review",
+                    "verdict": "approved",
+                    "comment": "lgtm",
+                    "reviewer": "alice",
+                    "reviewed_at": "2024-01-15T10:00:00Z",
+                },
+                {
+                    "run_id": "run-review",
+                    "verdict": "rejected",
+                    "comment": null,
+                    "reviewer": "bob",
+                    "reviewed_at": "2024-01-15T11:00:00Z",
+                },
+            ],
+        }),
+    );
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/runs/run-empty/reviews")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    assert_eq!(body, json!({"reviews": []}));
+}
+
 /// `GET /candidates` accepts repeatable `codebase` and `campaign`
 /// filters and intersects them.
 #[tokio::test]

@@ -14,6 +14,7 @@ pub mod publish;
 pub mod queue;
 pub mod redis;
 pub mod reprocess_logs;
+pub mod review;
 pub mod schedule;
 pub mod schema;
 pub mod shared_config;

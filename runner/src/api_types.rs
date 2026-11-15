@@ -1,6 +1,7 @@
 //! Request and response bodies of the runner's HTTP API.
 
 use chrono::{DateTime, Utc};
+use janitor::review::Verdict;
 use janitor::vcs::VcsType;
 use janitor_types::{Campaign, ChangeSetId, CodebaseName, LogFilename, RevisionId, Role, RunId};
 use serde::{Deserialize, Serialize};
@@ -386,6 +387,28 @@ pub struct RunFollowup {
 pub struct RunFollowupsResponse {
     /// Follow-up candidates scheduled off this run.
     pub followups: Vec<RunFollowup>,
+}
+
+/// One review recorded against a run.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, sqlx::FromRow)]
+pub struct ReviewEntry {
+    /// Run that was reviewed.
+    pub run_id: RunId,
+    /// Verdict the reviewer recorded.
+    pub verdict: Verdict,
+    /// Reviewer's comment, if any.
+    pub comment: Option<String>,
+    /// Identifier of the reviewer.
+    pub reviewer: String,
+    /// When the review was recorded.
+    pub reviewed_at: DateTime<Utc>,
+}
+
+/// Response for `GET /runs/{id}/reviews`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RunReviewsResponse {
+    /// Reviews recorded for the run, oldest first.
+    pub reviews: Vec<ReviewEntry>,
 }
 
 /// Response for `POST /runs/{id}`; also sent on the `publish-status`

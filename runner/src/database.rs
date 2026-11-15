@@ -373,6 +373,26 @@ impl RunnerDatabase {
         }))
     }
 
+    /// Fetch the reviews recorded for a run, oldest first.
+    pub async fn get_run_reviews(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Vec<crate::api_types::ReviewEntry>, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT run_id, \
+                    verdict, \
+                    comment, \
+                    reviewer, \
+                    (reviewed_at AT TIME ZONE 'UTC') AS reviewed_at \
+               FROM review \
+              WHERE run_id = $1 \
+              ORDER BY reviewed_at ASC",
+        )
+        .bind(run_id)
+        .fetch_all(self.pool())
+        .await
+    }
+
     /// Fetch the detail for the most recent unabsorbed run for
     /// `(codebase, campaign)`, if any. An "unabsorbed" run is one
     /// whose result branches have not yet been merged or pushed,
