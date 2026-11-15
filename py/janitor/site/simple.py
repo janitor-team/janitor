@@ -45,6 +45,7 @@ from . import (
     serve_run_log,
     template_loader,
 )
+from .api_tokens import setup_api_tokens
 from .common import html_template, render_template_for_request
 from .openid import setup_openid
 from .pubsub import Topic, pubsub_handler
@@ -736,6 +737,7 @@ async def create_app(
     setup_openid(
         app, config.oauth2_provider.base_url if config.oauth2_provider else None
     )
+    setup_api_tokens(app)
     app.router.add_post("/", handle_post_root, name="root-post")
 
     app.add_subapp(

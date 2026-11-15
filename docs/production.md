@@ -86,6 +86,13 @@ variables instead, which are used as a fallback if the config fields are empty.
 The provider needs a matching OAuth App/client registered with it first,
 with its callback URL set to `<external_url>/oauth/callback`.
 
+### API tokens
+
+Scripts use an API token instead. Once logged in, open "API tokens" on
+the cupboard page and create one there, then send it as an
+`Authorization: Bearer <token>` header to the API. Tokens have a limited
+lifetime. The same page lists and deletes them.
+
 ## Optional configuration
 
 A few `janitor.conf` fields are optional, each with a clean fallback if left

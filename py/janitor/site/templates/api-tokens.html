@@ -1,0 +1,49 @@
+{% extends "layout.html" %}
+{% block sidebar %}
+    {% include "cupboard/sidebar.html" %}
+{% endblock sidebar %}
+{% block page_title %}
+    API tokens
+{% endblock page_title %}
+{% block body %}
+    <div class="section" id="api-tokens">
+        <h1>API tokens</h1>
+        <form method="post" action="/api-tokens">
+            <select name="days" aria-label="Token lifetime">
+                <option value="7">7 days</option>
+                <option value="30" selected>30 days</option>
+                <option value="60">60 days</option>
+                <option value="90">90 days</option>
+            </select>
+            <input type="submit" value="Create API token" />
+        </form>
+        {% if tokens %}
+            <table class="docutils" border="1">
+                <thead valign="bottom">
+                    <tr class="row-odd">
+                        <th class="head">Created</th>
+                        <th class="head">Expires</th>
+                        <td></td>
+                    </tr>
+                </thead>
+                <tbody valign="top">
+                    {% for token in tokens %}
+                        <tr>
+                            <td>{{ format_timestamp(token.created) }}</td>
+                            <td>{{ format_timestamp(token.expires_at) }}</td>
+                            <td>
+                                <form method="post" action="/api-tokens/{{ token.hash }}/delete">
+                                    <input type="submit"
+                                           value="Delete"
+                                           aria-label="Delete the token that expires {{ format_timestamp(token.expires_at) }}" />
+                                </form>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <p>You have no API tokens.</p>
+        {% endif %}
+    </div>
+{% endblock body %}

@@ -16,6 +16,7 @@
 
 import asyncio
 import base64
+import hashlib
 import json
 import tempfile
 from datetime import timedelta
@@ -509,6 +510,96 @@ async def test_oauth_callback_defaults_missing_groups_claim(
     )
     stored = await _get_session(client, session_id)
     assert (resp.status, page.status, stored["groups"]) == (302, 200, groups)
+
+
+async def test_api_tokens(aiohttp_client, aiohttp_server, database_location):
+    alice = {"sub": "alice", "name": "Alice", "groups": []}
+    provider = await _start_provider(aiohttp_server, userinfo=alice)
+    client = await _openid_site(aiohttp_client, database_location, provider)
+    cookie = (await _callback(client)).cookies["session_id"]
+    alice_session = {"session_id": cookie.value}
+    await _add_session(client, "bob", {"sub": "bob", "groups": []})
+    bob_session = {"session_id": "bob"}
+    as_json = {"Accept": "application/json"}
+
+    async def call(method, path, cookies=None, token=None, data=None):
+        headers = {} if token is None else {"Authorization": f"Bearer {token}"}
+        resp = await client.request(
+            method,
+            path,
+            cookies=cookies,
+            headers={**as_json, **headers},
+            data=data,
+            allow_redirects=False,
+        )
+        return resp.status, await resp.text()
+
+    async def create(**data):
+        resp = await client.post("/api-tokens", cookies=alice_session, data=data)
+        soup = BeautifulSoup(await resp.text(), "html.parser")
+        token_tag = soup.find(id="token")
+        assert token_tag is not None
+        return resp.status, token_tag.get_text()
+
+    async def listed():
+        resp = await client.get(
+            "/api-tokens", cookies=alice_session, headers={"Accept": "text/html"}
+        )
+        soup = BeautifulSoup(await resp.text(), "html.parser")
+        section = soup.find(id="api-tokens")
+        assert section is not None
+        return [form["action"] for form in section.find_all("form")]
+
+    (status, token), (_, short_token) = await create(), await create(days="7")
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    short_hash = hashlib.sha256(short_token.encode()).hexdigest()
+    tokens = await (await client.get("/api-tokens", cookies=alice_session)).json()
+    async with client.app.database.acquire() as conn:
+        lifetimes = await conn.fetch(
+            "SELECT (expires_at - created)::text FROM site_api_token ORDER BY created"
+        )
+    assert status == 201
+    assert [t["hash"] for t in tokens] == [token_hash, short_hash]
+    assert [r[0] for r in lifetimes] == ["30 days", "7 days"]
+    assert await listed() == [
+        "/api-tokens",
+        f"/api-tokens/{token_hash}/delete",
+        f"/api-tokens/{short_hash}/delete",
+    ]
+    async with client.app.database.acquire() as conn:
+        await conn.execute(
+            "UPDATE site_api_token SET expires_at = NOW() - INTERVAL '1 second' "
+            "WHERE hash = $1",
+            short_hash,
+        )
+    review = "/api/run/some-run"
+    assert await listed() == ["/api-tokens", f"/api-tokens/{token_hash}/delete"]
+    assert [
+        await call("POST", review, token=token),
+        await call("POST", review, token=short_token),
+        await call("POST", review, token="the-access-token"),
+        await call("GET", "/api-tokens", token=token),
+        await call("POST", "/api-tokens", token=token),
+        await call("POST", "/api-tokens", cookies=alice_session, data={"days": 31}),
+        await call("GET", "/api-tokens", cookies=bob_session),
+        await call("DELETE", f"/api-tokens/{token_hash}", cookies=bob_session),
+        await call("POST", f"/api-tokens/{token_hash}/delete", cookies=alice_session),
+        await call("POST", review, token=token),
+    ] == [
+        (200, '{"verdict": null, "review-comment": null}'),
+        (401, "token expired"),
+        (401, "invalid token"),
+        (401, "401: Unauthorized"),
+        (401, "401: Unauthorized"),
+        (400, "days must be one of 7, 30, 60, 90"),
+        (200, "[]"),
+        (404, "no such token"),
+        (303, "303: See Other"),
+        (401, "invalid token"),
+    ]
+    # Deleting a token also deletes the expired ones.
+    async with client.app.database.acquire() as conn:
+        assert await conn.fetchval("SELECT COUNT(*) FROM site_api_token") == 0
 
 
 async def test_result_file_log_from_runner(aiohttp_client, database_location):
