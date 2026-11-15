@@ -7,9 +7,9 @@ registerHandler = function(kind, cb) {
 var ws_url;
 window.onload = function() {
 if(location.protocol == 'http:') {
-    ws_url = 'ws://' + location.hostname + '/ws/notifications';
+    ws_url = 'ws://' + location.host + '/ws/notifications';
 } else if(location.protocol == 'https:') {
-    ws_url = 'wss://' + location.hostname + '/ws/notifications';
+    ws_url = 'wss://' + location.host + '/ws/notifications';
 } else {
     console.log('Unknown protocol: ' + location.protocol);
     ws_url = undefined;
