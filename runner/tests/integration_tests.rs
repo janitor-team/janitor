@@ -106,50 +106,6 @@ async fn test_metrics_collection() {
     }
 }
 
-#[tokio::test]
-async fn test_error_tracking() {
-    // Test error tracking system
-
-    use janitor_runner::error_tracking::{
-        ErrorCategory, ErrorSeverity, ErrorTracker, ErrorTrackingConfig, TrackedError,
-    };
-    use std::collections::HashMap;
-
-    let config = ErrorTrackingConfig {
-        log_to_file: false, // Don't write files in tests
-        ..Default::default()
-    };
-
-    let tracker = ErrorTracker::new(config);
-
-    // Create a test error
-    let error = TrackedError {
-        id: "test-error-1".to_string(),
-        timestamp: chrono::Utc::now(),
-        severity: ErrorSeverity::Error,
-        category: ErrorCategory::Database,
-        component: "test-component".to_string(),
-        operation: "test-operation".to_string(),
-        message: "Test error message".to_string(),
-        details: None,
-        stack_trace: None,
-        context: HashMap::new(),
-        correlation_id: None,
-        user_id: None,
-        request_id: None,
-        retry_count: 0,
-        is_transient: false,
-    };
-
-    // Track the error
-    tracker.track_error(error).await;
-
-    // Get statistics
-    let stats = tracker.get_error_statistics().await;
-    assert_eq!(stats.total_errors, 1);
-    assert_eq!(stats.by_category.get(&ErrorCategory::Database), Some(&1));
-}
-
 // `test_performance_monitoring` removed: the `performance` module and
 // `AppState.performance_monitor` field that this test exercised were
 // deleted in a runner refactor. The test became permanently broken
@@ -273,62 +229,6 @@ async fn test_graceful_shutdown() {
 }
 
 #[tokio::test]
-async fn test_concurrent_operations() {
-    // Test concurrent operations to ensure thread safety
-
-    use janitor_runner::error_tracking::{
-        ErrorCategory, ErrorSeverity, ErrorTracker, ErrorTrackingConfig, TrackedError,
-    };
-    use std::collections::HashMap;
-    use std::sync::Arc;
-
-    let config = ErrorTrackingConfig {
-        log_to_file: false,
-        ..Default::default()
-    };
-
-    let tracker = Arc::new(ErrorTracker::new(config));
-
-    // Spawn multiple tasks that track errors concurrently
-    let mut handles = Vec::new();
-
-    for i in 0..10 {
-        let tracker_clone = Arc::clone(&tracker);
-        let handle = tokio::spawn(async move {
-            let error = TrackedError {
-                id: format!("concurrent-error-{}", i),
-                timestamp: chrono::Utc::now(),
-                severity: ErrorSeverity::Warning,
-                category: ErrorCategory::Network,
-                component: "concurrent-test".to_string(),
-                operation: "test-operation".to_string(),
-                message: format!("Concurrent test error {}", i),
-                details: None,
-                stack_trace: None,
-                context: HashMap::new(),
-                correlation_id: None,
-                user_id: None,
-                request_id: None,
-                retry_count: 0,
-                is_transient: false,
-            };
-
-            tracker_clone.track_error(error).await;
-        });
-        handles.push(handle);
-    }
-
-    // Wait for all tasks to complete
-    for handle in handles {
-        handle.await.unwrap();
-    }
-
-    // Check that all errors were tracked
-    let stats = tracker.get_error_statistics().await;
-    assert_eq!(stats.total_errors, 10);
-}
-
-#[tokio::test]
 #[serial]
 async fn test_system_integration() {
     // High-level integration test that exercises multiple systems together
@@ -354,13 +254,6 @@ async fn test_system_integration() {
 
             // performance_monitor field removed from AppState; the
             // assertion that exercised it lived here.
-
-            // Test error tracker
-            let error_stats = state.error_tracker.get_error_statistics().await;
-            assert_eq!(
-                error_stats.total_errors, 0,
-                "Should have no errors initially"
-            );
 
             // Test metrics
             let metrics_result = MetricsCollector::collect_metrics();

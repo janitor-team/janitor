@@ -186,13 +186,6 @@ lazy_static! {
         &["vcs_type"]
     ).unwrap();
 
-    /// Error tracking metrics
-    pub static ref ERROR_OCCURRENCES_TOTAL: IntCounterVec = register_int_counter_vec!(
-        "janitor_runner_error_occurrences_total",
-        "Total number of tracked errors by category, component, and severity",
-        &["category", "component", "severity"]
-    ).unwrap();
-
     /// Error patterns detected
     pub static ref ERROR_PATTERNS_DETECTED: IntCounterVec = register_int_counter_vec!(
         "janitor_runner_error_patterns_detected_total",
