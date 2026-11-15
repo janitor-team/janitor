@@ -815,7 +815,6 @@ mod tests {
         );
     }
 
-    /// Suite/source names may contain dashes; the layout must
     /// Campaign/source names may contain dashes; the layout must
     /// pass them through unchanged (no encoding). Regression
     /// guard against a future "sanitize" helper.
