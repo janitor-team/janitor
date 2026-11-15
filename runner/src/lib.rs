@@ -49,7 +49,6 @@ pub mod builder;
 /// Database operations.
 pub mod database;
 /// Error tracking and logging.
-pub mod error_tracking;
 /// Module for log file management.
 pub mod logs;
 /// Module for Prometheus metrics collection.
@@ -1618,8 +1617,6 @@ pub struct AppState {
     pub backup_log_manager: Option<Arc<logs::LogFileManager>>,
     /// Artifact manager to fall back to when `artifact_manager` fails.
     pub backup_artifact_manager: Option<Arc<janitor::artifacts::ArtifactManager>>,
-    /// Error tracking system.
-    pub error_tracker: Arc<error_tracking::ErrorTracker>,
     /// Metrics collector.
     pub metrics: Arc<metrics::MetricsCollector>,
     /// Configuration.

@@ -1,12 +1,6 @@
 //! Application initialization and orchestration for the runner.
 
-use crate::{
-    database::RunnerDatabase,
-    error_tracking::{ErrorSeverity, ErrorTracker, ErrorTrackingConfig},
-    metrics::MetricsCollector,
-    vcs::RunnerVcsManager,
-    AppState,
-};
+use crate::{database::RunnerDatabase, metrics::MetricsCollector, vcs::RunnerVcsManager, AppState};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -153,17 +147,6 @@ impl ApplicationBuilder {
         }
     }
 
-    fn error_tracking_config() -> ErrorTrackingConfig {
-        ErrorTrackingConfig {
-            max_errors_in_memory: 1000,
-            log_to_file: false,
-            error_log_path: None,
-            enable_stack_traces: true,
-            min_severity: ErrorSeverity::Warning,
-            enable_correlation: true,
-        }
-    }
-
     /// Build and initialize the application.
     pub async fn build(self) -> Result<Application, ApplicationError> {
         // Initialize tracing and logging first. Like Python, spans are
@@ -209,29 +192,13 @@ impl ApplicationBuilder {
         let metrics = Arc::new(MetricsCollector {});
         crate::metrics::init_metrics();
 
-        // Initialize error tracking
-        log::info!("Initializing error tracking...");
-        let error_tracking_config = Self::error_tracking_config();
-        let error_tracker = Arc::new(ErrorTracker::new(error_tracking_config));
-
         log::info!("Initializing database connection...");
         let janitor_config = self.config;
-        let database_pool = match janitor::state::create_pool(&janitor_config).await {
-            Ok(pool) => pool,
-            Err(e) => {
-                let error =
-                    ApplicationError::Database(format!("Failed to create database pool: {}", e));
-                error_tracker
-                    .track_error(error_tracker.create_tracked_error(
-                        &error,
-                        crate::error_tracking::ErrorCategory::Database,
-                        "application",
-                        "initialization",
-                    ))
-                    .await;
-                return Err(error);
-            }
-        };
+        let database_pool = janitor::state::create_pool(&janitor_config)
+            .await
+            .map_err(|e| {
+                ApplicationError::Database(format!("Failed to create database pool: {}", e))
+            })?;
 
         let database = Arc::new(
             RunnerDatabase::new_with_redis_url(
@@ -356,7 +323,6 @@ impl ApplicationBuilder {
             artifact_manager,
             backup_log_manager,
             backup_artifact_manager,
-            error_tracker,
             metrics,
             config: Arc::new(janitor_config),
             upload_processor,
@@ -563,13 +529,6 @@ impl Application {
 
             // 3. Artifact manager doesn't have flush_all in janitor crate
             log::info!("Artifact flush not needed for janitor artifact manager");
-
-            // 5. Clean up error tracking
-            log::info!("Cleaning up error tracking...");
-            self.state
-                .error_tracker
-                .cleanup_old_errors(chrono::Duration::hours(24))
-                .await;
 
             // 6. Close database connections (handled by connection pool drop)
             log::info!("Closing database connections...");
