@@ -948,7 +948,7 @@ impl PublishWorker {
                         .expect("proposal_url just checked to be Some")
                         .to_string(),
                     web_url: result.proposal_web_url.as_ref().map(|u| u.to_string()),
-                    status: "open".to_string(),
+                    status: janitor::publish::MergeProposalStatus::Open,
                     codebase: codebase.clone(),
                     campaign: campaign.clone(),
                     target_branch_url: result.target_branch_url.to_string(),

@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use janitor::publish::MergeProposalStatus;
 use janitor::redis::{PubSubMessage, RedisManager};
 use janitor_types::{Campaign, CodebaseName, RunId};
 use log::{debug, error, info};
@@ -122,7 +123,7 @@ pub struct MergeProposalEvent {
     /// Web URL of the merge proposal.
     pub web_url: Option<String>,
     /// Status of the merge proposal.
-    pub status: String,
+    pub status: MergeProposalStatus,
     /// The codebase this proposal belongs to.
     pub codebase: CodebaseName,
     /// The campaign this proposal belongs to.
