@@ -5,12 +5,13 @@ use crate::api_types::{
     CleanupRunsResponse, CurrentStageResponse, DebianBuildAssignment, EmptyResponse, ErrorResponse,
     FinishConflictResponse, GenericBuildAssignment, MessageResponse, PeekResponse,
     PublishStatusUpdate, QueueEntry, QueuePositionResponse, QueueStatsResponse,
-    RateLimitedResponse, ReasonResponse, ResultBranchEntry, ResumeAssignment, ResumeChainResponse,
-    ResumeCheckResponse, ResumeDescendantsResponse, ResumeValidationResponse, RunDetailResponse,
-    RunFollowup, RunFollowupsResponse, RunHealthSummary, RunListResponse, RunReviewsResponse,
-    RunSummary, ScheduleControlResponse, ScheduleResponse, ScheduledCandidate, StatusResponse,
-    UploadCandidatesResponse, WatchdogHealthResponse, WorkerInfo, WorkerListResponse,
-    WorkerSummary,
+    RateLimitedResponse, ReasonResponse, ReprocessLogsRequest, ReprocessRunLogsRequest,
+    ReprocessRunLogsResponse, ReprocessingRun, ResultBranchEntry, ResumeAssignment,
+    ResumeChainResponse, ResumeCheckResponse, ResumeDescendantsResponse, ResumeValidationResponse,
+    RunDetailResponse, RunFollowup, RunFollowupsResponse, RunHealthSummary, RunListResponse,
+    RunReviewsResponse, RunSummary, ScheduleControlResponse, ScheduleResponse, ScheduledCandidate,
+    StatusResponse, UploadCandidatesResponse, WatchdogHealthResponse, WorkerInfo,
+    WorkerListResponse, WorkerSummary,
 };
 use crate::{
     get_builder, metrics::MetricsCollector, ActiveRun, AppState, Backchannel, BuilderResult,
@@ -2651,6 +2652,133 @@ async fn admin_cleanup_runs(
     .into_response()
 }
 
+/// `POST /runs/{id}/reprocess-logs` -- reanalyze the logs of a run and
+/// update its result code, description and failure details if the
+/// analysis changed.
+#[utoipa::path(
+    post,
+    path = "/runs/{id}/reprocess-logs",
+    params(("id" = RunId, Path, description = "Run id")),
+    request_body = ReprocessRunLogsRequest,
+    responses(
+        (status = 200, description = "Logs were reprocessed", body = ReprocessRunLogsResponse),
+        (status = 404, description = "No such run or log", body = ReasonResponse),
+        (status = 500, description = "Reprocessing failed", body = ErrorResponse),
+    )
+)]
+async fn reprocess_run_logs(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<RunId>,
+    Json(request): Json<ReprocessRunLogsRequest>,
+) -> Response {
+    let pool = state.database.pool();
+    let runs = crate::reprocess_logs::select_runs_to_reprocess(
+        pool,
+        Some(std::slice::from_ref(&id)),
+        None,
+        None,
+        None,
+    )
+    .await;
+    let run = match runs.map(|runs| runs.into_iter().next()) {
+        Ok(Some(run)) => run,
+        Ok(None) => return reason(StatusCode::NOT_FOUND, format!("no such run: {}", id)),
+        Err(e) => {
+            log::error!("Failed to get run {}: {}", id, e);
+            return db_error();
+        }
+    };
+    match crate::reprocess_logs::reprocess_run_logs(
+        pool,
+        &state.log_manager,
+        &run,
+        request.dry_run,
+        request.reschedule,
+    )
+    .await
+    {
+        Ok(Some(analysis)) => Json(ReprocessRunLogsResponse {
+            changed: true,
+            result_code: analysis.code,
+            description: Some(analysis.description),
+            failure_details: analysis.failure_details,
+        })
+        .into_response(),
+        Ok(None) => Json(ReprocessRunLogsResponse {
+            changed: false,
+            result_code: run.result_code,
+            description: run.description,
+            failure_details: run.failure_details,
+        })
+        .into_response(),
+        Err(e @ crate::reprocess_logs::Error::LogNotFound(_)) => {
+            reason(StatusCode::NOT_FOUND, e.to_string())
+        }
+        Err(e) => {
+            log::error!("Failed to reprocess logs of {}: {}", id, e);
+            error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        }
+    }
+}
+
+/// `POST /admin/runs/reprocess-logs` -- reanalyze the logs of a set of
+/// runs in the background. Returns the runs that will be reprocessed.
+#[utoipa::path(
+    post,
+    path = "/admin/runs/reprocess-logs",
+    request_body = ReprocessLogsRequest,
+    responses(
+        (status = 200, description = "Runs are being reprocessed", body = Vec<ReprocessingRun>),
+        (status = 400, description = "Invalid regular expression", body = ErrorResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
+async fn admin_reprocess_logs(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<ReprocessLogsRequest>,
+) -> Response {
+    let runs = match crate::reprocess_logs::select_runs_to_reprocess(
+        state.database.pool(),
+        request.run_ids.as_deref(),
+        request.campaign.as_ref(),
+        request.description_re.as_deref(),
+        request.min_age,
+    )
+    .await
+    {
+        Ok(runs) => runs,
+        Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("2201B") => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                format!("Invalid regex: {}", e.message()),
+            );
+        }
+        Err(e) => {
+            log::error!("Failed to select runs to reprocess: {}", e);
+            return db_error();
+        }
+    };
+    let response: Vec<ReprocessingRun> = runs
+        .iter()
+        .map(|run| ReprocessingRun {
+            codebase: run.codebase.clone(),
+            campaign: run.campaign.clone(),
+            log_id: run.id.clone(),
+        })
+        .collect();
+    tokio::spawn(async move {
+        crate::reprocess_logs::reprocess_runs(
+            state.database.pool(),
+            &state.log_manager,
+            runs,
+            request.dry_run,
+            request.reschedule,
+        )
+        .await
+    });
+    Json(response).into_response()
+}
+
 /// Check for resume information for a campaign and branch.
 #[utoipa::path(
     post,
@@ -4559,6 +4687,8 @@ fn private_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(admin_delete_worker))
         .routes(routes!(admin_security_stats))
         .routes(routes!(admin_cleanup_runs))
+        .routes(routes!(admin_reprocess_logs))
+        .routes(routes!(reprocess_run_logs))
         .routes(routes!(check_resume_info))
         .routes(routes!(get_resume_chain))
         .routes(routes!(get_resume_descendants))
@@ -5730,6 +5860,114 @@ distribution {
         assert_eq!(
             (status, String::from_utf8(body.to_vec()).unwrap()),
             (StatusCode::OK, r#"["alpha","beta"]"#.to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reprocess_logs() {
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+        let Ok(Some(db)) = crate::test_utils::TestDatabase::new_optional_with_schema(
+            crate::test_utils::TestSchema::Core,
+        )
+        .await
+        else {
+            eprintln!("Skipping: no Postgres available");
+            return;
+        };
+        sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs1', 'mycampaign')")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO codebase (name) VALUES ('foo')")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO run (id, command, start_time, finish_time, result_code, \
+             description, campaign, change_set, codebase, logfilenames) \
+             VALUES ('run-1', 'cmd', NOW(), NOW(), 'build-old-code', 'old', 'mycampaign', \
+             'cs1', 'foo', ARRAY['build.log'])",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let state = crate::test_utils::create_test_app_state_without_redis(db);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("build.log");
+        std::fs::write(&path, "nothing to see here\n").unwrap();
+        state
+            .log_manager
+            .import_log(
+                &CodebaseName::new("foo").unwrap(),
+                &janitor_types::RunId::new("run-1").unwrap(),
+                path.to_str().unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let app = super::app(state);
+        let mut got = Vec::new();
+        for (uri, body) in [
+            ("/runs/run-1/reprocess-logs", r#"{"dry_run": true}"#),
+            ("/runs/run-2/reprocess-logs", "{}"),
+            ("/admin/runs/reprocess-logs", r#"{"description_re": "("}"#),
+            (
+                "/admin/runs/reprocess-logs",
+                r#"{"campaign": "mycampaign", "dry_run": true}"#,
+            ),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = resp.status();
+            let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            got.push((
+                status,
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+            ));
+        }
+        assert_eq!(
+            got,
+            vec![
+                (
+                    StatusCode::OK,
+                    serde_json::json!({
+                        "changed": true,
+                        "result_code": "build-failed",
+                        "description": "Build failed",
+                        "failure_details": null,
+                    })
+                ),
+                (
+                    StatusCode::NOT_FOUND,
+                    serde_json::json!({"reason": "no such run: run-2"})
+                ),
+                (
+                    StatusCode::BAD_REQUEST,
+                    serde_json::json!({
+                        "error": "Invalid regex: invalid regular expression: parentheses () not balanced"
+                    })
+                ),
+                (
+                    StatusCode::OK,
+                    serde_json::json!([
+                        {"codebase": "foo", "campaign": "mycampaign", "log_id": "run-1"}
+                    ])
+                ),
+            ]
         );
     }
 
