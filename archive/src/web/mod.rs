@@ -359,6 +359,11 @@ fn normalized_path_candidates(path: &str) -> Vec<String> {
 
 /// Add a fallback to `router` that redirects requests matching no route
 /// to a normalized path among `known`, if there is one.
+///
+/// `known` is a side table of the same routes `router` holds: axum's
+/// own matchit index is private, and probing it by calling the router
+/// recursively would run the matched handler (publishing, file I/O)
+/// just to answer "does this path match".
 fn with_path_normalization(
     router: Router<AppState>,
     known: matchit::Router<Vec<Method>>,
