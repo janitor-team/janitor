@@ -915,19 +915,14 @@ impl PublishWorker {
         };
         let response = if let Some(lock_manager) = &self.lock_manager {
             match lock_manager
-                .lock(
+                .using(
                     format!("publish:{}", target_branch_url).as_bytes(),
                     std::time::Duration::from_secs(60),
+                    async || run_worker_process(args, request).await,
                 )
                 .await
             {
-                Ok(rl) => {
-                    let response = run_worker_process(args, request)
-                        .await
-                        .map_err(invalid_response)?;
-                    lock_manager.unlock(&rl).await;
-                    response
-                }
+                Ok(result) => result.map_err(invalid_response)?,
                 Err(_) => {
                     return Err(PublishError::BranchBusy(target_branch_url.clone()));
                 }
