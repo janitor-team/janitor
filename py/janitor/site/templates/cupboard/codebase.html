@@ -62,7 +62,7 @@
         <ul>
             {% for run in runs %}
                 <li>
-                    <a href="/cupboard/c/{{ codebase.name }}/{{ run.id }}/">{{ format_timestamp(run.finish_time) }} {{ run.campaign }}</a>: {{ display_result_code(run.result_code, run.failure_transient) }}
+                    <a href="{{ url_for('cupboard-run', codebase=codebase.name, run_id=run.id) }}">{{ format_timestamp(run.finish_time) }} {{ run.campaign }}</a>: {{ display_result_code(run.result_code, run.failure_transient) }}
                 </li>
             {% endfor %}
         </ul>

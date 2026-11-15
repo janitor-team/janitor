@@ -27,7 +27,7 @@
                 Codebase: <a class="reference external" href="..">{{ run.codebase }}</a>
             </li>
             <li>
-                Changeset: <a href="/cupboard/cs/{{ run.change_set }}/">{{ run.change_set }}</a>
+                Changeset: <a href="{{ url_for('cupboard-changeset', id=run.change_set) }}">{{ run.change_set }}</a>
             </li>
             {% if vcs_url %}<li>Branch URL: {{ display_branch_url(vcs_browse, vcs_url) }}</li>{% endif %}
             {% if run.result and 'upstream_branch_url' in run.result %}
@@ -39,17 +39,17 @@
             <li>
                 Status: {{ display_result_code(result_code, failure_transient) |safe }}
                 {% if unchanged_run and campaign_name not in ('unchanged', 'control') %}
-                    (<a href="/cupboard/c/{{ unchanged_run.codebase }}/{{ unchanged_run.id }}/">run</a> without changes: {{ display_result_code(unchanged_run.result_code, unchanged_run.failure_transient) |safe }})
+                    (<a href="{{ url_for('cupboard-run', codebase=unchanged_run.codebase, run_id=unchanged_run.id) }}">run</a> without changes: {{ display_result_code(unchanged_run.result_code, unchanged_run.failure_transient) |safe }})
                 {% elif campaign_name not in ('unchanged', 'control') %}
                     ({{ schedule_control_button(run.id, "schedule control run", id="schedule-control") }})
                 {% endif %}
-                {% if run.resume_from %}(<a href="/cupboard/c/{{ run.codebase }}/{{ run.resume_from }}/">base run</a>){% endif %}
+                {% if run.resume_from %}(<a href="{{ url_for('cupboard-run', codebase=run.codebase, run_id=run.resume_from) }}">base run</a>){% endif %}
             </li>
             <li>Description: {% if description %}{{ description }}{% else %}<span class="missing-description">no description</span>{% endif %}</li>
             <li>Publish status: <span class="publish-status-{{ run.publish_status }}">{{ run.publish_status }}</span></li>
             {% if queue_position %}
                 <li class="queue-position.{{ run.codebase }}">
-                    <a href="/cupboard/queue">Queue</a> position: {{ queue_position }}
+                    <a href="{{ url_for('queue') }}">Queue</a> position: {{ queue_position }}
                     {% if queue_wait_time %}(a {{ format_duration(queue_wait_time) }} wait){% endif %}
                 </li>
             {% else %}

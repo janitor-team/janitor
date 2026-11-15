@@ -19,7 +19,7 @@
             </li>
             {% if proposal.codebase %}
                 <li>
-                    Codebase: <a href="/cupboard/c/{{ proposal.codebase }}/">{{ proposal.codebase }}</a>
+                    Codebase: <a href="{{ url_for('cupboard-codebase', codebase=proposal.codebase) }}">{{ proposal.codebase }}</a>
                 </li>
             {% endif %}
             {% if proposal.can_be_merged is not none %}
@@ -64,7 +64,7 @@
             </li>
             {% if proposal.campaign %}
                 <li>
-                    <a href="/{{ proposal.campaign }}/c/{{ proposal.codebase }}/">Run details</a>
+                    <a href="{{ url_for('generic-codebase', campaign=proposal.campaign, codebase=proposal.codebase) }}">Run details</a>
                 </li>
             {% endif %}
         </ul>

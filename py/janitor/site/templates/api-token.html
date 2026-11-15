@@ -12,6 +12,6 @@
         <pre id="token">{{ token }}</pre>
         <p>It expires at {{ format_timestamp(expires_at) }}.</p>
         <p>Send it to the API in an <code>Authorization: Bearer</code> header.</p>
-        <p><a href="/api-tokens">Your API tokens</a></p>
+        <p><a href="{{ url_for('api-token-list') }}">Your API tokens</a></p>
     </div>
 {% endblock body %}
