@@ -265,3 +265,67 @@ async fn test_get_last_unabsorbed_run_detail() {
         .unwrap();
     assert!(missing.is_none());
 }
+
+/// `get_unchanged_run` returns the latest successful `control`/`unchanged`
+/// run for a codebase+revision whose change_set equals its own id, and
+/// None when no such run exists.
+#[tokio::test]
+async fn test_get_unchanged_run() {
+    let Some(db) = setup().await else { return };
+    sqlx::raw_sql(
+        "INSERT INTO change_set (id, campaign) VALUES \
+             ('run-older', 'unchanged'), \
+             ('run-newer', 'unchanged'), \
+             ('run-wrong-rev', 'unchanged'), \
+             ('run-failed', 'unchanged'), \
+             ('cs-other', 'unchanged');
+         INSERT INTO run (id, command, result_code, campaign, logfilenames, change_set, codebase, \
+                          vcs_type, branch_url, revision, main_branch_revision, \
+                          start_time, finish_time) \
+         VALUES ('run-older', 'true', 'success', 'unchanged', '{}', 'run-older', 'foo', \
+                 'git', 'https://example.com/foo', 'base-rev', 'base-rev', \
+                 '2024-01-01 00:00:00', '2024-01-01 00:10:00'),
+                ('run-newer', 'true', 'success', 'control', '{}', 'run-newer', 'foo', \
+                 'git', 'https://example.com/foo', 'base-rev', 'base-rev', \
+                 '2024-02-01 00:00:00', '2024-02-01 00:10:00'),
+                ('run-wrong-rev', 'true', 'success', 'unchanged', '{}', 'run-wrong-rev', 'foo', \
+                 'git', 'https://example.com/foo', 'other-rev', 'other-rev', \
+                 '2024-03-01 00:00:00', '2024-03-01 00:10:00'),
+                ('run-failed', 'true', 'build-failed', 'unchanged', '{}', 'run-failed', 'foo', \
+                 'git', 'https://example.com/foo', 'base-rev', 'base-rev', \
+                 '2024-04-01 00:00:00', '2024-04-01 00:10:00'),
+                ('run-grouped', 'true', 'success', 'unchanged', '{}', 'cs-other', 'foo', \
+                 'git', 'https://example.com/foo', 'base-rev', 'base-rev', \
+                 '2024-05-01 00:00:00', '2024-05-01 00:10:00');
+         SELECT refresh_last_run('foo', 'unchanged');
+         SELECT refresh_last_run('foo', 'control');",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let runner_db = RunnerDatabase::new(db.pool.clone());
+
+    let detail = runner_db
+        .get_unchanged_run(&"foo".parse().unwrap(), "base-rev")
+        .await
+        .unwrap()
+        .expect("unchanged run present");
+    assert_eq!(detail.row.id.as_str(), "run-newer");
+    assert_eq!(detail.row.codebase.as_str(), "foo");
+    assert_eq!(detail.row.campaign.as_str(), "control");
+    assert_eq!(detail.row.result_code, "success");
+
+    // Revision with no matching run returns None.
+    let missing = runner_db
+        .get_unchanged_run(&"foo".parse().unwrap(), "no-such-rev")
+        .await
+        .unwrap();
+    assert!(missing.is_none());
+
+    // Unknown codebase returns None.
+    let missing = runner_db
+        .get_unchanged_run(&"nope".parse().unwrap(), "base-rev")
+        .await
+        .unwrap();
+    assert!(missing.is_none());
+}
