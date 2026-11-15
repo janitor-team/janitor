@@ -63,13 +63,14 @@ async def create_client(
     user=None,
     config="",
     publisher_url=None,
+    runner_url=None,
     logfile_manager=None,
 ):
     config = read_config_string(config)
     app = create_app(
         config=config,
         publisher_url=publisher_url,
-        runner_url=None,
+        runner_url=runner_url,
         differ_url=None,
         db=db,
     )
@@ -292,7 +293,7 @@ def test_run():
     env.get_template("cupboard/run.html")
 
 
-async def test_run_page_log_links(aiohttp_client, db, tmp_path):
+async def test_run_page_log_links(aiohttp_client, aiohttp_server, db, tmp_path):
     async with db.acquire() as conn:
         await _insert_codebase(conn, "foo")
         now = utcnow()
@@ -308,8 +309,19 @@ async def test_run_page_log_links(aiohttp_client, db, tmp_path):
             "UPDATE run SET failure_stage = 'worker', "
             "logfilenames = '{codemod.log,worker.log}'"
         )
+
+    runner_app = web.Application()
+
+    async def _handle_unchanged(request):
+        return web.json_response({"reason": "no unchanged run"}, status=404)
+
+    runner_app.router.add_get("/runs/unchanged", _handle_unchanged)
+    runner_server = await aiohttp_server(runner_app)
     client = await create_client(
-        aiohttp_client, db, logfile_manager=get_log_manager(str(tmp_path))
+        aiohttp_client,
+        db,
+        logfile_manager=get_log_manager(str(tmp_path)),
+        runner_url=str(runner_server.make_url("/")),
     )
 
     resp = await client.get("/cupboard/c/foo/somerun/")
