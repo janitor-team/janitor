@@ -154,22 +154,15 @@ WHERE id = $1
     return await conn.fetchrow(query, run_id)
 
 
-async def fetch_run_detail(client, runner_url: str, run_id: str):
-    """Fetch a run's detail from the runner, shaped like `get_run`.
+def _shape_run_detail(data):
+    """Reshape a runner RunDetailResponse body for template consumption.
 
-    * `result_branches` are projected to the 4-tuple shape the template
-      unpacks: `(role, remote_name, base_revision, revision)`.
+    * `result_branches` are projected to 4-tuples
+      `(role, remote_name, base_revision, revision)`.
     * `result_tags` are projected to `(actual_name, revision)` tuples.
     * The nested `debian_build` object is flattened into `build_version`,
       `build_distribution`, `lintian_result`, `binary_packages`.
     """
-    url = URL(runner_url) / "runs" / run_id
-    async with client.get(url) as resp:
-        if resp.status == 404:
-            return None
-        resp.raise_for_status()
-        data = await resp.json()
-
     run = dict(data)
     run["start_time"] = datetime.fromisoformat(run["start_time"])
     run["finish_time"] = datetime.fromisoformat(run["finish_time"])
@@ -189,33 +182,33 @@ async def fetch_run_detail(client, runner_url: str, run_id: str):
     return run
 
 
-async def get_unchanged_run(
-    conn: asyncpg.Connection, codebase: str, main_branch_revision: bytes
+async def fetch_run_detail(client, runner_url: str, run_id: str):
+    """Fetch a run's detail from the runner, shaped like `get_run`."""
+    url = URL(runner_url) / "runs" / run_id
+    async with client.get(url) as resp:
+        if resp.status == 404:
+            return None
+        resp.raise_for_status()
+        data = await resp.json()
+    return _shape_run_detail(data)
+
+
+async def fetch_unchanged_run(
+    client, runner_url: str, codebase: str, main_branch_revision: bytes
 ):
-    query = """
-SELECT
-    id, command, start_time, finish_time, description, codebase,
-    debian_build.version AS build_version,
-    debian_build.distribution AS build_distribution, result_code, value,
-    main_branch_revision, revision, context, result, campaign,
-    instigated_context, vcs_type, branch_url, logfilenames,
-    worker,
-    array(SELECT row(role, remote_name, base_revision, revision) FROM
-     new_result_branch WHERE run_id = id) AS result_branches,
-    result_tags, target_branch_url, change_set AS change_set,
-    failure_transient AS failure_transient, failure_stage, publish_status
-FROM
-    last_runs
-LEFT JOIN
-    debian_build ON debian_build.run_id = last_runs.id
-WHERE
-    campaign in ('control', 'unchanged') AND revision = $1 AND
-    codebase = $2 AND
-    result_code = 'success' AND
-    change_set = id
-ORDER BY finish_time DESC
-"""
-    return await conn.fetchrow(query, main_branch_revision.decode("utf-8"), codebase)
+    """Fetch the latest control/unchanged run for (codebase, revision).
+
+    Returns the same flattened shape as :func:`fetch_run_detail`, or None
+    when no such run exists.
+    """
+    url = URL(runner_url) / "runs" / "unchanged"
+    params = {"codebase": codebase, "revision": main_branch_revision.decode("utf-8")}
+    async with client.get(url, params=params) as resp:
+        if resp.status == 404:
+            return None
+        resp.raise_for_status()
+        data = await resp.json()
+    return _shape_run_detail(data)
 
 
 async def _fetch_codebase_merge_proposals(
@@ -280,9 +273,12 @@ WHERE codebase.name = $1""",
         else:
             run_id = run["id"]
             if run["main_branch_revision"]:
-                with span.new_child("sql:unchanged-run"):
-                    unchanged_run = await get_unchanged_run(
-                        conn,
+                if runner_url is None:
+                    raise web.HTTPInternalServerError(text="runner_url not configured")
+                with span.new_child("runner:unchanged-run"):
+                    unchanged_run = await fetch_unchanged_run(
+                        client,
+                        runner_url,
                         run["codebase"],
                         run["main_branch_revision"].encode("utf-8"),
                     )

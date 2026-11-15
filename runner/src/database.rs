@@ -440,6 +440,79 @@ impl RunnerDatabase {
         }))
     }
 
+    /// Fetch the detail for the most recent successful `control`/`unchanged`
+    /// run of `codebase` that was built on top of `revision` and whose
+    /// change_set matches its own id (i.e. a baseline rebuild). Used by the
+    /// site to show a baseline debdiff next to a changed run.
+    pub async fn get_unchanged_run(
+        &self,
+        codebase: &CodebaseName,
+        revision: &str,
+    ) -> Result<Option<RunDetail>, sqlx::Error> {
+        let row: Option<RunDetailRow> = sqlx::query_as(
+            r#"
+            SELECT id,
+                   codebase,
+                   campaign::text AS campaign,
+                   publish_status::text AS publish_status,
+                   result_code,
+                   main_branch_revision,
+                   revision,
+                   vcs_type,
+                   branch_url,
+                   target_branch_url,
+                   (start_time AT TIME ZONE 'UTC') AS start_time,
+                   (finish_time AT TIME ZONE 'UTC') AS finish_time,
+                   command,
+                   description,
+                   context,
+                   result,
+                   instigated_context,
+                   logfilenames,
+                   worker AS worker_name,
+                   worker_link,
+                   result_tags,
+                   change_set,
+                   failure_stage,
+                   failure_transient,
+                   resume_from
+              FROM last_runs
+             WHERE campaign IN ('control', 'unchanged')
+               AND revision = $1
+               AND codebase = $2
+               AND result_code = 'success'
+               AND change_set = id
+             ORDER BY finish_time DESC
+             LIMIT 1
+            "#,
+        )
+        .bind(revision)
+        .bind(codebase)
+        .fetch_optional(self.pool())
+        .await?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        let branches: Vec<ResultBranchRow> = sqlx::query_as(
+            "SELECT role, remote_name, base_revision, revision \
+             FROM new_result_branch WHERE run_id = $1 \
+             ORDER BY role",
+        )
+        .bind(&row.id)
+        .fetch_all(self.pool())
+        .await?;
+
+        let debian_build = self.get_run_debian_build(&row.id).await?;
+
+        Ok(Some(RunDetail {
+            row,
+            branches,
+            debian_build,
+        }))
+    }
+
     /// Get a run by ID.
     pub async fn get_run(&self, run_id: &RunId) -> Result<Option<JanitorResult>, sqlx::Error> {
         // run.campaign is a postgres enum; cast it to text so sqlx decodes

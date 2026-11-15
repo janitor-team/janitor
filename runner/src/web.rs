@@ -1840,6 +1840,59 @@ async fn get_last_unabsorbed_run(
     }
 }
 
+/// Query parameters for `GET /runs/unchanged`.
+#[derive(serde::Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct UnchangedRunQuery {
+    /// Codebase to look up.
+    codebase: CodebaseName,
+    /// Main-branch revision the baseline was built on.
+    revision: String,
+}
+
+/// `GET /runs/unchanged?codebase=X&revision=Y` -- the most recent
+/// successful `control`/`unchanged` run of `codebase` built on top of
+/// `revision` whose change_set equals its own id. Returns the same
+/// detail shape as `/runs/{id}`.
+#[utoipa::path(
+    get,
+    path = "/runs/unchanged",
+    params(UnchangedRunQuery),
+    responses(
+        (status = 200, description = "The matching unchanged run", body = RunDetailResponse),
+        (status = 404, description = "No matching unchanged run", body = ReasonResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
+async fn get_unchanged_run(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<UnchangedRunQuery>,
+) -> Response {
+    match state
+        .database
+        .get_unchanged_run(&params.codebase, &params.revision)
+        .await
+    {
+        Ok(Some(detail)) => Json(run_detail_to_response(detail)).into_response(),
+        Ok(None) => reason(
+            StatusCode::NOT_FOUND,
+            format!(
+                "no unchanged run for {} at {}",
+                params.codebase, params.revision
+            ),
+        ),
+        Err(e) => {
+            log::error!(
+                "Failed to get unchanged run for {} at {}: {}",
+                params.codebase,
+                params.revision,
+                e
+            );
+            db_error()
+        }
+    }
+}
+
 /// `POST /runs/{run_id}` -- set the publish_status of a run, then
 /// publish a notification on the Redis `publish-status` channel so
 /// other services can react.
@@ -4528,6 +4581,7 @@ fn private_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(get_run, update_run))
         .routes(routes!(get_run_followups))
         .routes(routes!(get_last_unabsorbed_run))
+        .routes(routes!(get_unchanged_run))
         // The unauthenticated POST is for intra-cluster admin tools
         // (e.g. schedule-codebases CronJob). Body must include
         // `worker`/`node`. Workers themselves should hit

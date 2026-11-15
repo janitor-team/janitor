@@ -21,33 +21,73 @@ from aiohttp import web
 
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
-from janitor.site.common import generate_codebase_context, get_unchanged_run
+from janitor.site.common import fetch_unchanged_run, generate_codebase_context
 
 from .conftest import _insert_codebase, _insert_run
 
 
-async def test_get_unchanged_run(con):
-    await _insert_codebase(con, "foo")
-    now = utcnow()
-    await _insert_run(
-        con,
-        run_id="control-run",
-        codebase="foo",
-        campaign="control",
-        start_time=now - timedelta(minutes=30),
-        finish_time=now,
-    )
+async def test_fetch_unchanged_run(aiohttp_client):
+    async def handle_unchanged(request):
+        assert dict(request.query) == {"codebase": "foo", "revision": "revid"}
+        now_iso = utcnow().isoformat()
+        return web.json_response(
+            {
+                "id": "control-run",
+                "codebase": "foo",
+                "campaign": "control",
+                "publish_status": "unknown",
+                "result_code": "success",
+                "main_branch_revision": "revid",
+                "revision": "revid",
+                "vcs_type": "git",
+                "branch_url": "https://example.com/foo.git",
+                "target_branch_url": None,
+                "start_time": now_iso,
+                "finish_time": now_iso,
+                "command": "",
+                "description": None,
+                "context": None,
+                "result": None,
+                "instigated_context": None,
+                "logfilenames": [],
+                "worker_name": None,
+                "worker_link": None,
+                "change_set": "control-run",
+                "failure_stage": None,
+                "failure_transient": None,
+                "resume_from": None,
+                "result_tags": None,
+                "result_branches": [],
+                "debian_build": None,
+            }
+        )
 
-    unchanged_run = await get_unchanged_run(con, "foo", b"revid")
-    expected = {
-        "id": "control-run",
-        "codebase": "foo",
-        "campaign": "control",
-        "result_code": "success",
-        "revision": "revid",
-    }
-    row = dict(unchanged_run)
-    assert {key: row.get(key) for key in expected} == expected
+    async def handle_missing(request):
+        return web.json_response({"reason": "no unchanged run"}, status=404)
+
+    app = web.Application()
+    app.router.add_get("/runs/unchanged", handle_unchanged)
+    client = await aiohttp_client(app)
+    unchanged = await fetch_unchanged_run(
+        client.session, str(client.make_url("/")), "foo", b"revid"
+    )
+    assert unchanged["id"] == "control-run"
+    assert unchanged["codebase"] == "foo"
+    assert unchanged["campaign"] == "control"
+    assert unchanged["result_code"] == "success"
+
+    app_missing = web.Application()
+    app_missing.router.add_get("/runs/unchanged", handle_missing)
+    missing_client = await aiohttp_client(app_missing)
+    assert (
+        await fetch_unchanged_run(
+            missing_client.session,
+            str(missing_client.make_url("/")),
+            "foo",
+            b"revid",
+        )
+        is None
+    )
 
 
 async def test_generate_codebase_context(aiohttp_client, db, con):
