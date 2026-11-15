@@ -454,7 +454,16 @@ pub async fn refresh_on_demand_dists(
     async_repo
         .generate_repository(&base_path, &pkg_provider, &src_provider)
         .await
-        .map_err(|e| ArchiveError::RepositoryGeneration(e.to_string()))?;
+        .map_err(|e| match e {
+            // The providers wrap our own ArchiveError in Provider; recover
+            // it so callers see the original typed error rather than a
+            // stringified version.
+            AptRepositoryError::Provider(inner) => match inner.downcast::<ArchiveError>() {
+                Ok(archive_err) => *archive_err,
+                Err(other) => ArchiveError::RepositoryGeneration(other.to_string()),
+            },
+            other => ArchiveError::RepositoryGeneration(other.to_string()),
+        })?;
     crate::repository::generate_contents(&async_repo, &scanner, &base_path, &build_infos).await?;
 
     if let Some(gpg_cfg) = gpg {
