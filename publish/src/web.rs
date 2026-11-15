@@ -1991,8 +1991,7 @@ async fn refresh_status(
             return error_response(
                 StatusCode::BAD_REQUEST,
                 format!("Invalid url parameter: {}", e),
-            )
-            .into_response();
+            );
         }
     };
     log::info!("Request to refresh proposal status for {}", url);
