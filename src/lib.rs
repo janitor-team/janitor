@@ -11,15 +11,12 @@ pub mod logs;
 pub mod migrate_logs;
 #[cfg(feature = "otlp")]
 pub mod otlp;
-pub mod pagination;
 pub mod publish;
 pub mod queue;
 pub mod redis;
 pub mod reprocess_logs;
-pub mod review;
 pub mod schedule;
 pub mod schema;
-pub mod security;
 pub mod shared_config;
 pub mod state;
 #[cfg(feature = "testing")]
@@ -27,7 +24,6 @@ pub mod test_utils;
 pub mod tracing;
 pub mod utils;
 pub mod vcs;
-pub mod worker_auth;
 
 /// Open the object store at `url`, rooted at `prefix`, with `scheme` and
 /// `prefix` as returned by `ObjectStoreScheme::parse`.
