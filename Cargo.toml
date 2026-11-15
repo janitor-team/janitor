@@ -49,7 +49,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
 redis = { workspace = true }
 axum = { workspace = true }
-rand = "0.9"
 base64 = ">=0.22,<0.24"
 pyo3 = { workspace = true, features = ["auto-initialize"] }
 opentelemetry = { version = "0.33", optional = true }
