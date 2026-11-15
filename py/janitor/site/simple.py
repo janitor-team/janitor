@@ -321,7 +321,12 @@ async def handle_ready_proposals(request):
 
     campaign = request.match_info.get("campaign")
     publish_status = request.query.get("publish_status")
-    return await generate_ready_list(request.app["pool"], campaign, publish_status)
+    return await generate_ready_list(
+        request.app["http_client_session"],
+        request.app["publisher_url"],
+        campaign,
+        publish_status,
+    )
 
 
 @html_template("generic/done.html", headers={"Vary": "Cookie"})

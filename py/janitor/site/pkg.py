@@ -397,31 +397,17 @@ class MergeProposalUserUrlResolver:
 
 
 async def generate_ready_list(
-    db, campaign: Optional[str], publish_status: Optional[str] = None
+    client,
+    publisher_url: str,
+    campaign: Optional[str],
+    publish_status: Optional[str] = None,
 ):
-    async with db.acquire() as conn:
-        query = "SELECT codebase, campaign, id, command, result FROM publish_ready"
-
-        conditions = [
-            "EXISTS (SELECT * FROM unnest(unpublished_branches) upb "
-            "WHERE mode in "
-            "('propose', 'attempt-push', 'push-derived', 'push') "
-            "AND NOT EXISTS "
-            "(SELECT FROM merge_proposal WHERE revision = upb.revision) "
-            ")"
-        ]
-
-        args = []
-        if campaign:
-            args.append(campaign)
-            conditions.append(f"campaign = ${len(args)}")
-        if publish_status:
-            args.append(publish_status)
-            conditions.append(f"publish_status = ${len(args)}")
-
-        query += " WHERE " + " AND ".join(conditions)
-
-        query += " ORDER BY codebase ASC"
-
-        runs = await conn.fetch(query, *args)
-    return {"runs": runs, "campaign": campaign}
+    url = URL(publisher_url) / "publish-ready"
+    params = {}
+    if campaign is not None:
+        params["campaign"] = campaign
+    if publish_status is not None:
+        params["publish_status"] = publish_status
+    async with client.get(url, params=params, raise_for_status=True) as resp:
+        data = await resp.json()
+    return {"runs": data["runs"], "campaign": campaign}
