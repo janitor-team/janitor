@@ -1,7 +1,6 @@
 pub mod analyze_log;
 pub mod api;
 pub mod artifacts;
-pub mod auth;
 pub mod config;
 pub mod database;
 pub mod debdiff;
