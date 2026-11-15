@@ -90,7 +90,7 @@ groups:
       summary: Janitor bzr store is down
 
   - alert: JanitorRunFinishFailing
-    expr: increase(request_exceptions_total{job="janitor.runner",route="finish"}[5m]) > 0
+    expr: increase(janitor_runner_http_requests_total{job="janitor.runner",method="POST",endpoint="finish",status="500"}[5m]) > 0
     for: 0m
     labels:
       severity: critical
@@ -100,7 +100,7 @@ groups:
       summary: Run finish requests are failing
 
   - alert: JanitorRunAssignFailing
-    expr: increase(request_exceptions_total{job="janitor.runner",route="assign"}[5m]) > 0
+    expr: increase(janitor_runner_http_requests_total{job="janitor.runner",method="POST",endpoint="assign",status="500"}[5m]) > 0
     for: 0m
     labels:
       severity: critical
