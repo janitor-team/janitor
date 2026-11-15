@@ -954,6 +954,12 @@ mod tests {
         assert_eq!(body_of(response).await, b"source");
     }
 
+    /// A percent-encoded `..` suite segment must not escape the dists
+    /// directory. axum decodes `%2E%2E` to `..` before our handler
+    /// sees it, so `path_segment` is what rejects it -- the "outside"
+    /// file at `tmp/Release` would otherwise be served with 200,
+    /// because the URI we pass to `ServeDir` is already `/Release`
+    /// (no `..` left for its own traversal check to catch).
     #[tokio::test]
     async fn test_rejects_escaping_segments() {
         let tmp = tempfile::tempdir().unwrap();
@@ -962,6 +968,20 @@ mod tests {
         std::fs::write(tmp.path().join("Release"), b"outside").unwrap();
         let response = get_from(&dists, "/dists/%2E%2E/Release").await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Guard the assumption above: axum really does decode
+    /// percent-encoded path segments before `{suite}` is extracted,
+    /// so `path_segment` sees `..` rather than `%2E%2E`.
+    #[tokio::test]
+    async fn test_decodes_percent_encoded_suite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let suite = tmp.path().join("main");
+        std::fs::create_dir_all(&suite).unwrap();
+        std::fs::write(suite.join("Release"), b"ok").unwrap();
+        let response = get_from(tmp.path(), "/dists/%6Dain/Release").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_of(response).await, b"ok");
     }
 
     #[test]
