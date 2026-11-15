@@ -17,7 +17,7 @@
 import asyncio
 import logging
 
-from aiohttp import web
+from aiohttp import ClientSession, web
 from breezy.controldir import ControlDir
 
 from janitor.site import webhook
@@ -49,6 +49,55 @@ async def test_main_tries_each_codebase_with_a_branch(aiohttp_server, caplog, tm
 
     assert requests == ["/codebases"]
     assert caplog.messages == [f"Ignoring branch with unknown forge: {branch.user_url}"]
+
+
+async def test_get_codebases_by_change_queries_runner(aiohttp_server):
+    captured = {}
+
+    async def handle_codebases(request):
+        captured["query"] = request.query_string
+        captured["branch_urls"] = request.query.getall("branch_url")
+        return web.json_response(
+            [{"name": "cb", "branch_url": "https://example.invalid/cb"}]
+        )
+
+    app = web.Application()
+    app.router.add_get("/codebases", handle_codebases)
+    server = await aiohttp_server(app)
+
+    change = webhook.GitChange(
+        urls=["https://example.invalid/cb/", "https://example.invalid/other"],
+        after=b"a" * 40,
+    )
+    async with ClientSession() as session:
+        rows = await webhook.get_codebases_by_change(
+            session, str(server.make_url("/")), change
+        )
+    assert rows == [{"name": "cb", "branch_url": "https://example.invalid/cb"}]
+    # Each candidate is passed both with and without a trailing slash.
+    assert captured["branch_urls"] == [
+        "https://example.invalid/cb",
+        "https://example.invalid/cb/",
+        "https://example.invalid/other",
+        "https://example.invalid/other/",
+    ]
+
+
+async def test_set_codebase_head_posts_revision(aiohttp_server):
+    seen = {}
+
+    async def handle_head(request):
+        seen["name"] = request.match_info["name"]
+        seen["body"] = await request.json()
+        return web.json_response({})
+
+    app = web.Application()
+    app.router.add_post("/codebases/{name}/head", handle_head)
+    server = await aiohttp_server(app)
+
+    async with ClientSession() as session:
+        await webhook.set_codebase_head(session, str(server.make_url("/")), "cb", "abc")
+    assert seen == {"name": "cb", "body": {"revision": "abc"}}
 
 
 def _launchpad_git_push(repository, path, ref_changes):

@@ -420,15 +420,21 @@ async def handle_health(request):
     return web.Response(text="ok")
 
 
-async def process_webhook(request, db):
+async def process_webhook(request):
     urls = []
     codebases: dict[str, str] = {}
-    async for codebase, branch_url in parse_webhook(request, db):
+    async for row in parse_webhook(
+        request,
+        request.app["http_client_session"],
+        request.app["runner_url"],
+    ):
+        branch_url = row.get("branch_url")
         urls.append(branch_url)
-        if codebase is not None:
-            codebases[codebase] = branch_url
+        name = row.get("name")
+        if name is not None:
+            codebases[name] = branch_url
 
-    async with db.acquire() as conn:
+    async with request.app.database.acquire() as conn:
         publishable = {
             codebase: await state.iter_publishable_campaigns(conn, codebase)
             for codebase in codebases
@@ -468,7 +474,7 @@ async def handle_webhook(request):
             content_type="text/html",
             text=text,
         )
-    return await process_webhook(request, request.app.database)
+    return await process_webhook(request)
 
 
 async def create_app(
@@ -694,7 +700,7 @@ async def create_app(
 
     async def handle_post_root(request):
         if is_webhook_request(request):
-            return await process_webhook(request, request.app["pool"])
+            return await process_webhook(request)
         raise web.HTTPMethodNotAllowed(method="POST", allowed_methods=["GET", "HEAD"])
 
     app["runner_url"] = runner_url

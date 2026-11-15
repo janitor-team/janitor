@@ -16,9 +16,8 @@
 
 import json
 import logging
-from typing import Union
+from typing import Optional, Union
 
-import asyncpg
 from aiohttp import ClientSession, web
 from breezy import urlutils
 from breezy.forge import UnsupportedForge, get_forge
@@ -225,23 +224,40 @@ def get_changes_from_gitlab_webhook(body):
 
 
 async def get_codebases_by_change(
-    conn: asyncpg.Connection, change: Union[GitChange, BzrChange]
-):
-    query = """
-SELECT
-  name, branch_url
-FROM
-  codebase
-WHERE
-  branch_url = ANY($1::text[])
-"""
+    session: ClientSession,
+    runner_url: str,
+    change: Union[GitChange, BzrChange],
+) -> list[dict]:
+    """Look up codebases matching any of the branch URLs in ``change``.
+
+    Queries the runner's ``GET /codebases?branch_url=...`` endpoint,
+    passing each candidate URL as a repeated query parameter.
+    """
     candidates = []
     for url in change.urls:
         candidates.extend([url.rstrip("/"), url.rstrip("/") + "/"])
-    return await conn.fetch(query, candidates)
+    params = [("branch_url", url) for url in candidates]
+    async with session.get(
+        URL(runner_url) / "codebases",
+        params=params,
+        raise_for_status=True,
+    ) as resp:
+        return await resp.json()
 
 
-async def parse_webhook(request, db):
+async def set_codebase_head(
+    session: ClientSession, runner_url: str, name: str, revision: str
+) -> None:
+    """Record ``revision`` as the latest head of ``name`` via the runner."""
+    async with session.post(
+        URL(runner_url) / "codebases" / name / "head",
+        json={"revision": revision},
+        raise_for_status=True,
+    ):
+        pass
+
+
+async def parse_webhook(request, session: ClientSession, runner_url: Optional[str]):
     if request.content_type == "application/json":
         body = await request.json()
     elif request.content_type == "application/x-www-form-urlencoded":
@@ -285,18 +301,19 @@ async def parse_webhook(request, db):
     else:
         raise web.HTTPBadRequest(text="Unrecognized webhook")
 
-    async with db.acquire() as conn:
-        for change in changes:
-            for row in await get_codebases_by_change(conn, change):
-                if change.after_revision_id() is not None:
-                    await conn.execute(
-                        "UPDATE codebase SET "
-                        "vcs_last_revision = $1, last_scanned = NOW() "
-                        "WHERE branch_url = $2",
-                        change.after_revision_id().decode("utf-8"),
-                        row["branch_url"],
-                    )
-                yield row
+    if runner_url is None:
+        raise web.HTTPServiceUnavailable(text="no runner configured")
+
+    for change in changes:
+        for row in await get_codebases_by_change(session, runner_url, change):
+            if change.after_revision_id() is not None and row.get("name"):
+                await set_codebase_head(
+                    session,
+                    runner_url,
+                    row["name"],
+                    change.after_revision_id().decode("utf-8"),
+                )
+            yield row
 
 
 async def get_codebases(runner_url):
