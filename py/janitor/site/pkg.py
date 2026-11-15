@@ -21,7 +21,7 @@ from io import BytesIO
 from typing import Optional
 
 import asyncpg
-from aiohttp import ClientConnectorError, ClientResponseError, ClientTimeout
+from aiohttp import ClientConnectorError, ClientResponseError, ClientTimeout, web
 from breezy.forge import Forge, UnsupportedForge, get_forge_by_hostname
 from breezy.revision import NULL_REVISION
 from yarl import URL
@@ -39,7 +39,7 @@ from janitor.site import (
 
 from ..config import get_campaign_config
 from ..vcs import VcsManager
-from .common import get_unchanged_run
+from .common import fetch_unchanged_run
 
 FAIL_BUILD_LOG_LEN = 15
 
@@ -91,6 +91,7 @@ async def generate_run_file(
     vcs_managers: dict[str, VcsManager],
     is_admin,
     span,
+    runner_url: Optional[str] = None,
 ):
     from ..schedule import estimate_success_probability_and_duration
 
@@ -100,9 +101,14 @@ async def generate_run_file(
     kwargs.update(run)
     async with db.acquire() as conn:
         if run["main_branch_revision"]:
-            with span.new_child("sql:unchanged-run"):
-                kwargs["unchanged_run"] = await get_unchanged_run(
-                    conn, run["codebase"], run["main_branch_revision"].encode("utf-8")
+            if runner_url is None:
+                raise web.HTTPInternalServerError(text="runner_url not configured")
+            with span.new_child("runner:unchanged-run"):
+                kwargs["unchanged_run"] = await fetch_unchanged_run(
+                    client,
+                    runner_url,
+                    run["codebase"],
+                    run["main_branch_revision"].encode("utf-8"),
                 )
         with span.new_child("sql:queue-position"):
             queue = Queue(conn)

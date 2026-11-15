@@ -402,6 +402,7 @@ async def handle_run(request):
         request.app["vcs_managers"],
         is_admin=is_admin(request),
         span=span,
+        runner_url=request.app["runner_url"],
     )
 
 
