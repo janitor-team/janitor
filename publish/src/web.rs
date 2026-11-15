@@ -346,6 +346,98 @@ async fn absorbed(
     Json(AbsorbedResponse { runs, oldest }).into_response()
 }
 
+/// One entry in a `/publish-ready` listing: a publishable run with at
+/// least one unpublished branch whose revision does not already have a
+/// corresponding merge proposal.
+#[derive(serde::Serialize, sqlx::FromRow, utoipa::ToSchema)]
+pub struct PublishReadyRow {
+    /// Codebase this run belongs to.
+    pub codebase: CodebaseName,
+    /// Campaign this run belongs to.
+    pub campaign: Campaign,
+    /// Run identifier.
+    pub id: RunId,
+    /// Command that produced the run.
+    pub command: String,
+    /// Run result JSON, if any.
+    #[schema(value_type = Option<Object>)]
+    pub result: Option<serde_json::Value>,
+}
+
+/// Response for `GET /publish-ready`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct PublishReadyResponse {
+    /// Matching publish-ready runs, ordered by codebase.
+    pub runs: Vec<PublishReadyRow>,
+}
+
+/// Query parameters for `GET /publish-ready`.
+#[derive(serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+struct PublishReadyQuery {
+    /// Only include runs for this campaign.
+    campaign: Option<Campaign>,
+    /// Only include runs with this `publish_status`.
+    publish_status: Option<String>,
+}
+
+/// `GET /publish-ready`: list publishable runs whose unpublished
+/// branches do not yet have a matching merge proposal.
+#[utoipa::path(
+    get,
+    path = "/publish-ready",
+    params(PublishReadyQuery),
+    responses(
+        (status = 200, description = "Publish-ready runs", body = PublishReadyResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
+async fn list_publish_ready(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PublishReadyQuery>,
+) -> Response {
+    let mut query = String::from(
+        "SELECT codebase, campaign::text AS campaign, id, command, result \
+         FROM publish_ready \
+         WHERE EXISTS ( \
+             SELECT FROM unnest(unpublished_branches) upb \
+             WHERE mode IN ('propose', 'attempt-push', 'push-derived', 'push') \
+               AND NOT EXISTS ( \
+                   SELECT FROM merge_proposal WHERE revision = upb.revision \
+               ) \
+         )",
+    );
+    let mut idx = 0;
+    if params.campaign.is_some() {
+        idx += 1;
+        query.push_str(&format!(" AND campaign = ${}", idx));
+    }
+    if params.publish_status.is_some() {
+        idx += 1;
+        query.push_str(&format!(" AND publish_status::text = ${}", idx));
+    }
+    query.push_str(" ORDER BY codebase ASC");
+
+    let mut q = sqlx::query_as::<_, PublishReadyRow>(sqlx::AssertSqlSafe(&*query));
+    if let Some(campaign) = params.campaign.as_ref() {
+        q = q.bind(campaign);
+    }
+    if let Some(publish_status) = params.publish_status.as_ref() {
+        q = q.bind(publish_status);
+    }
+
+    match q.fetch_all(&state.conn).await {
+        Ok(runs) => Json(PublishReadyResponse { runs }).into_response(),
+        Err(e) => {
+            log::error!("Failed to list publish-ready runs: {}", e);
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to list publish-ready runs",
+            )
+        }
+    }
+}
+
 /// Per-role branch policy entry as it appears on the wire. Matches
 /// the shape `py/janitor/publish.py::handle_policy_get` returns.
 #[derive(serde::Serialize, serde::Deserialize, Default, utoipa::ToSchema)]
@@ -2611,6 +2703,7 @@ fn routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(get_merge_proposals_by_codebase))
         .routes(routes!(list_merge_proposals))
         .routes(routes!(absorbed))
+        .routes(routes!(list_publish_ready))
         .routes(routes!(get_policy, put_policy, delete_policy))
         .routes(routes!(get_policies, put_policies))
         .routes(routes!(get_merge_proposal, update_merge_proposal))

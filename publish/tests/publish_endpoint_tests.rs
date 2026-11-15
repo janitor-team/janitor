@@ -1244,6 +1244,146 @@ test_with_database! {
     }
 }
 
+/// Seed a full `publish_ready`-visible row: codebase, change_set,
+/// run, named_publish_policy, candidate, and a `new_result_branch`
+/// whose revision has no matching `merge_proposal` (so the view's
+/// unpublished_branches array is non-empty and the Python/Rust
+/// `generate_ready_list` predicate passes).
+async fn seed_publish_ready_row(
+    pool: &PgPool,
+    codebase: &str,
+    campaign: &str,
+    run_id: &str,
+    revision: &str,
+) {
+    sqlx::query(
+        "INSERT INTO codebase (name, branch_url, url, vcs_type)
+         VALUES ($1, $2, $2, 'git') ON CONFLICT DO NOTHING",
+    )
+    .bind(codebase)
+    .bind(format!("https://example.invalid/{}", codebase))
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO change_set (id, campaign) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+        .bind(format!("cs-{}", run_id))
+        .bind(campaign)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO run (
+             id, codebase, campaign, command, start_time, finish_time, description,
+             result_code, branch_url, main_branch_revision, revision, value,
+             change_set, logfilenames, vcs_type, result
+         ) VALUES (
+             $1, $2, $3, 'noop', NOW() - INTERVAL '1 minute', NOW(), 'ok',
+             'success', $4, 'rev-base', $5, 100, $6, ARRAY[]::text[], 'git',
+             '{\"ok\": true}'::json
+         )",
+    )
+    .bind(run_id)
+    .bind(codebase)
+    .bind(campaign)
+    .bind(format!("https://example.invalid/{}", codebase))
+    .bind(revision)
+    .bind(format!("cs-{}", run_id))
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO new_result_branch (run_id, role, remote_name, base_revision, revision)
+         VALUES ($1, 'main', 'main', 'rev-base', $2)",
+    )
+    .bind(run_id)
+    .bind(revision)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO named_publish_policy (name, per_branch_policy, rate_limit_bucket)
+         VALUES ($1, ARRAY[ROW('main', 'propose'::publish_mode, NULL::int)::branch_publish_policy],
+                 'bucket-a')
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(format!("policy-{}", run_id))
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO candidate (campaign, value, command, publish_policy, codebase)
+         VALUES ($1, 100, 'noop', $2, $3)",
+    )
+    .bind(campaign)
+    .bind(format!("policy-{}", run_id))
+    .bind(codebase)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+test_with_database! {
+    schema = Core;
+    async fn publish_ready_lists_rows_ordered_by_codebase(test_db: TestDatabase) {
+        seed_publish_ready_row(test_db.pool(), "beta", "lintian-fixes", "run-beta", "rev-beta").await;
+        seed_publish_ready_row(test_db.pool(), "alpha", "other-campaign", "run-alpha", "rev-alpha").await;
+
+        let app = build_app(test_db.pool().clone()).await;
+
+        // No filters: both rows, ordered by codebase ASC.
+        let (status, body) = get_json(app.clone(), "/publish-ready").await;
+        assert_eq!(status, StatusCode::OK);
+        let runs = body["runs"].as_array().unwrap();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0]["codebase"], "alpha");
+        assert_eq!(runs[0]["campaign"], "other-campaign");
+        assert_eq!(runs[0]["id"], "run-alpha");
+        assert_eq!(runs[0]["command"], "noop");
+        assert_eq!(runs[0]["result"], serde_json::json!({"ok": true}));
+        assert_eq!(runs[1]["codebase"], "beta");
+
+        // Campaign filter narrows to one.
+        let (status, body) = get_json(app.clone(), "/publish-ready?campaign=lintian-fixes").await;
+        assert_eq!(status, StatusCode::OK);
+        let runs = body["runs"].as_array().unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0]["id"], "run-beta");
+
+        // publish_status filter: default is 'unknown', so 'approved' excludes everything.
+        let (status, body) = get_json(app.clone(), "/publish-ready?publish_status=approved").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["runs"].as_array().unwrap().len(), 0);
+
+        let (status, body) = get_json(app, "/publish-ready?publish_status=unknown").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["runs"].as_array().unwrap().len(), 2);
+    }
+}
+
+test_with_database! {
+    schema = Core;
+    async fn publish_ready_excludes_rows_with_existing_merge_proposal(test_db: TestDatabase) {
+        seed_publish_ready_row(test_db.pool(), "alpha", "lintian-fixes", "run-a", "rev-a").await;
+        seed_publish_ready_row(test_db.pool(), "beta", "lintian-fixes", "run-b", "rev-b").await;
+        // beta's branch already has a merge proposal for its revision -
+        // it must drop out of the listing.
+        sqlx::query(
+            "INSERT INTO merge_proposal (url, status, revision)
+             VALUES ('https://forge.invalid/beta/pulls/1', 'open', 'rev-b')",
+        )
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+
+        let app = build_app(test_db.pool().clone()).await;
+        let (status, body) = get_json(app, "/publish-ready").await;
+        assert_eq!(status, StatusCode::OK);
+        let runs = body["runs"].as_array().unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0]["id"], "run-a");
+    }
+}
+
 test_with_database! {
     schema = Core;
     async fn openapi_json_is_served(test_db: TestDatabase) {
