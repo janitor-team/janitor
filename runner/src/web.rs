@@ -4698,7 +4698,8 @@ const WORKER_AUTH: &str = "worker_auth";
     CodebaseName,
     Campaign,
     LogFilename,
-    ArtifactName
+    ArtifactName,
+    RunStatsGroup
 )))]
 struct RunnerApi;
 
