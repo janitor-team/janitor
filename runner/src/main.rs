@@ -13,6 +13,10 @@ struct Args {
     #[clap(long, default_value = "9919")]
     public_port: u16,
 
+    /// Listen address of the public port; defaults to --listen-address.
+    #[clap(long)]
+    public_listen_address: Option<std::net::IpAddr>,
+
     #[clap(long, default_value = "janitor.conf")]
     /// Path to configuration.
     config: PathBuf,
@@ -101,6 +105,7 @@ async fn main() -> Result<(), i32> {
         .with_redirect_artifact_downloads(args.redirect_artifact_downloads);
 
     let listen_address = args.listen_address;
+    let public_listen_address = args.public_listen_address.unwrap_or(listen_address);
     let port = args.port;
     let public_port = args.public_port;
 
@@ -140,7 +145,7 @@ async fn main() -> Result<(), i32> {
             .layer(trace());
 
         let private_addr = std::net::SocketAddr::new(listen_address, port);
-        let public_addr = std::net::SocketAddr::new(listen_address, public_port);
+        let public_addr = std::net::SocketAddr::new(public_listen_address, public_port);
         log::info!("Private (admin) listener on {}", private_addr);
         log::info!("Public (worker) listener on {}", public_addr);
 
