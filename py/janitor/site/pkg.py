@@ -39,7 +39,7 @@ from janitor.site import (
 
 from ..config import get_campaign_config
 from ..vcs import VcsManager
-from .common import fetch_unchanged_run
+from .common import fetch_unchanged_run, get_run_reviews
 
 FAIL_BUILD_LOG_LEN = 15
 
@@ -135,12 +135,6 @@ async def generate_run_file(
                 publish_history = await get_publish_history(conn, run["revision"])
             else:
                 publish_history = []
-        with span.new_child("sql:reviews"):
-            kwargs["reviews"] = await conn.fetch(
-                "SELECT verdict, comment, reviewer, reviewed_at "
-                "FROM review WHERE run_id = $1",
-                run["id"],
-            )
         with span.new_child("sql:success-probability"):
             (
                 kwargs["success_probability"],
@@ -159,6 +153,11 @@ LEFT JOIN candidate ON candidate.id = followup.candidate
 WHERE followup.origin = $1""",
                 run["id"],
             )
+
+    if runner_url is None:
+        raise web.HTTPInternalServerError(text="runner_url not configured")
+    with span.new_child("runner:reviews"):
+        kwargs["reviews"] = await get_run_reviews(client, runner_url, run["id"])
 
     kwargs["queue_wait_time"] = queue_wait_time
     kwargs["queue_position"] = queue_position

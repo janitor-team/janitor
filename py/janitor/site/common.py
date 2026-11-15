@@ -39,6 +39,19 @@ async def get_previous_runs(client, runner_url: str, codebase: str, campaign: st
     return runs
 
 
+async def get_run_reviews(client, runner_url: str, run_id: str) -> list[dict[str, Any]]:
+    """Fetch the reviews recorded for a run from the runner."""
+    url = URL(runner_url) / "runs" / run_id / "reviews"
+    async with client.get(url, raise_for_status=True) as resp:
+        data = await resp.json()
+    reviews = []
+    for entry in data["reviews"]:
+        entry = dict(entry)
+        entry["reviewed_at"] = datetime.fromisoformat(entry["reviewed_at"])
+        reviews.append(entry)
+    return reviews
+
+
 async def get_candidate(conn: asyncpg.Connection, codebase: str, campaign: str):
     return await conn.fetchrow(
         "SELECT context, value, success_chance FROM candidate "
@@ -285,14 +298,13 @@ WHERE codebase.name = $1""",
             else:
                 unchanged_run = None
 
-        if run_id:
-            with span.new_child("sql:reviews"):
-                reviews = await conn.fetch(
-                    "SELECT * FROM review WHERE run_id = $1 ORDER BY reviewed_at ASC",
-                    run_id,
-                )
-        else:
-            reviews = None
+    if run_id:
+        if runner_url is None:
+            raise web.HTTPInternalServerError(text="runner_url not configured")
+        with span.new_child("runner:reviews"):
+            reviews = await get_run_reviews(client, runner_url, run_id)
+    else:
+        reviews = None
 
     async def fetch(name, query, *args):
         async with db.acquire() as conn:
