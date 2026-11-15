@@ -46,7 +46,6 @@ pub mod backchannel;
 /// Module for build system implementations.
 pub mod builder;
 /// Module for generating configuration files.
-pub mod config_generator;
 /// Database operations.
 pub mod database;
 /// Error tracking and logging.
