@@ -1,0 +1,58 @@
+{% extends "layout.html" %}
+{% block sidebar %}
+    {% include "cupboard/sidebar.html" %}
+{% endblock sidebar %}
+{% block page_title %}
+    Cupboard - Campaign - {{ campaign.name }}
+{% endblock page_title %}
+{% block body %}
+    <div class="section">
+        <h1>{{ campaign.name }}</h1>
+        <ul class="metadata">
+            {% if campaign.command %}<li>Command: <code>{{ campaign.command }}</code></li>{% endif %}
+            {% if campaign.branch_name %}<li>Branch name: {{ campaign.branch_name }}</li>{% endif %}
+            <li>Force build: {{ "yes" if campaign.force_build else "no" }}</li>
+            <li>Skip setup validation: {{ "yes" if campaign.skip_setup_validation else "no" }}</li>
+            <li>Default empty: {{ "yes" if campaign.default_empty else "no" }}</li>
+        </ul>
+        {% if campaign.debian_build %}
+            {% set build = campaign.debian_build %}
+            <h2>Debian build</h2>
+            <ul class="metadata">
+                {% if build.base_distribution %}<li>Base distribution: {{ build.base_distribution }}</li>{% endif %}
+                {% if build.build_distribution %}<li>Build distribution: {{ build.build_distribution }}</li>{% endif %}
+                {% if build.extra_build_distribution %}
+                    <li>Extra build distributions: {{ build.extra_build_distribution|join(", ") }}</li>
+                {% endif %}
+                {% if build.chroot %}<li>Chroot: {{ build.chroot }}</li>{% endif %}
+                {% if build.build_suffix %}<li>Build suffix: {{ build.build_suffix }}</li>{% endif %}
+                {% if build.build_command %}<li>Build command: <code>{{ build.build_command }}</code></li>{% endif %}
+            </ul>
+        {% elif campaign.generic_build %}
+            <h2>Generic build</h2>
+            <ul class="metadata">
+                {% if campaign.generic_build.chroot %}<li>Chroot: {{ campaign.generic_build.chroot }}</li>{% endif %}
+            </ul>
+        {% endif %}
+        {% if campaign.merge_proposal %}
+            {% set mp = campaign.merge_proposal %}
+            <h2>Merge proposals</h2>
+            <ul class="metadata">
+                {% if mp.title %}<li>Title: {{ mp.title }}</li>{% endif %}
+                {% if mp.commit_message %}<li>Commit message: {{ mp.commit_message }}</li>{% endif %}
+                {% if mp.value_threshold is not none %}<li>Value threshold: {{ mp.value_threshold }}</li>{% endif %}
+                {% if mp.label %}<li>Labels: {{ mp.label|join(", ") }}</li>{% endif %}
+            </ul>
+        {% endif %}
+        {% if campaign.bugtracker %}
+            <h2>Bug trackers</h2>
+            <ul>
+                {% for bugtracker in campaign.bugtracker %}
+                    <li>
+                        {{ bugtracker.kind }}: <a href="{{ bugtracker.url }}">{{ bugtracker.name or bugtracker.url }}</a>
+                    </li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+    </div>
+{% endblock body %}
