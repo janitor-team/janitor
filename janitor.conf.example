@@ -215,3 +215,12 @@ apt_repository {
     campaign: "lintian-fixes"
   }
 }
+
+apt_repository {
+  name: "unchanged"
+  description: "Builds of the unchanged packages"
+  base: "unstable"
+  select {
+    campaign: "control"
+  }
+}

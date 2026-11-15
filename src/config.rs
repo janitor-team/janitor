@@ -73,7 +73,7 @@ mod tests {
         let config = read_file(std::path::Path::new("janitor.conf.example")).unwrap();
         assert_eq!(config.distribution.len(), 1);
         assert_eq!(config.campaign.len(), 8);
-        assert_eq!(config.apt_repository.len(), 1);
+        assert_eq!(config.apt_repository.len(), 2);
     }
 
     #[test]
