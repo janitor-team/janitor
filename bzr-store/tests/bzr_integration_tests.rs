@@ -15,7 +15,9 @@ use breezyshim::branch::Branch;
 use breezyshim::tree::{MutableTree, WorkingTree};
 use janitor::{test_utils::TestDatabase, test_with_database};
 use janitor_bzr_store::{
+    api_types::RemoteConfiguredResponse,
     config::{BzrConfig, BzrStoreConfig, Config},
+    repository::{RepositoryInfo, RevisionInfo},
     web::create_applications,
 };
 use sqlx::PgPool;
@@ -164,13 +166,12 @@ test_with_database! {
         )
         .await;
         assert_eq!(resp.status(), 200);
-        let body: serde_json::Value = body_json(resp).await;
+        let revs: Vec<RevisionInfo> = body_json(resp).await;
         // The ancestry walk between rev1 and rev2 includes exactly
         // one revision (rev2 itself; rev1 is the stop node).
-        let revs = body.as_array().expect("body must be a list");
         assert_eq!(revs.len(), 1, "expected one revision between r1 and r2, got {:?}", revs);
-        assert_eq!(revs[0]["revision-id"], rev2);
-        assert_eq!(revs[0]["message"], "second");
+        assert_eq!(revs[0].revision_id, rev2);
+        assert_eq!(revs[0].message, "second");
     }
 }
 
@@ -199,9 +200,9 @@ test_with_database! {
             .unwrap();
         let resp = send(&admin, req).await;
         assert_eq!(resp.status(), 200);
-        let body: serde_json::Value = body_json(resp).await;
-        assert_eq!(body["status"], "configured");
-        assert_eq!(body["remote_url"], "bzr+ssh://upstream.invalid/foo");
+        let body: RemoteConfiguredResponse = body_json(resp).await;
+        assert_eq!(body.status, "configured");
+        assert_eq!(body.remote_url, "bzr+ssh://upstream.invalid/foo");
 
         // TestEnv keeps the user's locations.conf out of the config stack.
         let env = breezyshim::testing::TestEnv::new();
@@ -263,10 +264,10 @@ test_with_database! {
 
         let resp = send(&admin, get("/foo/info")).await;
         assert_eq!(resp.status(), 200);
-        let body: serde_json::Value = body_json(resp).await;
-        assert_eq!(body["path"]["codebase"], "foo");
-        assert_eq!(body["exists"], true);
-        assert_eq!(body["branch_count"], 1);
-        assert_eq!(body["last_revision"], rev2);
+        let body: RepositoryInfo = body_json(resp).await;
+        assert_eq!(body.path.codebase, "foo");
+        assert!(body.exists);
+        assert_eq!(body.branch_count, 1);
+        assert_eq!(body.last_revision.as_deref(), Some(rev2.as_str()));
     }
 }

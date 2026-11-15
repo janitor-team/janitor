@@ -20,6 +20,7 @@ use axum::Router;
 use janitor::{test_utils::TestDatabase, test_with_database};
 use janitor_bzr_store::{
     config::{BzrConfig, BzrStoreConfig, Config},
+    repository::RepositoryInfo,
     web::create_applications,
 };
 use sqlx::PgPool;
@@ -397,12 +398,12 @@ test_with_database! {
 
         let resp = send(&admin, get("/empty/info")).await;
         assert_eq!(resp.status(), 200);
-        let body: serde_json::Value = body_json(resp).await;
-        assert_eq!(body["path"]["codebase"], "empty");
+        let body: RepositoryInfo = body_json(resp).await;
+        assert_eq!(body.path.codebase, "empty");
         // The directory exists but isn't a bzr repo, so `exists`
         // (true if `.bzr/` is present) must be false.
-        assert_eq!(body["exists"], false);
-        assert_eq!(body["branch_count"], 0);
+        assert!(!body.exists);
+        assert_eq!(body.branch_count, 0);
     }
 }
 
