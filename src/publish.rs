@@ -1,6 +1,5 @@
-use chrono::Duration;
-use janitor_types::{Campaign, CodebaseName, PublishId, RunId};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use janitor_types::{Campaign, CodebaseName};
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 #[derive(
@@ -132,48 +131,6 @@ pub struct MergeProposalNotification {
     pub target_branch_web_url: Option<Url>,
 }
 
-fn serialize_duration<S>(duration: &Option<Duration>, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    if let Some(d) = duration {
-        serializer.serialize_f64(d.num_seconds() as f64)
-    } else {
-        serializer.serialize_none()
-    }
-}
-
-fn deserialize_duration<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    if let Some(d) = Option::<f64>::deserialize(deserializer)? {
-        Ok(Some(Duration::seconds(d as i64)))
-    } else {
-        Ok(None)
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct PublishNotification {
-    pub id: PublishId,
-    pub codebase: CodebaseName,
-    pub campaign: Campaign,
-    pub proposal_url: Option<Url>,
-    pub mode: Mode,
-    pub main_branch_url: Option<Url>,
-    pub main_branch_web_url: Option<Url>,
-    pub branch_name: Option<String>,
-    pub result_code: String,
-    pub result: serde_json::Value,
-    pub run_id: RunId,
-    #[serde(
-        serialize_with = "serialize_duration",
-        deserialize_with = "deserialize_duration"
-    )]
-    pub publish_delay: Option<Duration>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,52 +221,6 @@ mod tests {
             MergeProposalStatus::from(breezyshim::forge::MergeProposalStatus::Closed),
             MergeProposalStatus::Closed
         );
-    }
-
-    #[test]
-    fn test_publish_notification_serde() {
-        let notification = PublishNotification {
-            id: PublishId::new("pub-123").unwrap(),
-            codebase: CodebaseName::new("mycodebase").unwrap(),
-            campaign: Campaign::new("lintian-fixes").unwrap(),
-            proposal_url: Some(
-                Url::parse("https://salsa.debian.org/foo/bar/-/merge_requests/1").unwrap(),
-            ),
-            mode: Mode::Propose,
-            main_branch_url: Some(Url::parse("https://salsa.debian.org/foo/bar").unwrap()),
-            main_branch_web_url: None,
-            branch_name: Some("lintian-fixes".to_string()),
-            result_code: "success".to_string(),
-            result: serde_json::json!({"key": "value"}),
-            run_id: RunId::new("run-456").unwrap(),
-            publish_delay: Some(Duration::seconds(3600)),
-        };
-        let json = serde_json::to_string(&notification).unwrap();
-        let roundtripped: PublishNotification = serde_json::from_str(&json).unwrap();
-        assert_eq!(roundtripped.id, "pub-123");
-        assert_eq!(roundtripped.mode, Mode::Propose);
-        assert_eq!(roundtripped.publish_delay, Some(Duration::seconds(3600)));
-    }
-
-    #[test]
-    fn test_publish_notification_null_delay() {
-        let json = r#"{
-            "id": "pub-1",
-            "codebase": "test",
-            "campaign": "test-campaign",
-            "proposal_url": null,
-            "mode": "push",
-            "main_branch_url": null,
-            "main_branch_web_url": null,
-            "branch_name": null,
-            "result_code": "success",
-            "result": {},
-            "run_id": "run-1",
-            "publish_delay": null
-        }"#;
-        let notification: PublishNotification = serde_json::from_str(json).unwrap();
-        assert_eq!(notification.publish_delay, None);
-        assert_eq!(notification.mode, Mode::Push);
     }
 
     #[test]
