@@ -290,6 +290,144 @@ async fn post_codebases_with_a_bad_entry_stores_none() {
     assert_eq!(state.database.get_codebases().await.unwrap(), vec![]);
 }
 
+/// `GET /codebases?branch_url=...` filters to codebases whose
+/// `branch_url` matches any supplied value. Repeated keys are
+/// honoured.
+#[tokio::test]
+async fn get_codebases_filters_by_branch_url() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    for name in ["cb-a", "cb-b", "cb-c"] {
+        insert_codebase(state.database.pool(), name).await;
+    }
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(
+            "/codebases?branch_url=https%3A%2F%2Fexample.invalid%2Fcb-a\
+              &branch_url=https%3A%2F%2Fexample.invalid%2Fcb-c",
+        )
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    let mut names: Vec<String> = body
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|row| row["name"].as_str().unwrap().to_string())
+        .collect();
+    names.sort();
+    assert_eq!(names, vec!["cb-a".to_string(), "cb-c".to_string()]);
+}
+
+/// `GET /codebases` with no `branch_url` still returns every codebase.
+#[tokio::test]
+async fn get_codebases_without_filter_returns_all() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    for name in ["cb-a", "cb-b"] {
+        insert_codebase(state.database.pool(), name).await;
+    }
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/codebases")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    let mut names: Vec<String> = body
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|row| row["name"].as_str().unwrap().to_string())
+        .collect();
+    names.sort();
+    assert_eq!(names, vec!["cb-a".to_string(), "cb-b".to_string()]);
+}
+
+/// `GET /codebases?branch_url=...` with a URL that matches nothing
+/// returns an empty list, not a 404.
+#[tokio::test]
+async fn get_codebases_filter_with_no_match_returns_empty() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    insert_codebase(state.database.pool(), "cb-a").await;
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/codebases?branch_url=https%3A%2F%2Fnope.invalid%2Fx")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    assert_eq!(body, json!([]));
+}
+
+/// `POST /codebases/{name}/head` writes `vcs_last_revision` and
+/// `last_scanned=NOW()` for the codebase.
+#[tokio::test]
+async fn post_codebase_head_updates_revision_and_last_scanned() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+    insert_codebase(state.database.pool(), "cb-head").await;
+    let before = Utc::now();
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/codebases/cb-head/head")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"revision": "abc123"}).to_string()))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    assert_eq!(body, json!({}));
+
+    let row: (Option<String>, Option<chrono::DateTime<Utc>>) = sqlx::query_as(
+        "SELECT vcs_last_revision, last_scanned AT TIME ZONE 'UTC' FROM codebase WHERE name = $1",
+    )
+    .bind("cb-head")
+    .fetch_one(state.database.pool())
+    .await
+    .expect("codebase row");
+    assert_eq!(row.0.as_deref(), Some("abc123"));
+    let last_scanned = row.1.expect("last_scanned set");
+    assert!(last_scanned >= before, "{last_scanned} < {before}");
+}
+
+/// `POST /codebases/{name}/head` on a missing codebase returns 404.
+#[tokio::test]
+async fn post_codebase_head_missing_returns_404() {
+    let Some((app, _state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/codebases/no-such-codebase/head")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"revision": "abc"}).to_string()))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = get_body(response).await;
+    assert_eq!(body["reason"], "no such codebase: no-such-codebase");
+}
+
 /// `POST /schedule` with a nonexistent `run_id` returns 404 with the
 /// `{reason}` body.
 #[tokio::test]

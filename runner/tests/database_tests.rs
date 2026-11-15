@@ -42,6 +42,55 @@ async fn test_get_codebases() {
 }
 
 #[tokio::test]
+async fn test_get_codebases_by_branch_urls() {
+    let Some(db) = setup().await else { return };
+    sqlx::query(
+        "INSERT INTO codebase (name, branch_url, url, subpath, vcs_type, value) \
+         VALUES ('bar', 'https://example.com/bar', 'https://example.com/bar', '', 'git', 20)",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let runner_db = RunnerDatabase::new(db.pool.clone());
+
+    let empty = runner_db.get_codebases_by_branch_urls(&[]).await.unwrap();
+    assert_eq!(empty, vec![]);
+
+    let mut hits = runner_db
+        .get_codebases_by_branch_urls(&[
+            "https://example.com/foo".to_string(),
+            "https://example.com/missing".to_string(),
+        ])
+        .await
+        .unwrap();
+    hits.sort_by_key(|c| c.name.clone().map(|n| n.into_string()).unwrap_or_default());
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].name.as_ref().map(|n| n.as_str()), Some("foo"));
+}
+
+#[tokio::test]
+async fn test_set_codebase_head_updates_row() {
+    use janitor_types::CodebaseName;
+    let Some(db) = setup().await else { return };
+    let runner_db = RunnerDatabase::new(db.pool.clone());
+    let name = CodebaseName::new("foo").unwrap();
+
+    assert!(runner_db.set_codebase_head(&name, "rev1").await.unwrap());
+    let row: (Option<String>, Option<chrono::DateTime<chrono::Utc>>) = sqlx::query_as(
+        "SELECT vcs_last_revision, last_scanned AT TIME ZONE 'UTC' FROM codebase WHERE name = $1",
+    )
+    .bind("foo")
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(row.0.as_deref(), Some("rev1"));
+    assert!(row.1.is_some());
+
+    let missing = CodebaseName::new("nope").unwrap();
+    assert!(!runner_db.set_codebase_head(&missing, "x").await.unwrap());
+}
+
+#[tokio::test]
 async fn test_get_candidates() {
     let Some(db) = setup().await else { return };
     sqlx::query(

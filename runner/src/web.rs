@@ -838,17 +838,49 @@ async fn kill(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> Resp
     }
 }
 
-/// `GET /codebases` -- return the codebase table as a JSON list.
+/// Query parameters for `GET /codebases`. Only used for OpenAPI
+/// documentation; the handler parses the raw query string itself so
+/// that repeated keys (`?branch_url=a&branch_url=b`) are supported --
+/// `serde_urlencoded`, which axum's `Query` extractor uses, drops all
+/// but the last repeat.
+#[derive(serde::Deserialize, Default, IntoParams)]
+#[into_params(parameter_in = Query)]
+#[allow(dead_code)]
+struct GetCodebasesQuery {
+    /// Restrict to codebases with this `branch_url`. Repeat the
+    /// parameter to pass multiple URLs. When absent, every codebase
+    /// is returned.
+    branch_url: Option<String>,
+}
+
+/// `GET /codebases` -- return the codebase table as a JSON list,
+/// optionally filtered by `branch_url` (repeatable).
 #[utoipa::path(
     get,
     path = "/codebases",
+    params(GetCodebasesQuery),
     responses(
-        (status = 200, description = "All codebases", body = Vec<crate::database::CodebaseRow>),
+        (status = 200, description = "Matching codebases", body = Vec<crate::database::CodebaseRow>),
         (status = 500, description = "Database error", body = ErrorResponse),
     )
 )]
-async fn get_codebases(State(state): State<Arc<AppState>>) -> Response {
-    match state.database.get_codebases().await {
+async fn get_codebases(
+    State(state): State<Arc<AppState>>,
+    request: axum::extract::Request,
+) -> Response {
+    let raw_query = request.uri().query();
+    // `String::from_str` is infallible, so the Err branch never fires.
+    let branch_urls: Vec<String> =
+        parse_identifier_list::<String>(raw_query, "branch_url").unwrap_or_default();
+    let result = if branch_urls.is_empty() {
+        state.database.get_codebases().await
+    } else {
+        state
+            .database
+            .get_codebases_by_branch_urls(&branch_urls)
+            .await
+    };
+    match result {
         Ok(codebases) => Json(codebases).into_response(),
         Err(e) => {
             log::error!("Failed to get codebases: {}", e);
@@ -896,6 +928,47 @@ async fn update_codebases(
         Ok(()) => Json(EmptyResponse {}).into_response(),
         Err(e) => {
             log::error!("Failed to upload codebases: {}", e);
+            db_error()
+        }
+    }
+}
+
+/// Request body for `POST /codebases/{name}/head`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SetCodebaseHeadRequest {
+    /// New value for `vcs_last_revision`.
+    pub revision: String,
+}
+
+/// `POST /codebases/{name}/head` -- record the latest observed
+/// revision for a codebase and bump `last_scanned` to now. Used by
+/// the site's webhook handler to update the DB without a direct
+/// connection.
+#[utoipa::path(
+    post,
+    path = "/codebases/{name}/head",
+    params(("name" = CodebaseName, Path, description = "Codebase name")),
+    request_body = SetCodebaseHeadRequest,
+    responses(
+        (status = 200, description = "Head was updated", body = EmptyResponse),
+        (status = 404, description = "No such codebase", body = ReasonResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
+async fn set_codebase_head(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<CodebaseName>,
+    Json(request): Json<SetCodebaseHeadRequest>,
+) -> Response {
+    match state
+        .database
+        .set_codebase_head(&name, &request.revision)
+        .await
+    {
+        Ok(true) => Json(EmptyResponse {}).into_response(),
+        Ok(false) => reason(StatusCode::NOT_FOUND, format!("no such codebase: {}", name)),
+        Err(e) => {
+            log::error!("Failed to set head for codebase {}: {}", name, e);
             db_error()
         }
     }
@@ -4521,6 +4594,7 @@ fn private_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(artifact))
         .routes(routes!(get_codebases, update_codebases))
         .routes(routes!(get_codebase_names))
+        .routes(routes!(set_codebase_head))
         .routes(routes!(get_candidates, upload_candidates))
         .routes(routes!(get_candidate))
         .routes(routes!(delete_candidate))

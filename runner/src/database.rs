@@ -1160,6 +1160,38 @@ INSERT INTO run (
         .await
     }
 
+    /// Get codebases whose `branch_url` matches any of the given URLs.
+    pub async fn get_codebases_by_branch_urls(
+        &self,
+        branch_urls: &[String],
+    ) -> Result<Vec<CodebaseRow>, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT name, branch_url, url, branch, subpath, vcs_type::text AS vcs_type, \
+                    web_url, vcs_last_revision, value \
+             FROM codebase WHERE branch_url = ANY($1::text[])",
+        )
+        .bind(branch_urls)
+        .fetch_all(self.pool())
+        .await
+    }
+
+    /// Update a codebase's `vcs_last_revision` and bump `last_scanned`
+    /// to the current time. Returns `true` when a row was updated.
+    pub async fn set_codebase_head(
+        &self,
+        name: &CodebaseName,
+        revision: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query(
+            "UPDATE codebase SET vcs_last_revision = $1, last_scanned = NOW() WHERE name = $2",
+        )
+        .bind(revision)
+        .bind(name)
+        .execute(self.pool())
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Get the names of all active codebases, sorted.
     pub async fn get_active_codebase_names(&self) -> Result<Vec<CodebaseName>, sqlx::Error> {
         sqlx::query_scalar(
