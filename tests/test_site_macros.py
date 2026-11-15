@@ -208,6 +208,75 @@ def test_display_publish_blockers():
     ]
 
 
+def _blocker_html(name, result, details):
+    template = env.get_template("run_util.html")
+    blockers = {name: {"result": result, "details": details}}
+    return BeautifulSoup(
+        str(template.module.display_publish_blockers(blockers)),  # type: ignore
+        "html.parser",
+    ).li
+
+
+@pytest.mark.parametrize(
+    "name,result,details,expected",
+    [
+        (
+            "backoff",
+            True,
+            {"attempt_count": 0, "next_try_time": "2026-11-05T12:00:00Z"},
+            "☑ 0 publish attempts so far, not currently attempting to back off",
+        ),
+        (
+            "backoff",
+            False,
+            {"attempt_count": 1, "next_try_time": "2026-11-05T12:00:00Z"},
+            "☒ 1 publish attempts so far, next attempt after 2026-11-05T12:00:00Z",
+        ),
+        (
+            "propose_rate_limit",
+            True,
+            {"bucket": "maintainer@example.com"},
+            "☑ proposals not currently being rate-limited for maintainer "
+            "maintainer@example.com",
+        ),
+        (
+            "propose_rate_limit",
+            True,
+            {"bucket": None},
+            "☑ no rate limit for merge proposals",
+        ),
+        (
+            "propose_rate_limit",
+            False,
+            {"open": 3, "max_open": 2},
+            "☒ merge proposals are currently being rate-limited (open: 3, max open: 2)",
+        ),
+        (
+            "propose_rate_limit",
+            False,
+            {"open": None, "max_open": None},
+            "☒ merge proposals are currently being rate-limited",
+        ),
+        (
+            "previous_mp",
+            False,
+            [
+                {"url": "https://example.com/mp/1", "status": "rejected"},
+                {"url": "https://example.com/mp/2", "status": "closed"},
+            ],
+            "☒ merge proposals for previous run were rejected: rejected, closed.",
+        ),
+    ],
+)
+def test_display_publish_blocker_texts(name, result, details, expected):
+    li = _blocker_html(name, result, details)
+    assert " ".join(li.get_text().split()) == expected
+    if name == "previous_mp":
+        assert [(a["href"], a.string) for a in li.find_all("a")] == [
+            (mp["url"], mp["status"]) for mp in details
+        ]
+
+
 # What the worker stores for a real lintian 2.141.0 run on a small package.
 LINTIAN_RESULT = {
     "groups": [
