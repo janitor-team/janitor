@@ -519,7 +519,7 @@ impl JanitorResult {
             "finish_time": self.finish_time.to_rfc3339(),
             "start_time": self.start_time.to_rfc3339(),
             "transient": self.transient,
-            "target": self.target.as_ref().map_or_else(|| serde_json::json!({}), |t| serde_json::json!(t)),
+            "target": self.target,
             "logfilenames": self.logfilenames,
             "codemod": self.codemod,
             "value": self.value,
