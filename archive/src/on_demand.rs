@@ -242,35 +242,52 @@ pub async fn lookup_builds(
 /// relative to `max_finish_time`. Returns `true` if we can skip
 /// regeneration -- Release exists and its `Date` field is newer than
 /// the newest build's finish time.
+///
+/// Any failure to read, parse or interpret the Release file is
+/// treated as "not fresh" so a corrupt or truncated file self-heals
+/// on the next request instead of propagating up as a 500.
 pub async fn is_fresh(
     release_path: &Path,
     max_finish_time: Option<DateTime<Utc>>,
 ) -> ArchiveResult<bool> {
+    let Some(max_finish_time) = max_finish_time else {
+        return Ok(false);
+    };
     let content = match tokio::fs::read_to_string(release_path).await {
         Ok(content) => content,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(ArchiveError::Io(e)),
     };
-    let invalid = |msg: String| {
-        ArchiveError::RepositoryGeneration(format!("{}: {}", release_path.display(), msg))
+    let release = match content.parse::<deb822_fast::Deb822>() {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("{}: unparseable Release, regenerating: {}", release_path.display(), e);
+            return Ok(false);
+        }
     };
-    let release = content
-        .parse::<deb822_fast::Deb822>()
-        .map_err(|e| invalid(e.to_string()))?;
-    let date = release
-        .iter()
-        .next()
-        .and_then(|p| p.get("Date"))
-        .ok_or_else(|| invalid("no Date field".to_string()))?;
-    // apt-repository has written "UTC", which Python's email.utils
-    // accepts but chrono does not.
+    let Some(date) = release.iter().next().and_then(|p| p.get("Date")) else {
+        warn!("{}: no Date field, regenerating", release_path.display());
+        return Ok(false);
+    };
+    // apt-repository writes "UTC", which chrono's rfc2822 parser does
+    // not accept -- swap it for "GMT" before parsing.
     let normalized = match date.strip_suffix(" UTC") {
         Some(prefix) => format!("{} GMT", prefix),
         None => date.to_string(),
     };
-    let stamp = DateTime::parse_from_rfc2822(&normalized)
-        .map_err(|e| invalid(format!("invalid Date {:?}: {}", date, e)))?;
-    Ok(max_finish_time.is_some_and(|t| t < stamp))
+    let stamp = match DateTime::parse_from_rfc2822(&normalized) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(
+                "{}: invalid Date {:?}, regenerating: {}",
+                release_path.display(),
+                date,
+                e
+            );
+            return Ok(false);
+        }
+    };
+    Ok(max_finish_time < stamp)
 }
 
 /// Package provider backed by a precomputed list of `BuildInfo`,
@@ -602,16 +619,36 @@ mod tests {
             .unwrap());
     }
 
+    /// A Release without a Date field should trigger regeneration
+    /// rather than bubbling an error up as a 500.
     #[tokio::test]
     async fn test_is_fresh_release_without_date() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("Release");
         tokio::fs::write(&path, b"Origin: janitor\n").await.unwrap();
         let now: DateTime<Utc> = SystemTime::now().into();
-        assert!(matches!(
-            is_fresh(&path, Some(now)).await,
-            Err(ArchiveError::RepositoryGeneration(_))
-        ));
+        assert!(!is_fresh(&path, Some(now)).await.unwrap());
+    }
+
+    /// Same for a Release whose Date field is unparseable.
+    #[tokio::test]
+    async fn test_is_fresh_release_with_bad_date() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_release(tmp.path(), "not a date").await;
+        let now: DateTime<Utc> = SystemTime::now().into();
+        assert!(!is_fresh(&path, Some(now)).await.unwrap());
+    }
+
+    /// Unparseable deb822 should also self-heal rather than 500.
+    #[tokio::test]
+    async fn test_is_fresh_release_unparseable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("Release");
+        tokio::fs::write(&path, b"not: a : valid\ndeb822: file:\n")
+            .await
+            .unwrap();
+        let now: DateTime<Utc> = SystemTime::now().into();
+        assert!(!is_fresh(&path, Some(now)).await.unwrap());
     }
 
     /// Like Python's write_suite_files, keep only the newest 12 files
