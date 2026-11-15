@@ -47,6 +47,13 @@ pub enum AptRepositoryError {
     DirectoryCreation(String),
 
     /// A package or source provider failed.
+    ///
+    /// The boxed error is how callers smuggle their own concrete error
+    /// type (e.g. `ArchiveError`) through the `AsyncPackageProvider` /
+    /// `AsyncSourceProvider` traits without this crate depending on it.
+    /// Callers that want the original type back should downcast the box
+    /// rather than stringifying it, since `e.to_string()` discards the
+    /// typed inner error.
     #[error("Provider error: {0}")]
     Provider(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
