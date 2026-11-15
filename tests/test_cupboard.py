@@ -63,13 +63,14 @@ async def create_client(
     user=None,
     config="",
     publisher_url=None,
+    runner_url=None,
     logfile_manager=None,
 ):
     config = read_config_string(config)
     app = create_app(
         config=config,
         publisher_url=publisher_url,
-        runner_url=None,
+        runner_url=runner_url,
         differ_url=None,
         db=db,
     )
@@ -94,13 +95,20 @@ async def create_api_client(aiohttp_client, db, *, user, runner_url=None):
 
 
 async def _start_fake_runner(aiohttp_server, *, admin_workers):
-    """In-process stand-in for the runner's `/admin/workers` endpoint."""
+    """In-process stand-in for the runner's `/admin/workers` and `/runs/unchanged`.
+
+    It has no unchanged runs, so `/runs/unchanged` always answers 404.
+    """
 
     async def handle_admin_workers(request):
         return web.json_response({"workers": admin_workers})
 
+    async def handle_unchanged(request):
+        return web.json_response({"reason": "no unchanged run"}, status=404)
+
     app = web.Application()
     app.router.add_get("/admin/workers", handle_admin_workers)
+    app.router.add_get("/runs/unchanged", handle_unchanged)
     server = await aiohttp_server(app)
     return str(server.make_url("/"))
 
@@ -292,7 +300,7 @@ def test_run():
     env.get_template("cupboard/run.html")
 
 
-async def test_run_page_log_links(aiohttp_client, db, tmp_path):
+async def test_run_page_log_links(aiohttp_client, aiohttp_server, db, tmp_path):
     async with db.acquire() as conn:
         await _insert_codebase(conn, "foo")
         now = utcnow()
@@ -308,8 +316,12 @@ async def test_run_page_log_links(aiohttp_client, db, tmp_path):
             "UPDATE run SET failure_stage = 'worker', "
             "logfilenames = '{codemod.log,worker.log}'"
         )
+    runner_url = await _start_fake_runner(aiohttp_server, admin_workers=[])
     client = await create_client(
-        aiohttp_client, db, logfile_manager=get_log_manager(str(tmp_path))
+        aiohttp_client,
+        db,
+        runner_url=runner_url,
+        logfile_manager=get_log_manager(str(tmp_path)),
     )
 
     resp = await client.get("/cupboard/c/foo/somerun/")
