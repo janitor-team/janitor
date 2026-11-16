@@ -3627,20 +3627,10 @@ async fn check_existing_mp(
     }
 
     let mp_run = mp_run.expect("checked above that mp_run is Some");
-    let mp_run_branch_url = match mp_run.branch_url.as_deref().map(url::Url::parse) {
-        None => None,
-        Some(Ok(url)) => Some(url),
-        Some(Err(e)) => {
-            log::warn!(
-                "{}: run {:?} has an invalid branch URL {:?}: {}",
-                mp_url,
-                mp_run.id,
-                mp_run.branch_url,
-                e
-            );
-            None
-        }
-    };
+    let mp_run_branch_url = mp_run.branch_url.as_deref().map(|u| {
+        u.parse::<url::Url>()
+            .expect("run has an invalid branch URL")
+    });
 
     // Resolve mp_remote_branch_name. Prefer the value the run recorded;
     // if it's empty, fall back to opening the target branch and reading
@@ -3943,10 +3933,10 @@ async fn check_existing_mp(
     // points to a different branch, we can't republish the same
     // proposal against it, so skip.
     let mp_branch = mp_run_branch_url;
-    let last_run_branch = last_run
-        .branch_url
-        .as_deref()
-        .and_then(|u| u.parse::<url::Url>().ok());
+    let last_run_branch = last_run.branch_url.as_deref().map(|u| {
+        u.parse::<url::Url>()
+            .expect("run has an invalid branch URL")
+    });
     if !branches_match(
         mp_branch.as_ref(),
         last_run_branch.as_ref(),
