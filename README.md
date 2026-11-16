@@ -27,24 +27,29 @@ are more likely to yield results and be published (i.e. merged or pushed).
 Design
 ======
 
-The janitor is made up out of multiple components. he janitor is built on top of
+The janitor is made up out of multiple components. The janitor is built on top of
 [silver-platter](https://github.com/jelmer/silver-platter) and relies
 on that project for most of the grunt work.
 
 Several permanently running jobs:
 
 * the *publisher* proposes or pushes changes that have been successfully
-  created and built previously, and which can provide VCS diffs
-* the *vcs store* manages and stores VCS repositories (git, bzr) [optional]
+  created and built previously
+* the *vcs store* manages and stores VCS repositories (git, bzr) and serves their diffs [optional]
 * the [ognibuild](https://github.com/jelmer/ognibuild) dep server is used to
-  resolve missing dependencies
+  resolve missing dependencies [optional]
 * the *runner* processes the queue, kicks off workers for
   each package and stores the results.
-* one or more *workers* which are responsible for actual generating and
+* one or more *workers* which are responsible for actually generating and
   building changes.
-* an *archiver* that takes care of managing the apt archives and publishes them
+* an *archiver* that takes care of managing the apt archives and publishes them [optional]
 * a *site* job that renders the web site
 * the *differ* takes care of running e.g. debdiff or diffoscope between binary runs
+* the *auto-uploader* signs and uploads the packages built by successful runs [optional]
+
+An optional [mail filter](sieve/README) can be run by the mail server for each
+e-mail from a forge, so the merge proposal it mentions is refreshed straight
+away.
 
 Each instance of the janitor should somehow upload "codebase" entries and
 "candidates", which describe where to find code and what to do with it.
@@ -53,7 +58,7 @@ See [docs/quickstart.md](docs/quickstart.md) for an example.
 There are no requirements that these jobs run on the same machine, but they are
 expected to have secure network access to each other.
 
-Every job runs a HTTP server to allow API requests and use of /metrics, for
+Every job runs an HTTP server to allow API requests and use of /metrics, for
 prometheus monitoring.
 
 Workers are fairly naive; they simply run a ``silver-platter`` subcommand
@@ -69,7 +74,7 @@ See the various files in ``devnotes/`` for details.
 Worker
 ======
 The actual changes are made by various codemod scripts that implement
-the [silver-platter protocol](https://github.com/jelmer/silver-platter/blob/master/codemod-protocol.rst).
+the [silver-platter protocol](https://github.com/jelmer/silver-platter/blob/master/codemod-protocol.md).
 
 Installation
 ============
@@ -77,12 +82,14 @@ Installation
 There are two common ways of deploying a new janitor instance.
 
  * On top of kubernetes (see the configuration for the Debian & Upstream janitor)
- * Using e.g. ansible and/or a venv
+ * Using e.g. ansible
+
+See [docs/production.md](docs/production.md) for running an instance.
 
 Containers
 ----------
 
-Several container images are provided
+Several [container images](docs/containers.md) are provided
 
  * [ghcr.io/jelmer/janitor/archive](https://github.com/users/jelmer/packages/container/package/janitor%2Farchive) - APT archive generator
  * [ghcr.io/jelmer/janitor/differ](https://github.com/users/jelmer/packages/container/package/janitor%2Fdiffer) - diffoscope/debdiff generator
@@ -92,6 +99,8 @@ Several container images are provided
  * [ghcr.io/jelmer/janitor/git_store](https://github.com/users/jelmer/packages/container/package/janitor%2Fgit_store) - storage for Git
  * [ghcr.io/jelmer/janitor/bzr_store](https://github.com/users/jelmer/packages/container/package/janitor%2Fbzr_store) - storage for Bazaar
  * [ghcr.io/jelmer/janitor/worker](https://github.com/users/jelmer/packages/container/package/janitor%2Fworker) - Base for workers
+ * [ghcr.io/jelmer/janitor/auto_upload](https://github.com/users/jelmer/packages/container/package/janitor%2Fauto_upload) - Package uploader
+ * [ghcr.io/jelmer/janitor/mail_filter](https://github.com/users/jelmer/packages/container/package/janitor%2Fmail_filter) - Forge e-mail filter
 
 Contributing
 ============
