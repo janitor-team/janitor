@@ -66,4 +66,4 @@ EXPOSE 8080
 
 EXPOSE 8090
 
-ENTRYPOINT ["janitor-site", "--port=8080", "--public-port=8090", "--host=0.0.0.0"]
+ENTRYPOINT ["janitor-site", "--port=8080", "--public-port=8090", "--host="]
