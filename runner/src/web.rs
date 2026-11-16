@@ -1,3 +1,4 @@
+use crate::api_types::CandidateUpload;
 use crate::api_types::{
     ActiveRunResponse, AssignRejectedResponse, AssignmentBranch, AssignmentBuild,
     AssignmentCodemod, AssignmentResponse, AssignmentTargetRepository, BuildAssignmentConfig,
@@ -25,7 +26,7 @@ use axum::{
 };
 use chrono::Utc;
 use janitor_types::{ArtifactName, Campaign, ChangeSetId, CodebaseName, LogFilename, RunId};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
@@ -1145,34 +1146,6 @@ pub(crate) enum CandidatePreflight {
     InvalidCommand,
     /// `value == 0`. Python adds to `invalid_value` and continues.
     InvalidValue,
-}
-
-/// Entry in a `POST /candidates` request body.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct CandidateUpload {
-    /// Codebase to run on.
-    pub codebase: CodebaseName,
-    /// Campaign to run.
-    pub campaign: Campaign,
-    /// Codemod command; defaults to the campaign's command.
-    pub command: Option<String>,
-    /// Change set the candidate belongs to.
-    pub change_set: Option<ChangeSetId>,
-    /// Value of the candidate; must not be 0.
-    pub value: Option<i64>,
-    /// Estimated chance of success, between 0 and 1.
-    pub success_chance: Option<f64>,
-    /// Free-form context.
-    pub context: Option<String>,
-    /// Name of the publish policy.
-    #[serde(rename = "publish-policy")]
-    pub publish_policy: Option<String>,
-    /// Queue bucket to schedule in.
-    pub bucket: Option<String>,
-    /// Who is requesting the run; appended to the generated requester.
-    pub requester: Option<String>,
-    /// Ids of candidates that this one is a followup for.
-    pub followup_for: Option<Vec<i32>>,
 }
 
 /// Pure preflight for a single candidate upload entry. Takes the
