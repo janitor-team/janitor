@@ -622,7 +622,12 @@ async def handle_ready_proposals(request):
     from ..pkg import generate_ready_list
 
     publish_status = request.query.get("publish_status")
-    return await generate_ready_list(request.app["pool"], None, publish_status)
+    return await generate_ready_list(
+        request.app["http_client_session"],
+        request.app["publisher_url"],
+        None,
+        publish_status,
+    )
 
 
 @routes.get("/cupboard/done", name="cupboard-done")
