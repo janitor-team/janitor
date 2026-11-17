@@ -2824,6 +2824,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "rustls",
+ "rustls-native-certs",
  "tokio",
  "tokio-rustls",
  "tower-service",
@@ -3555,6 +3556,7 @@ dependencies = [
  "metrics-process",
  "metrics-util",
  "reqwest",
+ "rustls",
  "tokio",
  "tower 0.5.3",
  "url",
@@ -4279,11 +4281,18 @@ checksum = "1db0d8f1fc9e62caebd0319e11eaec5822b0186c171568f0480b46a0137f9108"
 dependencies = [
  "base64 0.22.1",
  "evmap",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
  "indexmap 2.14.2",
  "metrics",
  "metrics-util",
  "quanta",
+ "rustls",
  "thiserror 2.0.20",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -8,7 +8,7 @@ use axum::{
     http::{header, StatusCode},
     response::{IntoResponse, Response},
 };
-use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
+use metrics_exporter_prometheus::{BuildError, Matcher, PrometheusBuilder, PrometheusHandle};
 use reqwest::Client;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -86,6 +86,31 @@ pub fn install(buckets: BucketOverrides) {
         installed.buckets, buckets,
         "metrics recorder already installed with different histogram buckets"
     );
+}
+
+/// Install the global Prometheus recorder, configured by [`builder`], and
+/// push its metrics to the push gateway at `gateway` every `interval`,
+/// grouped by `job` and `grouping_key`.
+///
+/// Must be called from within a Tokio runtime.
+pub fn install_with_push_gateway(
+    buckets: BucketOverrides,
+    gateway: &Url,
+    job: &str,
+    grouping_key: &HashMap<&str, &str>,
+    interval: Duration,
+) -> Result<(), BuildError> {
+    // The exporter's HTTP client takes the process-wide rustls provider.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    builder(buckets)
+        .with_push_gateway(
+            push_url(gateway, job, grouping_key),
+            interval,
+            None,
+            None,
+            false,
+        )?
+        .install()
 }
 
 /// Render all recorded metrics in the Prometheus text format.

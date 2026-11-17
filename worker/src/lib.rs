@@ -12,7 +12,6 @@ use dns_lookup::{getaddrinfo, LookupErrorKind};
 
 use janitor::api::worker::{Metadata, TargetDetails, WorkerFailure};
 use janitor::vcs::VcsType;
-use janitor_service::metrics::push_to_gateway;
 use janitor_types::{Campaign, CodebaseName, RunId};
 
 use url::Url;
@@ -928,7 +927,6 @@ pub async fn process_single_item(
     my_url: Option<&Url>,
     node_name: &str,
     jenkins_build_url: Option<&Url>,
-    prometheus: Option<&Url>,
     codebase: Option<&CodebaseName>,
     campaign: Option<&Campaign>,
     tee: bool,
@@ -1097,21 +1095,6 @@ pub async fn process_single_item(
     log::info!("Results uploaded");
 
     log::debug!("Result: {:?}", result);
-
-    if let Some(prometheus) = prometheus {
-        if let Err(e) = push_to_gateway(
-            prometheus,
-            "janitor.worker",
-            maplit::hashmap! {
-                "run_id" => assignment.id.as_str(),
-                "campaign" => assignment.campaign.as_str(),
-            },
-        )
-        .await
-        {
-            log::warn!("Failed to push metrics to Prometheus gateway: {}", e);
-        }
-    }
 
     Ok(())
 }

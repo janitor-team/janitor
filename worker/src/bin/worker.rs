@@ -4,6 +4,9 @@ use serde::Deserialize;
 use std::fs::File;
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
+
+const PUSH_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Parser, Debug)]
 #[command(author, version)]
@@ -79,7 +82,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     args.logging.init();
-    janitor_service::metrics::install(&[]);
 
     // Load breezy plugins so VCS URL handlers (notably
     // breezy.plugins.debian.directory, which normalises
@@ -167,6 +169,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .to_owned()
     });
 
+    match args.prometheus.as_ref() {
+        Some(prometheus) => janitor_service::metrics::install_with_push_gateway(
+            &[],
+            prometheus,
+            "janitor.worker",
+            &maplit::hashmap! { "instance" => node_name.as_str() },
+            PUSH_INTERVAL,
+        )?,
+        None => janitor_service::metrics::install(&[]),
+    }
+
     let addr = SocketAddr::new(args.listen_address, args.port.unwrap_or(0));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let addr = listener.local_addr()?;
@@ -244,7 +257,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 my_url.as_ref(),
                 &node_name,
                 jenkins_build_url.as_ref(),
-                args.prometheus.as_ref(),
                 args.codebase.as_ref(),
                 args.campaign.as_ref(),
                 args.tee,
@@ -278,6 +290,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             if !args.r#loop {
+                if args.prometheus.is_some() {
+                    // Let the exporter push once more after the run.
+                    tokio::time::sleep(2 * PUSH_INTERVAL).await;
+                }
                 std::process::exit(exit_code);
             }
         }
