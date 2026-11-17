@@ -456,6 +456,22 @@ async def test_login_redirects_to_provider(
     }
 
 
+async def test_logged_out_redirect_is_accepted_by_login(
+    aiohttp_client, aiohttp_server, database_location
+):
+    provider = await _start_provider(aiohttp_server)
+    client = await _openid_site(
+        aiohttp_client, database_location, provider, external_url="https://example.com/"
+    )
+    resp = await client.get(
+        "/api-tokens?x=1", headers={"Sec-Fetch-Mode": "navigate"}, allow_redirects=False
+    )
+    assert resp.status == 302
+    resp = await client.get(resp.headers["Location"], allow_redirects=False)
+    assert resp.status == 302
+    assert resp.cookies["back_url"].value == "/api-tokens?x=1"
+
+
 async def test_login_link_hidden_without_provider(aiohttp_client, database_location):
     # app["openid_config"] is always set, to None when login is disabled.
     client = await _openid_site(aiohttp_client, database_location)

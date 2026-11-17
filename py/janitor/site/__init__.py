@@ -295,7 +295,7 @@ def check_admin(request: web.Request) -> None:
 def check_logged_in(request: web.Request) -> None:
     if not request["user"]:
         if request.headers.get("Sec-Fetch-Mode") == "navigate":
-            raise web.HTTPFound(URL("/login").with_query(url=str(request.url)))
+            raise web.HTTPFound(URL("/login").with_query(url=str(request.rel_url)))
         raise web.HTTPUnauthorized()
 
 
