@@ -220,14 +220,17 @@ impl Credentials {
     /// Let Breezy use these credentials for `host`, so that pushes to the
     /// VCS stores behind the runner authenticate. Only Basic credentials
     /// are handed to Breezy.
-    pub fn register_with_breezy(&self, host: &str) -> Result<(), Box<breezyshim::error::Error>> {
+    pub fn register_with_breezy(
+        &self,
+        host: url::Host<&str>,
+    ) -> Result<(), Box<breezyshim::error::Error>> {
         let Credentials::Basic { username, password } = self else {
             return Ok(());
         };
         breezyshim::config::credential_store_registry().register_fallback(
             "janitor-worker",
             Box::new(WorkerCredentialStore {
-                host: host.to_string(),
+                host: host.to_owned(),
                 username: username.clone(),
                 password: password.clone(),
             }),
@@ -237,7 +240,7 @@ impl Credentials {
 }
 
 struct WorkerCredentialStore {
-    host: String,
+    host: url::Host<String>,
     username: String,
     password: Option<String>,
 }
@@ -252,7 +255,11 @@ impl breezyshim::config::CredentialStore for WorkerCredentialStore {
         path: Option<&str>,
         realm: Option<&str>,
     ) -> breezyshim::Result<Option<breezyshim::config::Credentials>> {
-        if host != self.host {
+        let matches = match &self.host {
+            url::Host::Ipv6(ip) => host.parse::<std::net::Ipv6Addr>() == Ok(*ip),
+            other => host == other.to_string(),
+        };
+        if !matches {
             return Ok(None);
         }
         Ok(Some(breezyshim::config::Credentials {
@@ -562,7 +569,7 @@ mod tests {
     fn worker_credential_store_only_answers_for_its_host() {
         use breezyshim::config::CredentialStore;
         let store = WorkerCredentialStore {
-            host: "runner.example.com".to_string(),
+            host: url::Host::Domain("runner.example.com".to_string()),
             username: "worker1".to_string(),
             password: Some("secret".to_string()),
         };
@@ -576,6 +583,21 @@ mod tests {
             .get_credentials("https", "github.com", None, None, None, None)
             .unwrap()
             .is_none());
+        for (host, asked) in [
+            ("[2001:db8::1]", "2001:db8::1"),
+            ("[::ffff:192.0.2.1]", "::ffff:c000:201"),
+        ] {
+            let store = WorkerCredentialStore {
+                host: url::Host::parse(host).unwrap(),
+                username: "worker1".to_string(),
+                password: None,
+            };
+            let creds = store
+                .get_credentials("https", asked, None, None, None, None)
+                .unwrap()
+                .unwrap();
+            assert_eq!(creds.username.as_deref(), Some("worker1"));
+        }
     }
 
     #[tokio::test]

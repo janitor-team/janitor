@@ -142,7 +142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         janitor_worker::client::Credentials::from_url(&base_url)
     };
 
-    let Some(host) = base_url.host_str() else {
+    let Some(host) = base_url.host() else {
         eprintln!("Base URL {} has no host", base_url);
         std::process::exit(1);
     };
