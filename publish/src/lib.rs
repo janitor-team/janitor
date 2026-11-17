@@ -2791,9 +2791,9 @@ pub async fn publish_from_policy(
         .as_ref()
         .map(|r| r.target_branch_url().clone())
         .unwrap_or_else(|| target_branch_url.clone());
-    let target_web_url_for_store: Option<String> = publish_result_opt
+    let target_web_url_for_store: Option<url::Url> = publish_result_opt
         .as_ref()
-        .and_then(|r| r.target_branch_web_url().map(|u| u.to_string()));
+        .and_then(|r| r.target_branch_web_url().cloned());
     let proposal_url_for_store: Option<url::Url> = publish_result_opt
         .as_ref()
         .and_then(|r| r.proposal_url().cloned());
@@ -2804,7 +2804,7 @@ pub async fn publish_from_policy(
         &run.codebase,
         branch_name_for_store.as_deref(),
         Some(&target_url_for_store),
-        target_web_url_for_store.as_deref(),
+        target_web_url_for_store.as_ref().map(|u| u.as_str()),
         base_revision.as_ref(),
         Some(&revision),
         role,
@@ -2856,21 +2856,21 @@ pub async fn publish_from_policy(
     };
 
     if let Some(manager) = redis_manager {
-        let entry = serde_json::json!({
-            "id": publish_id,
-            "codebase": run.codebase,
-            "campaign": run.campaign,
-            "proposal_url": proposal_url_for_store.as_ref().map(|u| u.to_string()),
-            "mode": effective_mode.to_string(),
-            "main_branch_url": target_url_for_store.to_string(),
-            "main_branch_browse_url": target_web_url_for_store,
-            "branch_name": branch_name_for_store,
-            "result_code": code,
-            "result": run.result.clone().unwrap_or(serde_json::Value::Null),
-            "role": role,
-            "run_id": run.id,
-            "publish_delay": publish_delay_secs,
-        });
+        let entry = janitor::api::publish::PublishedEntry {
+            id: publish_id.clone(),
+            codebase: run.codebase.clone(),
+            campaign: run.campaign.clone(),
+            proposal_url: proposal_url_for_store.clone(),
+            mode: effective_mode,
+            main_branch_url: target_url_for_store.clone(),
+            main_branch_browse_url: target_web_url_for_store.clone(),
+            branch_name: branch_name_for_store.clone(),
+            result_code: code.clone(),
+            result: run.result.clone(),
+            role: role.to_string(),
+            run_id: run.id.clone(),
+            publish_delay: publish_delay_secs,
+        };
         let payload = serde_json::to_string(&entry)?;
         manager
             .publisher()
@@ -3033,16 +3033,16 @@ pub async fn publish_and_store(
             .await?;
 
             if let Some(manager) = redis_manager {
-                let entry = serde_json::json!({
-                    "id": publish_id,
-                    "mode": mode.to_string(),
-                    "result_code": code,
-                    "description": description,
-                    "campaign": run.campaign,
-                    "main_branch_url": target_branch_url.to_string(),
-                    "result": run.result.clone().unwrap_or(serde_json::Value::Null),
-                    "codebase": run.codebase,
-                });
+                let entry = janitor::api::publish::PublishFailedEntry {
+                    id: publish_id.clone(),
+                    mode,
+                    result_code: code.clone(),
+                    description: description.clone(),
+                    campaign: run.campaign.clone(),
+                    main_branch_url: target_branch_url.clone(),
+                    result: run.result.clone(),
+                    codebase: run.codebase.clone(),
+                };
                 let payload = serde_json::to_string(&entry)?;
                 manager
                     .publisher()
@@ -3102,21 +3102,21 @@ pub async fn publish_and_store(
             ::metrics::histogram!(crate::metrics::PUBLISH_LATENCY).record(publish_delay_secs);
 
             if let Some(manager) = redis_manager {
-                let entry = serde_json::json!({
-                    "id": publish_id,
-                    "campaign": run.campaign,
-                    "proposal_url": publish_result.proposal_url().map(|u| u.to_string()),
-                    "mode": effective_mode.to_string(),
-                    "main_branch_url": publish_result.target_branch_url().to_string(),
-                    "main_branch_browse_url": publish_result.target_branch_web_url().map(|u| u.to_string()),
-                    "branch_name": publish_result.branch_name(),
-                    "result_code": "success",
-                    "result": run.result.clone().unwrap_or(serde_json::Value::Null),
-                    "role": role,
-                    "publish_delay": publish_delay_secs,
-                    "run_id": run.id,
-                    "codebase": run.codebase,
-                });
+                let entry = janitor::api::publish::PublishedEntry {
+                    id: publish_id.clone(),
+                    campaign: run.campaign.clone(),
+                    proposal_url: publish_result.proposal_url().cloned(),
+                    mode: effective_mode,
+                    main_branch_url: publish_result.target_branch_url().clone(),
+                    main_branch_browse_url: publish_result.target_branch_web_url().cloned(),
+                    branch_name: Some(publish_result.branch_name().to_string()),
+                    result_code: "success".to_string(),
+                    result: run.result.clone(),
+                    role: role.to_string(),
+                    publish_delay: Some(publish_delay_secs),
+                    run_id: run.id.clone(),
+                    codebase: run.codebase.clone(),
+                };
                 let payload = serde_json::to_string(&entry)?;
                 manager
                     .publisher()

@@ -1,4 +1,5 @@
 //! This module contains the API definitions for the various janitor components.
+pub mod publish;
 pub mod runner;
 pub mod worker;
 

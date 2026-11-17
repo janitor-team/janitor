@@ -313,17 +313,17 @@ impl ProposalInfoManager {
             redis
                 .publish::<_, _, i32>(
                     "merge-proposal",
-                    serde_json::to_string(&serde_json::json!({
-                        "url": url,
-                        "target_branch_url": target_branch_url,
-                        "rate_limit_bucket": rate_limit_bucket,
-                        "status": effective_status,
-                        "codebase": codebase,
-                        "merged_by": merged_by,
-                        "merged_by_url": merged_by_url,
-                        "merged_at": merged_at,
-                        "campaign": campaign,
-                    }))
+                    serde_json::to_string(&janitor::api::publish::MergeProposalUpdate {
+                        url,
+                        target_branch_url: target_branch_url.clone(),
+                        rate_limit_bucket: rate_limit_bucket.map(|s| s.to_string()),
+                        status: effective_status,
+                        codebase: codebase.cloned(),
+                        merged_by: merged_by.clone(),
+                        merged_by_url: merged_by_url.clone(),
+                        merged_at,
+                        campaign: campaign.cloned(),
+                    })
                     .unwrap(),
                 )
                 .await
