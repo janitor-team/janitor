@@ -22,7 +22,7 @@
                 {% endif %}
             </a>
             {% if proposal.campaign %}(<a href="{{ url_for('generic-codebase', campaign=proposal.campaign, codebase=proposal.codebase) }}">Details</a>){% endif %}
-            {% if not campaign %}(<a href="{{ url_for('cupboard-merge-proposal') }}?url={{ proposal.url|urlencode }}">Info</a>){% endif %}
+            (<a href="{{ url_for('campaign-merge-proposal', campaign=campaign) }}?url={{ proposal.url|urlencode }}">Info</a>)
         {% endmacro %}
         {% if not (open_proposals or merged_proposals or closed_proposals or abandoned_proposals or rejected_proposals) %}
             <ul class="simple empty-state">
