@@ -2583,7 +2583,7 @@ pub async fn publish_from_policy(
         return Ok(None);
     }
 
-    if run.result_branches.is_none() {
+    if run.result_branches.as_ref().is_none_or(Vec::is_empty) {
         log::warn!("no result branches for {}", run.id);
         ::metrics::counter!(crate::metrics::NO_RESULT_BRANCHES_COUNT).increment(1);
         return Ok(None);
