@@ -1,0 +1,49 @@
+---
+- name: Create the directories of the sbuild chroot's extra apt sources
+  ansible.builtin.file:
+    path: "{{ janitor_quadlet_sbuild_apt_dir }}/{{ item }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0755"
+  loop:
+    - sources.list.d
+    - keyrings
+
+- name: Copy the keys of the extra apt sources
+  ansible.builtin.copy:
+    src: "{{ item.key }}"
+    dest: "{{ janitor_quadlet_sbuild_apt_dir }}/keyrings/janitor-{{ item.name }}{{ item.key | splitext | last }}"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  loop: "{{ janitor_quadlet_sbuild_all_sources }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: janitor_sbuild_keys
+
+- name: Write the extra apt sources
+  ansible.builtin.template:
+    src: janitor-extra.sources.j2
+    dest: "{{ janitor_quadlet_sbuild_apt_dir }}/sources.list.d/janitor-{{ source.name }}.sources"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  loop: "{{ janitor_quadlet_sbuild_all_sources }}"
+  loop_control:
+    loop_var: source
+    label: "{{ source.name }}"
+  register: janitor_sbuild_sources
+
+- name: Find the extra apt source files
+  ansible.builtin.find:
+    paths:
+      - "{{ janitor_quadlet_sbuild_apt_dir }}/sources.list.d"
+      - "{{ janitor_quadlet_sbuild_apt_dir }}/keyrings"
+  register: janitor_sbuild_apt_found
+
+- name: Remove the extra apt source files no longer in janitor_sbuild_extra_sources
+  ansible.builtin.file:
+    path: "{{ janitor_quadlet_sbuild_apt_dir }}/{{ item }}"
+    state: absent
+  loop: >-
+    {{ janitor_sbuild_apt_found.files | default([]) | map(attribute='path')
+       | map('relpath', janitor_quadlet_sbuild_apt_dir) | difference(janitor_quadlet_sbuild_apt_files) }}
+  register: janitor_sbuild_apt_removed

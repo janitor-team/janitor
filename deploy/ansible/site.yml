@@ -33,6 +33,40 @@
         quiet: true
       when: (oauth_client_id | default('') | string | length) > 0
 
+    - name: Check each extra sbuild apt source
+      ansible.builtin.assert:
+        that:
+          - item.name | default('') | string is match('^[a-z0-9][a-z0-9-]*$')
+          - item.uris | default('') | length > 0
+          - item.suites | default('') | length > 0
+          - item.components | default('') | length > 0
+          - item.key | default('') | string is match('.+[.](asc|gpg)$')
+          - sources | map(attribute='name', default='') | select('equalto', item.name) | list | length == 1
+        fail_msg: >-
+          Each entry of janitor_sbuild_extra_sources and
+          janitor_sbuild_campaign_extra_sources needs a name of its own
+          across both (a-z, 0-9 and -), uris, suites, components and a key
+          file ending in .asc or .gpg.
+        quiet: true
+      loop: "{{ sources }}"
+      loop_control:
+        label: "{{ item.name | default('') }}"
+      vars:
+        sources: "{{ janitor_sbuild_extra_sources + (janitor_sbuild_campaign_extra_sources.values() | flatten(levels=1)) }}"
+
+    - name: Check janitor_sbuild_campaigns and janitor_sbuild_campaign_extra_sources
+      ansible.builtin.assert:
+        that:
+          - janitor_sbuild_campaign_extra_sources.keys() | difference(janitor_sbuild_campaigns.keys()) | length == 0
+          - janitor_sbuild_campaigns.values() | unique | list | length == janitor_sbuild_campaigns | length
+          - janitor_sbuild_chroot_aliases is not contains(janitor_sbuild_chroot)
+        fail_msg: >-
+          janitor_sbuild_campaign_extra_sources may only name campaigns in
+          janitor_sbuild_campaigns ({{ janitor_sbuild_campaigns.keys() | join(', ') }}),
+          and each campaign there needs a build distribution of its own,
+          whose tarball is not janitor_sbuild_chroot.
+        quiet: true
+
     - name: Check janitor_worker_concurrency is a whole number of at least 1
       ansible.builtin.assert:
         that:
