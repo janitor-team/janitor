@@ -546,6 +546,48 @@ async def test_run_logs(aiohttp_client, db):
     ]
 
 
+async def test_run_diff(aiohttp_client, db):
+    runs = {
+        "r1": {"result_branches": [], "vcs_type": "git"},
+        "r2": {"result_branches": [{"role": "main"}], "vcs_type": None},
+        "r3": {
+            "result_branches": [{"role": "main", "revision": None}],
+            "vcs_type": "git",
+        },
+    }
+
+    async def handle_run(request):
+        run_id = request.match_info["run_id"]
+        if run_id not in runs:
+            raise web.HTTPNotFound()
+        return web.json_response(runs[run_id])
+
+    runner_app = web.Application()
+    runner_app.router.add_get("/runs/{run_id}", handle_run)
+    runner_client = await aiohttp_client(runner_app)
+    client = await create_client(
+        aiohttp_client, db, runner_url=str(runner_client.make_url("/"))
+    )
+
+    got = []
+    for path in [
+        "/run/r0/diff",
+        "/run/r1/diff",
+        "/run/r2/diff",
+        "/run/r2/diff?role=other",
+        "/run/r3/diff",
+    ]:
+        resp = await client.get(path)
+        got.append((path, resp.status, await resp.text()))
+    assert got == [
+        ("/run/r0/diff", 404, "no run r0"),
+        ("/run/r1/diff", 404, "no main branch for run r1"),
+        ("/run/r2/diff", 404, "Not in a VCS"),
+        ("/run/r2/diff?role=other", 404, "no other branch for run r2"),
+        ("/run/r3/diff", 200, "Branch deleted"),
+    ]
+
+
 async def test_archive_diff(aiohttp_client, db):
     seen = []
 
