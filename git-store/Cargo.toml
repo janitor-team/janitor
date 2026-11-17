@@ -44,6 +44,7 @@ janitor-service = { workspace = true, features = ["testing"] }
 # use janitor::schema::CORE_SCHEMA.
 janitor = { path = "..", features = ["testing"] }
 libc = "0.2"
+select = "0.6"
 serial_test = "3"
 tempfile = "3.19"
 testcontainers-modules = { version = "0.15", default-features = false, features = ["postgres", "aws-lc-rs"] }

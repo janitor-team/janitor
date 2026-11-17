@@ -349,6 +349,11 @@ def build_klaus_app():
                 return f"/git/_static/{filename}"
             # The codebase is in SCRIPT_NAME rather than in the routes.
             values.pop("repo", None)
+            # klaus passes dulwich's bytes paths, which werkzeug would repr.
+            values = {
+                k: utils.force_unicode(v) if isinstance(v, bytes) else v
+                for k, v in values.items()
+            }
             return super().url_for(endpoint, **values)
 
         def create_jinja_environment(self):
