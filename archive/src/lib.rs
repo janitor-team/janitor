@@ -23,7 +23,7 @@ pub mod error;
 pub mod manager;
 /// On-demand `/dists/{kind}/{id}/...` generation.
 pub mod on_demand;
-/// Periodic republish + housekeeping loops.
+/// Periodic republish loop.
 pub mod periodic;
 /// Runner pub/sub listener.
 pub mod redis;
@@ -39,11 +39,8 @@ pub mod tracing_setup;
 pub mod web;
 
 pub use error::{ArchiveError, ArchiveResult};
-pub use manager::{
-    GeneratorManager, GeneratorManagerConfig, JobInfo, JobStatus, ManagerStatistics,
-};
-pub use periodic::{HealthCheck, HealthStatus, PeriodicConfig, PeriodicServices, ServiceMetrics};
-pub use redis::{ArchiveEvent, RedisPublisher, RedisSubscriber};
-pub use repository::{RepositoryGenerationConfig, RepositoryGenerator};
+pub use manager::GeneratorManager;
+pub use redis::RedisSubscriber;
+pub use repository::RepositoryGenerator;
 pub use scanner::{BuildInfo, PackageScanner};
 pub use web::{AppState, ArchiveWebService, PublishRequest, PublishResponse};
