@@ -189,3 +189,87 @@ This calls the admin-only `POST /cupboard/api/workers` API on the site, which
 generates a random password, stores its hash, and returns the plaintext password once
 in the response. It isn't kept anywhere in recoverable form, so copy it down when it's
 printed.
+
+## Upgrading
+
+`schema/state.sql` always holds the current schema and only sets up a new
+database, so moving an instance to a newer commit takes a few steps by hand.
+Run them from a checkout of the new commit. Below, `<commit>` is its full id
+(`git rev-parse HEAD`) and `<old>` is the commit the instance runs now. Note
+`<commit>` after each upgrade, as the next `<old>`. If you don't know `<old>`,
+the comparison in step 5 shows what differs.
+
+1. Get the images for the new commit. Published images are tagged with the
+   full id of the commit they were built from, as well as `latest`, but not
+   every commit on `main` has them. Pull each image you run:
+
+   ```console
+   $ podman pull ghcr.io/jelmer/janitor/runner:<commit>
+   ```
+
+   Or build them: `make build-all` tags each image with `latest` and the
+   commit id.
+
+   Either way, run every service from the same commit, as `latest` moves with
+   each new build: use `:<commit>` in place of `:latest` in the commands from
+   [containers](containers.md), and rebuild your own worker image with
+   `FROM ghcr.io/jelmer/janitor/worker:<commit>`.
+
+2. See what changed:
+
+   ```console
+   $ git log --oneline --first-parent <old>..HEAD -- schema/ janitor.conf.example py/janitor/config.proto
+   ```
+
+   Read the pull requests these commits came from: some give SQL in their
+   description that existing rows need. Keep a copy of `janitor.conf`, then
+   update it to match: the services refuse to start with a setting they don't
+   know, and the values some settings take can change.
+
+3. Stop the workers, then the site, then the other services. A service can
+   fail on the schema of another commit.
+
+4. Back up the database:
+
+   ```console
+   $ pg_dump -Fc janitor > janitor.dump
+   ```
+
+5. Change the schema. If `git diff <old> HEAD -- schema/` adds a
+   `schema/migrate-*.sql` script, run it first with
+   `psql -v ON_ERROR_STOP=1 -f <script> janitor`.
+
+   Write the statements for the other changes, such as `ALTER TABLE` or
+   `DROP INDEX`, into `upgrade.sql`, with the SQL from the pull requests
+   before the change it is for. Leave out `schema/debian/` if you did not
+   load it. Run `upgrade.sql` as one transaction, so that a failing statement
+   changes nothing:
+
+   ```console
+   $ psql -1 -v ON_ERROR_STOP=1 -f upgrade.sql janitor
+   ```
+
+   To check the result, load the new schema into an empty database and compare
+   the two. No output means they match. If it prints anything other than
+   columns in a different order, write the missing statements and run them
+   the same way.
+
+   ```console
+   $ createdb janitor-new
+   $ psql -q -f schema/state.sql janitor-new
+   $ psql -q -f schema/debian/debian.sql janitor-new  # only if you loaded it
+   $ diff -I restrict <(pg_dump -s -O -x janitor-new) <(pg_dump -s -O -x janitor)
+   $ dropdb janitor-new
+   ```
+
+6. Start the runner and the other services from the new images, then the
+   site, then the workers.
+
+To go back, stop the services, restore the backup and start the images you
+ran before with the old `janitor.conf`. Anything written since the backup is
+lost.
+
+```console
+$ dropdb --force janitor
+$ pg_restore -C -d postgres janitor.dump
+```
