@@ -14,6 +14,7 @@
   ansible.builtin.command: gpg --homedir {{ janitor_home }}/gnupg-archive --list-secret-keys --with-colons
   register: archive_gpg_list
   changed_when: false
+  failed_when: false
 
 - name: Generate the archive signing key
   # No passphrase: the archive signs unattended. RSA, since gpgv on older

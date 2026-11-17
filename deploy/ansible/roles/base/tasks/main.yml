@@ -13,10 +13,6 @@
       - jq
       # become_user needs setfacl for its temporary files.
       - acl
-      # Rootless podman: subordinate ids, the user's D-Bus and RunInit.
-      - uidmap
-      - dbus-user-session
-      - catatonit
     state: present
     update_cache: true
 

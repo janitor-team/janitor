@@ -10,32 +10,66 @@
 
 - name: Install the merge proposal templates
   ansible.builtin.copy:
-    src: "{{ janitor_proposal_templates }}/"
+    src: proposal-templates/
     dest: "{{ janitor_home }}/proposal-templates/"
     owner: "{{ ansible_user }}"
     mode: "0644"
     directory_mode: "0755"
-  when: janitor_proposal_templates | length > 0
+  when: "'publish' in janitor_services"
 
 - name: Write the worker's login file
   ansible.builtin.copy:
-    content: "{{ {'login': worker_name, 'password': worker_password} | to_json }}\n"
+    content: "{{ {'login': worker_name, 'password': janitor_worker_password} | to_json }}\n"
     dest: "{{ janitor_home }}/worker-credentials.json"
     owner: "{{ ansible_user }}"
     mode: "0600"
   register: janitor_worker_credentials
   no_log: true
+  when: "'worker' in janitor_services"
 
 - name: Deploy the quadlet units
   # The file name sets the unit name.
   ansible.builtin.template:
-    src: "{{ item }}.container.j2"
+    src: "{{ 'worker' if item in janitor_worker_instances else item }}.container.j2"
     dest: "/home/{{ ansible_user }}/.config/containers/systemd/janitor-{{ item }}.container"
     owner: "{{ ansible_user }}"
     mode: "0600"
-  loop: "{{ janitor_services }}"
+  loop: "{{ janitor_units }}"
   register: janitor_unit_files
   notify: Reload user systemd
+  no_log: true
+
+- name: Find worker units beyond janitor_worker_concurrency
+  ansible.builtin.find:
+    paths: "/home/{{ ansible_user }}/.config/containers/systemd"
+    patterns: janitor-worker-*.container
+  register: janitor_worker_unit_files
+  when: "'worker' in janitor_services"
+
+- name: Stop and remove the worker units beyond janitor_worker_concurrency
+  vars:
+    janitor_surplus_units: >-
+      {{ janitor_worker_unit_files.files | default([]) | map(attribute='path') | map('basename')
+         | map('regex_replace', '^janitor-|[.]container$', '')
+         | difference(janitor_worker_instances | list) }}
+  block:
+    - name: Stop the worker units beyond janitor_worker_concurrency
+      become: true
+      become_user: "{{ ansible_user }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
+      ansible.builtin.systemd:
+        name: "janitor-{{ item }}.service"
+        scope: user
+        state: stopped
+      loop: "{{ janitor_surplus_units }}"
+
+    - name: Remove the worker units beyond janitor_worker_concurrency
+      ansible.builtin.file:
+        path: "/home/{{ ansible_user }}/.config/containers/systemd/janitor-{{ item }}.container"
+        state: absent
+      loop: "{{ janitor_surplus_units }}"
+      notify: Reload user systemd
 
 - name: Flush handlers
   ansible.builtin.meta: flush_handlers
@@ -49,6 +83,7 @@
   loop:
     - sbuild
     - ognibuild
+  when: "'worker' in janitor_services"
 
 - name: Find running services whose image was rebuilt or pulled since they started
   # A running container keeps the image it started with.
@@ -58,20 +93,16 @@
     XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
   ansible.builtin.shell: |
     set -eu
-    rc=0
-    podman container exists janitor-{{ item }} || rc=$?
-    if [ "$rc" = 1 ]; then exit 0; fi
-    if [ "$rc" != 0 ]; then exit "$rc"; fi
-    running=$(podman inspect --format '{{ '{{.Image}}' }}' janitor-{{ item }})
+    running=$(podman inspect --format '{{ '{{.Image}}' }}' janitor-{{ item }} 2>/dev/null || true)
     latest=$(podman image inspect --format '{{ '{{.Id}}' }}' {{ janitor_image }})
-    if [ "$running" != "$latest" ]; then echo STALE; fi
+    if [ -n "$running" ] && [ "$running" != "$latest" ]; then echo STALE; fi
   args:
     executable: /bin/bash
   vars:
-    janitor_image: "{{ janitor_worker_image if item == 'worker' else 'ghcr.io/jelmer/janitor/' + item + ':latest' }}"
+    janitor_image: "{{ janitor_worker_image if item in janitor_worker_instances else 'ghcr.io/jelmer/janitor/' + item + ':latest' }}"
   register: janitor_stale
   changed_when: false
-  loop: "{{ janitor_services }}"
+  loop: "{{ janitor_units }}"
 
 - name: Start the Janitor services, restarting those with a new image, unit, janitor.conf or CA bundle
   become: true
@@ -87,26 +118,30 @@
       {{ (janitor_unit_files.results | selectattr('changed') | map(attribute='item') | list)
          + (janitor_stale.results | selectattr('stdout', 'search', 'STALE') | map(attribute='item') | list)
          + (janitor_services | difference(['worker']) if janitor_conf is changed else [])
-         + (['worker'] if janitor_worker_credentials is changed or caddy_cert_trust is changed else []) }}
-  loop: "{{ janitor_services }}"
+         + (janitor_worker_instances | list if janitor_worker_credentials is changed else [])
+         + (janitor_worker_instances | list if control_cert_trust is changed else []) }}
+  loop: "{{ janitor_units }}"
 
 - name: Wait for each service's health route
   ansible.builtin.uri:
-    url: "{{ janitor_health_urls[item] }}"
+    url: >-
+      {{ janitor_health_urls[item] if item in janitor_health_urls
+         else 'http://%s:%d/health' % (janitor_worker_url_host, janitor_worker_instances[item]) }}
   register: janitor_health
   until: janitor_health.status == 200
   retries: 30
   delay: 5
-  loop: "{{ janitor_services }}"
+  loop: "{{ janitor_units }}"
 
 - name: Read the named publish policies
   ansible.builtin.uri:
-    url: http://{{ janitor_listen_address }}:9912/policy
+    url: http://{{ janitor_loopback }}:9912/policy
   register: janitor_policies_now
+  when: "'publish' in janitor_services"
 
 - name: Make the named publish policies that candidates refer to
   ansible.builtin.uri:
-    url: "http://{{ janitor_listen_address }}:9912/policy/{{ item.key }}"
+    url: "http://{{ janitor_loopback }}:9912/policy/{{ item.key }}"
     method: PUT
     body_format: json
     body:
@@ -116,33 +151,37 @@
   vars:
     # publish adds max_frequency_days to each role, so compare only what is set here.
     policy_now: "{{ janitor_policies_now.json[item.key].per_branch | default({}) }}"
-  when: policy_now | list | sort != item.value | list | sort or policy_now | combine(item.value, recursive=true) != policy_now
+  when:
+    - "'publish' in janitor_services"
+    - policy_now | list | sort != item.value | list | sort or policy_now | combine(item.value, recursive=true) != policy_now
 
 # The worker's build session image, made inside the worker container.
-- name: Cache the build session image
+- name: Cache the build session image (ogni cache-env, a few minutes)
   become: true
   become_user: "{{ ansible_user }}"
   environment:
     XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
-  ansible.builtin.command: podman exec janitor-worker ogni cache-env {{ janitor_distribution }}
+  ansible.builtin.command: podman exec janitor-worker ogni cache-env {{ janitor_worker_session_suite }}
   register: ogni_cache_env
   # ogni reports on stderr.
   changed_when: "'Successfully cached' in ogni_cache_env.stderr"
+  when: "'worker' in janitor_services"
 
 # sbuild's unshare-mode tarball (janitor_quadlet_sbuild_chroot_build).
 - name: Check whether the sbuild chroot tarball exists
   ansible.builtin.stat:
     path: "{{ janitor_home }}/data/sbuild/{{ janitor_sbuild_chroot }}.tar.xz"
   register: chroot_tarball
+  when: "'worker' in janitor_services"
 
-- name: Build the sbuild chroot tarball
+- name: Build the sbuild chroot tarball (mmdebstrap, a few minutes)
   become: true
   become_user: "{{ ansible_user }}"
   environment:
     XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts.getent_passwd[ansible_user][1] }}"
   ansible.builtin.command: podman exec janitor-worker sh -c "{{ janitor_quadlet_sbuild_chroot_build }}"
   changed_when: true
-  when: not chroot_tarball.stat.exists
+  when: "'worker' in janitor_services and not chroot_tarball.stat.exists"
 
 - name: Link the chroot tarball under each campaign build distribution's name
   ansible.builtin.file:
@@ -153,16 +192,18 @@
     owner: "{{ ansible_user }}"
     group: "{{ ansible_user }}"
   loop: "{{ janitor_sbuild_chroot_aliases }}"
+  when: "'worker' in janitor_services"
 
-# Both are remade twice a week by janitor-sbuild-chroot.timer.
+# Remade twice a week by janitor-sbuild-chroot.timer.
 - name: Create the systemd user unit directory
   ansible.builtin.file:
     path: "/home/{{ ansible_user }}/.config/systemd/user"
     state: directory
     owner: "{{ ansible_user }}"
     mode: "0755"
+  when: "'worker' in janitor_services"
 
-- name: Deploy the timer that remakes the build images
+- name: Deploy the timer that remakes the sbuild chroot tarball
   ansible.builtin.template:
     src: "{{ item }}.j2"
     dest: "/home/{{ ansible_user }}/.config/systemd/user/{{ item }}"
@@ -172,11 +213,12 @@
     - janitor-sbuild-chroot.service
     - janitor-sbuild-chroot.timer
   notify: Reload user systemd
+  when: "'worker' in janitor_services"
 
 - name: Flush handlers
   ansible.builtin.meta: flush_handlers
 
-- name: Enable the timer that remakes the build images
+- name: Enable the timer that remakes the sbuild chroot tarball
   become: true
   become_user: "{{ ansible_user }}"
   environment:
@@ -186,3 +228,4 @@
     scope: user
     enabled: true
     state: started
+  when: "'worker' in janitor_services"
