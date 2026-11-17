@@ -12,7 +12,6 @@ use dns_lookup::{getaddrinfo, LookupErrorKind};
 
 use janitor::api::worker::{Metadata, TargetDetails, WorkerFailure};
 use janitor::vcs::VcsType;
-use janitor_service::metrics::push_to_gateway;
 use janitor_types::{Campaign, CodebaseName, RunId};
 
 use url::Url;
@@ -890,13 +889,12 @@ pub async fn process_single_item(
     my_url: Option<&Url>,
     node_name: &str,
     jenkins_build_url: Option<&Url>,
-    prometheus: Option<&Url>,
     codebase: Option<&CodebaseName>,
     campaign: Option<&Campaign>,
     tee: bool,
     output_directory_base: Option<&std::path::Path>,
     state: std::sync::Arc<std::sync::RwLock<AppState>>,
-) -> Result<(), SingleItemError> {
+) -> Result<(RunId, Campaign), SingleItemError> {
     let assignment = client
         .get_assignment(my_url, node_name, jenkins_build_url, codebase, campaign)
         .await?;
@@ -1041,20 +1039,7 @@ pub async fn process_single_item(
 
     log::debug!("Result: {:?}", result);
 
-    if let Some(prometheus) = prometheus {
-        push_to_gateway(
-            prometheus,
-            "janitor.worker",
-            maplit::hashmap! {
-                "run_id" => assignment.id.as_str(),
-                "campaign" => assignment.campaign.as_str(),
-            },
-        )
-        .await
-        .unwrap();
-    }
-
-    Ok(())
+    Ok((assignment.id, assignment.campaign))
 }
 
 fn push_error_to_worker_failure(e: BrzError, stage: Vec<String>) -> WorkerFailure {
