@@ -42,7 +42,7 @@ and posts the URL of the merge proposal in it to `--refresh-url`.
 
 ## Custom worker tooling
 
-`janitor-worker` only bundles Debian's `sbuild`/`schroot`/`mmdebstrap`; add anything else your campaigns need by deriving your own image the same way. For example, to add `lintian-brush` for the `lintian-fixes` campaign in `janitor.conf.example`:
+`janitor-worker` only bundles Debian's `sbuild`/`schroot`/`mmdebstrap`/`ognibuild`; add anything else your campaigns need by deriving your own image the same way. For example, to add `lintian-brush` for the `lintian-fixes` campaign in `janitor.conf.example`:
 
 ```dockerfile
 FROM ghcr.io/jelmer/janitor/worker:latest
