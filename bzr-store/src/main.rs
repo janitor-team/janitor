@@ -22,7 +22,7 @@ use tracing_subscriber::{EnvFilter, FmtSubscriber};
 /// directory of per-codebase shared bzr repositories, including the
 /// Bazaar smart protocol for remote client access.
 #[derive(Parser, Debug)]
-#[command(name = "janitor-bzr-store", version, about)]
+#[command(name = "janitor-bzr-store", version, about, args_override_self = true)]
 struct Cli {
     /// Admin listen port.
     #[arg(long, default_value_t = 9929)]

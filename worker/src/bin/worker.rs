@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 
 #[derive(Parser, Debug)]
-#[command(author, version)]
+#[command(author, version, args_override_self = true)]
 struct Args {
     /// Base URL
     #[clap(long, env = "JANITOR_BASE_URL")]

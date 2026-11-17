@@ -5,7 +5,8 @@ use tracing::info;
 #[derive(Debug, Parser)]
 #[command(
     name = "janitor-auto-upload",
-    about = "Automatically upload Debian packages to repositories"
+    about = "Automatically upload Debian packages to repositories",
+    args_override_self = true
 )]
 struct Args {
     /// Port to listen on for HTTP server.

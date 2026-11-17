@@ -17,6 +17,7 @@ enum RateLimiterKind {
 }
 
 #[derive(Parser)]
+#[command(args_override_self = true)]
 struct Args {
     /// Maximum number of open merge proposals per bucket.
     #[clap(long, required_if_eq("rate_limiter", "fixed"))]
@@ -356,6 +357,24 @@ mod tests {
         assert_eq!(
             check(&["--rate-limiter", "none"]),
             Some(ErrorKind::ArgumentConflict)
+        );
+    }
+
+    #[test]
+    fn test_later_value_wins() {
+        let args = Args::try_parse_from([
+            "janitor-publish",
+            "--port=9912",
+            "--listen-address=::",
+            "--listen-address",
+            "127.0.0.1",
+            "--port",
+            "19912",
+        ])
+        .unwrap();
+        assert_eq!(
+            SocketAddr::new(args.listen_address, args.port),
+            "127.0.0.1:19912".parse().unwrap()
         );
     }
 }

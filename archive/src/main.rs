@@ -21,7 +21,7 @@ use janitor_archive::{
 
 /// Janitor Archive Service -- APT repository generation and serving.
 #[derive(Parser, Debug)]
-#[command(name = "janitor-archive", version, about)]
+#[command(name = "janitor-archive", version, about, args_override_self = true)]
 struct Cli {
     /// Listen port.
     #[arg(long, default_value_t = 9914)]

@@ -15,7 +15,7 @@ use tracing::info;
 /// Serve admin and public HTTP interfaces to a directory of
 /// per-codebase bare git repositories.
 #[derive(Parser, Debug)]
-#[command(name = "janitor-git-store", version, about)]
+#[command(name = "janitor-git-store", version, about, args_override_self = true)]
 struct Cli {
     /// Admin listen port.
     #[arg(long, default_value_t = 9923)]

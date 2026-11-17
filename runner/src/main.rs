@@ -3,6 +3,7 @@ use janitor_runner::application::Application;
 use std::path::PathBuf;
 
 #[derive(Parser)]
+#[command(args_override_self = true)]
 struct Args {
     #[clap(long, default_value = "127.0.0.1")]
     listen_address: std::net::IpAddr,
