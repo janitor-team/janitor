@@ -299,6 +299,12 @@ impl crate::Target for DebianTarget {
         output_directory: &std::path::Path,
         config: &crate::BuildConfig,
     ) -> Result<serde_json::Value, WorkerFailure> {
+        // ognibuild takes the maintainer of the build changelog entry from the environment.
+        for name in ["DEBFULLNAME", "DEBEMAIL"] {
+            if let Some(value) = self.env.get(name) {
+                std::env::set_var(name, value);
+            }
+        }
         build_from_config(local_tree, subpath, output_directory, config, &self.env)
     }
 
