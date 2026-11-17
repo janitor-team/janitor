@@ -274,3 +274,60 @@ fn classify_forge_rate_limit_past_deadline_is_expired() {
         ForgeRateLimitDecision::Expired,
     );
 }
+
+/// A request for `run_worker_process`; the test children drop it.
+fn worker_request() -> PublishOneRequest {
+    serde_json::from_value(serde_json::json!({
+        "campaign": "lintian-fixes",
+        "command": "true",
+        "role": "main",
+        "log_id": "run-1",
+        "mode": "propose",
+        "revision_id": "rev",
+        "require-binary-diff": false,
+        "derived_branch_name": "b",
+        "allow_create_proposal": false,
+        "codemod_result": {},
+        "target_branch_url": "https://example.com/target",
+        "source_branch_url": "https://example.com/source",
+        "differ_url": "http://localhost:1/",
+    }))
+    .unwrap()
+}
+
+/// Run `script` with `sh -c` as the publish child after it reads the request; panic after 5 s.
+async fn run_script(script: &str) -> Result<(i32, serde_json::Value), WorkerInvalidResponse> {
+    let script = format!("cat > /dev/null; {}", script);
+    let args = vec!["sh".to_string(), "-c".to_string(), script];
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        run_worker_process(args, worker_request()),
+    )
+    .await
+    .expect("run_worker_process still waits for the child after 5 s")
+}
+
+#[tokio::test]
+async fn run_worker_process_reads_a_large_stderr() {
+    let result =
+        run_script("head -c 131072 /dev/zero | tr '\\0' e >&2; echo >&2; echo '{\"ok\": true}'")
+            .await;
+    assert_eq!(result.unwrap(), (0, serde_json::json!({"ok": true})));
+}
+
+#[tokio::test]
+async fn run_worker_process_reads_a_large_stdout() {
+    let result = run_script("printf '\"'; head -c 131072 /dev/zero | tr '\\0' e; echo '\"'").await;
+    assert_eq!(
+        result.unwrap(),
+        (0, serde_json::json!("e".repeat(128 * 1024)))
+    );
+}
+
+#[tokio::test]
+async fn run_worker_process_failures() {
+    let result = run_script("echo oops >&2; echo '{\"ok\": false}'; exit 1").await;
+    assert_eq!(result.unwrap(), (1, serde_json::json!({"ok": false})));
+    let result = run_script("printf 'one\\ntwo' >&2; exit 2").await;
+    assert_eq!(result.unwrap_err().to_string(), "Worker error: one\ntwo");
+}
