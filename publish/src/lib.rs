@@ -950,7 +950,7 @@ impl PublishWorker {
                     status: janitor::publish::MergeProposalStatus::Open,
                     codebase: codebase.clone(),
                     campaign: campaign.clone(),
-                    target_branch_url: result.target_branch_url.clone(),
+                    target_branch_url: Some(result.target_branch_url.clone()),
                     target_branch_web_url: result.target_branch_web_url.clone(),
                     timestamp: chrono::Utc::now(),
                 };

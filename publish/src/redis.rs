@@ -129,7 +129,7 @@ pub struct MergeProposalEvent {
     /// The campaign this proposal belongs to.
     pub campaign: Campaign,
     /// The target branch URL.
-    pub target_branch_url: url::Url,
+    pub target_branch_url: Option<url::Url>,
     /// Optional target branch web URL.
     pub target_branch_web_url: Option<url::Url>,
     /// Timestamp of the event.
