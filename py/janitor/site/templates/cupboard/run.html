@@ -3,7 +3,7 @@
     {% include "cupboard/sidebar.html" %}
 {% endblock sidebar %}
 {% from "codeblock.html" import include_console_log with context %}
-{% from "run_util.html" import local_command, merge_command, reschedule_button, schedule_control_button, publish_buttons, install_commands, display_result_code, result_code_explanation, display_branch_url, display_upstream_branch_url, display_vcs_diffs, display_publish_result, file_bug_buttons, display_publish_blockers with context %}
+{% from "run_util.html" import local_command, merge_command, reschedule_button, schedule_control_button, install_commands, display_result_code, result_code_explanation, display_branch_url, display_upstream_branch_url, display_vcs_diffs, display_publish_result, file_bug_buttons, display_publish_blockers with context %}
 {% from "cupboard/util.html" import reprocess_logs_button %}
 {% from "lintian_util.html" import display_lintian_result with context %}
 {% from "review_util.html" import display_reviews_table with context %}
@@ -79,7 +79,6 @@
         {% if branch_url or campaign.default_empty %}
             {{ reschedule_button(campaign_name, codebase, "Reschedule") }}
             {{ reschedule_button(campaign_name, codebase, "Reschedule (from scratch)", data={"refresh": "1"}, id="reschedule-refresh") }}
-            {% if run.result_branches %}{{ publish_buttons(campaign_name, run.codebase) }}{% endif %}
         {% endif %}
         {{ reprocess_logs_button(run_id) }}
         {{ file_bug_buttons(config.bugtracker, run_id, result_code, verbatim_id="#log") }}
