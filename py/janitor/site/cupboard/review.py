@@ -11,6 +11,7 @@ from breezy.revision import NULL_REVISION
 from yarl import URL
 
 from janitor import state
+from janitor.vcs import VcsStoreError
 
 from ..common import render_template_for_request
 from . import iter_needs_review
@@ -146,12 +147,11 @@ async def generate_evaluate(
                         revid.encode("utf-8"),
                     )
                 ).decode("utf-8", "replace")
-        except ClientResponseError as e:
-            return f"Unable to retrieve diff; error code {e.status}"
         except NotImplementedError as e:
             return str(e)
-        except ClientConnectorError as e:
-            return f"Unable to retrieve diff; error {e}"
+        except VcsStoreError as e:
+            logging.warning("Unable to retrieve diff: %s", e)
+            return "Unable to retrieve diff"
         except TimeoutError:
             return f"Timeout while retrieving diff; see it at {external_url}"
 

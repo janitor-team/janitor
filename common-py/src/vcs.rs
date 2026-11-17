@@ -4,6 +4,7 @@ use janitor_types::CodebaseName;
 use pyo3::basic::CompareOp;
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::import_exception;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyList};
 use std::collections::HashMap;
@@ -64,7 +65,10 @@ impl VcsManager {
     ) -> PyResult<Bound<'a, PyAny>> {
         let z = self.0.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let diff = z.get_diff(&codebase, &old_revid, &new_revid).await;
+            let diff = z
+                .get_diff(&codebase, &old_revid, &new_revid)
+                .await
+                .map_err(|e| diff_error_to_py(e, &codebase))?;
             Ok(Python::attach(|py| PyBytes::new(py, &diff).unbind()))
         })
     }
@@ -78,7 +82,10 @@ impl VcsManager {
     ) -> PyResult<Bound<'a, PyAny>> {
         let z = self.0.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let infos = z.get_revision_info(&codebase, &old_revid, &new_revid).await;
+            let infos = z
+                .get_revision_info(&codebase, &old_revid, &new_revid)
+                .await
+                .map_err(|e| diff_error_to_py(e, &codebase))?;
             Ok(infos
                 .into_iter()
                 .map(|info| RevisionInfo(info))
@@ -314,6 +321,19 @@ create_exception!(
     pyo3::exceptions::PyException
 );
 create_exception!(janitor.vcs, UnsupportedVcs, pyo3::exceptions::PyException);
+create_exception!(janitor.vcs, VcsStoreError, pyo3::exceptions::PyException);
+import_exception!(breezy.errors, InvalidRevisionId);
+
+fn diff_error_to_py(e: janitor::vcs::DiffError, codebase: &CodebaseName) -> PyErr {
+    match e {
+        janitor::vcs::DiffError::InvalidRevision(revid) => {
+            InvalidRevisionId::new_err((revid, codebase.to_string()))
+        }
+        e @ (janitor::vcs::DiffError::Request(_) | janitor::vcs::DiffError::Status(..)) => {
+            VcsStoreError::new_err(e.to_string())
+        }
+    }
+}
 
 #[pyfunction]
 #[pyo3(signature = (vcs_url, possible_transports=None, probers=None))]
@@ -355,5 +375,6 @@ pub(crate) fn init(py: Python, module: &Bound<PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(open_branch_ext, module)?)?;
     module.add("BranchOpenFailure", py.get_type::<BranchOpenFailure>())?;
     module.add("UnsupportedVcs", py.get_type::<UnsupportedVcs>())?;
+    module.add("VcsStoreError", py.get_type::<VcsStoreError>())?;
     Ok(())
 }
