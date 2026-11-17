@@ -28,7 +28,11 @@ impl MessageHandler {
         let log_id = &message.log_id;
         info!(
             %log_id,
-            target = message.target.name.as_deref().unwrap_or(""),
+            target = message
+                .target
+                .as_ref()
+                .and_then(|t| t.name.as_deref())
+                .unwrap_or(""),
             "received"
         );
 
@@ -55,9 +59,9 @@ impl MessageHandler {
 /// here to avoid downloading twice.
 ///
 /// The `code == "success"` check has to come before touching `target`
-/// because the runner publishes non-success runs with `target: {}`
-/// (matches the Python `is_debian_upload_target` fix in py commit
-/// 38fbc2025).
+/// because the runner publishes non-success runs with a missing/empty
+/// `target` (matches the Python `is_debian_upload_target` fix in py
+/// commit 38fbc2025).
 fn should_process_message(upload_config: &UploadConfig, message: &BuildResultMessage) -> bool {
     if message.code.as_deref() != Some("success") {
         debug!(
@@ -67,15 +71,20 @@ fn should_process_message(upload_config: &UploadConfig, message: &BuildResultMes
         return false;
     }
 
-    if message.target.name.as_deref() != Some("debian") {
+    let Some(target) = message.target.as_ref() else {
+        debug!(log_id = %message.log_id, "Skipping message without target");
+        return false;
+    };
+
+    if target.name.as_deref() != Some("debian") {
         debug!(
-            target = message.target.name.as_deref().unwrap_or("<none>"),
+            target = target.name.as_deref().unwrap_or("<none>"),
             "Skipping non-debian target"
         );
         return false;
     }
 
-    let Some(details) = message.target.details.as_ref() else {
+    let Some(details) = target.details.as_ref() else {
         debug!(log_id = %message.log_id, "Skipping message with missing target details");
         return false;
     };
@@ -109,13 +118,13 @@ mod tests {
         BuildResultMessage {
             log_id: janitor_types::RunId::new("test-123").unwrap(),
             code: code.map(str::to_string),
-            target: BuildTarget {
+            target: Some(BuildTarget {
                 name: target.map(str::to_string),
                 details: distribution.map(|d| BuildTargetDetails {
                     build_distribution: d.to_string(),
                     extra: serde_json::Map::new(),
                 }),
-            },
+            }),
         }
     }
 
@@ -147,6 +156,16 @@ mod tests {
     #[test]
     fn empty_target_is_rejected() {
         assert!(!should_process_message(&cfg(vec![]), &msg(None, None)));
+    }
+
+    #[test]
+    fn absent_target_is_rejected() {
+        let message = BuildResultMessage {
+            log_id: janitor_types::RunId::new("test-123").unwrap(),
+            code: Some("success".to_string()),
+            target: None,
+        };
+        assert!(!should_process_message(&cfg(vec![]), &message));
     }
 
     #[test]
