@@ -8,6 +8,7 @@
 //! "metric not found"; the call-site wiring is a follow-up task.
 
 use ::metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge};
+use janitor_service::metrics::BucketOverrides;
 
 /// Delay between a build finishing and its result being published.
 pub const PUBLISH_LATENCY: &str = "publish_latency";
@@ -65,6 +66,18 @@ pub const FORGE_RATE_LIMITED_COUNT: &str = "forge_rate_limited_count";
 
 /// Unexpected HTTP responses during checks of existing proposals.
 pub const UNEXPECTED_HTTP_RESPONSE_COUNT: &str = "unexpected_http_response_count";
+
+/// Histogram bucket overrides for the publisher.
+pub const BUCKETS: BucketOverrides = &[
+    // Runs are published minutes to weeks after their build finished.
+    (
+        PUBLISH_LATENCY,
+        &[
+            60.0, 300.0, 900.0, 3600.0, 10800.0, 21600.0, 43200.0, 86400.0, 172800.0, 345600.0,
+            604800.0, 1209600.0, 2419200.0,
+        ],
+    ),
+];
 
 fn describe() {
     describe_histogram!(PUBLISH_LATENCY, "Delay between build finish and publish.");
@@ -128,7 +141,7 @@ fn describe() {
 
 /// Install the metrics recorder and register the publisher's metrics.
 pub fn install() {
-    janitor_service::metrics::install(&[]);
+    janitor_service::metrics::install(BUCKETS);
     register();
 }
 
@@ -182,6 +195,37 @@ mod tests {
                 counter("rejected_last_mp"),
                 counter("unexpected_http_response_count"),
             ])
+        );
+    }
+
+    #[test]
+    fn publish_latency_buckets() {
+        let recorder = janitor_service::metrics::builder(BUCKETS).build_recorder();
+        ::metrics::with_local_recorder(&recorder, || {
+            ::metrics::histogram!(PUBLISH_LATENCY).record(30.0);
+            ::metrics::histogram!(PUBLISH_LATENCY).record(2.0 * 86400.0);
+        });
+        assert_eq!(
+            recorder.handle().render(),
+            r#"# TYPE publish_latency histogram
+publish_latency_bucket{le="60"} 1
+publish_latency_bucket{le="300"} 1
+publish_latency_bucket{le="900"} 1
+publish_latency_bucket{le="3600"} 1
+publish_latency_bucket{le="10800"} 1
+publish_latency_bucket{le="21600"} 1
+publish_latency_bucket{le="43200"} 1
+publish_latency_bucket{le="86400"} 1
+publish_latency_bucket{le="172800"} 2
+publish_latency_bucket{le="345600"} 2
+publish_latency_bucket{le="604800"} 2
+publish_latency_bucket{le="1209600"} 2
+publish_latency_bucket{le="2419200"} 2
+publish_latency_bucket{le="+Inf"} 2
+publish_latency_sum 172830
+publish_latency_count 2
+
+"#
         );
     }
 }
