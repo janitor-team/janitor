@@ -1,0 +1,16 @@
+# Managed by Ansible (roles/janitor_quadlet).
+[Unit]
+Description=Janitor site
+After=janitor-runner.service janitor-publish.service janitor-archive.service janitor-differ.service
+
+[Container]
+Image=ghcr.io/jelmer/janitor/site:latest
+ContainerName=janitor-site
+Network=host
+# The whole command line is given here.
+Entrypoint=janitor-site
+Exec=--host {{ janitor_listen_address }} --port 8080 --public-port 8090 --config /mnt/janitor/janitor.conf --archiver-url http://{{ janitor_listen_address }}:9914/ --differ-url http://{{ janitor_listen_address }}:9920/ --publisher-url http://{{ janitor_listen_address }}:9912/ --runner-url http://{{ janitor_listen_address }}:9911/ --external-url {{ janitor_external_url }}
+Volume={{ janitor_home }}/janitor.conf:/mnt/janitor/janitor.conf:ro
+Volume={{ janitor_home }}/data/logs:/mnt/janitor/data/logs:ro
+Volume={{ janitor_home }}/data/artifacts:/mnt/janitor/data/artifacts:ro
+{% include 'common.j2' %}

@@ -1,0 +1,28 @@
+---
+- name: Deploy Janitor on one host
+  hosts: janitor
+  become: true
+  vars:
+    # Every service listens here. Caddy serves them on the public addresses.
+    janitor_listen_address: 127.0.0.1
+  pre_tasks:
+    - name: Check a site login has an OpenID Connect provider
+      ansible.builtin.assert:
+        that:
+          - oauth_base_url | default('') | length > 0
+        fail_msg: >-
+          oauth_client_id needs oauth_base_url, an OpenID Connect provider
+          that serves /.well-known/openid-configuration (GitHub does not).
+        quiet: true
+      when: (oauth_client_id | default('') | string | length) > 0
+
+  roles:
+    - base
+    # Clones the source. roles/postgres loads schema/*.sql from it.
+    - janitor_source
+    - postgres
+    - redis
+    - caddy
+    - archive_signing_key
+    - janitor_config
+    - janitor_quadlet
