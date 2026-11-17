@@ -119,9 +119,9 @@ impl PubSubMessage for PublishEvent {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MergeProposalEvent {
     /// URL of the merge proposal.
-    pub url: String,
+    pub url: url::Url,
     /// Web URL of the merge proposal.
-    pub web_url: Option<String>,
+    pub web_url: Option<url::Url>,
     /// Status of the merge proposal.
     pub status: MergeProposalStatus,
     /// The codebase this proposal belongs to.
@@ -129,9 +129,9 @@ pub struct MergeProposalEvent {
     /// The campaign this proposal belongs to.
     pub campaign: Campaign,
     /// The target branch URL.
-    pub target_branch_url: String,
+    pub target_branch_url: url::Url,
     /// Optional target branch web URL.
-    pub target_branch_web_url: Option<String>,
+    pub target_branch_web_url: Option<url::Url>,
     /// Timestamp of the event.
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }

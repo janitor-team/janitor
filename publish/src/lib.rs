@@ -944,18 +944,14 @@ impl PublishWorker {
                 let event = crate::redis::MergeProposalEvent {
                     url: result
                         .proposal_url
-                        .as_ref()
-                        .expect("proposal_url just checked to be Some")
-                        .to_string(),
-                    web_url: result.proposal_web_url.as_ref().map(|u| u.to_string()),
+                        .clone()
+                        .expect("proposal_url just checked to be Some"),
+                    web_url: result.proposal_web_url.clone(),
                     status: janitor::publish::MergeProposalStatus::Open,
                     codebase: codebase.clone(),
                     campaign: campaign.clone(),
-                    target_branch_url: result.target_branch_url.to_string(),
-                    target_branch_web_url: result
-                        .target_branch_web_url
-                        .as_ref()
-                        .map(|u| u.to_string()),
+                    target_branch_url: result.target_branch_url.clone(),
+                    target_branch_web_url: result.target_branch_web_url.clone(),
                     timestamp: chrono::Utc::now(),
                 };
 
