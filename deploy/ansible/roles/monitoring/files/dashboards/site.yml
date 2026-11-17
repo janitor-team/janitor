@@ -1,0 +1,532 @@
+---
+# Rendered by templates/dashboard.json.j2.
+title: 'Janitor: site'
+uid: janitor-site
+description: The web site and its API.
+tags:
+  - janitor
+  - core
+  - web
+  - control
+  - site
+panels:
+  - title: Health
+    type: row
+  - title: Metrics reachable
+    type: stat
+    targets:
+      - expr: max_over_time(up{job="site"}[2m])
+        legend: metrics
+    defaults:
+      mappings:
+        - type: value
+          options:
+            '0':
+              text: 'no'
+              color: red
+              index: 0
+            '1':
+              text: 'yes'
+              color: green
+              index: 1
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 2
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value
+    width: 8
+  - title: Health check passes
+    type: stat
+    targets:
+      - expr: max_over_time(probe_success{job="health", service="site"}[2m])
+        legend: health check
+    defaults:
+      mappings:
+        - type: value
+          options:
+            '0':
+              text: 'no'
+              color: red
+              index: 0
+            '1':
+              text: 'yes'
+              color: green
+              index: 1
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 2
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value
+    requires:
+      - enable_blackbox_exporter
+    description: 'no: it does not answer 200. no data: the health checker (blackbox exporter) does not answer, or
+      Prometheus does not answer.'
+    width: 8
+  - title: Requests being answered
+    type: stat
+    targets:
+      - expr: sum(last_over_time(requests_in_progress_total{route!~"ws-notifications|metrics|health"}[2m])) or vector(0)
+        ref: A
+        hide: true
+      - expr: max(max_over_time(up{job="site"}[2m])) or vector(0)
+        ref: C
+        hide: true
+      - math: ($C == 0) * 4 + ($C == 1) * ($A > 0)
+        ref: D
+    width: 8
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value
+    defaults:
+      mappings:
+        - type: value
+          options:
+            '0':
+              text: idle
+              color: green
+              index: 0
+            '1':
+              text: busy
+              color: yellow
+              index: 1
+            '4':
+              text: unreachable
+              color: red
+              index: 4
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 99
+    description: 'busy: the site is answering at least one request, not counting open live page connections, the
+      metrics scrape or the health checks. idle: none. unreachable: its metrics do not answer.'
+  - title: Service state
+    type: stat
+    targets:
+      - expr: |-
+          sort_by_label(max by (unit, host) (
+            6 * ((janitor_unit_state{state="failed", unit="janitor-site.service"} or
+          ((last_over_time(janitor_unit_state{state="failed", unit="janitor-site.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state="failed", unit="janitor-site.service"})[2m:10s]) >= on (host)
+          group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1)) == 1)
+            or 5 * ((round(increase(janitor_unit_restarts_total{unit="janitor-site.service"}[15m])) > 2 or
+          round(increase(janitor_unit_restarts_total{unit="janitor-site.service"}[1h])) > 3) > bool 0) and on (host, unit)
+          (janitor_unit_restarts_total{unit="janitor-site.service"} or
+          ((last_over_time(janitor_unit_restarts_total{unit="janitor-site.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_restarts_total{unit="janitor-site.service"})[2m:10s]) >= on (host) group_left max
+          by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1))
+            or 4 * ((janitor_unit_state{state="inactive", unit="janitor-site.service"} or
+          ((last_over_time(janitor_unit_state{state="inactive", unit="janitor-site.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state="inactive", unit="janitor-site.service"})[2m:10s]) >= on (host)
+          group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1)) == 1)
+            or 2 * ((janitor_unit_state{state!~"active|inactive|failed", unit="janitor-site.service"} or
+          ((last_over_time(janitor_unit_state{state!~"active|inactive|failed", unit="janitor-site.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state!~"active|inactive|failed", unit="janitor-site.service"})[2m:10s]) >=
+          on (host) group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1)) == 1)
+            or ((increase(janitor_unit_restarts_total{unit="janitor-site.service"}[1h]) > bool 0) and on (host, unit)
+          (janitor_unit_restarts_total{unit="janitor-site.service"} or
+          ((last_over_time(janitor_unit_restarts_total{unit="janitor-site.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_restarts_total{unit="janitor-site.service"})[2m:10s]) >= on (host) group_left max
+          by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1)))
+            or 0 * ((janitor_unit_state{state="active", unit="janitor-site.service"} or
+          ((last_over_time(janitor_unit_state{state="active", unit="janitor-site.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state="active", unit="janitor-site.service"})[2m:10s]) >= on (host)
+          group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1)) == 1)
+          ), "host", "unit")
+        legend: '{{unit}} on {{host}}'
+    width: 8
+    height: 5
+    newline: true
+    requires:
+      - enable_node_exporter
+    defaults:
+      mappings:
+        - type: value
+          options:
+            '0':
+              text: up
+              color: green
+              index: 0
+            '1':
+              text: restarted
+              color: yellow
+              index: 1
+            '1.5':
+              text: mail held back
+              color: yellow
+              index: 2
+            '2':
+              text: starting, stopping or reloading
+              color: yellow
+              index: 3
+            '3':
+              text: unreachable
+              color: red
+              index: 4
+            '4':
+              text: stopped
+              color: red
+              index: 5
+            '5':
+              text: restarting in a loop
+              color: red
+              index: 6
+            '5.5':
+              text: mail held back for an hour
+              color: red
+              index: 7
+            '6':
+              text: failed
+              color: red
+              index: 8
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 99
+      color:
+        mode: thresholds
+      thresholds:
+        mode: absolute
+        steps:
+          - color: green
+            value: null
+          - color: yellow
+            value: 1
+          - color: red
+            value: 3
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value_and_name
+      justifyMode: center
+    description: 'up: running. restarted: systemd restarted it in the last hour. starting, stopping or reloading:
+      systemd is changing its state, or it is in another short-lived state such as maintenance. stopped: not running.
+      restarting in a loop: more than 2 restarts in 15 minutes or more than 3 in an hour. failed: systemd marked
+      it failed. A unit whose service state is gone leaves the tile: the unit was removed, the node exporter of
+      its host has not answered for 2 minutes ("Host metrics" on Hosts), or the service states file of its host
+      is missing or cannot be read. no data means none of its units has a service state. Its value comes from metrics
+      files the hosts write: an old, missing or unreadable file, or a node exporter that does not answer, makes
+      it wrong or empty ("Service state data age" on Janitor: overview shows the files'' age, "Host metrics" on
+      Hosts a node exporter that does not answer).'
+  - title: Last started and stopped
+    type: table
+    width: 16
+    height: 5
+    requires:
+      - enable_node_exporter
+    targets:
+      - expr: 1000 * last_over_time(janitor_unit_active_since_seconds{unit="janitor-site.service"}[2m])
+        format: table
+        instant: true
+      - expr: 1000 * last_over_time(janitor_unit_inactive_since_seconds{unit="janitor-site.service"}[2m])
+        format: table
+        instant: true
+      - expr: |-
+          round(increase(janitor_unit_restarts_total{unit="janitor-site.service"}[24h])) and on (host, unit)
+          last_over_time(janitor_unit_restarts_total{unit="janitor-site.service"}[2m])
+        format: table
+        instant: true
+      - expr: |-
+          (janitor_unit_result{unit="janitor-site.service"} or
+          ((last_over_time(janitor_unit_result{unit="janitor-site.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_result{unit="janitor-site.service"})[2m:10s]) >= on (host) group_left max by
+          (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1))
+        format: table
+        instant: true
+    transformations:
+      - id: merge
+        options: {}
+      - id: organize
+        options:
+          excludeByName:
+            Time: true
+            job: true
+            instance: true
+            __name__: true
+            'Value #D': true
+          renameByName:
+            'Value #A': last started
+            'Value #B': last stopped
+            'Value #C': restarts by systemd, 24 hours
+            result: last result
+      - id: sortBy
+        options:
+          sort:
+            - field: restarts by systemd, 24 hours
+              desc: true
+    overrides:
+      - matcher:
+          id: byRegexp
+          options: last (started|stopped)
+        properties:
+          - id: unit
+            value: dateTimeFromNow
+      - matcher:
+          id: byRegexp
+          options: restarts by systemd, 24 hours
+        properties:
+          - id: custom.cellOptions
+            value:
+              type: color-background
+          - id: color
+            value:
+              mode: thresholds
+          - id: thresholds
+            value:
+              mode: absolute
+              steps:
+                - color: green
+                  value: null
+                - color: yellow
+                  value: 1
+                - color: red
+                  value: 5
+          - id: custom.wrapHeaderText
+            value: true
+      - matcher:
+          id: byName
+          options: restarts by systemd, 24 hours
+        properties:
+          - id: mappings
+            value:
+              - type: special
+                options:
+                  match: 'null'
+                  result:
+                    text: no data
+                    color: transparent
+                    index: 9
+      - matcher:
+          id: byName
+          options: host
+        properties:
+          - id: custom.width
+            value: 90
+      - matcher:
+          id: byName
+          options: last started
+        properties:
+          - id: custom.width
+            value: 110
+      - matcher:
+          id: byName
+          options: last stopped
+        properties:
+          - id: custom.width
+            value: 110
+      - matcher:
+          id: byName
+          options: restarts by systemd, 24 hours
+        properties:
+          - id: custom.width
+            value: 120
+      - matcher:
+          id: byName
+          options: last result
+        properties:
+          - id: custom.width
+            value: 100
+      - matcher:
+          id: byName
+          options: last result
+        properties:
+          - id: custom.cellOptions
+            value:
+              type: color-text
+          - id: mappings
+            value:
+              - type: value
+                options:
+                  success:
+                    color: text
+                    index: 0
+              - type: regex
+                options:
+                  pattern: .+
+                  result:
+                    color: red
+                    index: 1
+    description: 'last result: systemd sets it back to success when it starts the unit again. A crash that systemd
+      restarted shows in the restart count, and in last stopped until the next manual restart. The cause is in the
+      unit''s journal. no data: the unit appeared less than a minute ago (the count needs two readings). Its value
+      comes from metrics files the hosts write: an old, missing or unreadable file, or a node exporter that does
+      not answer, makes it wrong or empty ("Service state data age" on Janitor: overview shows the files'' age,
+      "Host metrics" on Hosts a node exporter that does not answer). A unit whose service state is gone leaves the
+      table, for the same causes as on "Service state".'
+  - title: Memory
+    type: timeseries
+    unit: bytes
+    requires:
+      - enable_node_exporter
+    description: 'Memory in use, without file cache. Its lines come from metrics files the hosts write: an old,
+      missing or unreadable file, or a node exporter that does not answer, makes them wrong or leaves gaps ("Service
+      state data age" on Janitor: overview shows the files'' age, "Host metrics" on Hosts a node exporter that does
+      not answer).'
+    targets:
+      - expr: janitor_unit_memory_in_use_bytes{unit="janitor-site.service"}
+        legend: '{{unit}} on {{host}}'
+  - title: CPU, in cores
+    type: timeseries
+    unit: short
+    requires:
+      - enable_node_exporter
+    defaults:
+      custom:
+        axisSoftMax: 0.01
+    targets:
+      - expr: rate(janitor_unit_cpu_seconds_total{unit="janitor-site.service"}[5m])
+        legend: '{{unit}} on {{host}}'
+    description: 'Its lines come from metrics files the hosts write: an old, missing or unreadable file, or a node
+      exporter that does not answer, makes them wrong or leaves gaps ("Service state data age" on Janitor: overview
+      shows the files'' age, "Host metrics" on Hosts a node exporter that does not answer).'
+  - title: Requests
+    type: row
+  - title: Requests per second, by HTTP status
+    type: timeseries
+    unit: reqps
+    defaults:
+      noValue: no requests in this time range, or the counts could not be read
+      color:
+        mode: shades
+        fixedColor: blue
+    description: Not counting the metrics scrape, the health checks and the live page connections. The site counts
+      a live page connection only when the page closes, so they are left out. "Live page connections, by topic"
+      shows them. A request that ended in an exception is not here, "Server errors per hour" counts it.
+    targets:
+      - expr: |-
+          sum by (status) ((((requests_total{job="site", route!~"ws-notifications|metrics|health"} unless
+          requests_total{job="site", route!~"ws-notifications|metrics|health"} offset 5m) and on (job, instance) (up offset 5m ==
+          1)) or increase(requests_total{job="site", route!~"ws-notifications|metrics|health"}[5m])) / 300)
+        legend: '{{status}}'
+    overrides:
+      - matcher:
+          id: byRegexp
+          options: (^|.* )5[0-9][0-9]$
+        properties:
+          - id: color
+            value:
+              mode: fixed
+              fixedColor: red
+  - title: Server errors per hour
+    type: timeseries
+    defaults:
+      noValue: the counts could not be read in this time range
+      color:
+        mode: shades
+        fixedColor: red
+    description: The health check answers 200 when it passes and nothing when it fails, so it adds no error here.
+      See "Health check passes".
+    targets:
+      - expr: |-
+          sum((((requests_total{job="site", status=~"5.."} unless requests_total{job="site", status=~"5.."} offset 1h) and on
+          (job, instance) (up offset 1h == 1)) or increase(requests_total{job="site", status=~"5.."}[1h]))) or (0 *
+          (max(max_over_time(up{job="site"}[2m])) == 1))
+        legend: server errors (5xx)
+      - expr: |-
+          sum((((request_exceptions_total{job="site"} unless request_exceptions_total{job="site"} offset 1h) and on (job,
+          instance) (up offset 1h == 1)) or increase(request_exceptions_total{job="site"}[1h]))) or (0 *
+          (max(max_over_time(up{job="site"}[2m])) == 1))
+        legend: exceptions
+      - expr: |-
+          sum((((postgres_insufficient_resources_total unless postgres_insufficient_resources_total offset 1h) and on (job,
+          instance) (up offset 1h == 1)) or increase(postgres_insufficient_resources_total[1h])))
+        legend: PostgreSQL out of resources
+  - title: Request time
+    type: timeseries
+    unit: s
+    defaults:
+      noValue: no requests in this time range, or the counts could not be read
+    description: Not counting the metrics scrape, the health checks and the live page connections. A live page connection
+      stays open for as long as the page is open, "Live page connections, by topic" shows them. The slowest 10%
+      line is estimated from fixed time buckets. When nearly every request is faster than the limit of the first
+      bucket, the line reads just under that limit, and the real time can be lower.
+    targets:
+      - expr: |-
+          sum((((request_latency_seconds_sum{job="site", route!~"ws-notifications|metrics|health"} unless
+          request_latency_seconds_sum{job="site", route!~"ws-notifications|metrics|health"} offset 5m) and on (job, instance) (up
+          offset 5m == 1)) or increase(request_latency_seconds_sum{job="site", route!~"ws-notifications|metrics|health"}[5m])) /
+          300) / (sum((((request_latency_seconds_count{job="site", route!~"ws-notifications|metrics|health"} unless
+          request_latency_seconds_count{job="site", route!~"ws-notifications|metrics|health"} offset 5m) and on (job, instance)
+          (up offset 5m == 1)) or increase(request_latency_seconds_count{job="site",
+          route!~"ws-notifications|metrics|health"}[5m])) / 300) > 0)
+        legend: mean
+      - expr: |-
+          histogram_quantile(0.9, sum by (le) ((((request_latency_seconds_bucket{job="site",
+          route!~"ws-notifications|metrics|health"} unless request_latency_seconds_bucket{job="site",
+          route!~"ws-notifications|metrics|health"} offset 5m) and on (job, instance) (up offset 5m == 1)) or
+          increase(request_latency_seconds_bucket{job="site", route!~"ws-notifications|metrics|health"}[5m])) / 300)) and on ()
+          (sum((((request_latency_seconds_count{job="site", route!~"ws-notifications|metrics|health"} unless
+          request_latency_seconds_count{job="site", route!~"ws-notifications|metrics|health"} offset 5m) and on (job, instance)
+          (up offset 5m == 1)) or increase(request_latency_seconds_count{job="site",
+          route!~"ws-notifications|metrics|health"}[5m])) / 300) > 0)
+        legend: slowest 10% take at least
+  - title: Busiest routes, last hour
+    type: bargauge
+    unit: short
+    defaults:
+      color:
+        mode: fixed
+        fixedColor: blue
+      decimals: 0
+      noValue: no requests in the last hour
+      min: 0
+      displayName: ${__series.name}
+    targets:
+      - expr: |-
+          topk(10, round(sum by (route) ((((last_over_time(requests_total{job="site",
+          route!~"ws-notifications|metrics|health"}[2m]) unless last_over_time(requests_total{job="site",
+          route!~"ws-notifications|metrics|health"}[2m] offset 1h)) and on (job, instance) (last_over_time(up[2m] offset 1h) ==
+          1)) or increase(requests_total{job="site", route!~"ws-notifications|metrics|health"}[1h])))) > 0)
+        legend: '{{route}}'
+    options:
+      orientation: horizontal
+      displayMode: basic
+      showUnfilled: true
+      namePlacement: left
+      text:
+        titleSize: 14
+      reduceOptions:
+        values: true
+        calcs: []
+        fields: ''
+      valueMode: text
+    description: 'Requests in the last hour, by route name. Not counting the metrics scrape, the health checks and
+      the live page connections. A request that ended in an exception is not here, "Server errors per hour" counts
+      it. No bars: no requests in the last hour, or the counts could not be read.'
+    overrides:
+      - matcher:
+          id: byName
+          options: None
+        properties:
+          - id: displayName
+            value: no named route
+  - title: Live page connections, by topic
+    type: timeseries
+    width: 24
+    defaults:
+      noValue: no live page connections in this time range, or the count could not be read
+    targets:
+      - expr: subscriptions
+        legend: '{{topic}}'

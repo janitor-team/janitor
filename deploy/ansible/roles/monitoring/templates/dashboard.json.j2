@@ -1,0 +1,89 @@
+{# Managed by Ansible (roles/monitoring). Renders one dashboard of
+   files/dashboards/<name>.yml: panels whose "requires" variables are
+   all true, laid out left to right in rows of 24 columns. A "row" panel
+   starts a new section, and "newline: true" starts a new line. A row
+   with none of its panels left is dropped. Graphs start their axis at 0. #}
+{%- set d = dashboard_spec -%}
+{%- set ns = namespace(x=0, y=0, row_h=0, id=0, panels=[]) -%}
+{%- set sources = {'prometheus': {'type': 'prometheus', 'uid': 'prometheus'},
+                   'postgres': {'type': 'grafana-postgresql-datasource', 'uid': 'postgres'},
+                   'expr': {'type': '__expr__', 'uid': '__expr__'}} -%}
+{%- for p in d.panels -%}
+{%-   set on = namespace(v=true) -%}
+{%-   for r in p.requires | default([]) -%}
+{%-     if not (lookup('vars', r) | bool) %}{% set on.v = false %}{% endif -%}
+{%-   endfor -%}
+{%-   if on.v and p.type == 'row' -%}
+{%-     set ns.y = ns.y + ns.row_h -%}
+{%-     set ns.id = ns.id + 1 -%}
+{%-     set _ = ns.panels.append({'id': ns.id, 'type': 'row', 'title': p.title, 'collapsed': false, 'panels': [],
+                                  'gridPos': {'x': 0, 'y': ns.y, 'w': 24, 'h': 1}}) -%}
+{%-     set ns.y = ns.y + 1 -%}
+{%-     set ns.x = 0 -%}
+{%-     set ns.row_h = 0 -%}
+{%-   elif on.v -%}
+{%-     set w = p.width | default(6 if p.type == 'stat' else 12) | int -%}
+{%-     set h = p.height | default(4 if p.type == 'stat' else 8) | int -%}
+{%-     if ns.x + w > 24 or (p.newline | default(false) and ns.x > 0) %}{% set ns.y = ns.y + ns.row_h %}{% set ns.x = 0 %}{% set ns.row_h = 0 %}{% endif -%}
+{%-     set ns.id = ns.id + 1 -%}
+{%-     set used = [] -%}
+{%-     set targets = [] -%}
+{%-     for t in p.targets | default([]) -%}
+{%-       set ref = t.ref | default('ABCDEFGHIJKLMNOP'[loop.index0]) -%}
+{%-       if t.math is defined -%}
+{%-         set src = 'expr' -%}
+{%-         set target = {'refId': ref, 'datasource': sources.expr, 'type': 'math', 'expression': t.math} -%}
+{%-       elif t.sql is defined -%}
+{%-         set src = 'postgres' -%}
+{%-         set target = {'refId': ref, 'datasource': sources.postgres, 'rawSql': t.sql, 'rawQuery': true,
+                          'editorMode': 'code', 'format': t.format | default('time_series')} -%}
+{%-       else -%}
+{%-         set src = 'prometheus' -%}
+{%-         set instant = t.instant | default(p.type in ['stat', 'table', 'bargauge', 'gauge']) -%}
+{%-         set target = {'refId': ref, 'datasource': sources.prometheus, 'expr': t.expr,
+                          'legendFormat': t.legend | default('__auto'),
+                          'instant': instant, 'range': not instant,
+                          'format': t.format | default('time_series')} -%}
+{%-       endif -%}
+{%-       if t.hide | default(false) %}{% set _ = target.update({'hide': true}) %}{% endif -%}
+{%-       if src != 'expr' and src not in used %}{% set _ = used.append(src) %}{% endif -%}
+{%-       set _ = targets.append(target) -%}
+{%-     endfor -%}
+{%-     set ds = sources[used[0]] if used | length == 1 else {'type': 'datasource', 'uid': '-- Mixed --'} -%}
+{%-     set panel = {'id': ns.id, 'type': p.type, 'title': p.title, 'datasource': ds, 'targets': targets,
+                     'gridPos': {'x': ns.x, 'y': ns.y, 'w': w, 'h': h},
+                     'fieldConfig': {'defaults': {'unit': p.unit | default('short')}
+                                                 | combine({'color': {'mode': 'fixed', 'fixedColor': 'blue'}}
+                                                           if p.type in ['stat', 'bargauge', 'gauge'] and 'color' not in p.defaults | default({})
+                                                              and 'thresholds' not in p.defaults | default({}) else {})
+                                                 | combine({'noValue': 'none'} if p.type in ['timeseries', 'table', 'bargauge'] and p.targets | default([]) | length > 0
+                                                           and p.targets | selectattr('sql', 'defined') | list | length == p.targets | length else {})
+                                                 | combine({'custom': {'axisSoftMin': 0}} if p.type == 'timeseries' else {})
+                                                 | combine(p.defaults | default({}), recursive=True),
+                                     'overrides': p.overrides | default([])},
+                     'options': p.options | default({})} -%}
+{%-     if p.description is defined %}{% set _ = panel.update({'description': p.description}) %}{% endif -%}
+{%-     if p.links is defined %}{% set _ = panel.update({'links': p.links}) %}{% endif -%}
+{%-     if p.time_from is defined %}{% set _ = panel.update({'timeFrom': p.time_from}) %}{% endif -%}
+{%-     if p.transformations is defined %}{% set _ = panel.update({'transformations': p.transformations}) %}{% endif -%}
+{%-     set _ = ns.panels.append(panel) -%}
+{%-     set ns.x = ns.x + w -%}
+{%-     if h > ns.row_h %}{% set ns.row_h = h %}{% endif -%}
+{%-   endif -%}
+{%- endfor -%}
+{%- set kept = namespace(panels=[]) -%}
+{%- for p in ns.panels -%}
+{%-   set nxt = ns.panels[loop.index] if loop.index < ns.panels | length else none -%}
+{%-   if p.type != 'row' or (nxt is not none and nxt.type != 'row') %}{% set _ = kept.panels.append(p) %}{% endif -%}
+{%- endfor -%}
+{%- set links = [{'title': 'Dashboards', 'type': 'dashboards', 'tags': ['janitor'],
+                  'asDropdown': true, 'keepTime': true, 'includeVars': true}] -%}
+{%- if d.uid != 'janitor-overview' -%}
+{%-   set _ = links.insert(0, {'title': 'Janitor: overview', 'type': 'link', 'url': '/d/janitor-overview',
+                               'keepTime': true, 'includeVars': true, 'icon': 'dashboard'}) -%}
+{%- endif -%}
+{{ {'uid': d.uid, 'title': d.title, 'description': d.description | default(''), 'tags': d.tags,
+    'timezone': 'utc', 'schemaVersion': 39, 'version': 1, 'editable': false, 'links': links,
+    'templating': {'list': d.variables | default([])},
+    'time': {'from': d.time_from | default('now-24h'), 'to': 'now'}, 'refresh': '1m',
+    'panels': kept.panels} | to_nice_json(indent=2) }}

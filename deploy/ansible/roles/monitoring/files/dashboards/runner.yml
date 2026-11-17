@@ -1,0 +1,1159 @@
+---
+# Rendered by templates/dashboard.json.j2.
+title: 'Janitor: runner'
+uid: janitor-runner
+description: Hands out runs to the workers and takes their results.
+tags:
+  - janitor
+  - core
+  - scheduling
+  - control
+  - runner
+variables:
+  - name: campaign
+    label: Campaign
+    type: query
+    datasource:
+      type: grafana-postgresql-datasource
+      uid: postgres
+    query: |-
+      SELECT campaign AS name FROM candidate UNION SELECT campaign FROM queue UNION SELECT campaign FROM change_set UNION SELECT
+      campaign FROM run WHERE start_time > (now() AT TIME ZONE 'UTC') - interval '30 days' UNION SELECT '(no campaign yet)' WHERE
+      NOT EXISTS (SELECT FROM candidate) AND NOT EXISTS (SELECT FROM queue) AND NOT EXISTS (SELECT FROM run) AND NOT EXISTS
+      (SELECT FROM change_set) ORDER BY 1
+    definition: SELECT campaign AS name FROM candidate UNION SELECT campaign FROM queue UNION SELECT campaign FROM change_set
+      UNION SELECT campaign FROM run WHERE start_time > (now() AT TIME ZONE 'UTC') - interval '30 days' UNION SELECT
+      '(no campaign yet)' WHERE NOT EXISTS (SELECT FROM candidate) AND NOT EXISTS (SELECT FROM queue) AND NOT EXISTS
+      (SELECT FROM run) AND NOT EXISTS (SELECT FROM change_set) ORDER BY 1
+    multi: true
+    includeAll: true
+    refresh: 1
+    sort: 1
+    current:
+      selected: true
+      text:
+        - All
+      value:
+        - $__all
+panels:
+  - title: Health
+    type: row
+  - title: Metrics reachable
+    type: stat
+    targets:
+      - expr: max_over_time(up{job="runner"}[2m])
+        legend: metrics
+    defaults:
+      mappings:
+        - type: value
+          options:
+            '0':
+              text: 'no'
+              color: red
+              index: 0
+            '1':
+              text: 'yes'
+              color: green
+              index: 1
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 2
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value
+    width: 6
+  - title: Health check passes
+    type: stat
+    targets:
+      - expr: max_over_time(probe_success{job="health", service="runner"}[2m])
+        legend: health check
+    defaults:
+      mappings:
+        - type: value
+          options:
+            '0':
+              text: 'no'
+              color: red
+              index: 0
+            '1':
+              text: 'yes'
+              color: green
+              index: 1
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 2
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value
+    requires:
+      - enable_blackbox_exporter
+    description: 'no: it does not answer 200. It answers 503 when it cannot reach PostgreSQL or its log store. no
+      data: the health checker (blackbox exporter) does not answer, or Prometheus does not answer.'
+    width: 6
+  - title: Busy, idle or waiting
+    type: stat
+    targets:
+      - expr: |-
+          (sum(max by (worker) (last_over_time(active_runs[2m])) or max by (worker) ((janitor_runs_in_progress or
+          ((last_over_time(janitor_runs_in_progress[2m]) and (max_over_time(timestamp(janitor_runs_in_progress)[2m:10s]) >= on
+          (host) group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1)))) or vector(0))
+        ref: A
+        hide: true
+      - sql: SELECT count(*) AS items FROM queue
+        format: table
+        ref: B
+        hide: true
+      - expr: max(max_over_time(up{job="runner"}[2m])) or vector(0)
+        ref: C
+        hide: true
+      - expr: |-
+          (time() - max(max_over_time(job_last_success_unixtime[2m]) > 0 or
+          max_over_time(janitor_unit_active_since_seconds{unit="janitor-runner.service"}[2m]))) or (vector(7200) and on ()
+          count_over_time((max_over_time(job_last_success_unixtime[2m]) == 0)[2h:1m]) >= 120) or vector(0)
+        ref: E
+        hide: true
+      - expr: sum(increase(queue_empty_total[15m])) or vector(0)
+        ref: F
+        hide: true
+      - expr: sum(last_over_time(janitor_lost_queue_claims[2m])) or (vector(-1) and on () count(up{job="node"})
+          > 0) or vector(0)
+        ref: G
+        hide: true
+      - expr: |-
+          sum(increase(assignments_total[10m])) or (vector(1) and on () (time() -
+          max(max_over_time(janitor_unit_active_since_seconds{unit="janitor-runner.service"}[2m])) <= 600)) or vector(0)
+        ref: H
+        hide: true
+      - expr: |-
+          min_over_time((sum(max by (worker) (max_over_time(active_runs[2m])) or max by (worker)
+          (max_over_time(janitor_runs_in_progress[2m]))) or vector(0))[2h:1m])
+        ref: I
+        hide: true
+      - math: ($C == 0) * 4 + ($C == 1) * (($A > 0) * (($E < 7200) || ($F > 0) || ($I == 0)) * 1 + ($A > 0) * ($E
+          >= 7200) * ($F == 0) * ($I > 0) * 3 + ($A == 0) * ($G >= 0) * (($B - $G) > 0) * (2 + 5 * ($H == 0)) +
+          ($A == 0) * ($G < 0) * 5 + ($A == 0) * ($G > 0) * (($B - $G) <= 0) * 6)
+        ref: D
+    width: 6
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value
+    defaults:
+      mappings:
+        - type: value
+          options:
+            '0':
+              text: idle
+              color: green
+              index: 0
+            '1':
+              text: busy
+              color: yellow
+              index: 1
+            '2':
+              text: waiting
+              color: yellow
+              index: 2
+            '3':
+              text: stuck
+              color: red
+              index: 3
+            '4':
+              text: unreachable
+              color: red
+              index: 4
+            '5':
+              text: unknown
+              color: red
+              index: 5
+            '6':
+              text: only held items
+              color: red
+              index: 6
+            '7':
+              text: no worker asks for work
+              color: red
+              index: 7
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 99
+    description: 'busy: runs in progress. waiting: items in the queue but no run in progress (items held by ended
+      runs left out). no worker asks for work: waiting, and no worker asked for work in 10 minutes. stuck: runs
+      in progress for the last 2 hours, no result from a worker in the last 2 hours (after a runner start, the 2
+      hours count from the start), and no worker found the queue empty in the last 15 minutes. idle: nothing to
+      hand out. only held items: every queue item is held by an ended run, so no worker gets work, and QueueAllHeld
+      fires after 30 minutes. unreachable: its metrics do not answer. unknown: the held items could not be read,
+      because Redis or the node exporter on the control host does not answer, or the run counts file is missing
+      or cannot be read ("Service state data age" on Janitor: overview shows that). no data: the queue could not
+      be read from PostgreSQL, or Prometheus does not answer. Without the node exporter the held items cannot be
+      counted, so they count as waiting, and "only held items" does not show. It counts all campaigns. With the
+      node exporter, its value comes from metrics files the hosts write: an old, missing or unreadable file, or
+      a node exporter that does not answer, makes it wrong or empty ("Service state data age" on Janitor: overview
+      shows the files'' age, "Host metrics" on Hosts a node exporter that does not answer).'
+  - title: Time since a worker last sent a result
+    type: stat
+    targets:
+      - expr: |-
+          (time() - max(max_over_time(job_last_success_unixtime[2m]) > 0 or
+          max_over_time(janitor_unit_active_since_seconds{unit="janitor-runner.service"}[2m]))) and on ()
+          max(max_over_time(up{job="runner"}[2m])) == 1
+        legend: runner
+      - expr: (max(max_over_time(up{job="runner"}[2m])) == 0) * 0 - 1
+        legend: unreachable
+    unit: s
+    options:
+      colorMode: value
+      graphMode: none
+      textMode: value
+    defaults:
+      color:
+        mode: fixed
+        fixedColor: blue
+      noValue: none yet
+      mappings:
+        - type: value
+          options:
+            '-1':
+              text: unreachable
+              color: red
+              index: 0
+    description: 'Any result a worker sends counts. Runs the runner ends itself do not. After a runner start, it
+      counts from that start until the first result comes in. Without the node exporter that start is not known,
+      so it shows "none yet" until then. It counts all campaigns. The "Runner" tile on Janitor: overview turns red,
+      and RunnerStuck fires, when runs have been in progress for 2 hours, no result from a worker came in for 2
+      hours (after a runner start, counted from the start), and no worker found the queue empty in the last 15 minutes.
+      unreachable: its metrics do not answer. With the node exporter, its value comes from metrics files the hosts
+      write: an old, missing or unreadable file, or a node exporter that does not answer, makes it wrong or empty
+      ("Service state data age" on Janitor: overview shows the files'' age, "Host metrics" on Hosts a node exporter
+      that does not answer).'
+    width: 6
+  - title: Service state
+    type: stat
+    targets:
+      - expr: |-
+          sort_by_label(max by (unit, host) (
+            6 * ((janitor_unit_state{state="failed", unit="janitor-runner.service"} or
+          ((last_over_time(janitor_unit_state{state="failed", unit="janitor-runner.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state="failed", unit="janitor-runner.service"})[2m:10s]) >= on (host)
+          group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1)) == 1)
+            or 5 * ((round(increase(janitor_unit_restarts_total{unit="janitor-runner.service"}[15m])) > 2 or
+          round(increase(janitor_unit_restarts_total{unit="janitor-runner.service"}[1h])) > 3) > bool 0) and on (host, unit)
+          (janitor_unit_restarts_total{unit="janitor-runner.service"} or
+          ((last_over_time(janitor_unit_restarts_total{unit="janitor-runner.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_restarts_total{unit="janitor-runner.service"})[2m:10s]) >= on (host) group_left
+          max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1))
+            or 4 * ((janitor_unit_state{state="inactive", unit="janitor-runner.service"} or
+          ((last_over_time(janitor_unit_state{state="inactive", unit="janitor-runner.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state="inactive", unit="janitor-runner.service"})[2m:10s]) >= on (host)
+          group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1)) == 1)
+            or 2 * ((janitor_unit_state{state!~"active|inactive|failed", unit="janitor-runner.service"} or
+          ((last_over_time(janitor_unit_state{state!~"active|inactive|failed", unit="janitor-runner.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state!~"active|inactive|failed", unit="janitor-runner.service"})[2m:10s]) >=
+          on (host) group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1)) == 1)
+            or ((increase(janitor_unit_restarts_total{unit="janitor-runner.service"}[1h]) > bool 0) and on (host, unit)
+          (janitor_unit_restarts_total{unit="janitor-runner.service"} or
+          ((last_over_time(janitor_unit_restarts_total{unit="janitor-runner.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_restarts_total{unit="janitor-runner.service"})[2m:10s]) >= on (host) group_left
+          max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} ==
+          1)))
+            or 0 * ((janitor_unit_state{state="active", unit="janitor-runner.service"} or
+          ((last_over_time(janitor_unit_state{state="active", unit="janitor-runner.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state="active", unit="janitor-runner.service"})[2m:10s]) >= on (host)
+          group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1)) == 1)
+          ), "host", "unit")
+        legend: '{{unit}} on {{host}}'
+    width: 8
+    height: 5
+    newline: true
+    requires:
+      - enable_node_exporter
+    defaults:
+      mappings:
+        - type: value
+          options:
+            '0':
+              text: up
+              color: green
+              index: 0
+            '1':
+              text: restarted
+              color: yellow
+              index: 1
+            '1.5':
+              text: mail held back
+              color: yellow
+              index: 2
+            '2':
+              text: starting, stopping or reloading
+              color: yellow
+              index: 3
+            '3':
+              text: unreachable
+              color: red
+              index: 4
+            '4':
+              text: stopped
+              color: red
+              index: 5
+            '5':
+              text: restarting in a loop
+              color: red
+              index: 6
+            '5.5':
+              text: mail held back for an hour
+              color: red
+              index: 7
+            '6':
+              text: failed
+              color: red
+              index: 8
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 99
+      color:
+        mode: thresholds
+      thresholds:
+        mode: absolute
+        steps:
+          - color: green
+            value: null
+          - color: yellow
+            value: 1
+          - color: red
+            value: 3
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value_and_name
+      justifyMode: center
+    description: 'up: running. restarted: systemd restarted it in the last hour. starting, stopping or reloading:
+      systemd is changing its state, or it is in another short-lived state such as maintenance. stopped: not running.
+      restarting in a loop: more than 2 restarts in 15 minutes or more than 3 in an hour. failed: systemd marked
+      it failed. A unit whose service state is gone leaves the tile: the unit was removed, the node exporter of
+      its host has not answered for 2 minutes ("Host metrics" on Hosts), or the service states file of its host
+      is missing or cannot be read. no data means none of its units has a service state. Its value comes from metrics
+      files the hosts write: an old, missing or unreadable file, or a node exporter that does not answer, makes
+      it wrong or empty ("Service state data age" on Janitor: overview shows the files'' age, "Host metrics" on
+      Hosts a node exporter that does not answer).'
+  - title: Last started and stopped
+    type: table
+    width: 16
+    height: 5
+    requires:
+      - enable_node_exporter
+    targets:
+      - expr: 1000 * last_over_time(janitor_unit_active_since_seconds{unit="janitor-runner.service"}[2m])
+        format: table
+        instant: true
+      - expr: 1000 * last_over_time(janitor_unit_inactive_since_seconds{unit="janitor-runner.service"}[2m])
+        format: table
+        instant: true
+      - expr: |-
+          round(increase(janitor_unit_restarts_total{unit="janitor-runner.service"}[24h])) and on (host, unit)
+          last_over_time(janitor_unit_restarts_total{unit="janitor-runner.service"}[2m])
+        format: table
+        instant: true
+      - expr: |-
+          (janitor_unit_result{unit="janitor-runner.service"} or
+          ((last_over_time(janitor_unit_result{unit="janitor-runner.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_result{unit="janitor-runner.service"})[2m:10s]) >= on (host) group_left max by
+          (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1))
+        format: table
+        instant: true
+    transformations:
+      - id: merge
+        options: {}
+      - id: organize
+        options:
+          excludeByName:
+            Time: true
+            job: true
+            instance: true
+            __name__: true
+            'Value #D': true
+          renameByName:
+            'Value #A': last started
+            'Value #B': last stopped
+            'Value #C': restarts by systemd, 24 hours
+            result: last result
+      - id: sortBy
+        options:
+          sort:
+            - field: restarts by systemd, 24 hours
+              desc: true
+    overrides:
+      - matcher:
+          id: byRegexp
+          options: last (started|stopped)
+        properties:
+          - id: unit
+            value: dateTimeFromNow
+      - matcher:
+          id: byRegexp
+          options: restarts by systemd, 24 hours
+        properties:
+          - id: custom.cellOptions
+            value:
+              type: color-background
+          - id: color
+            value:
+              mode: thresholds
+          - id: thresholds
+            value:
+              mode: absolute
+              steps:
+                - color: green
+                  value: null
+                - color: yellow
+                  value: 1
+                - color: red
+                  value: 5
+          - id: custom.wrapHeaderText
+            value: true
+      - matcher:
+          id: byName
+          options: restarts by systemd, 24 hours
+        properties:
+          - id: mappings
+            value:
+              - type: special
+                options:
+                  match: 'null'
+                  result:
+                    text: no data
+                    color: transparent
+                    index: 9
+      - matcher:
+          id: byName
+          options: host
+        properties:
+          - id: custom.width
+            value: 90
+      - matcher:
+          id: byName
+          options: last started
+        properties:
+          - id: custom.width
+            value: 110
+      - matcher:
+          id: byName
+          options: last stopped
+        properties:
+          - id: custom.width
+            value: 110
+      - matcher:
+          id: byName
+          options: restarts by systemd, 24 hours
+        properties:
+          - id: custom.width
+            value: 120
+      - matcher:
+          id: byName
+          options: last result
+        properties:
+          - id: custom.width
+            value: 100
+      - matcher:
+          id: byName
+          options: last result
+        properties:
+          - id: custom.cellOptions
+            value:
+              type: color-text
+          - id: mappings
+            value:
+              - type: value
+                options:
+                  success:
+                    color: text
+                    index: 0
+              - type: regex
+                options:
+                  pattern: .+
+                  result:
+                    color: red
+                    index: 1
+    description: 'last result: systemd sets it back to success when it starts the unit again. A crash that systemd
+      restarted shows in the restart count, and in last stopped until the next manual restart. The cause is in the
+      unit''s journal. no data: the unit appeared less than a minute ago (the count needs two readings). Its value
+      comes from metrics files the hosts write: an old, missing or unreadable file, or a node exporter that does
+      not answer, makes it wrong or empty ("Service state data age" on Janitor: overview shows the files'' age,
+      "Host metrics" on Hosts a node exporter that does not answer). A unit whose service state is gone leaves the
+      table, for the same causes as on "Service state".'
+  - title: Memory
+    type: timeseries
+    unit: bytes
+    requires:
+      - enable_node_exporter
+    description: 'Memory in use, without file cache. Its lines come from metrics files the hosts write: an old,
+      missing or unreadable file, or a node exporter that does not answer, makes them wrong or leaves gaps ("Service
+      state data age" on Janitor: overview shows the files'' age, "Host metrics" on Hosts a node exporter that does
+      not answer).'
+    targets:
+      - expr: janitor_unit_memory_in_use_bytes{unit="janitor-runner.service"}
+        legend: '{{unit}} on {{host}}'
+  - title: CPU, in cores
+    type: timeseries
+    unit: short
+    requires:
+      - enable_node_exporter
+    defaults:
+      custom:
+        axisSoftMax: 0.01
+    targets:
+      - expr: rate(janitor_unit_cpu_seconds_total{unit="janitor-runner.service"}[5m])
+        legend: '{{unit}} on {{host}}'
+    description: 'Its lines come from metrics files the hosts write: an old, missing or unreadable file, or a node
+      exporter that does not answer, makes them wrong or leaves gaps ("Service state data age" on Janitor: overview
+      shows the files'' age, "Host metrics" on Hosts a node exporter that does not answer).'
+  - title: Queue
+    type: row
+  - title: 'Queue: waiting (all campaigns)'
+    type: stat
+    targets:
+      - sql: SELECT count(*) AS items FROM queue
+        format: table
+        ref: A
+        hide: true
+      - expr: |-
+          (sum(max by (worker) (last_over_time(active_runs[2m])) or max by (worker) ((janitor_runs_in_progress or
+          ((last_over_time(janitor_runs_in_progress[2m]) and (max_over_time(timestamp(janitor_runs_in_progress)[2m:10s]) >= on
+          (host) group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1)))) or vector(0))
+        ref: B
+        hide: true
+      - expr: sum(last_over_time(janitor_lost_queue_claims[2m])) or (vector(0) unless on () count(up{job="node"})
+          > 0)
+        ref: E
+        hide: true
+      - expr: sum(last_over_time(janitor_lost_queue_claims[2m]))
+        ref: H
+      - math: ($A - $B - $E) * (($A - $B - $E) > 0)
+        ref: C
+      - expr: |-
+          (sum(last_over_time(janitor_pipeline_items{stage="in the queue (waiting or running)"}[2m])) -
+          sum(last_over_time(janitor_pipeline_items{stage="in the queue (waiting or running)"}[2m] offset 1h))) and on ()
+          sum(last_over_time(janitor_lost_queue_claims[2m]))
+        legend: change, 1 hour
+        ref: D
+    width: 6
+    options:
+      colorMode: value
+      graphMode: none
+      textMode: value_and_name
+      text:
+        titleSize: 12
+        valueSize: 32
+    defaults:
+      color:
+        mode: fixed
+        fixedColor: blue
+      min: 0
+      noValue: unknown
+      mappings:
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: unknown
+              color: red
+              index: 0
+    overrides:
+      - matcher:
+          id: byFrameRefID
+          options: C
+        properties:
+          - id: displayName
+            value: waiting
+      - matcher:
+          id: byFrameRefID
+          options: H
+        properties:
+          - id: displayName
+            value: held by ended runs
+          - id: color
+            value:
+              mode: thresholds
+          - id: thresholds
+            value:
+              mode: absolute
+              steps:
+                - color: green
+                  value: null
+                - color: red
+                  value: 1
+      - matcher:
+          id: byName
+          options: change, 1 hour
+        properties:
+          - id: color
+            value:
+              mode: thresholds
+          - id: thresholds
+            value:
+              mode: absolute
+              steps:
+                - color: green
+                  value: null
+                - color: yellow
+                  value: 1
+    description: 'waiting: queue items no worker has yet, that is queue rows minus runs in progress and minus items
+      held by ended runs. change, 1 hour: how many more queue items are waiting or running than an hour ago. It
+      is left out until there is a reading from an hour ago. held by ended runs: queue items still claimed by runs
+      that ended without a result, for all campaigns. Without the node exporter they cannot be counted, so they
+      count as waiting and the held line is left out. unknown: the held items could not be read, because Redis,
+      the node exporter on the control host or Prometheus does not answer, or the run counts file is missing or
+      cannot be read ("Service state data age" on Janitor: overview shows that), or, without the node exporter,
+      the queue could not be read from PostgreSQL. With the node exporter, a queue that could not be read shows
+      as a missing waiting line. The queue has no time an item was added, so how long items waited is not known.
+      With the node exporter, its value comes from metrics files the hosts write: an old, missing or unreadable
+      file, or a node exporter that does not answer, makes it wrong or empty ("Service state data age" on Janitor:
+      overview shows the files'' age, "Host metrics" on Hosts a node exporter that does not answer).'
+    height: 8
+  - title: 'Queue: estimated time to clear'
+    type: stat
+    targets:
+      - sql: |-
+          SELECT extract(epoch FROM coalesce(sum(estimated_duration), interval '0')) AS seconds FROM queue WHERE campaign IN
+          (${campaign:singlequote})
+        format: table
+        ref: A
+        hide: true
+      - expr: count(last_over_time(probe_success{job="worker"}[2m]))
+        ref: B
+        hide: true
+      - expr: |-
+          sum(last_over_time(janitor_lost_queue_claims_estimated_seconds{campaign=~"$campaign"}[2m])) or (vector(0) unless on ()
+          count(up{job="node"}) > 0)
+        ref: H
+        hide: true
+      - math: ($A - $H) * (($A - $H) > 0) / $B
+        ref: C
+    width: 6
+    height: 8
+    unit: s
+    options:
+      colorMode: none
+      graphMode: none
+      textMode: value
+    defaults:
+      color:
+        mode: fixed
+        fixedColor: blue
+      noValue: unknown
+    requires:
+      - enable_blackbox_exporter
+    description: 'The queue''s estimated run times added up (running items too, items held by ended runs left out,
+      but without the node exporter they cannot be counted and are in the sum), divided by the worker slots. It
+      follows the Campaign selector. The worker slots are those of all workers. unknown: the queue could not be
+      read from PostgreSQL, no worker slot is known (the slots are counted from the worker health checks, so this
+      needs the health checker: "Health checker" in "Software Janitor runs on, and its monitoring" on Janitor: overview
+      shows when it does not answer), or the held items could not be read, because Redis, the node exporter on the
+      control host or Prometheus does not answer, or the run counts file is missing or cannot be read ("Service
+      state data age" on Janitor: overview shows that). With the node exporter, its value comes from metrics files
+      the hosts write: an old, missing or unreadable file, or a node exporter that does not answer, makes it wrong
+      or empty ("Service state data age" on Janitor: overview shows the files'' age, "Host metrics" on Hosts a node
+      exporter that does not answer).'
+  - title: Queue items, by why they were queued
+    type: bargauge
+    defaults:
+      color:
+        mode: fixed
+        fixedColor: blue
+      displayName: ${__data.fields["why queued"]}
+      min: 0
+    description: 'Why each item was queued (waiting, running or held by ended runs): default, manual, control, hook,
+      reschedule, update-new-mp, update-existing-mp or missing-deps (mp: merge proposal, deps: dependencies).'
+    targets:
+      - sql: |-
+          SELECT bucket::text AS "why queued", count(*) AS items FROM queue WHERE campaign IN (${campaign:singlequote}) GROUP BY 1
+          ORDER BY 2 DESC
+        format: table
+    options:
+      orientation: horizontal
+      displayMode: basic
+      showUnfilled: true
+      namePlacement: left
+      text:
+        titleSize: 14
+      reduceOptions:
+        values: true
+        calcs: []
+        fields: ''
+      valueMode: text
+    width: 12
+  - title: Queue items, by campaign
+    type: bargauge
+    width: 24
+    height: 9
+    requires:
+      - enable_node_exporter
+    description: 'Waiting or running, and held by ended runs (red from 1), counted every minute. unknown: the counts
+      could not be read, because Redis, the node exporter on the control host or Prometheus does not answer, or
+      the run counts file is missing or cannot be read ("Service state data age" on Janitor: overview shows that).
+      Its value comes from metrics files the hosts write: an old, missing or unreadable file, or a node exporter
+      that does not answer, makes it wrong or empty ("Service state data age" on Janitor: overview shows the files''
+      age, "Host metrics" on Hosts a node exporter that does not answer).'
+    defaults:
+      color:
+        mode: fixed
+        fixedColor: blue
+      decimals: 0
+      mappings:
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: unknown
+              color: red
+              index: 0
+      min: 0
+      displayName: ${__series.name}
+      noValue: unknown
+    targets:
+      - expr: |-
+          sum by (campaign) (last_over_time(janitor_pipeline_items{stage="in the queue (waiting or running)",
+          campaign=~"$campaign"}[2m]))
+        legend: '{{campaign}}: waiting or running'
+      - expr: sum by (campaign) (last_over_time(janitor_lost_queue_claims{campaign=~"$campaign"}[2m]))
+        legend: '{{campaign}}: held by ended runs'
+    overrides:
+      - matcher:
+          id: byRegexp
+          options: .*held by ended runs
+        properties:
+          - id: color
+            value:
+              mode: thresholds
+          - id: thresholds
+            value:
+              mode: absolute
+              steps:
+                - color: blue
+                  value: null
+                - color: red
+                  value: 1
+    options:
+      orientation: horizontal
+      displayMode: basic
+      showUnfilled: true
+      namePlacement: top
+      text:
+        titleSize: 14
+      reduceOptions:
+        values: true
+        calcs: []
+        fields: ''
+  - title: Runs
+    type: row
+  - title: Runs in progress per worker login (all campaigns)
+    type: timeseries
+    targets:
+      - expr: |-
+          (max by (worker) (active_runs) or max by (worker) (janitor_runs_in_progress)) or 0 * max by (worker)
+          (probe_success{job="worker"}) or 0 * max by (worker) (assignments_total) unless on () count(probe_success{job="worker"})
+          > 0
+        legend: '{{worker}}'
+    description: 'A worker login is shared by all worker instances on one host. With the node exporter, its lines
+      come from metrics files the hosts write: an old, missing or unreadable file, or a node exporter that does
+      not answer, makes them wrong or leaves gaps ("Service state data age" on Janitor: overview shows the files''
+      age, "Host metrics" on Hosts a node exporter that does not answer). A worker login with no run in progress
+      is drawn at 0 from the worker health checks (the health checker), or, while the health checker gives none,
+      from the logins that have asked the runner for work since it last started.'
+    defaults:
+      color:
+        mode: shades
+        fixedColor: blue
+  - title: Requests for work per hour, per worker login (all campaigns)
+    type: timeseries
+    description: Every request a worker made for a run, even when the queue was empty. A check for work that finds
+      the queue empty counts only in the empty-queue line. A check that finds work is not counted.
+    targets:
+      - expr: |-
+          sum by (worker) ((((assignments_total unless assignments_total offset 1h) and on (job, instance) (up offset 1h == 1)) or
+          increase(assignments_total[1h])))
+        legend: '{{worker}}'
+      - expr: |-
+          sum((((run_count_total unless run_count_total offset 1h) and on (job, instance) (up offset 1h == 1)) or
+          increase(run_count_total[1h])))
+        legend: got work (total)
+      - expr: |-
+          sum((((queue_empty_total unless queue_empty_total offset 1h) and on (job, instance) (up offset 1h == 1)) or
+          increase(queue_empty_total[1h])))
+        legend: queue was empty (total)
+    defaults:
+      noValue: nothing counted in this time range, or the counts could not be read
+      color:
+        mode: shades
+        fixedColor: blue
+  - title: Results the runner stored per hour, by campaign and result
+    type: timeseries
+    description: 'Every result the runner stores: those a worker sends, runs it ended itself, and runs it could
+      not hand out. A result a worker sends twice counts twice. These counts have no failure stage, so a run that
+      could not push its result branch is red only as push-failed. "Runs finished per hour, by campaign and result"
+      on Janitor: overview marks the others with "(result push)".'
+    targets:
+      - expr: |-
+          sum by (campaign, result_code) (((result_total{campaign=~"$campaign"} unless result_total{campaign=~"$campaign"} offset
+          1h) and on (job, instance) (up offset 1h == 1)) or increase(result_total{campaign=~"$campaign"}[1h]))
+        legend: '{{campaign}}: {{result_code}}'
+    defaults:
+      noValue: nothing counted in this time range, or the counts could not be read
+      color:
+        mode: shades
+        fixedColor: blue
+      custom:
+        stacking:
+          mode: normal
+          group: A
+        fillOpacity: 40
+    overrides:
+      - matcher:
+          id: byRegexp
+          options: '.*: (worker-failure|worker-timeout|worker-disappeared|system-failure|push-failed|publish-error|.+
+            [(]result push[)])$'
+        properties:
+          - id: color
+            value:
+              mode: fixed
+              fixedColor: red
+      - matcher:
+          id: byRegexp
+          options: '.*: success$'
+        properties:
+          - id: color
+            value:
+              mode: fixed
+              fixedColor: green
+  - title: Mean run time, by campaign, over the last hour
+    type: timeseries
+    unit: s
+    defaults:
+      noValue: no runs finished in this time range, or the times could not be read
+    description: Also counts runs the runner ended itself or could not hand out.
+    targets:
+      - expr: |-
+          sum by (campaign) ((((build_duration_sum{campaign=~"$campaign"} unless build_duration_sum{campaign=~"$campaign"} offset
+          1h) and on (job, instance) (up offset 1h == 1)) or increase(build_duration_sum{campaign=~"$campaign"}[1h]))) / (sum by
+          (campaign) ((((build_duration_count{campaign=~"$campaign"} unless build_duration_count{campaign=~"$campaign"} offset 1h)
+          and on (job, instance) (up offset 1h == 1)) or increase(build_duration_count{campaign=~"$campaign"}[1h]))) > 0)
+        legend: '{{campaign}}'
+  - title: Runs ended early, per hour
+    type: timeseries
+    description: 'From the run table: runs the runner ended because they took too long or their worker failed or
+      went away. Runs someone killed are left out. Runs that crashed in the worker leave no run row and do not show
+      here. With the node exporter, "Runs crashed, 1 hour" on Janitor: worker counts those of the last hour, of
+      all campaigns, and "Runs that crashed in the worker, per host, over time (all campaigns)" on Janitor: worker
+      shows them over time. Each hour is drawn at its start, so the hour in progress shows at once.'
+    targets:
+      - sql: |-
+          SELECT $__timeGroupAlias(finish_time, '1h', 0), result_code AS metric, count(*) AS value FROM run WHERE
+          $__timeFilter(finish_time) AND start_time > $__timeFrom()::timestamp - interval '1 day' AND result_code IN
+          ('worker-timeout', 'worker-failure', 'worker-disappeared', 'system-failure') AND failure_details ->>
+          'termination_reason' = result_code AND campaign IN (${campaign:singlequote}) GROUP BY 1, 2 ORDER BY 1
+    defaults:
+      noValue: none
+      color:
+        mode: shades
+        fixedColor: red
+  - title: Median run time per hour, by campaign
+    type: timeseries
+    unit: s
+    targets:
+      - sql: |-
+          SELECT $__timeGroupAlias(finish_time, '1h', NULL), campaign AS metric, percentile_cont(0.5) WITHIN GROUP (ORDER BY
+          extract(epoch FROM duration)) AS value FROM run WHERE $__timeFilter(finish_time) AND start_time >
+          $__timeFrom()::timestamp - interval '1 day' AND campaign IN (${campaign:singlequote}) GROUP BY 1, 2 ORDER BY 1
+    defaults:
+      noValue: none
+    description: Each hour is drawn at its start, so the hour in progress shows at once. "Mean run time, by campaign,
+      over the last hour" shows at each moment the hour before it, so there the same run is drawn up to an hour
+      further to the right.
+  - title: Log files uploaded per hour
+    type: timeseries
+    description: It counts all campaigns.
+    targets:
+      - expr: |-
+          sum((((logfile_uploads unless logfile_uploads offset 1h) and on (job, instance) (up offset 1h == 1)) or
+          increase(logfile_uploads[1h])))
+        legend: log files
+    defaults:
+      noValue: nothing counted in this time range, or the counts could not be read
+  - title: Mean time to open the earlier branch to build on, over the last hour
+    type: timeseries
+    unit: s
+    defaults:
+      noValue: no earlier branch opened in this time range, or the times could not be read
+    description: A run can build on the branch of an earlier run of the same codebase and campaign. This is the
+      time the runner takes each time it looks for that branch. It counts all campaigns.
+    targets:
+      - expr: |-
+          sum by (vcs_type) ((((janitor_runner_vcs_operation_duration_seconds_sum{operation="open_branch"} unless
+          janitor_runner_vcs_operation_duration_seconds_sum{operation="open_branch"} offset 1h) and on (job, instance) (up offset
+          1h == 1)) or increase(janitor_runner_vcs_operation_duration_seconds_sum{operation="open_branch"}[1h]))) / (sum by
+          (vcs_type) ((((janitor_runner_vcs_operation_duration_seconds_count{operation="open_branch"} unless
+          janitor_runner_vcs_operation_duration_seconds_count{operation="open_branch"} offset 1h) and on (job, instance) (up
+          offset 1h == 1)) or increase(janitor_runner_vcs_operation_duration_seconds_count{operation="open_branch"}[1h]))) > 0)
+        legend: '{{vcs_type}}'
+  - title: Latest finished runs
+    type: table
+    width: 24
+    height: 12
+    targets:
+      - sql: |-
+          SELECT finish_time AS finished, campaign, codebase, worker, CASE WHEN failure_stage ~ 'result-(push|sym)' AND
+          result_code <> 'push-failed' THEN result_code || ' (result push)' ELSE result_code END AS result, duration FROM run
+          WHERE campaign IN (${campaign:singlequote}) AND start_time > (now() AT TIME ZONE 'UTC') - interval '30 days' ORDER BY
+          finish_time DESC LIMIT 50
+        format: table
+    overrides:
+      - matcher:
+          id: byName
+          options: result
+        properties:
+          - id: custom.cellOptions
+            value:
+              type: color-text
+          - id: mappings
+            value:
+              - type: value
+                options:
+                  success:
+                    color: green
+                    index: 0
+              - type: regex
+                options:
+                  pattern: ^(worker-failure|worker-timeout|worker-disappeared|system-failure|push-failed|publish-error|.+
+                    [(]result push[)])$
+                  result:
+                    color: red
+                    index: 1
+              - type: regex
+                options:
+                  pattern: .+
+                  result:
+                    color: text
+                    index: 2
+    description: 'The newest 50 that started in the last 30 days, any result. "(result push)" after a result: the
+      run could not push its result branch, before or after the build.'
+  - title: Problems
+    type: row
+  - title: Held queue items
+    type: timeseries
+    requires:
+      - enable_node_exporter
+    description: 'Queue items still claimed by runs that ended without a result (a worker restart or a run that
+      crashed in the worker). No worker gets them. A gap: the count could not be read, because Redis, the node exporter
+      on the control host or Prometheus does not answer, or the run counts file is missing or cannot be read ("Service
+      state data age" on Janitor: overview shows that). QueueItemsHeld fires when the count for all campaigns grows,
+      and QueueAllHeld when only held items are left for 30 minutes. unknown: the count could not be read for the
+      whole time range. Its lines come from metrics files the hosts write: an old, missing or unreadable file, or
+      a node exporter that does not answer, makes them wrong or leaves gaps ("Service state data age" on Janitor:
+      overview shows the files'' age, "Host metrics" on Hosts a node exporter that does not answer).'
+    targets:
+      - expr: sum by (campaign) (last_over_time(janitor_lost_queue_claims{campaign=~"$campaign"}[2m]))
+        legend: '{{campaign}}'
+    defaults:
+      decimals: 0
+      color:
+        mode: shades
+        fixedColor: red
+      noValue: unknown
+  - title: Runs that could not push their result branch, over time (all campaigns)
+    type: timeseries
+    requires:
+      - enable_node_exporter
+    links:
+      - title: 'Janitor: git store'
+        url: /d/janitor-git_store?${__url_time_range}
+      - title: 'Janitor: bzr store'
+        url: /d/janitor-bzr_store?${__url_time_range}
+    description: 'Runs that failed in a result push stage (before or after the build). The count over the hour before,
+      written every minute, so a failed run shows for an hour. ResultPushFailing fires on it. Its lines come from
+      metrics files the hosts write: an old, missing or unreadable file, or a node exporter that does not answer,
+      makes them wrong or leaves gaps ("Service state data age" on Janitor: overview shows the files'' age, "Host
+      metrics" on Hosts a node exporter that does not answer).'
+    targets:
+      - expr: max(janitor_result_push_failed_runs_last_hour)
+        legend: runs
+    defaults:
+      decimals: 0
+      color:
+        mode: shades
+        fixedColor: red
+  - title: Problems per hour
+    type: timeseries
+    width: 24
+    description: It counts all campaigns.
+    targets:
+      - expr: |-
+          sum by (host) ((((rate_limited_host_total unless rate_limited_host_total offset 1h) and on (job, instance) (up offset 1h
+          == 1)) or increase(rate_limited_host_total[1h])))
+        legend: 'forge rate limit: {{host}}'
+      - expr: |-
+          sum((((forge_login_required unless forge_login_required offset 1h) and on (job, instance) (up offset 1h == 1)) or
+          increase(forge_login_required[1h])))
+        legend: no forge login
+      - expr: |-
+          sum((((artifact_upload_failed_total unless artifact_upload_failed_total offset 1h) and on (job, instance) (up offset 1h
+          == 1)) or increase(artifact_upload_failed_total[1h])))
+        legend: artifact upload failed
+      - expr: |-
+          sum((((primary_logfile_upload_failed unless primary_logfile_upload_failed offset 1h) and on (job, instance) (up offset
+          1h == 1)) or increase(primary_logfile_upload_failed[1h])))
+        legend: log upload failed
+      - expr: |-
+          sum by (vcs_type, error_code) ((((janitor_runner_vcs_errors_total unless janitor_runner_vcs_errors_total offset 1h) and
+          on (job, instance) (up offset 1h == 1)) or increase(janitor_runner_vcs_errors_total[1h])))
+        legend: 'could not open the earlier branch: {{vcs_type}} {{error_code}}'
+      - expr: |-
+          sum by (operation) ((((janitor_runner_redis_operations_total{status="error"} unless
+          janitor_runner_redis_operations_total{status="error"} offset 1h) and on (job, instance) (up offset 1h == 1)) or
+          increase(janitor_runner_redis_operations_total{status="error"}[1h])))
+        legend: 'Redis error: {{operation}}'
+    defaults:
+      noValue: nothing counted in this time range, or the counts could not be read
+      color:
+        mode: shades
+        fixedColor: red
+  - title: Requests
+    type: row
+  - title: Requests per second, by HTTP status
+    type: timeseries
+    unit: reqps
+    defaults:
+      noValue: no requests in this time range, or the counts could not be read
+      color:
+        mode: shades
+        fixedColor: blue
+    description: Not counting the metrics scrape and the health checks. Only the runner's internal API (site, publish,
+      admin). For the workers' API, see "Requests for work per hour, per worker login (all campaigns)" and "Results
+      the runner stored per hour, by campaign and result".
+    targets:
+      - expr: |-
+          sum by (status) ((((janitor_runner_http_requests_total{job="runner", endpoint!~"/metrics|/health"} unless
+          janitor_runner_http_requests_total{job="runner", endpoint!~"/metrics|/health"} offset 5m) and on (job, instance) (up
+          offset 5m == 1)) or increase(janitor_runner_http_requests_total{job="runner", endpoint!~"/metrics|/health"}[5m])) / 300)
+        legend: '{{status}}'
+    overrides:
+      - matcher:
+          id: byRegexp
+          options: (^|.* )5[0-9][0-9]$
+        properties:
+          - id: color
+            value:
+              mode: fixed
+              fixedColor: red
+  - title: Server errors per hour
+    type: timeseries
+    defaults:
+      noValue: the counts could not be read in this time range
+      color:
+        mode: shades
+        fixedColor: red
+    description: A failing health check counts here too. Only the runner's internal API (site, publish, admin).
+      For the workers' API, see "Requests for work per hour, per worker login (all campaigns)" and "Results the
+      runner stored per hour, by campaign and result".
+    targets:
+      - expr: |-
+          sum((((janitor_runner_http_requests_total{job="runner", status=~"5.."} unless
+          janitor_runner_http_requests_total{job="runner", status=~"5.."} offset 1h) and on (job, instance) (up offset 1h == 1))
+          or increase(janitor_runner_http_requests_total{job="runner", status=~"5.."}[1h]))) or (0 *
+          (max(max_over_time(up{job="runner"}[2m])) == 1))
+        legend: server errors (5xx)
+  - title: Request time
+    type: timeseries
+    unit: s
+    defaults:
+      noValue: no requests in this time range, or the counts could not be read
+    description: Not counting the metrics scrape and the health checks. Only the runner's internal API (site, publish,
+      admin). For the workers' API, see "Requests for work per hour, per worker login (all campaigns)" and "Results
+      the runner stored per hour, by campaign and result". The slowest 10% line is estimated from fixed time buckets.
+      When nearly every request is faster than the limit of the first bucket, the line reads just under that limit,
+      and the real time can be lower.
+    targets:
+      - expr: |-
+          sum((((janitor_runner_http_request_duration_seconds_sum{job="runner", endpoint!~"/metrics|/health"} unless
+          janitor_runner_http_request_duration_seconds_sum{job="runner", endpoint!~"/metrics|/health"} offset 5m) and on (job,
+          instance) (up offset 5m == 1)) or increase(janitor_runner_http_request_duration_seconds_sum{job="runner",
+          endpoint!~"/metrics|/health"}[5m])) / 300) / (sum((((janitor_runner_http_request_duration_seconds_count{job="runner",
+          endpoint!~"/metrics|/health"} unless janitor_runner_http_request_duration_seconds_count{job="runner",
+          endpoint!~"/metrics|/health"} offset 5m) and on (job, instance) (up offset 5m == 1)) or
+          increase(janitor_runner_http_request_duration_seconds_count{job="runner", endpoint!~"/metrics|/health"}[5m])) / 300) >
+          0)
+        legend: mean
+      - expr: |-
+          histogram_quantile(0.9, sum by (le) ((((janitor_runner_http_request_duration_seconds_bucket{job="runner",
+          endpoint!~"/metrics|/health"} unless janitor_runner_http_request_duration_seconds_bucket{job="runner",
+          endpoint!~"/metrics|/health"} offset 5m) and on (job, instance) (up offset 5m == 1)) or
+          increase(janitor_runner_http_request_duration_seconds_bucket{job="runner", endpoint!~"/metrics|/health"}[5m])) / 300))
+          and on () (sum((((janitor_runner_http_request_duration_seconds_count{job="runner", endpoint!~"/metrics|/health"} unless
+          janitor_runner_http_request_duration_seconds_count{job="runner", endpoint!~"/metrics|/health"} offset 5m) and on (job,
+          instance) (up offset 5m == 1)) or increase(janitor_runner_http_request_duration_seconds_count{job="runner",
+          endpoint!~"/metrics|/health"}[5m])) / 300) > 0)
+        legend: slowest 10% take at least
+  - title: Busiest paths, last hour
+    type: bargauge
+    unit: short
+    height: 8
+    defaults:
+      color:
+        mode: fixed
+        fixedColor: blue
+      decimals: 0
+      noValue: no requests in the last hour
+      min: 0
+      displayName: ${__series.name}
+    targets:
+      - expr: |-
+          topk(10, round(sum by (route)
+          (label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace((((last_over_time(janitor_runner_http_requests_total{job="runner",
+          endpoint!~"/metrics|/health"}[2m]) unless last_over_time(janitor_runner_http_requests_total{job="runner",
+          endpoint!~"/metrics|/health"}[2m] offset 1h)) and on (job, instance) (last_over_time(up[2m] offset 1h) == 1)) or
+          increase(janitor_runner_http_requests_total{job="runner", endpoint!~"/metrics|/health"}[1h])), "route", "$1",
+          "endpoint", "(.*)"), "route", "/runs/{id}$1", "route", "/runs/[0-9a-f-]{36}(/[^/]+)?(/.*)?"), "route", "/log/{id}$1",
+          "route", "/log/[^/]+(/[^/]+)?(/.*)?"), "route", "/active-runs/{id}$1", "route", "/active-runs/[0-9a-f-]{36}(/.*)?"),
+          "route", "/kill/{id}", "route", "/kill/.+"), "route", "/candidates/{key}", "route", "/candidates/.+"), "route",
+          "/resume/$1/{id}", "route", "/resume/([^/]+)/.+"), "route", "/admin/workers/{name}", "route", "/admin/workers/.+"))) >
+          0)
+        legend: '{{route}}'
+    options:
+      orientation: horizontal
+      displayMode: basic
+      showUnfilled: true
+      namePlacement: left
+      text:
+        titleSize: 14
+      reduceOptions:
+        values: true
+        calcs: []
+        fields: ''
+      valueMode: text
+    description: 'Requests in the last hour. Not counting the metrics scrape and the health checks. Run ids, candidate
+      ids and worker names are folded into one path. Log file names are kept. Only the runner''s internal API (site,
+      publish, admin). For the workers'' API, see "Requests for work per hour, per worker login (all campaigns)"
+      and "Results the runner stored per hour, by campaign and result". No bars: no requests in the last hour, or
+      the counts could not be read.'

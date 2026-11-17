@@ -1,0 +1,1186 @@
+---
+# Rendered by templates/dashboard.json.j2.
+title: 'Janitor: publish'
+uid: janitor-publish
+description: Pushes and proposes the approved runs, and checks the open merge proposals.
+tags:
+  - janitor
+  - core
+  - publishing
+  - control
+  - publish
+variables:
+  - name: campaign
+    label: Campaign
+    type: query
+    datasource:
+      type: grafana-postgresql-datasource
+      uid: postgres
+    query: |-
+      SELECT campaign AS name FROM candidate UNION SELECT campaign FROM queue UNION SELECT campaign FROM change_set UNION SELECT
+      campaign FROM run WHERE start_time > (now() AT TIME ZONE 'UTC') - interval '30 days' UNION SELECT '(no campaign yet)' WHERE
+      NOT EXISTS (SELECT FROM candidate) AND NOT EXISTS (SELECT FROM queue) AND NOT EXISTS (SELECT FROM run) AND NOT EXISTS
+      (SELECT FROM change_set) ORDER BY 1
+    definition: SELECT campaign AS name FROM candidate UNION SELECT campaign FROM queue UNION SELECT campaign FROM change_set
+      UNION SELECT campaign FROM run WHERE start_time > (now() AT TIME ZONE 'UTC') - interval '30 days' UNION SELECT
+      '(no campaign yet)' WHERE NOT EXISTS (SELECT FROM candidate) AND NOT EXISTS (SELECT FROM queue) AND NOT EXISTS
+      (SELECT FROM run) AND NOT EXISTS (SELECT FROM change_set) ORDER BY 1
+    multi: true
+    includeAll: true
+    refresh: 1
+    sort: 1
+    current:
+      selected: true
+      text:
+        - All
+      value:
+        - $__all
+panels:
+  - title: Health
+    type: row
+  - title: Metrics reachable
+    type: stat
+    targets:
+      - expr: max_over_time(up{job="publish"}[2m])
+        legend: metrics
+    defaults:
+      mappings:
+        - type: value
+          options:
+            '0':
+              text: 'no'
+              color: red
+              index: 0
+            '1':
+              text: 'yes'
+              color: green
+              index: 1
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 2
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value
+    width: 8
+  - title: Health check passes
+    type: stat
+    targets:
+      - expr: max_over_time(probe_success{job="health", service="publish"}[2m])
+        legend: health check
+    defaults:
+      mappings:
+        - type: value
+          options:
+            '0':
+              text: 'no'
+              color: red
+              index: 0
+            '1':
+              text: 'yes'
+              color: green
+              index: 1
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 2
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value
+    requires:
+      - enable_blackbox_exporter
+    description: 'no: it does not answer 200. It answers 503 when it cannot reach PostgreSQL or Redis. no data:
+      the health checker (blackbox exporter) does not answer, or Prometheus does not answer.'
+    width: 8
+  - title: Time since the last publish pass
+    type: stat
+    targets:
+      - expr: |-
+          ((time() - max(max_over_time(last_publish_pending_success[2m]) > 0)) or (time() -
+          max(max_over_time(janitor_unit_active_since_seconds{unit="janitor-publish.service"}[2m])))) and on ()
+          (max_over_time(up{job="publish"}[2m]) == 1)
+        legend: publish
+      - expr: (max_over_time(up{job="publish"}[2m]) == 0) * 0 - 1
+        legend: unreachable
+      - expr: |-
+          vector(-2) and on () (max_over_time(up{job="publish"}[2m]) == 1) unless on ()
+          (max_over_time(last_publish_pending_success[2m]) > 0) unless on () count(up{job="node"}) > 0 unless on ()
+          count_over_time((max_over_time(last_publish_pending_success[2m]) == 0)[4h:1m]) >= 240
+        legend: no pass yet
+      - expr: |-
+          vector(-3) and on () (max_over_time(up{job="publish"}[2m]) == 1) unless on ()
+          (max_over_time(last_publish_pending_success[2m]) > 0) unless on () count(up{job="node"}) > 0 and on ()
+          count_over_time((max_over_time(last_publish_pending_success[2m]) == 0)[4h:1m]) >= 240
+        legend: no pass yet
+    width: 8
+    unit: s
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value
+      reduceOptions:
+        calcs:
+          - lastNotNull
+        fields: ''
+        values: false
+    defaults:
+      color:
+        mode: thresholds
+      mappings:
+        - type: value
+          options:
+            '-1':
+              text: unreachable
+              color: red
+              index: 0
+            '-2':
+              text: no pass yet
+              color: yellow
+              index: 1
+            '-3':
+              text: no pass yet
+              color: red
+              index: 2
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 3
+      thresholds:
+        mode: absolute
+        steps:
+          - color: green
+            value: null
+          - color: yellow
+            value: 9000
+          - color: red
+            value: 14400
+    description: 'Since its last pass, or since publish started. Publish goes through the approved runs every 2
+      hours by default, and publishes a run at once when it is approved. Yellow after 2.5 hours, red after 4. unreachable:
+      its metrics do not answer. "No pass yet": publish has not finished its first pass, and without the node exporter
+      its start time is not known. It is yellow, and red after 4 hours. "Waiting to publish" in the Backlog row
+      shows the runs of the selected campaigns waiting for it. With the node exporter, its value comes from metrics
+      files the hosts write: an old, missing or unreadable file, or a node exporter that does not answer, makes
+      it wrong or empty ("Service state data age" on Janitor: overview shows the files'' age, "Host metrics" on
+      Hosts a node exporter that does not answer).'
+  - title: Service state
+    type: stat
+    targets:
+      - expr: |-
+          sort_by_label(max by (unit, host) (
+            6 * ((janitor_unit_state{state="failed", unit="janitor-publish.service"} or
+          ((last_over_time(janitor_unit_state{state="failed", unit="janitor-publish.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state="failed", unit="janitor-publish.service"})[2m:10s]) >= on (host)
+          group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1)) == 1)
+            or 5 * ((round(increase(janitor_unit_restarts_total{unit="janitor-publish.service"}[15m])) > 2 or
+          round(increase(janitor_unit_restarts_total{unit="janitor-publish.service"}[1h])) > 3) > bool 0) and on (host, unit)
+          (janitor_unit_restarts_total{unit="janitor-publish.service"} or
+          ((last_over_time(janitor_unit_restarts_total{unit="janitor-publish.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_restarts_total{unit="janitor-publish.service"})[2m:10s]) >= on (host) group_left
+          max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1))
+            or 4 * ((janitor_unit_state{state="inactive", unit="janitor-publish.service"} or
+          ((last_over_time(janitor_unit_state{state="inactive", unit="janitor-publish.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state="inactive", unit="janitor-publish.service"})[2m:10s]) >= on (host)
+          group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1)) == 1)
+            or 2 * ((janitor_unit_state{state!~"active|inactive|failed", unit="janitor-publish.service"} or
+          ((last_over_time(janitor_unit_state{state!~"active|inactive|failed", unit="janitor-publish.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state!~"active|inactive|failed", unit="janitor-publish.service"})[2m:10s])
+          >= on (host) group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on
+          (host) up{job="node"} == 1)) == 1)
+            or ((increase(janitor_unit_restarts_total{unit="janitor-publish.service"}[1h]) > bool 0) and on (host, unit)
+          (janitor_unit_restarts_total{unit="janitor-publish.service"} or
+          ((last_over_time(janitor_unit_restarts_total{unit="janitor-publish.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_restarts_total{unit="janitor-publish.service"})[2m:10s]) >= on (host) group_left
+          max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} ==
+          1)))
+            or 0 * ((janitor_unit_state{state="active", unit="janitor-publish.service"} or
+          ((last_over_time(janitor_unit_state{state="active", unit="janitor-publish.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state="active", unit="janitor-publish.service"})[2m:10s]) >= on (host)
+          group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1)) == 1)
+          ), "host", "unit")
+        legend: '{{unit}} on {{host}}'
+    width: 8
+    height: 5
+    newline: true
+    requires:
+      - enable_node_exporter
+    defaults:
+      mappings:
+        - type: value
+          options:
+            '0':
+              text: up
+              color: green
+              index: 0
+            '1':
+              text: restarted
+              color: yellow
+              index: 1
+            '1.5':
+              text: mail held back
+              color: yellow
+              index: 2
+            '2':
+              text: starting, stopping or reloading
+              color: yellow
+              index: 3
+            '3':
+              text: unreachable
+              color: red
+              index: 4
+            '4':
+              text: stopped
+              color: red
+              index: 5
+            '5':
+              text: restarting in a loop
+              color: red
+              index: 6
+            '5.5':
+              text: mail held back for an hour
+              color: red
+              index: 7
+            '6':
+              text: failed
+              color: red
+              index: 8
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 99
+      color:
+        mode: thresholds
+      thresholds:
+        mode: absolute
+        steps:
+          - color: green
+            value: null
+          - color: yellow
+            value: 1
+          - color: red
+            value: 3
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value_and_name
+      justifyMode: center
+    description: 'up: running. restarted: systemd restarted it in the last hour. starting, stopping or reloading:
+      systemd is changing its state, or it is in another short-lived state such as maintenance. stopped: not running.
+      restarting in a loop: more than 2 restarts in 15 minutes or more than 3 in an hour. failed: systemd marked
+      it failed. A unit whose service state is gone leaves the tile: the unit was removed, the node exporter of
+      its host has not answered for 2 minutes ("Host metrics" on Hosts), or the service states file of its host
+      is missing or cannot be read. no data means none of its units has a service state. Its value comes from metrics
+      files the hosts write: an old, missing or unreadable file, or a node exporter that does not answer, makes
+      it wrong or empty ("Service state data age" on Janitor: overview shows the files'' age, "Host metrics" on
+      Hosts a node exporter that does not answer).'
+  - title: Last started and stopped
+    type: table
+    width: 16
+    height: 5
+    requires:
+      - enable_node_exporter
+    targets:
+      - expr: 1000 * last_over_time(janitor_unit_active_since_seconds{unit="janitor-publish.service"}[2m])
+        format: table
+        instant: true
+      - expr: 1000 * last_over_time(janitor_unit_inactive_since_seconds{unit="janitor-publish.service"}[2m])
+        format: table
+        instant: true
+      - expr: |-
+          round(increase(janitor_unit_restarts_total{unit="janitor-publish.service"}[24h])) and on (host, unit)
+          last_over_time(janitor_unit_restarts_total{unit="janitor-publish.service"}[2m])
+        format: table
+        instant: true
+      - expr: |-
+          (janitor_unit_result{unit="janitor-publish.service"} or
+          ((last_over_time(janitor_unit_result{unit="janitor-publish.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_result{unit="janitor-publish.service"})[2m:10s]) >= on (host) group_left max by
+          (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1))
+        format: table
+        instant: true
+    transformations:
+      - id: merge
+        options: {}
+      - id: organize
+        options:
+          excludeByName:
+            Time: true
+            job: true
+            instance: true
+            __name__: true
+            'Value #D': true
+          renameByName:
+            'Value #A': last started
+            'Value #B': last stopped
+            'Value #C': restarts by systemd, 24 hours
+            result: last result
+      - id: sortBy
+        options:
+          sort:
+            - field: restarts by systemd, 24 hours
+              desc: true
+    overrides:
+      - matcher:
+          id: byRegexp
+          options: last (started|stopped)
+        properties:
+          - id: unit
+            value: dateTimeFromNow
+      - matcher:
+          id: byRegexp
+          options: restarts by systemd, 24 hours
+        properties:
+          - id: custom.cellOptions
+            value:
+              type: color-background
+          - id: color
+            value:
+              mode: thresholds
+          - id: thresholds
+            value:
+              mode: absolute
+              steps:
+                - color: green
+                  value: null
+                - color: yellow
+                  value: 1
+                - color: red
+                  value: 5
+          - id: custom.wrapHeaderText
+            value: true
+      - matcher:
+          id: byName
+          options: restarts by systemd, 24 hours
+        properties:
+          - id: mappings
+            value:
+              - type: special
+                options:
+                  match: 'null'
+                  result:
+                    text: no data
+                    color: transparent
+                    index: 9
+      - matcher:
+          id: byName
+          options: host
+        properties:
+          - id: custom.width
+            value: 90
+      - matcher:
+          id: byName
+          options: last started
+        properties:
+          - id: custom.width
+            value: 110
+      - matcher:
+          id: byName
+          options: last stopped
+        properties:
+          - id: custom.width
+            value: 110
+      - matcher:
+          id: byName
+          options: restarts by systemd, 24 hours
+        properties:
+          - id: custom.width
+            value: 120
+      - matcher:
+          id: byName
+          options: last result
+        properties:
+          - id: custom.width
+            value: 100
+      - matcher:
+          id: byName
+          options: last result
+        properties:
+          - id: custom.cellOptions
+            value:
+              type: color-text
+          - id: mappings
+            value:
+              - type: value
+                options:
+                  success:
+                    color: text
+                    index: 0
+              - type: regex
+                options:
+                  pattern: .+
+                  result:
+                    color: red
+                    index: 1
+    description: 'last result: systemd sets it back to success when it starts the unit again. A crash that systemd
+      restarted shows in the restart count, and in last stopped until the next manual restart. The cause is in the
+      unit''s journal. no data: the unit appeared less than a minute ago (the count needs two readings). Its value
+      comes from metrics files the hosts write: an old, missing or unreadable file, or a node exporter that does
+      not answer, makes it wrong or empty ("Service state data age" on Janitor: overview shows the files'' age,
+      "Host metrics" on Hosts a node exporter that does not answer). A unit whose service state is gone leaves the
+      table, for the same causes as on "Service state".'
+  - title: Memory
+    type: timeseries
+    unit: bytes
+    requires:
+      - enable_node_exporter
+    description: 'Memory in use, without file cache. Its lines come from metrics files the hosts write: an old,
+      missing or unreadable file, or a node exporter that does not answer, makes them wrong or leaves gaps ("Service
+      state data age" on Janitor: overview shows the files'' age, "Host metrics" on Hosts a node exporter that does
+      not answer).'
+    targets:
+      - expr: janitor_unit_memory_in_use_bytes{unit="janitor-publish.service"}
+        legend: '{{unit}} on {{host}}'
+  - title: CPU, in cores
+    type: timeseries
+    unit: short
+    requires:
+      - enable_node_exporter
+    defaults:
+      custom:
+        axisSoftMax: 0.01
+    targets:
+      - expr: rate(janitor_unit_cpu_seconds_total{unit="janitor-publish.service"}[5m])
+        legend: '{{unit}} on {{host}}'
+    description: 'Its lines come from metrics files the hosts write: an old, missing or unreadable file, or a node
+      exporter that does not answer, makes them wrong or leaves gaps ("Service state data age" on Janitor: overview
+      shows the files'' age, "Host metrics" on Hosts a node exporter that does not answer).'
+  - title: Backlog
+    type: row
+  - title: Waiting for review
+    type: stat
+    targets:
+      - sql: |-
+          SELECT count(*) AS runs FROM publish_ready pr WHERE campaign IN (${campaign:singlequote}) AND publish_status IN ('unknown',
+          'needs-manual-review') AND change_set_state IN ('ready', 'publishing') AND EXISTS (SELECT FROM
+          unnest(unpublished_branches) b WHERE b.mode IN ('propose', 'attempt-push', 'push-derived', 'push')) AND NOT EXISTS
+          (SELECT FROM publish p WHERE p.revision = pr.revision AND p.result_code = 'success')
+        format: table
+    options:
+      colorMode: none
+      graphMode: none
+      textMode: value
+    defaults:
+      color:
+        mode: fixed
+        fixedColor: blue
+    description: Successful runs with branches to push or propose that are not approved yet. Publish acts only on
+      approved runs.
+    width: 5
+  - title: Oldest run waiting for review
+    type: stat
+    targets:
+      - sql: |-
+          SELECT coalesce(extract(epoch FROM (now() AT TIME ZONE 'UTC') - min(finish_time)), -1) AS age FROM publish_ready pr
+          WHERE campaign IN (${campaign:singlequote}) AND publish_status IN ('unknown', 'needs-manual-review') AND change_set_state
+          IN ('ready', 'publishing') AND EXISTS (SELECT FROM unnest(unpublished_branches) b WHERE b.mode IN ('propose',
+          'attempt-push', 'push-derived', 'push')) AND NOT EXISTS (SELECT FROM publish p WHERE p.revision = pr.revision AND
+          p.result_code = 'success')
+        format: table
+    unit: s
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value
+    description: Yellow after a day, red after a week.
+    defaults:
+      color:
+        mode: thresholds
+      mappings:
+        - type: value
+          options:
+            '-1':
+              text: none
+              color: green
+              index: 0
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 99
+      thresholds:
+        mode: absolute
+        steps:
+          - color: green
+            value: null
+          - color: yellow
+            value: 86400
+          - color: red
+            value: 604800
+    width: 5
+  - title: Waiting to publish
+    type: stat
+    targets:
+      - sql: |-
+          SELECT count(*) AS runs FROM publish_ready pr WHERE campaign IN (${campaign:singlequote}) AND publish_status = 'approved'
+          AND change_set_state IN ('ready', 'publishing') AND EXISTS (SELECT FROM unnest(unpublished_branches) b WHERE b.mode IN
+          ('propose', 'attempt-push', 'push-derived', 'push')) AND NOT EXISTS (SELECT FROM publish p WHERE p.revision =
+          pr.revision AND p.result_code = 'success') AND (SELECT l.code FROM new_result_branch b CROSS JOIN LATERAL (SELECT
+          p.result_code AS code, p.timestamp FROM publish p WHERE p.revision = b.revision AND p.run_id = b.run_id ORDER BY
+          p.timestamp DESC LIMIT 1) l WHERE b.run_id = pr.id AND l.code <> 'success' ORDER BY l.code IN ('success',
+          'nothing-to-do', 'empty-merge-proposal', 'merge-conflict', 'diverged-branches'), l.code ~
+          ('^(too-many-requests|differ-unreachable|branch-busy|network-error|service-unavailable|bad-gateway|' ||
+          'differ-http-error|project-creation-timeout|.*-temporarily-unavailable|.*-rate-limited)$'), l.timestamp DESC LIMIT 1) IS
+          NULL
+        format: table
+    options:
+      colorMode: none
+      graphMode: none
+      textMode: value
+    defaults:
+      color:
+        mode: fixed
+        fixedColor: blue
+    description: Approved runs with a branch to push or propose, which publish has not tried yet, or has published
+      only some of their branches so far.
+    width: 5
+  - title: Oldest run waiting to publish
+    type: stat
+    targets:
+      - sql: |-
+          SELECT coalesce(extract(epoch FROM (now() AT TIME ZONE 'UTC') - min(finish_time)), -1) AS age FROM publish_ready pr
+          WHERE campaign IN (${campaign:singlequote}) AND publish_status = 'approved' AND change_set_state IN ('ready', 'publishing')
+          AND EXISTS (SELECT FROM unnest(unpublished_branches) b WHERE b.mode IN ('propose', 'attempt-push', 'push-derived',
+          'push')) AND NOT EXISTS (SELECT FROM publish p WHERE p.revision = pr.revision AND p.result_code = 'success') AND (SELECT
+          l.code FROM new_result_branch b CROSS JOIN LATERAL (SELECT p.result_code AS code, p.timestamp FROM publish p WHERE
+          p.revision = b.revision AND p.run_id = b.run_id ORDER BY p.timestamp DESC LIMIT 1) l WHERE b.run_id = pr.id AND l.code
+          <> 'success' ORDER BY l.code IN ('success', 'nothing-to-do', 'empty-merge-proposal', 'merge-conflict',
+          'diverged-branches'), l.code ~
+          ('^(too-many-requests|differ-unreachable|branch-busy|network-error|service-unavailable|bad-gateway|' ||
+          'differ-http-error|project-creation-timeout|.*-temporarily-unavailable|.*-rate-limited)$'), l.timestamp DESC LIMIT 1) IS
+          NULL
+        format: table
+    unit: s
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value
+    description: 'Of the runs waiting to publish: not tried yet, or only some of their branches published so far.
+      Yellow after a day, red after a week. Publish rate limits can hold runs back on purpose.'
+    defaults:
+      color:
+        mode: thresholds
+      mappings:
+        - type: value
+          options:
+            '-1':
+              text: none
+              color: green
+              index: 0
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 99
+      thresholds:
+        mode: absolute
+        steps:
+          - color: green
+            value: null
+          - color: yellow
+            value: 86400
+          - color: red
+            value: 604800
+    width: 5
+  - title: Failed to publish
+    type: stat
+    targets:
+      - sql: |-
+          SELECT count(*) FILTER (WHERE NOT retry) AS "to fix", count(*) FILTER (WHERE retry) AS "will retry" FROM (SELECT (SELECT
+          l.code FROM new_result_branch b CROSS JOIN LATERAL (SELECT p.result_code AS code, p.timestamp FROM publish p WHERE
+          p.revision = b.revision AND p.run_id = b.run_id ORDER BY p.timestamp DESC LIMIT 1) l WHERE b.run_id = pr.id AND l.code
+          <> 'success' ORDER BY l.code IN ('success', 'nothing-to-do', 'empty-merge-proposal', 'merge-conflict',
+          'diverged-branches'), l.code ~
+          ('^(too-many-requests|differ-unreachable|branch-busy|network-error|service-unavailable|bad-gateway|' ||
+          'differ-http-error|project-creation-timeout|.*-temporarily-unavailable|.*-rate-limited)$'), l.timestamp DESC LIMIT 1) ~
+          ('^(too-many-requests|differ-unreachable|branch-busy|network-error|service-unavailable|bad-gateway|' ||
+          'differ-http-error|project-creation-timeout|.*-temporarily-unavailable|.*-rate-limited)$') AS retry FROM publish_ready
+          pr WHERE campaign IN (${campaign:singlequote}) AND publish_status = 'approved' AND change_set_state IN ('ready',
+          'publishing') AND EXISTS (SELECT FROM unnest(unpublished_branches) b WHERE b.mode IN ('propose', 'attempt-push',
+          'push-derived', 'push')) AND NOT EXISTS (SELECT FROM publish p WHERE p.revision = pr.revision AND p.result_code =
+          'success') AND (SELECT l.code FROM new_result_branch b CROSS JOIN LATERAL (SELECT p.result_code AS code, p.timestamp
+          FROM publish p WHERE p.revision = b.revision AND p.run_id = b.run_id ORDER BY p.timestamp DESC LIMIT 1) l WHERE b.run_id
+          = pr.id AND l.code <> 'success' ORDER BY l.code IN ('success', 'nothing-to-do', 'empty-merge-proposal',
+          'merge-conflict', 'diverged-branches'), l.code ~
+          ('^(too-many-requests|differ-unreachable|branch-busy|network-error|service-unavailable|bad-gateway|' ||
+          'differ-http-error|project-creation-timeout|.*-temporarily-unavailable|.*-rate-limited)$'), l.timestamp DESC LIMIT 1) IS
+          NOT NULL AND (SELECT l.code FROM new_result_branch b CROSS JOIN LATERAL (SELECT p.result_code AS code, p.timestamp FROM
+          publish p WHERE p.revision = b.revision AND p.run_id = b.run_id ORDER BY p.timestamp DESC LIMIT 1) l WHERE b.run_id =
+          pr.id AND l.code <> 'success' ORDER BY l.code IN ('success', 'nothing-to-do', 'empty-merge-proposal', 'merge-conflict',
+          'diverged-branches'), l.code ~
+          ('^(too-many-requests|differ-unreachable|branch-busy|network-error|service-unavailable|bad-gateway|' ||
+          'differ-http-error|project-creation-timeout|.*-temporarily-unavailable|.*-rate-limited)$'), l.timestamp DESC LIMIT 1)
+          NOT IN ('success', 'nothing-to-do', 'empty-merge-proposal', 'merge-conflict', 'diverged-branches')) f
+        format: table
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value_and_name
+      justifyMode: center
+    defaults:
+      color:
+        mode: thresholds
+      thresholds:
+        mode: absolute
+        steps:
+          - color: green
+            value: null
+          - color: red
+            value: 1
+      mappings:
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 99
+    overrides:
+      - matcher:
+          id: byName
+          options: will retry
+        properties:
+          - id: thresholds
+            value:
+              mode: absolute
+              steps:
+                - color: green
+                  value: null
+                - color: yellow
+                  value: 1
+    description: 'Approved runs that publish has not fully published, where the last publish attempt on one of their
+      branches failed. A result of nothing to do or an empty merge proposal does not count. Merge conflicts and
+      diverged branches do not count either, because publish then schedules a new run by itself. Publish tries the
+      runs in both states below again after a wait. to fix: on at least one branch, the last error most often needs
+      someone, for example a forge login. will retry: on every failed branch, the last error most often clears by
+      itself (a rate limit, a busy branch, a network error). "Latest publish attempts" shows why, while the attempt
+      is among its newest 30.'
+    width: 4
+  - title: Publishing
+    type: row
+  - title: Failed publish attempts, last 24 hours
+    type: stat
+    targets:
+      - sql: |-
+          SELECT count(*) FILTER (WHERE NOT retry) AS "to fix", count(*) FILTER (WHERE retry) AS "will retry" FROM (SELECT
+          p.result_code ~ ('^(too-many-requests|differ-unreachable|branch-busy|network-error|service-unavailable|bad-gateway|' ||
+          'differ-http-error|project-creation-timeout|.*-temporarily-unavailable|.*-rate-limited)$') AS retry FROM publish p JOIN
+          change_set cs ON cs.id = p.change_set WHERE p.result_code NOT IN ('success', 'nothing-to-do', 'empty-merge-proposal',
+          'merge-conflict', 'diverged-branches') AND p.timestamp > (now() AT TIME ZONE 'UTC') - interval '24 hours' AND
+          cs.campaign IN (${campaign:singlequote})) f
+        format: table
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value_and_name
+      justifyMode: center
+    defaults:
+      color:
+        mode: thresholds
+      thresholds:
+        mode: absolute
+        steps:
+          - color: green
+            value: null
+          - color: red
+            value: 1
+      mappings:
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 99
+    overrides:
+      - matcher:
+          id: byName
+          options: will retry
+        properties:
+          - id: thresholds
+            value:
+              mode: absolute
+              steps:
+                - color: green
+                  value: null
+                - color: yellow
+                  value: 1
+    description: 'Every attempt that did not publish, split by its own error. to fix: the error most often needs
+      someone. will retry: the error most often clears by itself. A result of nothing to do or an empty merge proposal
+      does not count. Merge conflicts and diverged branches do not count either, because publish then schedules
+      a new run by itself. It also counts failed attempts for runs that were published earlier. "Latest publish
+      attempts" shows the newest 30 attempts and their results.'
+    width: 24
+  - title: Publish attempts per hour, by mode and result
+    type: timeseries
+    description: 'Mode: push, propose (a merge proposal), attempt-push, build-only and others. Each hour is drawn
+      at its start, so the hour in progress shows at once.'
+    targets:
+      - sql: |-
+          SELECT $__timeGroupAlias(p.timestamp, '1h', 0), p.mode || ': ' || p.result_code AS metric, count(*) AS value FROM
+          publish p JOIN change_set cs ON cs.id = p.change_set WHERE $__timeFilter(p.timestamp) AND cs.campaign IN
+          (${campaign:singlequote}) GROUP BY 1, 2 ORDER BY 1
+    defaults:
+      color:
+        mode: shades
+        fixedColor: blue
+      custom:
+        stacking:
+          mode: normal
+          group: A
+        fillOpacity: 40
+    overrides:
+      - matcher:
+          id: byRegexp
+          options: .+
+        properties:
+          - id: color
+            value:
+              mode: fixed
+              fixedColor: red
+      - matcher:
+          id: byRegexp
+          options: '.*: (nothing-to-do|empty-merge-proposal|merge-conflict|diverged-branches)$'
+        properties:
+          - id: color
+            value:
+              mode: fixed
+              fixedColor: blue
+      - matcher:
+          id: byRegexp
+          options: '.*: (too-many-requests|differ-unreachable|branch-busy|network-error|service-unavailable|bad-gateway)$'
+        properties:
+          - id: color
+            value:
+              mode: fixed
+              fixedColor: yellow
+      - matcher:
+          id: byRegexp
+          options: '.*: (differ-http-error|project-creation-timeout|.*-temporarily-unavailable|.*-rate-limited)$'
+        properties:
+          - id: color
+            value:
+              mode: fixed
+              fixedColor: yellow
+      - matcher:
+          id: byRegexp
+          options: '.*: success$'
+        properties:
+          - id: color
+            value:
+              mode: fixed
+              fixedColor: green
+  - title: Median time from run to publish, per hour
+    type: timeseries
+    unit: s
+    description: Each run counts once, at its first publish. Each hour is drawn at its start, so the hour in progress
+      shows at once.
+    targets:
+      - sql: |-
+          SELECT $__timeGroupAlias(p.timestamp, '1h', NULL), percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM
+          p.timestamp - r.finish_time)) AS median FROM publish p JOIN run r ON r.id = p.run_id WHERE $__timeFilter(p.timestamp)
+          AND p.result_code = 'success' AND r.campaign IN (${campaign:singlequote}) AND NOT EXISTS (SELECT FROM new_result_branch b
+          JOIN publish e ON e.revision = b.revision WHERE b.run_id = p.run_id AND e.run_id = p.run_id AND e.result_code =
+          'success' AND e.timestamp < p.timestamp) GROUP BY 1 ORDER BY 1
+  - title: Time since each publish pass last finished
+    type: timeseries
+    unit: s
+    description: Yellow line at 2.5 hours, red at 4, as on "Time since the last publish pass".
+    defaults:
+      custom:
+        thresholdsStyle:
+          mode: line
+        axisSoftMax: 15000
+      thresholds:
+        mode: absolute
+        steps:
+          - color: green
+            value: null
+          - color: yellow
+            value: 9000
+          - color: red
+            value: 14400
+    overrides:
+      - matcher:
+          id: byName
+          options: publishing approved runs
+        properties:
+          - id: color
+            value:
+              mode: fixed
+              fixedColor: blue
+      - matcher:
+          id: byName
+          options: checking open merge proposals
+        properties:
+          - id: color
+            value:
+              mode: fixed
+              fixedColor: purple
+    targets:
+      - expr: time() - (last_publish_pending_success > 0)
+        legend: publishing approved runs
+      - expr: time() - (last_scan_existing_success > 0)
+        legend: checking open merge proposals
+  - title: Times publish held a run back, per hour (all campaigns)
+    type: timeseries
+    description: 'Counted on every pass, so a run held back for a day counts again on each pass of that day, not
+      once. A changed campaign command counts once for each branch other than main, and main then counts in "main
+      waits for other branches" (a run with only main counts once), so one run can count more than once on a pass.
+      When someone approves a run, publish also checks it at once, outside a pass. Then a changed campaign command
+      counts once for each branch in the publish policy, main too. policy branch missing from the run: only at an
+      approval, a branch in the publish policy whose publish mode is not build-only or skip is missing from the
+      run, also when the run has no result branches. role: which result branch of the run, for example main. main
+      waits for other branches: another branch of the run did not publish on this pass. That branch failed, had
+      nothing to do, was published earlier (on a pass, or when the run was approved), was busy, was held by a rate
+      limit, or its publish mode is build-only or skip. A changed campaign command holds main back too. "Latest
+      publish attempts" shows the ones of the selected campaigns that got a result, while they are among its newest
+      30.'
+    targets:
+      - expr: |-
+          sum((((exponential_backoff_count unless exponential_backoff_count offset 1h) and on (job, instance) (up offset 1h == 1))
+          or increase(exponential_backoff_count[1h])))
+        legend: waiting after failures
+      - expr: |-
+          sum((((missing_branch_url_count unless missing_branch_url_count offset 1h) and on (job, instance) (up offset 1h == 1))
+          or increase(missing_branch_url_count[1h])))
+        legend: no branch URL
+      - expr: |-
+          sum((((rejected_last_mp unless rejected_last_mp offset 1h) and on (job, instance) (up offset 1h == 1)) or
+          increase(rejected_last_mp[1h])))
+        legend: last merge proposal rejected
+      - expr: |-
+          sum by (role) ((((missing_publish_mode_count unless missing_publish_mode_count offset 1h) and on (job, instance) (up
+          offset 1h == 1)) or increase(missing_publish_mode_count[1h])))
+        legend: no publish mode for branch {{role}}
+      - expr: |-
+          sum by (role) ((((unpublished_aux_branches_count unless unpublished_aux_branches_count offset 1h) and on (job, instance)
+          (up offset 1h == 1)) or increase(unpublished_aux_branches_count[1h])))
+        legend: '{{role}} waits for other branches'
+      - expr: |-
+          sum((((command_changed_count unless command_changed_count offset 1h) and on (job, instance) (up offset 1h == 1)) or
+          increase(command_changed_count[1h])))
+        legend: campaign command changed since the run
+      - expr: |-
+          sum((((missing_main_result_branch_count unless missing_main_result_branch_count offset 1h) and on (job, instance) (up
+          offset 1h == 1)) or increase(missing_main_result_branch_count[1h])))
+        legend: policy branch missing from the run
+    defaults:
+      noValue: nothing counted in this time range, or the counts could not be read
+      color:
+        mode: shades
+        fixedColor: blue
+      custom:
+        stacking:
+          mode: normal
+          group: A
+        fillOpacity: 40
+    overrides:
+      - matcher:
+          id: byRegexp
+          options: ^(waiting after failures|campaign command changed since the run)$
+        properties:
+          - id: color
+            value:
+              mode: fixed
+              fixedColor: yellow
+      - matcher:
+          id: byRegexp
+          options: ^(no branch URL|no publish mode for branch .*|policy branch missing from the run)$
+        properties:
+          - id: color
+            value:
+              mode: fixed
+              fixedColor: red
+  - title: Latest publish attempts
+    type: table
+    width: 24
+    description: The newest 30 publish attempts, their result and their merge proposal.
+    targets:
+      - sql: |-
+          SELECT p.timestamp AS time, cs.campaign, p.codebase, p.mode, p.result_code AS result, p.merge_proposal_url AS proposal
+          FROM publish p JOIN change_set cs ON cs.id = p.change_set WHERE cs.campaign IN (${campaign:singlequote}) ORDER BY
+          p.timestamp DESC LIMIT 30
+        format: table
+    overrides:
+      - matcher:
+          id: byName
+          options: result
+        properties:
+          - id: custom.cellOptions
+            value:
+              type: color-text
+          - id: mappings
+            value:
+              - type: value
+                options:
+                  success:
+                    color: green
+                    index: 0
+              - type: regex
+                options:
+                  pattern: ^(too-many-requests|differ-unreachable|branch-busy|network-error|service-unavailable|bad-gateway)$
+                  result:
+                    color: yellow
+                    index: 1
+              - type: regex
+                options:
+                  pattern: ^(differ-http-error|project-creation-timeout|.*-temporarily-unavailable|.*-rate-limited)$
+                  result:
+                    color: yellow
+                    index: 2
+              - type: regex
+                options:
+                  pattern: ^(nothing-to-do|empty-merge-proposal|merge-conflict|diverged-branches)$
+                  result:
+                    color: text
+                    index: 3
+              - type: regex
+                options:
+                  pattern: .+
+                  result:
+                    color: red
+                    index: 4
+  - title: Merge proposals
+    type: row
+  - title: Merge proposals by status, now
+    type: bargauge
+    defaults:
+      color:
+        mode: fixed
+        fixedColor: blue
+      displayName: ${__data.fields.status}
+      min: 0
+    options:
+      orientation: horizontal
+      displayMode: basic
+      showUnfilled: true
+      namePlacement: left
+      text:
+        titleSize: 14
+      reduceOptions:
+        values: true
+        calcs: []
+        fields: ''
+      valueMode: text
+    targets:
+      - sql: |-
+          SELECT coalesce(mp.status::text, 'unknown') AS status, count(DISTINCT mp.url) AS proposals FROM merge_proposal mp JOIN
+          publish p ON p.merge_proposal_url = mp.url JOIN change_set cs ON cs.id = p.change_set WHERE cs.campaign IN
+          (${campaign:singlequote}) GROUP BY 1 ORDER BY 2 DESC
+        format: table
+  - title: Merge proposals opened per hour, by campaign
+    type: timeseries
+    description: Counted from the first successful propose of each merge proposal. Each hour is drawn at its start,
+      so the hour in progress shows at once.
+    targets:
+      - sql: |-
+          SELECT $__timeGroupAlias(opened, '1h', 0), campaign AS metric, count(*) AS value FROM (SELECT cs.campaign,
+          min(p.timestamp) AS opened FROM publish p JOIN change_set cs ON cs.id = p.change_set WHERE p.mode = 'propose' AND
+          p.result_code = 'success' AND p.merge_proposal_url IS NOT NULL AND cs.campaign IN (${campaign:singlequote}) GROUP BY
+          cs.campaign, p.merge_proposal_url) mp WHERE $__timeFilter(opened) GROUP BY 1, 2 ORDER BY 1
+    defaults:
+      noValue: none
+  - title: Runs merged or pushed per day, by campaign
+    type: timeseries
+    time_from: now-7d/d
+    description: 'Each run counts once, on the day of its first merge or push (UTC). With a relative time range,
+      such as the default last 24 hours, the graph shows the last 7 whole days and today so far (Grafana labels
+      this "Last 7 days"): every day starts inside the axis, and today''s point counts only the hours so far. With
+      an absolute range, such as after a zoom, it uses that range: a day shows only when its 00:00 is inside it,
+      and the last day counts only up to the end of the range.'
+    targets:
+      - sql: |-
+          SELECT $__timeGroupAlias(absorbed_at, '1d', 0), campaign AS metric, count(*) AS value FROM absorbed_runs a WHERE a.delay
+          >= interval '0' AND NOT EXISTS (SELECT FROM publish e WHERE e.revision = a.revision AND e.mode = 'push' AND
+          e.result_code = 'success' AND e.timestamp < a.absorbed_at) AND NOT EXISTS (SELECT FROM merge_proposal m WHERE m.revision
+          = a.revision AND m.merged_at < a.absorbed_at) AND $__timeFilter(absorbed_at) AND campaign IN (${campaign:singlequote})
+          GROUP BY 1, 2 ORDER BY 1
+    defaults:
+      noValue: none
+  - title: Median time from run to merged or pushed, per day, by campaign
+    type: timeseries
+    time_from: now-7d/d
+    unit: s
+    description: 'Each run counts once, on the day of its first merge or push (UTC). With a relative time range,
+      such as the default last 24 hours, the graph shows the last 7 whole days and today so far (Grafana labels
+      this "Last 7 days"): every day starts inside the axis, and today''s point counts only the hours so far. With
+      an absolute range, such as after a zoom, it uses that range: a day shows only when its 00:00 is inside it,
+      and the last day counts only up to the end of the range.'
+    targets:
+      - sql: |-
+          SELECT $__timeGroupAlias(absorbed_at, '1d', NULL), campaign AS metric, percentile_cont(0.5) WITHIN GROUP (ORDER BY
+          extract(epoch FROM delay)) AS value FROM absorbed_runs a WHERE a.delay >= interval '0' AND NOT EXISTS (SELECT FROM
+          publish e WHERE e.revision = a.revision AND e.mode = 'push' AND e.result_code = 'success' AND e.timestamp <
+          a.absorbed_at) AND NOT EXISTS (SELECT FROM merge_proposal m WHERE m.revision = a.revision AND m.merged_at <
+          a.absorbed_at) AND $__timeFilter(absorbed_at) AND campaign IN (${campaign:singlequote}) GROUP BY 1, 2 ORDER BY 1
+    defaults:
+      noValue: none
+  - title: Open merge proposals per rate limit group (all campaigns)
+    type: bargauge
+    defaults:
+      color:
+        mode: fixed
+        fixedColor: blue
+      noValue: no merge proposals with a rate limit group
+      min: 0
+      displayName: ${__series.name}
+    description: 'As publish counted them at its last full check of the open merge proposals, plus the ones it opened
+      since. Only merge proposals with a rate limit group are counted. No bars: publish has counted no open merge
+      proposal with a rate limit group, or the count could not be read.'
+    targets:
+      - expr: last_over_time(bucket_proposal_count[2m])
+        legend: '{{bucket}}'
+    options:
+      orientation: horizontal
+      displayMode: basic
+      showUnfilled: true
+      namePlacement: left
+      text:
+        titleSize: 14
+      reduceOptions:
+        values: true
+        calcs: []
+        fields: ''
+      valueMode: text
+  - title: Merge proposal checks skipped or failed, per hour (all campaigns)
+    type: timeseries
+    targets:
+      - expr: |-
+          sum by (forge) ((((forge_rate_limited_count unless forge_rate_limited_count offset 1h) and on (job, instance) (up offset
+          1h == 1)) or increase(forge_rate_limited_count[1h])))
+        legend: 'forge rate limit: {{forge}}'
+      - expr: |-
+          sum((((unexpected_http_response_count unless unexpected_http_response_count offset 1h) and on (job, instance) (up offset
+          1h == 1)) or increase(unexpected_http_response_count[1h])))
+        legend: unexpected answer from the forge
+    defaults:
+      noValue: nothing counted in this time range, or the counts could not be read
+      color:
+        mode: shades
+        fixedColor: red
+  - title: Requests
+    type: row
+  - title: Requests per second, by HTTP status
+    type: timeseries
+    unit: reqps
+    defaults:
+      noValue: no requests in this time range, or the counts could not be read
+      color:
+        mode: shades
+        fixedColor: blue
+    description: Not counting the metrics scrape and the health checks.
+    targets:
+      - expr: |-
+          sum by (status) ((((http_requests_total{job="publish", path!~"/metrics|/health"} unless
+          http_requests_total{job="publish", path!~"/metrics|/health"} offset 5m) and on (job, instance) (up offset 5m == 1)) or
+          increase(http_requests_total{job="publish", path!~"/metrics|/health"}[5m])) / 300)
+        legend: '{{status}}'
+    overrides:
+      - matcher:
+          id: byRegexp
+          options: (^|.* )5[0-9][0-9]$
+        properties:
+          - id: color
+            value:
+              mode: fixed
+              fixedColor: red
+  - title: Server errors per hour
+    type: timeseries
+    defaults:
+      noValue: the counts could not be read in this time range
+      color:
+        mode: shades
+        fixedColor: red
+    description: A failing health check counts here too.
+    targets:
+      - expr: |-
+          sum((((http_requests_total{job="publish", status=~"5.."} unless http_requests_total{job="publish", status=~"5.."} offset
+          1h) and on (job, instance) (up offset 1h == 1)) or increase(http_requests_total{job="publish", status=~"5.."}[1h]))) or
+          (0 * (max(max_over_time(up{job="publish"}[2m])) == 1))
+        legend: server errors (5xx)
+  - title: Request time
+    type: timeseries
+    unit: s
+    defaults:
+      noValue: no requests in this time range, or the counts could not be read
+    description: Not counting the metrics scrape and the health checks. The slowest 10% line is estimated from fixed
+      time buckets. When nearly every request is faster than the limit of the first bucket, the line reads just
+      under that limit, and the real time can be lower.
+    targets:
+      - expr: |-
+          sum((((http_request_duration_seconds_sum{job="publish", path!~"/metrics|/health"} unless
+          http_request_duration_seconds_sum{job="publish", path!~"/metrics|/health"} offset 5m) and on (job, instance) (up offset
+          5m == 1)) or increase(http_request_duration_seconds_sum{job="publish", path!~"/metrics|/health"}[5m])) / 300) /
+          (sum((((http_request_duration_seconds_count{job="publish", path!~"/metrics|/health"} unless
+          http_request_duration_seconds_count{job="publish", path!~"/metrics|/health"} offset 5m) and on (job, instance) (up
+          offset 5m == 1)) or increase(http_request_duration_seconds_count{job="publish", path!~"/metrics|/health"}[5m])) / 300) >
+          0)
+        legend: mean
+      - expr: |-
+          histogram_quantile(0.9, sum by (le) ((((http_request_duration_seconds_bucket{job="publish", path!~"/metrics|/health"}
+          unless http_request_duration_seconds_bucket{job="publish", path!~"/metrics|/health"} offset 5m) and on (job, instance)
+          (up offset 5m == 1)) or increase(http_request_duration_seconds_bucket{job="publish", path!~"/metrics|/health"}[5m])) /
+          300)) and on () (sum((((http_request_duration_seconds_count{job="publish", path!~"/metrics|/health"} unless
+          http_request_duration_seconds_count{job="publish", path!~"/metrics|/health"} offset 5m) and on (job, instance) (up
+          offset 5m == 1)) or increase(http_request_duration_seconds_count{job="publish", path!~"/metrics|/health"}[5m])) / 300) >
+          0)
+        legend: slowest 10% take at least
+  - title: Busiest paths, last hour
+    type: bargauge
+    unit: short
+    height: 8
+    defaults:
+      color:
+        mode: fixed
+        fixedColor: blue
+      decimals: 0
+      noValue: no requests in the last hour
+      min: 0
+      displayName: ${__series.name}
+    targets:
+      - expr: |-
+          topk(10, round(sum by (route)
+          (label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace((((last_over_time(http_requests_total{job="publish",
+          path!~"/metrics|/health"}[2m]) unless last_over_time(http_requests_total{job="publish", path!~"/metrics|/health"}[2m]
+          offset 1h)) and on (job, instance) (last_over_time(up[2m] offset 1h) == 1)) or
+          increase(http_requests_total{job="publish", path!~"/metrics|/health"}[1h])), "route", "$1", "path", "(.*)"), "route",
+          "/blockers/{id}", "route", "/blockers/.+"), "route", "/c/{codebase}/$1", "route", "/c/[^/]+/(.*)"), "route",
+          "/consider/{id}", "route", "/consider/.+"), "route", "/publish/{id}", "route", "/publish/.+"), "route",
+          "/policy/{name}", "route", "/policy/.+"), "route", "/rate-limits/{group}", "route", "/rate-limits/.+"), "route",
+          "/$1/{codebase}/publish", "route", "/([^/]+)/[^/]+/publish"))) > 0)
+        legend: '{{route}}'
+    options:
+      orientation: horizontal
+      displayMode: basic
+      showUnfilled: true
+      namePlacement: left
+      text:
+        titleSize: 14
+      reduceOptions:
+        values: true
+        calcs: []
+        fields: ''
+      valueMode: text
+    description: 'Requests in the last hour. Not counting the metrics scrape and the health checks. Codebase names,
+      blocker, run and publish ids, and policy and rate limit group names are folded into one path. No bars: no
+      requests in the last hour, or the counts could not be read.'

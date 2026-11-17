@@ -1,0 +1,11 @@
+# Managed by Ansible (roles/monitoring).
+[Unit]
+Description=Write the run and pipeline counts for the node exporter every minute
+
+[Timer]
+OnActiveSec=0
+OnUnitActiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
