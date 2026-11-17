@@ -14,6 +14,10 @@ pub enum BzrError {
     #[error("Python error: {0}")]
     Python(String),
 
+    /// Breezy errors
+    #[error("Breezy error: {0}")]
+    Breezy(#[source] Box<breezyshim::error::Error>),
+
     /// Database errors
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
@@ -86,6 +90,12 @@ impl BzrError {
     }
 }
 
+impl From<breezyshim::error::Error> for BzrError {
+    fn from(e: breezyshim::error::Error) -> Self {
+        Self::Breezy(Box::new(e))
+    }
+}
+
 impl IntoResponse for BzrError {
     fn into_response(self) -> Response {
         let (status, error_message) = match self {
@@ -94,6 +104,7 @@ impl IntoResponse for BzrError {
             BzrError::InvalidRequest { .. } => (StatusCode::BAD_REQUEST, "Invalid request"),
             BzrError::Repository { .. } => (StatusCode::NOT_FOUND, "Repository error"),
             BzrError::Python(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Python error"),
+            BzrError::Breezy(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Breezy error"),
             BzrError::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
             BzrError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, "IO error"),
             BzrError::Template(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Template error"),
