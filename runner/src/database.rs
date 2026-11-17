@@ -739,12 +739,6 @@ INSERT INTO run (
         instigated_context: Option<&serde_json::Value>,
         queue_id: i64,
     ) -> Result<FinishOutcome, sqlx::Error> {
-        crate::metrics::MetricsCollector::record_run_completion(
-            &result.campaign,
-            &result.code,
-            (result.finish_time - result.start_time).num_milliseconds() as f64 / 1000.0,
-        );
-
         // Idempotency guard. Cheap (PK lookup); we surface
         // AlreadyStored to the caller rather than silently no-op'ing
         // so the client sees the truth (409, not 201) and the
@@ -793,6 +787,11 @@ INSERT INTO run (
             .await?;
 
         tx.commit().await?;
+        crate::metrics::MetricsCollector::record_run_completion(
+            &result.campaign,
+            &result.code,
+            (result.finish_time - result.start_time).num_milliseconds() as f64 / 1000.0,
+        );
         Ok(FinishOutcome::Stored)
     }
 
