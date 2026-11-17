@@ -40,3 +40,21 @@ jobs:
           set -o pipefail
           cat schema/state.sql schema/debian/debian.sql \
             | pg_virtualenv psql -v ON_ERROR_STOP=1
+
+      - name: Check that the migrations match state.sql
+        run: |
+          set -x
+          # schema/state.sql from before the first migration
+          git fetch --depth=1 origin 33b8a3310a8b23c334909d9b4dd9c2c15e229774
+          git show FETCH_HEAD:schema/state.sql > old-state.sql
+          pg_virtualenv bash -ec '
+            createdb old
+            psql -q -v ON_ERROR_STOP=1 -f old-state.sql old
+            for f in schema/migrations/*.sql; do
+              psql -q -v ON_ERROR_STOP=1 -1 -f "$f" old
+            done
+            createdb new
+            psql -q -v ON_ERROR_STOP=1 -f schema/state.sql new
+            diff -u <(pg_dump -s --restrict-key=x old) \
+              <(pg_dump -s --restrict-key=x new)
+          '

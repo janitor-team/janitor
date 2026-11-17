@@ -1,6 +1,4 @@
 -- Rename the suite columns of run, queue and candidate to campaign.
--- Apply once to databases created from a schema/state.sql that predates the rename.
-BEGIN;
 
 DROP VIEW absorbed_runs, change_set_unpublished, change_set_todo, publish_ready, queue_positions, first_run_time, perpetual_candidates, campaigns, last_unabsorbed_runs, last_effective_runs, last_runs;
 
@@ -263,5 +261,3 @@ CREATE OR REPLACE VIEW absorbed_runs AS
     AND run.result_code = 'success'
     AND publish.result_code = 'success'
     AND run.campaign not in ('unchanged', 'control');
-
-COMMIT;

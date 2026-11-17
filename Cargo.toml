@@ -8,7 +8,7 @@ license = "GPL-3.0+"
 repository = "https://github.com/jelmer/janitor.git"
 homepage = "https://github.com/jelmer/janitor"
 build = "build.rs"
-include = ["src/**/*", "schema/state.sql", "schema/debian/debian.sql", "README.md"]
+include = ["src/**/*", "schema/state.sql", "schema/migrations/*.sql", "schema/debian/debian.sql", "README.md"]
 
 [dependencies]
 breezyshim = { workspace = true, features = ["sqlx"] }
