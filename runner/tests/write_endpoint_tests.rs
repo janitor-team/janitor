@@ -2116,10 +2116,6 @@ async fn assign_response_envelope_has_all_documented_fields() {
         "build.config must be an object, got {:?}",
         build.config
     );
-    assert!(
-        build.environment.is_some(),
-        "build.environment must be an object"
-    );
 
     // Python sent the codemod an empty environment; the command
     // environment goes in the top-level `env`.

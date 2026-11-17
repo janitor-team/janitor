@@ -37,9 +37,9 @@
 <ul>
 <li><b>Target</b>: {{ assignment.build.target }}</li>
 <li><b>Force Build</b>: {{ assignment.force_build }}</li>
-{% if let Some(build_env) = assignment.build.environment %}
+{% if !assignment.build.environment.is_empty() %}
 <li><b>Environment</b>: <ul>
-{% for (key, value) in build_env.iter() %}
+{% for (key, value) in assignment.build.environment.iter() %}
 <li>{{ key }}: {{ value }}</li>
 {% endfor %}
 </ul>

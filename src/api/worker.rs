@@ -213,7 +213,7 @@ pub struct Build {
     pub target: String,
     #[cfg_attr(feature = "utoipa", schema(value_type = Object))]
     pub config: serde_json::Value,
-    pub environment: Option<HashMap<String, String>>,
+    pub environment: HashMap<String, String>,
 }
 
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
@@ -479,7 +479,7 @@ mod tests {
             "build": {
                 "target": "debian",
                 "config": {},
-                "environment": null
+                "environment": {}
             }
         }"#;
         let assignment: Assignment = serde_json::from_str(json).unwrap();
