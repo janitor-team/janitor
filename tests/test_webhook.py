@@ -58,6 +58,7 @@ def _launchpad_git_push(repository, path, ref_changes):
         "git_repository_path": path,
         "ref_changes": ref_changes,
     }
+    assert webhook.LaunchpadGitPushSchema().validate(body) == {}
     return [
         (change.urls, change.after)
         for change in webhook.get_git_changes_from_launchpad_webhook(body)

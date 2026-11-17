@@ -182,6 +182,58 @@ async def test_webhook_github_push_reschedules_without_crashing(
     )
 
 
+@pytest.mark.parametrize(
+    "headers, payload, errors",
+    [
+        (
+            {"X-Gitea-Event": "push"},
+            {"ref": "refs/heads/main"},
+            {
+                "after": ["Missing data for required field."],
+                "repository": ["Missing data for required field."],
+            },
+        ),
+        (
+            {"X-GitHub-Event": "push"},
+            {
+                "ref": "refs/heads/main",
+                "repository": {"clone_url": "https://example.com/example"},
+            },
+            {"after": ["Missing data for required field."]},
+        ),
+        (
+            {"X-GitHub-Event": "push"},
+            {"ref": "refs/heads/main", "after": "0" * 40, "repository": "example"},
+            {"repository": {"_schema": ["Invalid input type."]}},
+        ),
+        (
+            {"X-Launchpad-Event-Type": "bzr:push:0.1"},
+            {},
+            {
+                "bzr_branch_path": ["Missing data for required field."],
+                "new": ["Missing data for required field."],
+            },
+        ),
+        (
+            {"X-Gitlab-Event": "Push Hook"},
+            [],
+            {"_schema": ["Invalid input type."]},
+        ),
+    ],
+    ids=["gitea", "github", "github-wrong-type", "launchpad", "not-an-object"],
+)
+async def test_webhook_push_with_a_bad_body(
+    aiohttp_client, database_location, headers, payload, errors
+):
+    _private_app, app = await create_app(
+        config=create_config(database_location), redis=FakeRedis()
+    )
+    client = await aiohttp_client(app)
+    resp = await client.post("/webhook", headers=headers, json=payload)
+    assert resp.status == 400
+    assert await resp.text() == f"Invalid webhook body: {errors}"
+
+
 async def test_webhook_push_schedules_via_runner(aiohttp_client, database_location):
     conn = await asyncpg.connect(database_location)
     try:
