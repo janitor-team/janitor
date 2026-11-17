@@ -739,11 +739,12 @@ impl std::error::Error for WorkerInvalidResponse {}
 /// * `request` - The publish request to send to the worker
 ///
 /// # Returns
-/// A tuple of the exit code and the response value, or an error
+/// The worker's result or the failure it reported, or an error if the
+/// worker did not produce a valid response
 async fn run_worker_process(
     args: Vec<String>,
     request: PublishOneRequest,
-) -> Result<(i32, serde_json::Value), WorkerInvalidResponse> {
+) -> Result<Result<PublishOneResult, PublishOneError>, WorkerInvalidResponse> {
     let mut p = tokio::process::Command::new(&args[0])
         .args(&args[1..])
         .stdin(std::process::Stdio::piped())
@@ -772,9 +773,7 @@ async fn run_worker_process(
         let mut output = Vec::new();
         tokio::io::AsyncReadExt::read_to_end(&mut stdout, &mut output).await?;
 
-        let response =
-            serde_json::from_reader(&mut output.as_slice()).map_err(WorkerInvalidResponse::from)?;
-        Ok((status.code().unwrap_or(-1), response))
+        Ok(Ok(serde_json::from_slice(&output)?))
     } else if status.code() == Some(1) {
         let mut stdout = p.stdout.take().ok_or_else(|| {
             WorkerInvalidResponse::from("Failed to get stdout handle".to_string())
@@ -784,13 +783,12 @@ async fn run_worker_process(
         })?;
         let mut output = Vec::new();
         tokio::io::AsyncReadExt::read_to_end(&mut stdout, &mut output).await?;
-        let response =
-            serde_json::from_reader(&mut output.as_slice()).map_err(WorkerInvalidResponse::from)?;
+        let response = serde_json::from_slice(&output)?;
         let mut error = Vec::new();
         tokio::io::AsyncReadExt::read_to_end(&mut stderr, &mut error).await?;
         use std::io::Write;
         std::io::stderr().write_all(&error)?;
-        return Ok((status.code().unwrap_or(1), response));
+        return Ok(Err(response));
     } else {
         let mut stderr = p.stderr.take().ok_or_else(|| {
             WorkerInvalidResponse::from("Failed to get stderr handle".to_string())
@@ -911,7 +909,11 @@ impl PublishWorker {
             ));
         }
 
-        let (returncode, response) = if let Some(lock_manager) = &self.lock_manager {
+        let invalid_response = |e: WorkerInvalidResponse| PublishError::Failure {
+            code: "publisher-invalid-response".to_string(),
+            description: e.to_string(),
+        };
+        let response = if let Some(lock_manager) = &self.lock_manager {
             match lock_manager
                 .lock(
                     format!("publish:{}", target_branch_url).as_bytes(),
@@ -920,91 +922,62 @@ impl PublishWorker {
                 .await
             {
                 Ok(rl) => {
-                    let (returncode, response) = match run_worker_process(args, request).await {
-                        Ok((returncode, response)) => (returncode, response),
-                        Err(e) => {
-                            return Err(PublishError::Failure {
-                                code: "publisher-invalid-response".to_string(),
-                                description: e.to_string(),
-                            });
-                        }
-                    };
+                    let response = run_worker_process(args, request)
+                        .await
+                        .map_err(invalid_response)?;
                     lock_manager.unlock(&rl).await;
-                    (returncode, response)
+                    response
                 }
                 Err(_) => {
                     return Err(PublishError::BranchBusy(target_branch_url.clone()));
                 }
             }
         } else {
-            match run_worker_process(args, request).await {
-                Ok((returncode, response)) => (returncode, response),
-                Err(e) => {
-                    return Err(PublishError::Failure {
-                        code: "publisher-invalid-response".to_string(),
-                        description: e.to_string(),
-                    });
-                }
-            }
+            run_worker_process(args, request)
+                .await
+                .map_err(invalid_response)?
         };
 
-        if returncode == 1 {
-            let error: PublishOneError =
-                serde_json::from_value(response).map_err(|e| PublishError::Failure {
-                    code: "publisher-invalid-response".to_string(),
-                    description: e.to_string(),
-                })?;
-            return Err(PublishError::Failure {
-                code: error.code,
-                description: error.description,
-            });
-        }
+        let result = response.map_err(|error| PublishError::Failure {
+            code: error.code,
+            description: error.description,
+        })?;
 
-        if returncode == 0 {
-            let result: PublishOneResult =
-                serde_json::from_value(response).map_err(|e| PublishError::Failure {
-                    code: "publisher-invalid-response".to_string(),
-                    description: e.to_string(),
-                })?;
+        if result.proposal_url.is_some() && result.is_new.unwrap_or(false) {
+            // Publish merge proposal event to Redis
+            if let Some(redis_manager) = self.redis_manager.as_ref() {
+                let event = crate::redis::MergeProposalEvent {
+                    url: result
+                        .proposal_url
+                        .as_ref()
+                        .expect("proposal_url just checked to be Some")
+                        .to_string(),
+                    web_url: result.proposal_web_url.as_ref().map(|u| u.to_string()),
+                    status: "open".to_string(),
+                    codebase: codebase.clone(),
+                    campaign: campaign.clone(),
+                    target_branch_url: result.target_branch_url.to_string(),
+                    target_branch_web_url: result
+                        .target_branch_web_url
+                        .as_ref()
+                        .map(|u| u.to_string()),
+                    timestamp: chrono::Utc::now(),
+                };
 
-            if result.proposal_url.is_some() && result.is_new.unwrap_or(false) {
-                // Publish merge proposal event to Redis
-                if let Some(redis_manager) = self.redis_manager.as_ref() {
-                    let event = crate::redis::MergeProposalEvent {
-                        url: result
-                            .proposal_url
-                            .as_ref()
-                            .expect("proposal_url just checked to be Some")
-                            .to_string(),
-                        web_url: result.proposal_web_url.as_ref().map(|u| u.to_string()),
-                        status: "open".to_string(),
-                        codebase: codebase.clone(),
-                        campaign: campaign.clone(),
-                        target_branch_url: result.target_branch_url.to_string(),
-                        target_branch_web_url: result
-                            .target_branch_web_url
-                            .as_ref()
-                            .map(|u| u.to_string()),
-                        timestamp: chrono::Utc::now(),
-                    };
-
-                    let publisher = crate::redis::RedisPublisher::new(redis_manager.clone());
-                    if let Err(e) = publisher.publish_merge_proposal(&event).await {
-                        log::warn!("Failed to publish merge proposal event to Redis: {}", e);
-                    }
-                }
-
-                if let Some(bucket) = rate_limit_bucket {
-                    if let Some(rate_limiter) = bucket_rate_limiter.as_mut() {
-                        rate_limiter.inc(bucket);
-                    }
+                let publisher = crate::redis::RedisPublisher::new(redis_manager.clone());
+                if let Err(e) = publisher.publish_merge_proposal(&event).await {
+                    log::warn!("Failed to publish merge proposal event to Redis: {}", e);
                 }
             }
 
-            return Ok(result);
+            if let Some(bucket) = rate_limit_bucket {
+                if let Some(rate_limiter) = bucket_rate_limiter.as_mut() {
+                    rate_limiter.inc(bucket);
+                }
+            }
         }
 
-        unreachable!();
+        Ok(result)
     }
 }
 
