@@ -1488,9 +1488,14 @@ async fn publish(
     State(state): State<Arc<AppState>>,
     Path((campaign, codebase)): Path<(Campaign, CodebaseName)>,
     Query(query): Query<PublishQuery>,
-    axum::extract::Form(form): axum::extract::Form<PublishForm>,
+    form: Result<axum::extract::Form<PublishForm>, axum::extract::rejection::FormRejection>,
 ) -> Response {
     log::info!("Handling request to publish {}/{}", codebase, campaign);
+
+    let form = match form {
+        Ok(axum::extract::Form(f)) => f,
+        Err(_) => return (StatusCode::BAD_REQUEST, Json(EmptyResponse {})).into_response(),
+    };
 
     let run = match crate::state::get_last_effective_run(&state.conn, &codebase, &campaign).await {
         Ok(Some(r)) => Arc::new(r),
@@ -1546,7 +1551,7 @@ async fn publish(
     // to every role, or the per-role policy mode with MODE_SKIP as
     // the fallback. The form mode is already typed; policy modes come
     // out of the database as strings. None means skip/build-only (or
-    // an unparseable policy entry): the role gets a publish_id but no
+    // an unparsable policy entry): the role gets a publish_id but no
     // work.
     let branches: Vec<(String, Option<crate::Mode>)> = if let Some(m) = form.mode {
         let mode: crate::Mode = m.into();
