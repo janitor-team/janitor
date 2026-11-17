@@ -949,6 +949,33 @@ async def test_login_keeps_only_a_url_the_site_serves(
     }
 
 
+async def test_logged_out_navigation_comes_back_after_login(
+    aiohttp_client, aiohttp_server, database_location
+):
+    provider = await _start_provider(aiohttp_server)
+    client = await _openid_site(
+        aiohttp_client, database_location, provider, external_url=None
+    )
+    page = str(client.make_url("/api-tokens"))
+    back_urls = []
+    for method, path, headers in [
+        ("GET", "/api-tokens", {}),
+        ("POST", "/api-tokens/abc/delete", {"Referer": page}),
+        ("POST", "/api-tokens/abc/delete", {}),
+    ]:
+        resp = await client.request(
+            method,
+            path,
+            headers={"Sec-Fetch-Mode": "navigate", **headers},
+            allow_redirects=False,
+        )
+        login = await client.get(resp.headers["Location"], allow_redirects=False)
+        assert login.status == 302
+        back_url = login.cookies.get("back_url")
+        back_urls.append(back_url.value if back_url else None)
+    assert back_urls == ["/api-tokens", "/api-tokens", None]
+
+
 async def test_oauth_callback_goes_back_only_to_a_url_the_site_serves(
     aiohttp_client, aiohttp_server, database_location
 ):
