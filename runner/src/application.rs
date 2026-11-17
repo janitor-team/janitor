@@ -199,6 +199,11 @@ impl ApplicationBuilder {
             .map_err(|e| {
                 ApplicationError::Database(format!("Failed to create database pool: {}", e))
             })?;
+        janitor::schema::upgrade(&database_pool)
+            .await
+            .map_err(|e| {
+                ApplicationError::Database(format!("Failed to upgrade the database: {}", e))
+            })?;
 
         let database = Arc::new(
             RunnerDatabase::new_with_redis_url(

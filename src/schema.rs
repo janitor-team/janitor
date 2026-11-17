@@ -4,6 +4,37 @@ pub const CORE_SCHEMA: &str = include_str!("../schema/state.sql");
 /// Debian-specific database schema extensions
 pub const DEBIAN_SCHEMA: &str = include_str!("../schema/debian/debian.sql");
 
+/// Migrations that bring a database set up from an older `schema/state.sql` up to date.
+pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./schema/migrations");
+
+/// Load the core schema into an empty database, or apply the pending migrations.
+pub async fn upgrade(pool: &sqlx::PgPool) -> Result<(), sqlx::migrate::MigrateError> {
+    use sqlx::migrate::Migrate;
+    use sqlx::Connection;
+    use sqlx::Executor;
+
+    // A connection of its own, so the lock goes away with it on any error.
+    let mut conn = pool.acquire().await?.detach();
+    conn.lock().await?;
+    let (has_run, has_suite): (bool, bool) = sqlx::query_as(
+        "SELECT to_regclass('run') IS NOT NULL, \
+         EXISTS (SELECT FROM information_schema.columns \
+                 WHERE table_name = 'run' AND column_name = 'suite')",
+    )
+    .fetch_one(&mut conn)
+    .await?;
+    if !has_run {
+        conn.execute(sqlx::raw_sql(CORE_SCHEMA)).await?;
+        MIGRATOR.skip(&mut conn, None).await?;
+    } else if !has_suite {
+        // Already past the suite rename, so the first migration does not apply.
+        MIGRATOR.skip(&mut conn, Some(1)).await?;
+    }
+    MIGRATOR.run(&mut conn).await?;
+    conn.unlock().await?;
+    Ok(conn.close().await?)
+}
+
 #[cfg(feature = "testing")]
 /// Set up a test database with core janitor schema.
 ///
@@ -29,7 +60,7 @@ pub async fn setup_debian_test_database(pool: &sqlx::PgPool) -> Result<(), sqlx:
 #[cfg(all(test, feature = "testing"))]
 mod tests {
     use super::*;
-    use crate::test_utils::TestDatabase;
+    use crate::test_utils::{TestDatabase, TestSchema};
 
     async fn table_names(pool: &sqlx::PgPool, names: &[&str]) -> Vec<String> {
         sqlx::query_scalar(
@@ -64,6 +95,30 @@ mod tests {
             table_names(db.pool(), &["debian_build"]).await,
             Vec::<String>::new()
         );
+    }
+
+    async fn applied_migrations(pool: &sqlx::PgPool) -> Vec<i64> {
+        sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success ORDER BY version")
+            .fetch_all(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_upgrade() {
+        let all: Vec<i64> = MIGRATOR.iter().map(|m| m.version).collect();
+        for schema in [TestSchema::Empty, TestSchema::Core] {
+            let Some(db) = TestDatabase::new_optional_with_schema(schema)
+                .await
+                .unwrap()
+            else {
+                return;
+            };
+            upgrade(db.pool()).await.unwrap();
+            upgrade(db.pool()).await.unwrap();
+            assert_eq!(applied_migrations(db.pool()).await, all);
+            assert_eq!(table_names(db.pool(), &["run"]).await, ["run"]);
+        }
     }
 
     #[tokio::test]
