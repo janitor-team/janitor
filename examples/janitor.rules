@@ -46,15 +46,6 @@ groups:
     annotations:
       description: Job {{ $labels.job }} instance {{ $labels.instance }} is down.
       summary: Janitor archiver is down
-  - alert: JanitorArchiverDown
-    expr: up{job="janitor.archiver"} == 0
-    for: 1h
-    labels:
-      severity: critical
-      project: janitor
-    annotations:
-      description: Job {{ $labels.job }} instance {{ $labels.instance }} is down.
-      summary: Janitor archiver is down
   - alert: JanitorScheduleNotRunning
     expr: ((time() - job_last_success_unixtime{exported_job="janitor.schedule"}) / 3600) > 48
     for: 1h
