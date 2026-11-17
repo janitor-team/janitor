@@ -159,7 +159,9 @@ mod tests {
     test_with_database! {
         schema = Core;
         async fn test_finish_run_inserts_run_and_result_branches(test_db: TestDatabase) {
+            use crate::database::FinishOutcome;
             use crate::{JanitorResult, ResultResume};
+            use janitor_service::testing::{capture_local, Snapshot, Value};
             use breezyshim::RevisionId;
             use chrono::{Duration as ChronoDuration, Utc};
 
@@ -228,7 +230,7 @@ mod tests {
             // because JanitorResult::change_set is None.
             let log_id = "finish-run-1";
             let start_time = Utc::now() - ChronoDuration::minutes(2);
-            let finish_time = Utc::now();
+            let finish_time = start_time + ChronoDuration::minutes(2);
 
             let mut result = JanitorResult {
                 log_id: janitor_types::RunId::new(log_id).unwrap(),
@@ -271,15 +273,28 @@ mod tests {
             };
 
             let runner_db = create_test_runner_db(&test_db);
-            runner_db
-                .finish_run(
-                    &mut result,
-                    "lintian-brush",
-                    Some(&serde_json::json!({"from": "test"})),
-                    queue_id,
-                )
-                .await
-                .expect("finish_run should succeed");
+            let (outcome, recorded) = capture_local(runner_db.finish_run(
+                &mut result,
+                "lintian-brush",
+                Some(&serde_json::json!({"from": "test"})),
+                queue_id,
+            ))
+            .await;
+            assert_eq!(outcome.unwrap(), FinishOutcome::Stored);
+            assert_eq!(
+                recorded,
+                Snapshot::from([
+                    (
+                        "build_duration{campaign=\"lintian-fixes\"}".to_string(),
+                        Value::Histogram(vec![120.0])
+                    ),
+                    (
+                        "result_total{campaign=\"lintian-fixes\",result_code=\"success\"}"
+                            .to_string(),
+                        Value::Counter(1)
+                    ),
+                ])
+            );
 
             // finish_run is expected to have created a change_set row
             // whose id is the log_id.
@@ -349,6 +364,13 @@ mod tests {
                     .await
                     .unwrap();
             assert_eq!(queue_remaining, 0);
+
+            // A retried /finish is not counted again.
+            let (outcome, recorded) =
+                capture_local(runner_db.finish_run(&mut result, "lintian-brush", None, queue_id))
+                    .await;
+            assert_eq!(outcome.unwrap(), FinishOutcome::AlreadyStored);
+            assert_eq!(recorded, Snapshot::new());
         }
     }
 
