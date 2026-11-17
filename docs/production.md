@@ -93,6 +93,9 @@ the cupboard page and create one there, then send it as an
 `Authorization: Bearer <token>` header to the API. Tokens have a limited
 lifetime. The same page lists and deletes them.
 
+The API is documented at `<external_url>/api/docs`, and the cupboard API
+at `<external_url>/cupboard/api/docs`.
+
 ## Optional configuration
 
 A few `janitor.conf` fields are optional, each with a clean fallback if left
