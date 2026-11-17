@@ -47,3 +47,19 @@
     {{ janitor_sbuild_apt_found.files | default([]) | map(attribute='path')
        | map('relpath', janitor_quadlet_sbuild_apt_dir) | difference(janitor_quadlet_sbuild_apt_files) }}
   register: janitor_sbuild_apt_removed
+
+- name: Write the apt cache settings of the sbuild chroot
+  ansible.builtin.template:
+    src: janitor-apt-proxy.conf.j2
+    dest: "{{ janitor_quadlet_sbuild_apt_dir }}/proxy.conf"
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  register: janitor_sbuild_proxy
+  when: enable_apt_cacher_ng | bool
+
+- name: Remove the apt cache settings without enable_apt_cacher_ng
+  ansible.builtin.file:
+    path: "{{ janitor_quadlet_sbuild_apt_dir }}/proxy.conf"
+    state: absent
+  register: janitor_sbuild_proxy_removed
+  when: not enable_apt_cacher_ng | bool

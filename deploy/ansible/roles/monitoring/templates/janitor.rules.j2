@@ -5,7 +5,7 @@ groups:
     rules:
       - alert: MetricsUnreachable
         # A health check job's up is the blackbox exporter's, and the blackbox job checks that.
-        expr: up{job!~"health|worker|ognibuild_dep"} == 0
+        expr: up{job!~"health|worker|ognibuild_dep|apt_cacher_ng"} == 0
         for: 5m
         annotations:
           summary: {% raw %}"Prometheus cannot get the metrics of {{ $labels.job }} at {{ $labels.instance }}"{% endraw %}
@@ -30,7 +30,7 @@ groups:
       - alert: ServiceNotActive
         expr: >-
           max_over_time(janitor_unit_state{state!~"active|failed",
-            unit=~"(janitor-({{ janitor_unit_names | join('|') }})|gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|postgresql@.+|postfix|janitor-worker-firewall)[.]service|janitor-sbuild-chroot[.]timer"}[2m]) == 1
+            unit=~"(janitor-({{ janitor_unit_names | join('|') }})|gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|postgresql@.+|postfix|janitor-worker-firewall|apt-cacher-ng|janitor-apt-cacher-ng-firewall)[.]service|janitor-sbuild-chroot[.]timer"}[2m]) == 1
         for: 5m
         annotations:
           summary: {% raw %}"{{ $labels.unit }} on {{ $labels.host }} is not active (systemd state: {{ $labels.state }})"{% endraw %}
@@ -44,12 +44,12 @@ groups:
 
       - alert: ServiceStatesMissingOrOld
         expr: >-
-          time() - ((max_over_time(node_textfile_mtime_seconds{file=~".*(units|runs)[.]prom"}[24h])) and on (instance) up{job="node"}) > 300
+          time() - ((max_over_time(node_textfile_mtime_seconds{file=~".*(units|runs)[.]prom"}[24h]) or last_over_time(node_textfile_mtime_seconds{file=~".*apt_cacher_ng[.]prom"}[2m])) and on (instance) up{job="node"}) > 300
           or last_over_time(node_textfile_scrape_error[2m]) == 1
           or (max_over_time(up{job="node"}[2m]) == 1 unless on (instance) last_over_time(node_textfile_mtime_seconds{file=~".*units[.]prom"}[2m]))
           or (max_over_time(up{job="node", host="{{ inventory_hostname }}"}[2m]) == 1 unless on (instance) last_over_time(node_textfile_mtime_seconds{file=~".*runs[.]prom"}[2m]))
         annotations:
-          summary: {% raw %}"The service states of {{ $labels.host }}, or on the control host its run counts, are missing, or its service states or run counts are older than 5 minutes (an old file, or for up to 24 hours a node exporter that does not answer), or a metrics file on that host cannot be read"{% endraw %}
+          summary: {% raw %}"The service states of {{ $labels.host }}, or on the control host its run counts, are missing, or its service states, run counts or apt-cacher-ng counts are older than 5 minutes (an old file, or for up to 24 hours a node exporter that does not answer), or a metrics file on that host cannot be read"{% endraw %}
 
       - alert: WorkerRunsCrashed
         expr: last_over_time(janitor_worker_job_panics_last_hour[2m]) > 0

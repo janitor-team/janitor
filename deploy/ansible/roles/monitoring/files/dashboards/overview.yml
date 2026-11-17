@@ -414,65 +414,65 @@ panels:
       - expr: |-
           sort_by_label(label_replace(max by (service) (
             label_replace(6 * ((janitor_unit_state{state="failed",
-          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"} or
+          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"} or
           ((last_over_time(janitor_unit_state{state="failed",
-          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"}[2m]) and
-          (max_over_time(timestamp(janitor_unit_state{state="failed",
-          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"})[2m:10s]) >= on
-          (host) group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
-          up{job="node"} == 1)) == 1), "service", "$1", "unit",
-          "(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service")
+          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"}[2m])
+          and (max_over_time(timestamp(janitor_unit_state{state="failed",
+          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"})[2m:10s])
+          >= on (host) group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on
+          (host) up{job="node"} == 1)) == 1), "service", "$1", "unit",
+          "(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service")
             or label_replace(5 *
-          ((round(increase(janitor_unit_restarts_total{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"}[15m]))
+          ((round(increase(janitor_unit_restarts_total{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"}[15m]))
           > 2 or
-          round(increase(janitor_unit_restarts_total{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"}[1h]))
+          round(increase(janitor_unit_restarts_total{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"}[1h]))
           > 3) > bool 0) and on (host, unit)
-          (janitor_unit_restarts_total{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"}
+          (janitor_unit_restarts_total{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"}
           or
-          ((last_over_time(janitor_unit_restarts_total{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"}[2m])
+          ((last_over_time(janitor_unit_restarts_total{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"}[2m])
           and
-          (max_over_time(timestamp(janitor_unit_restarts_total{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"})[2m:10s])
+          (max_over_time(timestamp(janitor_unit_restarts_total{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"})[2m:10s])
           >= on (host) group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on
           (host) up{job="node"} == 1)), "service", "$1", "unit",
-          "(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service")
+          "(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service")
             or label_replace(4 * ((janitor_unit_state{state="inactive",
-          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"} or
+          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"} or
           ((last_over_time(janitor_unit_state{state="inactive",
-          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"}[2m]) and
-          (max_over_time(timestamp(janitor_unit_state{state="inactive",
-          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"})[2m:10s]) >= on
-          (host) group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
-          up{job="node"} == 1)) == 1), "service", "$1", "unit",
-          "(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service")
+          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"}[2m])
+          and (max_over_time(timestamp(janitor_unit_state{state="inactive",
+          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"})[2m:10s])
+          >= on (host) group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on
+          (host) up{job="node"} == 1)) == 1), "service", "$1", "unit",
+          "(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service")
             or label_replace(2 * ((janitor_unit_state{state!~"active|inactive|failed",
-          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"} or
+          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"} or
           ((last_over_time(janitor_unit_state{state!~"active|inactive|failed",
-          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"}[2m]) and
-          (max_over_time(timestamp(janitor_unit_state{state!~"active|inactive|failed",
-          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"})[2m:10s]) >= on
-          (host) group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
-          up{job="node"} == 1)) == 1), "service", "$1", "unit",
-          "(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service")
+          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"}[2m])
+          and (max_over_time(timestamp(janitor_unit_state{state!~"active|inactive|failed",
+          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"})[2m:10s])
+          >= on (host) group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on
+          (host) up{job="node"} == 1)) == 1), "service", "$1", "unit",
+          "(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service")
             or
-          label_replace((increase(janitor_unit_restarts_total{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"}[1h])
+          label_replace((increase(janitor_unit_restarts_total{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"}[1h])
           > bool 0) and on (host, unit)
-          (janitor_unit_restarts_total{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"}
+          (janitor_unit_restarts_total{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"}
           or
-          ((last_over_time(janitor_unit_restarts_total{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"}[2m])
+          ((last_over_time(janitor_unit_restarts_total{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"}[2m])
           and
-          (max_over_time(timestamp(janitor_unit_restarts_total{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"})[2m:10s])
+          (max_over_time(timestamp(janitor_unit_restarts_total{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"})[2m:10s])
           >= on (host) group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on
           (host) up{job="node"} == 1)), "service", "$1", "unit",
-          "(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service")
+          "(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service")
             or label_replace(0 * ((janitor_unit_state{state="active",
-          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"} or
+          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"} or
           ((last_over_time(janitor_unit_state{state="active",
-          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"}[2m]) and
-          (max_over_time(timestamp(janitor_unit_state{state="active",
-          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"})[2m:10s]) >= on
-          (host) group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
-          up{job="node"} == 1)) == 1), "service", "$1", "unit",
-          "(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service")
+          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"}[2m])
+          and (max_over_time(timestamp(janitor_unit_state{state="active",
+          unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"})[2m:10s])
+          >= on (host) group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on
+          (host) up{job="node"} == 1)) == 1), "service", "$1", "unit",
+          "(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service")
             or label_replace(6 * ((janitor_unit_state{state="failed",
           unit=~"prometheus-(blackbox-exporter|pushgateway)[.]service"} or ((last_over_time(janitor_unit_state{state="failed",
           unit=~"prometheus-(blackbox-exporter|pushgateway)[.]service"}[2m]) and
@@ -615,6 +615,9 @@ panels:
             or label_replace(0 * last_over_time(redis_up[2m]), "service", "redis-server", "job", ".*")
             or label_replace(3 * (max(last_over_time(postfix_up[2m])) == bool 0), "service", "postfix", "", "")
             or label_replace(0 * max(last_over_time(postfix_up[2m])), "service", "postfix", "", "")
+            or label_replace(3 * (max_over_time(probe_success{job="apt_cacher_ng"}[2m]) == bool 0), "service", "apt-cacher-ng",
+          "job", ".*")
+            or label_replace(0 * last_over_time(probe_success{job="apt_cacher_ng"}[2m]), "service", "apt-cacher-ng", "job", ".*")
           ), "order", "b", "service", "blackbox|pushgateway|.+-exporter"), "order", "service")
         legend: '{{service}}'
     width: 16
@@ -678,6 +681,16 @@ panels:
           - color: red
             value: 3
     overrides:
+      - matcher:
+          id: byName
+          options: apt-cacher-ng
+        properties:
+          - id: displayName
+            value: apt-cacher-ng
+          - id: links
+            value:
+              - title: Open its dashboard
+                url: /d/janitor-apt-cache?${__url_time_range}
       - matcher:
           id: byName
           options: caddy
@@ -843,21 +856,22 @@ panels:
         url: /d/janitor-host?${__url_time_range}
     description: 'up: running. restarted: systemd restarted it in the last hour. starting, stopping or reloading:
       systemd is changing its state, or it is in another short-lived state such as maintenance. unreachable: its
-      metrics do not answer, or, for PostgreSQL and Redis, their metrics collector cannot connect to them, and for
-      Postfix, its metrics collector cannot read the mail queue. stopped: not running. restarting in a loop: more
-      than 2 restarts in 15 minutes or more than 3 in an hour. failed: systemd marked it failed. no data: Prometheus
-      has nothing for any of them. With the node exporter, Hosts shows the state of each one in "Service, socket
-      and timer states per host", and its start and stop times in "Software Janitor runs on, and its monitoring:
-      last started and stopped". With the node exporter, "Host metrics collector (node exporter)" is the node exporter
-      of every host and shows the worst one, and Hosts shows each host in "Host metrics". With the node exporter,
-      its value comes from metrics files the hosts write: an old, missing or unreadable file, or a node exporter
-      that does not answer, makes it wrong or empty ("Service state data age" shows the files'' age, "Host metrics"
-      on Hosts a node exporter that does not answer). Without the node exporter there are no service states, so
-      restarted, starting, stopping or reloading, stopped, restarting in a loop and failed do not show. The state
-      of each entry comes from the sources this text names. A source that is off or does not answer gives none of
-      its states, except that metrics that do not answer show as unreachable, as this text says. Otherwise the entry
-      shows only what its other sources give, and leaves the tile when none is left. "Host metrics" on Hosts and
-      the entries of this tile, such as "Health checker", show which source does not answer.'
+      metrics do not answer, its health check does not answer 200 (only apt-cacher-ng has one), or, for PostgreSQL
+      and Redis, their metrics collector cannot connect to them, and for Postfix, its metrics collector cannot read
+      the mail queue. stopped: not running. restarting in a loop: more than 2 restarts in 15 minutes or more than
+      3 in an hour. failed: systemd marked it failed. no data: Prometheus has nothing for any of them. With the
+      node exporter, Hosts shows the state of each one in "Service, socket and timer states per host", and its start
+      and stop times in "Software Janitor runs on, and its monitoring: last started and stopped". With the node
+      exporter, "Host metrics collector (node exporter)" is the node exporter of every host and shows the worst
+      one, and Hosts shows each host in "Host metrics". With the node exporter, its value comes from metrics files
+      the hosts write: an old, missing or unreadable file, or a node exporter that does not answer, makes it wrong
+      or empty ("Service state data age" shows the files'' age, "Host metrics" on Hosts a node exporter that does
+      not answer). Without the node exporter there are no service states, so restarted, starting, stopping or reloading,
+      stopped, restarting in a loop and failed do not show. The state of each entry comes from the sources this
+      text names. A source that is off or does not answer gives none of its states, except that metrics that do
+      not answer show as unreachable, as this text says. Otherwise the entry shows only what its other sources give,
+      and leaves the tile when none is left. "Host metrics" on Hosts and the entries of this tile, such as "Health
+      checker", show which source does not answer.'
   - title: Alerts firing
     type: stat
     targets:
@@ -946,7 +960,8 @@ panels:
     targets:
       - expr: |-
           sort_by_label(time() - min by (host) ((max_over_time(node_textfile_mtime_seconds{file=~".*(units|runs)[.]prom"}[24h]) or
-          (0 * max by (instance, host) ((janitor_unit_state{unit="janitor-run-metrics.timer"} or
+          last_over_time(node_textfile_mtime_seconds{file=~".*apt_cacher_ng[.]prom"}[2m]) or (0 * max by (instance, host)
+          ((janitor_unit_state{unit="janitor-run-metrics.timer"} or
           ((last_over_time(janitor_unit_state{unit="janitor-run-metrics.timer"}[2m]) and
           (max_over_time(timestamp(janitor_unit_state{unit="janitor-run-metrics.timer"})[2m:10s]) >= on (host) group_left max by
           (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1)))
@@ -997,12 +1012,13 @@ panels:
       stop times, memory and CPU of its units, the host''s process memory, on a worker host the crash counts and,
       on the control host with the mail filter, the failed mail filter runs) and on the control host the run counts
       file (runs.prom: the run and pipeline counts, that is the runs in progress, the items in each stage, the held
-      queue items, and the runs that ended early or could not push their result branch) are only as fresh as this.
-      Red after 5 minutes, when ServiceStatesMissingOrOld fires. a metrics file is missing: the service states file
-      of this host, or on the control host the run counts file, is missing. ServiceStatesMissingOrOld also fires
-      when the node exporter cannot read a metrics file. This tile then shows that file as missing: look in the
-      node exporter''s journal on that host. A host whose node exporter does not answer keeps its last file times
-      for 24 hours, so its age goes up and turns red too ("Host metrics" on Hosts shows that, and MetricsUnreachable
+      queue items, and the runs that ended early or could not push their result branch) and, with the apt cache,
+      the apt-cacher-ng counts file (apt_cacher_ng.prom) are only as fresh as this. Red after 5 minutes, when ServiceStatesMissingOrOld
+      fires. a metrics file is missing: the service states file of this host, or on the control host the run counts
+      file, is missing. ServiceStatesMissingOrOld also fires when the node exporter cannot read a metrics file.
+      This tile then shows that file as missing, or for the apt-cacher-ng counts shows no change: look in the node
+      exporter''s journal on that host. A host whose node exporter does not answer keeps its last file times for
+      24 hours, so its age goes up and turns red too ("Host metrics" on Hosts shows that, and MetricsUnreachable
       fires). After 24 hours the host leaves this tile and ServiceStatesMissingOrOld stops for it. "Host metrics"
       on Hosts and MetricsUnreachable still show it. "Service state data age, per host and file" on Hosts shows
       the age of each file.'
@@ -3407,14 +3423,14 @@ panels:
           (max_over_time(timestamp(janitor_unit_state{unit=~"janitor-[a-z_]+(-[0-9]+)?[.]service"})[2m:10s]) >= on (host)
           group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
           up{job="node"} == 1)) == 1, "service", "$1", "unit", "janitor-([a-z_]+?)(-[0-9]+)?[.]service") or
-          label_replace((janitor_unit_state{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"}
+          label_replace((janitor_unit_state{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"}
           or
-          ((last_over_time(janitor_unit_state{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"}[2m])
+          ((last_over_time(janitor_unit_state{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"}[2m])
           and
-          (max_over_time(timestamp(janitor_unit_state{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service"})[2m:10s])
+          (max_over_time(timestamp(janitor_unit_state{unit=~"(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service"})[2m:10s])
           >= on (host) group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on
           (host) up{job="node"} == 1)) == 1, "service", "$1", "unit",
-          "(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana)(@.+)?[.]service") or
+          "(caddy|redis-server|postgresql|postfix|gitea|garage|jaeger|prometheus|grafana|apt-cacher-ng)(@.+)?[.]service") or
           label_replace((janitor_unit_state{unit="janitor-mail-filter.socket"} or
           ((last_over_time(janitor_unit_state{unit="janitor-mail-filter.socket"}[2m]) and
           (max_over_time(timestamp(janitor_unit_state{unit="janitor-mail-filter.socket"})[2m:10s]) >= on (host) group_left max by
@@ -3462,36 +3478,39 @@ panels:
                   site:
                     text: site
                     index: 9
+                  apt-cacher-ng:
+                    text: apt-cacher-ng
+                    index: 10
                   caddy:
                     text: Caddy
-                    index: 10
+                    index: 11
                   garage:
                     text: Garage
-                    index: 11
+                    index: 12
                   gitea:
                     text: Gitea
-                    index: 12
+                    index: 13
                   grafana:
                     text: Grafana
-                    index: 13
+                    index: 14
                   jaeger:
                     text: Jaeger
-                    index: 14
+                    index: 15
                   postfix:
                     text: Postfix
-                    index: 15
+                    index: 16
                   postgresql:
                     text: PostgreSQL
-                    index: 16
+                    index: 17
                   prometheus:
                     text: Prometheus
-                    index: 17
+                    index: 18
                   redis-server:
                     text: Redis
-                    index: 18
+                    index: 19
                   worker:
                     text: worker
-                    index: 19
+                    index: 20
     transformations:
       - id: groupingToMatrix
         options:
