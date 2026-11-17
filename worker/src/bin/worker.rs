@@ -80,6 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     args.logging.init();
     janitor_service::metrics::install(&[]);
+    janitor_worker::client::register_metrics();
 
     // Load breezy plugins so VCS URL handlers (notably
     // breezy.plugins.debian.directory, which normalises

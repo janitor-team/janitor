@@ -7,6 +7,17 @@ use reqwest::{Error as ReqwestError, Response, StatusCode, Url};
 use std::error::Error;
 use std::path::Path;
 
+const ASSIGNMENT_FAILED_COUNT: &str = "assignment_failed_count_total";
+const UPLOAD_RESULT_RETRIES: &str = "upload_result_retries_total";
+
+/// Describe the client's counters and start them at zero, as the Python worker did.
+pub fn register_metrics() {
+    metrics::describe_counter!(ASSIGNMENT_FAILED_COUNT, "Failed to obtain assignment");
+    metrics::describe_counter!(UPLOAD_RESULT_RETRIES, "Number of result upload retries.");
+    metrics::counter!(ASSIGNMENT_FAILED_COUNT).increment(0);
+    metrics::counter!(UPLOAD_RESULT_RETRIES).increment(0);
+}
+
 #[derive(Debug)]
 pub enum AssignmentError {
     Failure(String),
@@ -83,7 +94,7 @@ pub async fn get_assignment_raw(
         builder = builder.json(json);
         builder.send().await
     }
-    let assignment = backoff::future::retry(ExponentialBackoff::default(), || async {
+    let op = || async {
         let session = session.clone();
         let assign_url = assign_url.clone();
         match send_assignment_request(session, assign_url, credentials, &json).await {
@@ -131,6 +142,9 @@ pub async fn get_assignment_raw(
                 e.to_string(),
             ))),
         }
+    };
+    let assignment = backoff::future::retry_notify(ExponentialBackoff::default(), op, |_, _| {
+        metrics::counter!(ASSIGNMENT_FAILED_COUNT).increment(1)
     })
     .await?;
     log::debug!("Got assignment: {:?}", assignment);
@@ -460,7 +474,7 @@ where
     F: Fn(reqwest::Request) -> Fut,
     Fut: std::future::Future<Output = Result<Response, ReqwestError>>,
 {
-    backoff::future::retry(ExponentialBackoff::default(), || async {
+    backoff::future::retry_notify(ExponentialBackoff::default(), || async {
         let finish_url = base_url
             .join(&format!("active-runs/{}/finish", run_id))
             .map_err(|e| UploadFailure(format!("Error building finish URL: {}", e)))?;
@@ -566,7 +580,7 @@ where
                 }
             }
         }
-    }).await
+    }, |_, _| metrics::counter!(UPLOAD_RESULT_RETRIES).increment(1)).await
 }
 
 pub async fn abort_run(client: &Client, run_id: &RunId, metadata: &Metadata, description: &str) {
