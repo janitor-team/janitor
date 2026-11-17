@@ -18,6 +18,21 @@
                 </li>
             {% endfor %}
         </ul>
+        {% if 'repo-list-git' in app.router or 'repo-list-bzr' in app.router %}
+            <h2>Repositories</h2>
+            <ul>
+                {% if 'repo-list-git' in app.router %}
+                    <li>
+                        <a href="{{ url_for('repo-list-git', vcs='git') }}">Git</a>
+                    </li>
+                {% endif %}
+                {% if 'repo-list-bzr' in app.router %}
+                    <li>
+                        <a href="{{ url_for('repo-list-bzr', vcs='bzr') }}">Bazaar</a>
+                    </li>
+                {% endif %}
+            </ul>
+        {% endif %}
     </div>
     <p>
         For Janitor internal status details, see the <a href="cupboard/">cupboard</a>.
