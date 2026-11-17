@@ -144,7 +144,7 @@ groups:
       project: janitor
 
   - alert: WorkerCrashing
-    expr: avg without(instance)(changes(run{result_code="worker-failure"}[10m])) > 5
+    expr: avg without(instance)(increase(result_total{result_code="worker-failure"}[10m])) > 5
     for: 10m
     labels:
       severity: critical
