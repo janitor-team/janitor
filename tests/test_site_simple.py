@@ -17,6 +17,7 @@
 import asyncio
 import base64
 import hashlib
+import inspect
 import json
 import tempfile
 from datetime import timedelta
@@ -26,13 +27,15 @@ import asyncpg
 import pytest
 import pytest_asyncio
 from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
 from bs4 import BeautifulSoup
 from fakeredis.aioredis import FakeRedis
 from yarl import URL
 
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
-from janitor.site.simple import create_app, main_async
+from janitor.site.simple import create_app, handle_repo_list, main_async
+from janitor.vcs import RemoteBzrVcsManager, RemoteGitVcsManager
 
 from .conftest import _insert_run
 
@@ -738,6 +741,35 @@ async def test_result_file_artifact_from_runner(aiohttp_client, database_locatio
         ),
         ("missing.deb", 404, None, b"No artifact missing.deb for run run-id"),
     ]
+
+
+async def test_repo_list(aiohttp_client):
+    repositories = {"git": ["bar", "foo"], "bzr": ["baz"]}
+
+    async def handle_list(request):
+        if request.headers["Accept"] == "application/json":
+            return web.json_response(repositories[request.match_info["vcs"]])
+        return web.Response(text="<ul><li>bar</li></ul>", content_type="text/html")
+
+    store_app = web.Application()
+    store_app.router.add_get("/{vcs}/", handle_list)
+    store_client = await aiohttp_client(store_app)
+    app = {
+        "http_client_session": store_client.session,
+        "vcs_managers": {
+            "git": RemoteGitVcsManager(str(store_client.make_url("/git/"))),
+            "bzr": RemoteBzrVcsManager(str(store_client.make_url("/bzr/"))),
+        },
+    }
+
+    for vcs, names in repositories.items():
+        request = make_mocked_request(
+            "GET", f"/{vcs}/", app=app, match_info={"vcs": vcs}
+        )
+        assert await inspect.unwrap(handle_repo_list)(request) == {
+            "vcs": vcs,
+            "repositories": names,
+        }
 
 
 async def test_oauth_callback_clears_state_cookie_with_matching_path(
