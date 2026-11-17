@@ -19,21 +19,21 @@ pub struct RedisClient {
 ///
 /// Matches the shape of `ActiveRun.result.json()` on the runner side. Only the
 /// fields consulted by auto-upload are modelled; the rest of the payload is
-/// ignored. `target` may be an empty object when the run has no builder
-/// result, so it is deserialized permissively.
+/// ignored. `target` may be `null` or an empty object when the run has no
+/// builder result, so it is deserialized permissively.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BuildResultMessage {
     /// Unique identifier for the build run.
     pub log_id: RunId,
     /// Runner result code (e.g. `"success"`, `"nothing-to-do"`,
     /// `"codemod-error"`). Non-success runs also publish to this channel
-    /// but emit `target: {}`, so we filter them out before touching
-    /// `target.name`.
+    /// but emit a missing/empty `target`, so we filter them out before
+    /// touching `target.name`.
     #[serde(default)]
     pub code: Option<String>,
-    /// Empty object when the run had no builder result.
+    /// `None` or an empty object when the run had no builder result.
     #[serde(default)]
-    pub target: BuildTarget,
+    pub target: Option<BuildTarget>,
 }
 
 /// Target field of a build result.
@@ -130,8 +130,17 @@ mod tests {
         let payload = r#"{"log_id": "abc", "target": {}}"#;
         let msg: BuildResultMessage = serde_json::from_str(payload).unwrap();
         assert_eq!(msg.log_id, "abc");
-        assert!(msg.target.name.is_none());
-        assert!(msg.target.details.is_none());
+        let target = msg.target.unwrap();
+        assert!(target.name.is_none());
+        assert!(target.details.is_none());
+    }
+
+    #[test]
+    fn tolerates_null_target() {
+        let payload = r#"{"log_id": "abc", "target": null}"#;
+        let msg: BuildResultMessage = serde_json::from_str(payload).unwrap();
+        assert_eq!(msg.log_id, "abc");
+        assert!(msg.target.is_none());
     }
 
     #[test]
@@ -147,10 +156,10 @@ mod tests {
         // when target was `{}` (see py commit 38fbc2025). We must at least
         // be able to deserialise it.
         let payload =
-            r#"{"log_id": "abc", "code": "codemod-error", "description": "boom", "target": {}}"#;
+            r#"{"log_id": "abc", "code": "codemod-error", "description": "boom", "target": null}"#;
         let msg: BuildResultMessage = serde_json::from_str(payload).unwrap();
         assert_eq!(msg.code.as_deref(), Some("codemod-error"));
-        assert!(msg.target.name.is_none());
+        assert!(msg.target.is_none());
     }
 
     #[test]
@@ -162,7 +171,8 @@ mod tests {
             "target": {"name": "debian", "details": {"build_distribution": "unstable"}}
         }"#;
         let msg: BuildResultMessage = serde_json::from_str(payload).unwrap();
-        assert_eq!(msg.target.name.as_deref(), Some("debian"));
-        assert_eq!(msg.target.details.unwrap().build_distribution, "unstable");
+        let target = msg.target.unwrap();
+        assert_eq!(target.name.as_deref(), Some("debian"));
+        assert_eq!(target.details.unwrap().build_distribution, "unstable");
     }
 }
