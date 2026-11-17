@@ -413,7 +413,9 @@ async def handle_repo_list(request):
         raise web.HTTPNotFound() from None
     else:
         url = vcs.base_url
-    async with request.app["http_client_session"].get(url) as resp:
+    async with request.app["http_client_session"].get(
+        url, headers={"Accept": "application/json"}
+    ) as resp:
         return {"vcs": vcs_name, "repositories": await resp.json()}
 
 
