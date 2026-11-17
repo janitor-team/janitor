@@ -499,7 +499,9 @@ async def create_app(
             metrics_middleware,
             trailing_slash_redirect,
             state.asyncpg_error_middleware,
-        ]
+        ],
+        # The reverse proxy limits body sizes.
+        client_max_size=0,
     )
     aiohttp_jinja2.setup(
         app,
