@@ -26,6 +26,9 @@ import aiohttp
 from aiohttp import web
 from yarl import URL
 
+# Seconds a user has to log in at the provider before the state cookie is gone.
+LOGIN_STATE_MAX_AGE = 10 * 60
+
 
 @web.middleware
 async def openid_middleware(request, handler):
@@ -184,7 +187,12 @@ async def handle_login(request):
     )
     response = web.HTTPFound(location)
     response.set_cookie(
-        "state", state, max_age=60, path=callback_path, httponly=True, secure=True
+        "state",
+        state,
+        max_age=LOGIN_STATE_MAX_AGE,
+        path=callback_path,
+        httponly=True,
+        secure=True,
     )
     if "url" in request.query:
         target = await _site_path(request, request.query["url"])
