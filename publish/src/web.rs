@@ -2337,7 +2337,6 @@ pub struct BlockerPreviousMpDetails {
 /// Details of the `propose_rate_limit` blocker when the bucket is not
 /// rate-limited.
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
 pub struct BlockerRateLimitAllowedDetails {
     /// Rate-limit bucket of the run; null if it has none.
     pub bucket: Option<String>,
@@ -2359,10 +2358,10 @@ pub struct BlockerRateLimitExceededDetails {
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 #[serde(untagged)]
 pub enum BlockerProposeRateLimitDetails {
-    /// The bucket is not rate-limited, or the run has no bucket.
-    Allowed(BlockerRateLimitAllowedDetails),
     /// The bucket is rate-limited.
     Exceeded(BlockerRateLimitExceededDetails),
+    /// The bucket is not rate-limited, or the run has no bucket.
+    Allowed(BlockerRateLimitAllowedDetails),
 }
 
 /// Response of `GET /blockers/{run_id}`.
