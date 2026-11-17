@@ -927,7 +927,7 @@ pub async fn process_single_item(
         } else {
             (None, None, None)
         };
-    let build_environment = assignment.build.environment.clone().unwrap_or_default();
+    let build_environment = assignment.build.environment.clone();
 
     let start_time = chrono::Utc::now();
 
