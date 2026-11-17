@@ -8,7 +8,7 @@
 {% block body %}
     <div class="section" id="api-tokens">
         <h1>API tokens</h1>
-        <form method="post" action="/api-tokens">
+        <form method="post" action="{{ url_for('api-token-create') }}">
             <select name="days" aria-label="Token lifetime">
                 <option value="7">7 days</option>
                 <option value="30" selected>30 days</option>

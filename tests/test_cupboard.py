@@ -39,7 +39,12 @@ from janitor.site import (
     template_loader,
     worker_link_is_global,
 )
-from janitor.site.cupboard import create_app, generate_codebase, handle_result_file
+from janitor.site.cupboard import (
+    create_app,
+    generate_codebase,
+    handle_result_file,
+    routes,
+)
 from janitor.site.cupboard.api import create_app as create_api_app
 from janitor.site.cupboard.api import select_runs_to_reprocess
 from janitor.site.pkg import read_log
@@ -125,8 +130,16 @@ async def _start_fake_publisher(aiohttp_server, *, publishes):
     return str(server.make_url("/"))
 
 
-def test_render_merge_proposal():
+def _cupboard_env():
+    app = web.Application()
+    app.router.add_routes(routes)
     env = Environment(loader=template_loader)
+    env.globals["url_for"] = lambda name, **kwargs: app.router[name].url_for(**kwargs)
+    return env
+
+
+def test_render_merge_proposal():
+    env = _cupboard_env()
     template = env.get_template("cupboard/merge-proposal.html")
     template.render(
         proposal={
@@ -137,7 +150,7 @@ def test_render_merge_proposal():
 
 
 def test_render_run():
-    env = Environment(loader=template_loader)
+    env = _cupboard_env()
     template = env.get_template("cupboard/run.html")
     config = read_config_string("""\
 campaign {
@@ -150,6 +163,7 @@ campaign {
         run={
             "start_time": utcnow(),
             "finish_time": utcnow(),
+            "change_set": "some-change-set",
         },
         success_probability=0.2,
         classify_result_code=classify_result_code,
@@ -227,7 +241,7 @@ async def test_reprocess_logs_admin(aiohttp_client, db):
 
 
 def test_render_changeset():
-    env = Environment(loader=template_loader)
+    env = _cupboard_env()
     template = env.get_template("cupboard/changeset.html")
     template.render(changeset="changeset", url=URL("https://example/com"), URL=URL)
 
@@ -248,7 +262,7 @@ def test_render_rejected():
 
 
 def test_workers():
-    env = Environment(loader=template_loader)
+    env = _cupboard_env()
     template = env.get_template("cupboard/workers.html")
     template.render(worker_link_is_global=worker_link_is_global)
 

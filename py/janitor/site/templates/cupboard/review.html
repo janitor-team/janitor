@@ -9,7 +9,7 @@
     <div class="section" id="review">
         <h1>Review</h1>
         <p>
-            <a href="/cupboard/c/{{ codebase }}/{{ run_id }}/" id="full-run-link">Full run</a>
+            <a href="{{ url_for('cupboard-run', codebase=codebase, run_id=run_id) }}" id="full-run-link">Full run</a>
             {% if review_instructions_url %}<a href="{{ review_instructions_url }}">Review instructions</a>{% endif %}
         </p>
         <div id="evaluate">{{ evaluate|safe }}</div>
@@ -74,7 +74,7 @@
                     {% if not publishable_only %}
                         $('.branch').replaceWith('All done!');
                     {% else %}
-                        $('.branch').replaceWith('All done! <a href="/cupboard/review?publishable_only=false">Review unpublishable</a>');
+                        $('.branch').replaceWith('All done! <a href="{{ url_for('cupboard-review') }}?publishable_only=false">Review unpublishable</a>');
                     {% endif %}
                     $('#evaluate').replaceWith('');
                     $('#options').remove();
@@ -137,7 +137,7 @@
                 });
             }
         </script>
-        <form action="/cupboard/review" method="post" id="options">
+        <form action="{{ url_for('cupboard-review-post') }}" method="post" id="options">
             <input type="hidden" name="run_id" id="run-id" value="{{ run_id }}" />
             <input type="hidden" name="codebase" id="codebase" value="{{ codebase }}" />
             {% if campaigns %}

@@ -44,7 +44,7 @@
                 {% for codebase, campaign in never_processed %}
                     <tr>
                         <td>
-                            <a class="reference external" href="/cupboard/c/{{ codebase }}/">{{ codebase }}</a>
+                            <a class="reference external" href="{{ url_for('cupboard-codebase', codebase=codebase) }}">{{ codebase }}</a>
                         </td>
                         <td>
                             <a href="/{{ campaign }}/c/{{ codebase }}/">{{ campaign }}</a>

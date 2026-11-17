@@ -83,7 +83,7 @@
                         <tr id="active-{{ entry['id'] }}"
                             {% if entry['mia'] %}class="old-keepalive"{% endif %}>
                             <td>
-                                <a href="/cupboard/c/{{ entry['codebase'] }}/">{{ entry['codebase'] }}</a>
+                                <a href="{{ url_for('cupboard-codebase', codebase=entry['codebase']) }}">{{ entry['codebase'] }}</a>
                             </td>
                             <td>{{ entry['campaign'] }}</td>
                             <td>{{ format_duration(entry['estimated_duration']) if entry['estimated_duration'] else 'unknown' }}</td>
@@ -142,14 +142,14 @@
                         <tr id="queue-{{ queue_item.id }}"
                             {% if queue_item.id in active_queue_ids %}class="active"{% endif %}>
                             <td>
-                                <a class="reference external" href="/cupboard/c/{{ queue_item.codebase }}/">{{ queue_item.codebase }}</a>
+                                <a class="reference external" href="{{ url_for('cupboard-codebase', codebase=queue_item.codebase) }}">{{ queue_item.codebase }}</a>
                             </td>
                             <td>{{ description }}</td>
                             <td>{{ format_duration(queue_item.estimated_duration) if queue_item.estimated_duration else 'unknown' }}</td>
                             <td>{{ queue_item.requester }}</td>
                             <td>
                                 {% if last_run.id %}
-                                    <a href="/cupboard/c/{{ last_run.codebase }}/{{ last_run.id }}/">{{ display_result_code(last_run.result_code, last_run.failure_transient) }}</a>
+                                    <a href="{{ url_for('cupboard-run', codebase=last_run.codebase, run_id=last_run.id) }}">{{ display_result_code(last_run.result_code, last_run.failure_transient) }}</a>
                                 {% endif %}
                             </td>
                         </tr>
