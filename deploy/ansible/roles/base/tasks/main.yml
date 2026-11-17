@@ -50,3 +50,10 @@
     scope: user
     enabled: true
     state: started
+
+- name: Add janitor_extra_hosts to /etc/hosts
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^\S+\s+{{ item.key | regex_escape }}$'
+    line: "{{ item.value }} {{ item.key }}"
+  loop: "{{ janitor_extra_hosts | dict2items }}"

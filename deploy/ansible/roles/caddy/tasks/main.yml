@@ -15,8 +15,9 @@
   when: caddy_self_signed | default(false) | bool
 
 - name: Generate a self-signed certificate for a host without a real domain
-  # Only for test hosts (caddy_self_signed). Each worker host trusts it.
-  # TLS clients match the name against subjectAltName, not the CN.
+  # Only for test hosts (caddy_self_signed). The worker hosts trust it.
+  # With Gitea, every host does. TLS clients match the names against
+  # subjectAltName, not the CN.
   ansible.builtin.shell: >
     openssl req -x509 -newkey rsa:2048 -nodes -days 3650
     -keyout /etc/caddy/janitor.key
@@ -30,7 +31,8 @@
     - caddy_cert_names.rc != 0 or caddy_cert_names.stdout_lines[0] != caddy_cert_sans | join(',')
   vars:
     caddy_cert_sans: >-
-      {{ [('IP:' if janitor_domain is match('^[0-9.]+$') or ':' in janitor_domain else 'DNS:') + janitor_domain] }}
+      {{ [('IP:' if janitor_domain is match('^[0-9.]+$') or ':' in janitor_domain else 'DNS:') + janitor_domain]
+         + (['DNS:' + gitea_domain] if enable_gitea | bool else []) }}
   changed_when: true
   notify: Restart caddy
 
