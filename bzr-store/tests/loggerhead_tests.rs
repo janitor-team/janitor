@@ -6,75 +6,13 @@
 //! Postgres and a real on-disk bzr branch created via breezyshim,
 //! then check that the HTML browser answers.
 
-use std::sync::Arc;
+mod common;
 
-use axum::body::Body;
-use axum::http::Request;
-use axum::response::Response;
-use axum::Router;
 use breezyshim::tree::{MutableTree, WorkingTree};
-use janitor::{test_utils::TestDatabase, test_with_database};
-use janitor_bzr_store::{
-    config::{BzrConfig, BzrStoreConfig, Config},
-    web::create_applications,
-};
-use sqlx::PgPool;
+use common::*;
+use janitor::test_with_database;
+use janitor_bzr_store::web::create_applications;
 use tempfile::TempDir;
-use tower::ServiceExt;
-
-fn test_db_url(test_db: &TestDatabase) -> String {
-    let base = std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgresql://localhost/postgres".to_string());
-    match base.rsplit_once('/') {
-        Some((prefix, _)) => format!("{}/{}", prefix, test_db.database_name),
-        None => format!("{}/{}", base, test_db.database_name),
-    }
-}
-
-fn build_config(tmp_dir: &std::path::Path, database_url: String) -> Config {
-    let mut cfg = BzrStoreConfig::default();
-    cfg.bzr = BzrConfig {
-        repository_path: tmp_dir.to_path_buf(),
-        admin_bind: "127.0.0.1:0".parse().unwrap(),
-        public_bind: "127.0.0.1:0".parse().unwrap(),
-        python_path: None,
-        request_timeout: cfg.bzr.request_timeout,
-    };
-    cfg.base.database = Some(janitor::shared_config::DatabaseConfig {
-        url: database_url,
-        ..janitor::shared_config::DatabaseConfig::default()
-    });
-    cfg
-}
-
-fn janitor_config_with_campaign() -> Arc<janitor::config::Config> {
-    let text = r#"
-campaign {
-    name: "campaign"
-}
-"#;
-    Arc::new(janitor::config::read_string(text).expect("parse test janitor.conf"))
-}
-
-async fn get(app: Router, uri: &str) -> Response {
-    app.oneshot(Request::get(uri).body(Body::empty()).unwrap())
-        .await
-        .unwrap()
-}
-
-async fn seed_codebase(pool: &PgPool, name: &str) {
-    let url = format!("https://example.invalid/{}", name);
-    sqlx::query(
-        "INSERT INTO codebase (name, branch_url, url, vcs_type)
-         VALUES ($1, $2, $2, 'bzr')
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(name)
-    .bind(&url)
-    .execute(pool)
-    .await
-    .unwrap();
-}
 
 /// Create a bzr branch with one commit at `branch_path`.
 fn make_bzr_branch(branch_path: &std::path::Path) {
@@ -96,7 +34,7 @@ test_with_database! {
             .await
             .unwrap();
 
-        let resp = get(public, "/bzr/ghost/").await;
+        let resp = send(&public, get("/bzr/ghost/")).await;
         assert_eq!(resp.status(), 404);
     }
 }
@@ -145,7 +83,7 @@ fn test_loggerhead_browse_known_codebase_renders() {
         // to /bzr/foo/changes (loggerhead's root_redirect), or (c)
         // 200 with HTML. Accept any of those as proof the integration
         // is wired up.
-        let resp = get(public, "/bzr/foo/").await;
+        let resp = send(&public, get("/bzr/foo/")).await;
         let status = resp.status().as_u16();
         assert!(
             status == 301
@@ -205,7 +143,7 @@ fn test_loggerhead_changes_endpoint_reachable() {
             .await
             .unwrap();
 
-        let resp = get(public, "/bzr/foo/changes").await;
+        let resp = send(&public, get("/bzr/foo/changes")).await;
         // Expected 200 (rendered HTML) when loggerhead's static dir
         // is wired; 503 otherwise. Anything else is a routing bug.
         let status = resp.status().as_u16();
