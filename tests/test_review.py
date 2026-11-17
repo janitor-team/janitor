@@ -130,6 +130,14 @@ async def test_review_post_publishable_only_unchecked(aiohttp_client, db):
     assert resp.status == 200
     assert shown_run(await resp.text()) == ["somerun"]
 
+    resp = await client.post(
+        "/cupboard/review", data={"run_id": "somerun", "verdict": "Bogus"}
+    )
+    assert resp.status == 422
+    assert await resp.json() == {
+        "verdict": ["Must be one of: Approve, Reject, Reschedule, Abstain."]
+    }
+
 
 def test_parse_review_form_reschedule():
     assert parse_review_form({"verdict": "Reschedule"}) == ("reschedule", None)

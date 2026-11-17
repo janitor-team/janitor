@@ -40,6 +40,7 @@ from aiohttp_apispec import (
 )
 from breezy.revision import NULL_REVISION
 from marshmallow import Schema, fields, validate
+from webargs.aiohttpparser import use_kwargs
 from yarl import URL
 
 from janitor import version_string
@@ -607,7 +608,8 @@ class ReviewSchema(Schema):
 @form_schema(ReviewSchema())
 @response_schema(ReviewSchema())
 @routes.post("/run/{run_id}", name="run-update")
-async def handle_run_post(request):
+@use_kwargs(ReviewSchema(), locations=("form",))
+async def handle_run_post(request, verdict=None, review_comment=None):
     from ..review import store_review
 
     async with request.app["pool"].acquire() as conn:
@@ -615,11 +617,7 @@ async def handle_run_post(request):
 
         check_logged_in(request)
         span = aiozipkin.request_span(request)
-        post = await request.post()
-        verdict = post.get("verdict")
-        review_comment = post.get("review-comment")
         if verdict:
-            verdict = verdict.lower()
             with span.new_child("sql:update-run"):
                 try:
                     user = request["user"]["email"]
