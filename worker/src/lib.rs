@@ -13,7 +13,7 @@ use tokio::net::lookup_host;
 
 use janitor::api::worker::{Metadata, TargetDetails, WorkerFailure};
 use janitor::vcs::VcsType;
-use janitor_service::prometheus::push_to_gateway;
+use janitor_service::metrics::push_to_gateway;
 use janitor_types::{Campaign, CodebaseName, RunId};
 
 use url::Url;
@@ -1052,7 +1052,6 @@ pub async fn process_single_item(
                 "run_id" => assignment.id.as_str(),
                 "campaign" => assignment.campaign.as_str(),
             },
-            prometheus::default_registry(),
         )
         .await
         .unwrap();

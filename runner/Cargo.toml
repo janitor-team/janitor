@@ -35,8 +35,7 @@ tower-http = { version = "0.6", features = ["fs", "trace"] }
 serde_with = { version = "3.9.0", features = ["chrono_0_4"] }
 uuid = { version = "1.11.0", features = ["v4"] }
 base64 = "0.22"
-prometheus = "0.14.0"
-lazy_static = "1.4"
+metrics = { workspace = true }
 num_cpus = "1.16"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
@@ -49,6 +48,7 @@ utoipa.workspace = true
 utoipa-axum.workspace = true
 
 [dev-dependencies]
+janitor-service = { workspace = true, features = ["testing"] }
 janitor-runner = { path = ".", features = ["testing"] }
 maplit = { workspace = true }
 tokio-test = "0.4"

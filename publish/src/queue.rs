@@ -375,7 +375,8 @@ pub async fn publish_pending_ready(
     );
 
     // Unix seconds since epoch.
-    crate::metrics::LAST_PUBLISH_PENDING_SUCCESS.set(chrono::Utc::now().timestamp() as f64);
+    ::metrics::gauge!(crate::metrics::LAST_PUBLISH_PENDING_SUCCESS)
+        .set(chrono::Utc::now().timestamp() as f64);
 
     if published_count > 0 {
         log::info!("Published {} changes this cycle", published_count);

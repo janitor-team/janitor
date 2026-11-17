@@ -69,6 +69,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     init_tracing(cli.debug, cli.gcp_logging);
+    janitor_bzr_store::web_utils::install_metrics();
 
     let vcs_path = cli
         .vcs_path

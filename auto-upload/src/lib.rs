@@ -19,39 +19,45 @@ pub mod upload;
 pub mod utils;
 pub mod web;
 
-use std::sync::LazyLock;
-
-use prometheus::{register_counter, Counter};
-
 pub use config::Config;
 pub use error::UploadError;
 
 /// Counter for failed package signings.
-pub static DEBSIGN_FAILED_COUNT: LazyLock<Counter> = LazyLock::new(|| {
-    register_counter!(
-        "debsign_failed",
-        "Number of packages for which signing failed."
-    )
-    .expect("register debsign_failed counter")
-});
+pub const DEBSIGN_FAILED_COUNT: &str = "debsign_failed";
 
 /// Counter for failed package uploads.
-pub static UPLOAD_FAILED_COUNT: LazyLock<Counter> = LazyLock::new(|| {
-    register_counter!(
-        "upload_failed",
-        "Number of packages for which uploading failed."
-    )
-    .expect("register upload_failed counter")
-});
+pub const UPLOAD_FAILED_COUNT: &str = "upload_failed";
 
 /// Counter for result messages that could not be handled.
-pub static RESULT_HANDLING_FAILED_COUNT: LazyLock<Counter> = LazyLock::new(|| {
-    register_counter!(
-        "result_handling_failed",
+pub const RESULT_HANDLING_FAILED_COUNT: &str = "result_handling_failed";
+
+/// Install the metrics recorder and register the auto-upload metrics.
+pub fn install_metrics() {
+    janitor_service::metrics::install(&[]);
+    register_metrics();
+}
+
+fn register_metrics() {
+    metrics::describe_counter!(
+        DEBSIGN_FAILED_COUNT,
+        "Number of packages for which signing failed."
+    );
+    metrics::describe_counter!(
+        UPLOAD_FAILED_COUNT,
+        "Number of packages for which uploading failed."
+    );
+    metrics::describe_counter!(
+        RESULT_HANDLING_FAILED_COUNT,
         "Number of result messages that could not be handled."
-    )
-    .expect("register result_handling_failed counter")
-});
+    );
+    for name in [
+        DEBSIGN_FAILED_COUNT,
+        UPLOAD_FAILED_COUNT,
+        RESULT_HANDLING_FAILED_COUNT,
+    ] {
+        metrics::counter!(name).increment(0);
+    }
+}
 
 /// Run the auto-upload service: start the metrics web server and the Redis
 /// listener and wait until one of them exits.
@@ -70,6 +76,7 @@ pub async fn run_service(
     distributions: Vec<String>,
     run_backfill: bool,
 ) -> Result<(), UploadError> {
+    install_metrics();
     let upload_config = upload::UploadConfig {
         dput_host: dput_host.map(str::to_string),
         debsign_keyid: debsign_keyid.map(str::to_string),
@@ -77,4 +84,22 @@ pub async fn run_service(
         distributions,
     };
     service::run(config, listen_addr, port, upload_config, run_backfill).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use janitor_service::testing::{capture, Snapshot, Value};
+
+    #[test]
+    fn counters_registered_at_zero() {
+        assert_eq!(
+            capture(register_metrics),
+            Snapshot::from([
+                ("debsign_failed".to_string(), Value::Counter(0)),
+                ("result_handling_failed".to_string(), Value::Counter(0)),
+                ("upload_failed".to_string(), Value::Counter(0)),
+            ])
+        );
+    }
 }

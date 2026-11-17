@@ -22,7 +22,7 @@ janitor = { path = "..", features = ["otlp"] }
 janitor-types = { workspace = true, features = ["pyo3", "sqlx", "utoipa"] }
 janitor-service = { workspace = true }
 nix = { workspace = true, features = ["signal"] }
-prometheus = { version = "0.14.0", features = ["process"] }
+metrics = { workspace = true }
 pyo3 = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -39,6 +39,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
+janitor-service = { workspace = true, features = ["testing"] }
 # Redeclare janitor with the `testing` feature so integration tests can
 # use janitor::schema::CORE_SCHEMA.
 janitor = { path = "..", features = ["testing"] }

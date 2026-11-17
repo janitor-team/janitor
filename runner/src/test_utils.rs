@@ -208,6 +208,7 @@ fn assemble_app_state(
         .take()
         .unwrap_or_else(|| Arc::new(RunnerVcsManager::new(std::collections::HashMap::new())));
     let config = Arc::new(config_builder.build_janitor_config());
+    crate::metrics::install();
     let metrics = Arc::new(MetricsCollector);
 
     let temp_dir = std::env::temp_dir().join("janitor_test_uploads");
