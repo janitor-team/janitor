@@ -41,8 +41,6 @@ async def write_publish(client, publisher_url: str, publish_id: str):
             raise web.HTTPNotFound(text=f"no such publish: {publish_id}")
         resp.raise_for_status()
         publish = await resp.json()
-    # Template reads `publish.vcs_browse` (not codebase_web_url).
-    publish["vcs_browse"] = publish.pop("codebase_web_url", None)
     publish["id"] = publish_id
     publish["timestamp"] = _parse_timestamp(publish.get("timestamp"))
     return {"publish": publish}

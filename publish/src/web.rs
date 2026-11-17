@@ -1258,6 +1258,7 @@ pub struct PublishDetails {
     /// browsable VCS URL without a second query.
     codebase_web_url: Option<String>,
     target_branch_url: Option<String>,
+    target_branch_web_url: Option<String>,
     branch_name: Option<String>,
     main_branch_revision: Option<String>,
     revision: Option<String>,
@@ -1405,6 +1406,7 @@ SELECT
   mode::text AS mode,
   merge_proposal_url,
   target_branch_url,
+  target_branch_web_url,
   result_code,
   description
 FROM publish
@@ -1576,13 +1578,8 @@ async fn publish(
     };
 
     // Spawn one publish_and_store per active (role, mode) pair.
-    // Skip/build-only roles get recorded in publish_ids without
-    // queuing any work.
     let mut publish_ids: BTreeMap<String, PublishId> = BTreeMap::new();
     for (role, mode_str) in branches {
-        let publish_id = crate::new_publish_id();
-        publish_ids.insert(role.clone(), publish_id.clone());
-
         log::info!(".. publishing for role {}: {}", role, mode_str);
 
         if mode_str == "skip" || mode_str == "build-only" {
@@ -1601,6 +1598,9 @@ async fn publish(
                 continue;
             }
         };
+
+        let publish_id = crate::new_publish_id();
+        publish_ids.insert(role.clone(), publish_id.clone());
 
         let state = state.clone();
         let run = run.clone();
