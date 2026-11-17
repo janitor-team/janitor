@@ -8,8 +8,7 @@ pub use breezyshim::RevisionId;
 use reqwest::header::{HeaderMap, HeaderValue};
 use std::collections::HashMap;
 
-use std::net::IpAddr;
-use tokio::net::lookup_host;
+use dns_lookup::{getaddrinfo, LookupErrorKind};
 
 use janitor::api::worker::{Metadata, TargetDetails, WorkerFailure};
 use janitor::vcs::VcsType;
@@ -40,19 +39,17 @@ pub struct AppState {
     pub metadata: Option<Metadata>,
 }
 
-pub async fn is_gce_instance() -> bool {
-    match lookup_host("metadata.google.internal").await {
-        Ok(lookup_result) => {
-            for addr in lookup_result {
-                if let IpAddr::V4(ipv4) = addr.ip() {
-                    if ipv4.is_private() {
-                        return true;
-                    }
-                }
+pub fn is_gce_instance() -> std::io::Result<bool> {
+    match getaddrinfo(Some("metadata.google.internal"), None, None) {
+        Ok(_) => Ok(true),
+        Err(e) => match e.kind() {
+            LookupErrorKind::NoName | LookupErrorKind::NoData => Ok(false),
+            LookupErrorKind::System => Err(e.into()),
+            _ => {
+                log::warn!("Unable to detect whether we are on GCE: {}", e);
+                Ok(false)
             }
-            false
-        }
-        Err(_) => false,
+        },
     }
 }
 

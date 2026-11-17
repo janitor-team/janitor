@@ -39,6 +39,7 @@ debian-changelog = { workspace = true, optional = true }
 tokio-util = "0.7.14"
 utoipa.workspace = true
 utoipa-axum.workspace = true
+dns-lookup = "4.0.2"
 
 [features]
 default = ["debian", "cli"]
