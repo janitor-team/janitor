@@ -75,9 +75,7 @@ async fn build_app_with_rate_limiter(
         url::Url::parse("http://differ.invalid").unwrap(),
         None,
         None,
-        None,
-    )
-    .await;
+    );
     let health_checker = Arc::new(janitor_publish::health::BasicHealthChecker::with_info(
         "publish-test".to_string(),
         env!("CARGO_PKG_VERSION").to_string(),
