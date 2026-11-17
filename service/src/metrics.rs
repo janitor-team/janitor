@@ -112,7 +112,7 @@ pub async fn metrics_handler() -> Response {
 fn push_url(gateway: &Url, job: &str, grouping_key: &HashMap<&str, &str>) -> Url {
     let mut url = gateway.join("/metrics/job/").unwrap().join(job).unwrap();
     for (k, v) in grouping_key {
-        url.query_pairs_mut().append_pair(k, v);
+        url.path_segments_mut().unwrap().push(k).push(v);
     }
     url
 }
@@ -147,7 +147,7 @@ mod tests {
         let grouping_key = HashMap::from([("instance", "test_instance")]);
         assert_eq!(
             push_url(&base_url, "test_job", &grouping_key).as_str(),
-            "http://localhost:9091/metrics/job/test_job?instance=test_instance"
+            "http://localhost:9091/metrics/job/test_job/instance/test_instance"
         );
     }
 
