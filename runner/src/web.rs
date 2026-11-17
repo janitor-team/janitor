@@ -188,6 +188,7 @@ fn create_campaign_config(
                 build_suffix: none_if_empty(db_config.build_suffix()),
                 build_command: none_if_empty(db_config.build_command()),
                 chroot: none_if_empty(db_config.chroot()),
+                session: none_if_empty(db_config.session()),
                 extra_build_distribution: db_config
                     .extra_build_distribution
                     .iter()
@@ -1094,6 +1095,21 @@ fn cache_branch_name(
     #[cfg(feature = "debian")]
     let vendor = vendor.or_else(|| crate::dpkg_vendor().map(|v| v.to_lowercase()));
     Some(format!("{}/latest", vendor?))
+}
+
+/// The worker's `session` and `chroot`: the campaign's if it sets
+/// either, else the distribution's `session` or else its `chroot`.
+fn worker_session(
+    debian_config: &crate::builder::DebianBuildConfig,
+    distribution: Option<&janitor::config::Distribution>,
+) -> (Option<String>, Option<String>) {
+    if debian_config.session.is_some() || debian_config.chroot.is_some() {
+        return (debian_config.session.clone(), debian_config.chroot.clone());
+    }
+    match distribution {
+        Some(d) if d.session.is_some() => (d.session.clone(), None),
+        d => (None, d.and_then(|d| d.chroot.clone())),
+    }
 }
 
 /// The cached branch URL and target repository URL handed to the
@@ -4052,6 +4068,7 @@ async fn assign_work_internal(
             .distribution
             .iter()
             .find(|d| d.name.as_deref() == Some(dcfg.base_distribution.as_str()));
+        let (session, chroot) = worker_session(dcfg, dist);
 
         let build_assignment = DebianBuildAssignment {
             // Python: `campaign_config.debian_build.build_distribution
@@ -4065,10 +4082,8 @@ async fn assign_work_internal(
                 .build_command
                 .clone()
                 .or_else(|| dist.and_then(|d| d.build_command.clone())),
-            chroot: dcfg
-                .chroot
-                .clone()
-                .or_else(|| dist.and_then(|d| d.chroot.clone())),
+            chroot,
+            session,
             // When the runner has a `--public-apt-archive-location`,
             // expand each campaign's `extra_build_distribution` (plus
             // a `cs/{change_set}` entry, if any) into a fully formed
@@ -4728,6 +4743,7 @@ distribution {
                 build_suffix: None,
                 build_command: None,
                 chroot: None,
+                session: None,
                 extra_build_distribution: vec![],
             }),
             ..generic
@@ -4735,6 +4751,53 @@ distribution {
         assert_eq!(
             super::cache_branch_name(&debian, &config),
             Some("Debian/latest".to_string())
+        );
+    }
+
+    #[test]
+    fn test_worker_session() {
+        let config = janitor::config::read_string(
+            r#"
+distribution {
+  name: "unstable"
+  chroot: "unstable-amd64-sbuild"
+}
+distribution {
+  name: "trixie"
+  chroot: "trixie-amd64-sbuild"
+  session: "unshare:trixie"
+}
+"#,
+        )
+        .unwrap();
+        let unstable = config.get_distribution("unstable");
+        let trixie = config.get_distribution("trixie");
+        let campaign =
+            |chroot: Option<&str>, session: Option<&str>| crate::builder::DebianBuildConfig {
+                base_distribution: "unstable".to_string(),
+                build_distribution: None,
+                build_suffix: None,
+                build_command: None,
+                chroot: chroot.map(str::to_string),
+                session: session.map(str::to_string),
+                extra_build_distribution: vec![],
+            };
+        let some = |s: &str| Some(s.to_string());
+        assert_eq!(
+            [
+                super::worker_session(&campaign(None, None), None),
+                super::worker_session(&campaign(None, None), unstable),
+                super::worker_session(&campaign(None, None), trixie),
+                super::worker_session(&campaign(Some("x"), None), trixie),
+                super::worker_session(&campaign(None, Some("unshare:sid")), unstable),
+            ],
+            [
+                (None, None),
+                (None, some("unstable-amd64-sbuild")),
+                (some("unshare:trixie"), None),
+                (None, some("x")),
+                (some("unshare:sid"), None),
+            ]
         );
     }
 

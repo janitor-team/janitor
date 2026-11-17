@@ -113,6 +113,7 @@ pub fn build_from_config(
         local_tree,
         subpath,
         output_directory,
+        config.session.as_deref(),
         config.chroot.as_deref(),
         config.dep_server_url.as_ref(),
     )
@@ -122,23 +123,23 @@ fn build(
     local_tree: &breezyshim::workingtree::GenericWorkingTree,
     subpath: &Path,
     output_directory: &Path,
+    session: Option<&str>,
     schroot: Option<&str>,
     dep_server_url: Option<&url::Url>,
 ) -> Result<serde_json::Value, WorkerFailure> {
     use ognibuild::session::Session;
-    #[cfg(target_os = "linux")]
-    let mut session: Box<dyn Session> = if let Some(schroot) = schroot {
+    if let Some(session) = session {
+        log::info!("Using session {:?}", session);
+    }
+    if let Some(schroot) = schroot {
         log::info!("Using schroot {:?}", schroot);
-        Box::new(
-            ognibuild::session::schroot::SchrootSession::new(schroot, Some("janitor-worker"))
-                .map_err(|e| crate::session_failure(e, &["build"]))?,
-        ) as Box<dyn Session>
-    } else {
-        Box::new(ognibuild::session::plain::PlainSession::new()) as Box<dyn Session>
-    };
+    }
+    #[cfg(target_os = "linux")]
+    let mut session: Box<dyn Session> =
+        crate::open_session(session, schroot, Some("janitor-worker"), &["build"])?;
 
     #[cfg(not(target_os = "linux"))]
-    let mut session: Box<dyn Session> = if schroot.is_some() {
+    let mut session: Box<dyn Session> = if session.is_some() || schroot.is_some() {
         return Err(WorkerFailure::new(
             "chroot-not-supported",
             "Chroot is not supported",
