@@ -32,6 +32,47 @@ pub mod web;
 
 mod tee;
 
+/// Session backend for a `session` value in ognibuild's syntax or a schroot name.
+#[cfg(target_os = "linux")]
+fn session_kind(
+    session: Option<&str>,
+    chroot: Option<&str>,
+) -> Result<ognibuild::session::SessionKind, String> {
+    if chroot == Some("") {
+        return Err("empty chroot value".to_string());
+    }
+    let session = session
+        .map(|s| {
+            s.parse()
+                .map_err(|e| format!("invalid session {:?}: {}", s, e))
+        })
+        .transpose()?;
+    ognibuild::session::resolve_session_kind(session, chroot.map(str::to_string))
+}
+
+/// Open the session for a `session` or `chroot` value.
+#[cfg(target_os = "linux")]
+pub fn open_session(
+    session: Option<&str>,
+    chroot: Option<&str>,
+    session_prefix: Option<&str>,
+    stage: &[&str],
+) -> Result<Box<dyn ognibuild::session::Session>, WorkerFailure> {
+    let kind = session_kind(session, chroot).map_err(|e| WorkerFailure {
+        code: "invalid-session".to_string(),
+        description: e,
+        details: None,
+        stage: stage.iter().map(|s| s.to_string()).collect(),
+        transient: Some(false),
+    })?;
+    let session = kind
+        .build(session_prefix)
+        .map_err(|e| session_failure(e, stage))?;
+    // Builds fetch apt dependencies, and unshare's default would isolate them.
+    session.set_isolate_network(false);
+    Ok(session)
+}
+
 #[derive(Clone, Default)]
 pub struct AppState {
     pub output_directory: Option<std::path::PathBuf>,
@@ -1316,6 +1357,57 @@ mod tests {
             assert_eq!(f.details, None, "{}", code);
             assert!(f.description.contains(text), "{}", f.description);
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_session_kind() {
+        use ognibuild::session::SessionKind;
+        assert_eq!(
+            session_kind(None, Some("unshare:sid")),
+            Ok(SessionKind::Schroot("unshare:sid".to_string()))
+        );
+        assert_eq!(
+            session_kind(Some("unshare:sid"), Some("unstable-amd64-sbuild")),
+            Err("--schroot and --session are mutually exclusive".to_string())
+        );
+        assert_eq!(
+            session_kind(None, Some("")),
+            Err("empty chroot value".to_string())
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_open_session_invalid_session() {
+        let f = open_session(Some("unshare:"), None, None, &["build"])
+            .err()
+            .unwrap();
+        assert_eq!(
+            (
+                f.code.as_str(),
+                f.description.as_str(),
+                f.stage,
+                f.transient
+            ),
+            (
+                "invalid-session",
+                "invalid session \"unshare:\": unshare session requires a suite",
+                vec!["build".to_string()],
+                Some(false)
+            )
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_open_session_missing_image() {
+        let f = open_session(Some("unshare:no-such-suite"), None, None, &[])
+            .err()
+            .unwrap();
+        assert_eq!(f.code, "session-image-error");
+        assert!(f.description.contains("no-such-suite"), "{}", f.description);
+        assert!(f.description.contains("Cached image"), "{}", f.description);
     }
 
     #[test]
