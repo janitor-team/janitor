@@ -230,12 +230,32 @@ async fn post_codebases_replaces_fields_of_existing_codebase() {
         vcs_type: some("bzr"),
         ..Default::default()
     };
-    for upload in [full_upload(), second.clone()] {
-        assert_eq!(
-            post_codebases(&app, &[upload]).await,
-            (StatusCode::OK, json!({}))
-        );
-    }
+    let pool = state.database.pool().clone();
+    assert_eq!(
+        post_codebases(&app, &[full_upload()]).await,
+        (StatusCode::OK, json!({}))
+    );
+    sqlx::query("INSERT INTO candidate (codebase, campaign, command) VALUES ('cb', 'one', 'true')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        post_codebases(&app, std::slice::from_ref(&second)).await,
+        (StatusCode::OK, json!({}))
+    );
+    // The new branch URL queues the codebase's candidate.
+    let queue_rows = || {
+        sqlx::query_as::<_, (String, String, String)>(
+            "SELECT campaign::text, bucket::text, requester FROM queue",
+        )
+        .fetch_all(&pool)
+    };
+    let queued = vec![(
+        "one".to_string(),
+        "default".to_string(),
+        "codebase update".to_string(),
+    )];
+    assert_eq!(queue_rows().await.unwrap(), queued);
     // vcs_last_revision is kept when the upload leaves it out.
     let expected = CodebaseRow {
         name: Some(CodebaseName::new("cb").unwrap()),
@@ -257,10 +277,16 @@ async fn post_codebases_replaces_fields_of_existing_codebase() {
         vcs_last_revision: some("def"),
         ..second
     };
+    sqlx::query("DELETE FROM queue")
+        .execute(&pool)
+        .await
+        .unwrap();
     assert_eq!(
         post_codebases(&app, &[third]).await,
         (StatusCode::OK, json!({}))
     );
+    // Same branch URL and subpath: nothing is queued.
+    assert_eq!(queue_rows().await.unwrap(), vec![]);
     assert_eq!(
         state.database.get_codebases().await.unwrap(),
         vec![CodebaseRow {
