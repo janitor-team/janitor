@@ -1,5 +1,6 @@
 ---
-# roles/postgres loads the schema from the checkout, and the images build from it.
+# The checkout is needed on every path: roles/postgres loads its schema
+# and the image builds run from it.
 - name: Create the Janitor checkout directory
   ansible.builtin.file:
     path: "{{ janitor_home }}"
@@ -42,7 +43,7 @@
   register: janitor_image_exists
   changed_when: false
   failed_when: janitor_image_exists.rc not in [0, 1]
-  loop: "{{ janitor_services }}"
+  loop: "{{ janitor_images }}"
   when: not use_prebuilt_images
 
 - name: Export the checkout's tracked files as the image build context
@@ -62,8 +63,8 @@
 
 - name: Build the images this host needs from source
   # Rootless: the images must land in the deploy user's store, which the
-  # quadlet units run from. The log is kept next to the checkout. SHA is
-  # given because the export has no .git.
+  # quadlet units run from. Each build takes minutes to an hour, and the log
+  # is kept next to the checkout. SHA is given because the export has no .git.
   become: true
   become_user: "{{ ansible_user }}"
   ansible.builtin.shell: >-
@@ -112,7 +113,7 @@
     executable: /bin/bash
   register: janitor_image_pull
   changed_when: "'IMAGE_UPDATED' in janitor_image_pull.stdout"
-  loop: "{{ janitor_services }}"
+  loop: "{{ janitor_images }}"
   when: use_prebuilt_images
 
 - name: Check every image this host needs is present
@@ -120,7 +121,7 @@
   become_user: "{{ ansible_user }}"
   ansible.builtin.command: podman image exists ghcr.io/jelmer/janitor/{{ item }}:latest
   changed_when: false
-  loop: "{{ janitor_services }}"
+  loop: "{{ janitor_images }}"
 
 - name: Create the derived worker image's directory
   ansible.builtin.file:
@@ -128,7 +129,7 @@
     state: directory
     owner: "{{ ansible_user }}"
     mode: "0755"
-  when: janitor_worker_extra_packages | length > 0
+  when: "'worker' in janitor_services and janitor_worker_extra_packages | length > 0"
 
 - name: Write the derived worker image's Containerfile
   # As docs/containers.md, "Custom worker tooling", describes.
@@ -140,7 +141,7 @@
       FROM ghcr.io/jelmer/janitor/worker:latest
       RUN apt-get update && apt-get install -y --no-install-recommends {{ janitor_worker_extra_packages | join(' ') }} && apt-get clean
   register: worker_containerfile
-  when: janitor_worker_extra_packages | length > 0
+  when: "'worker' in janitor_services and janitor_worker_extra_packages | length > 0"
 
 - name: Check whether the derived worker image exists and is built on the current worker image
   become: true
@@ -156,7 +157,7 @@
     executable: /bin/bash
   register: worker_custom_state
   changed_when: false
-  when: janitor_worker_extra_packages | length > 0
+  when: "'worker' in janitor_services and janitor_worker_extra_packages | length > 0"
 
 - name: Build the derived worker image
   become: true
@@ -168,5 +169,5 @@
     /home/{{ ansible_user }}/janitor-worker-image
   changed_when: true
   when:
-    - janitor_worker_extra_packages | length > 0
+    - "'worker' in janitor_services and janitor_worker_extra_packages | length > 0"
     - worker_containerfile.changed or 'MISSING' in worker_custom_state.stdout or 'STALE' in worker_custom_state.stdout
