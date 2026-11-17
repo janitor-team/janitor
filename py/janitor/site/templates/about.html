@@ -49,5 +49,11 @@
         <p>
             Please report bugs in the <a href="https://github.com/jelmer/janitor/issues/new">bug tracker</a>.
         </p>
+        {% if 'credentials' in app.router %}
+            <h2>Credentials</h2>
+            <p>
+                The <a href="{{ url_for('credentials') }}">credentials page</a> lists the accounts on hosting sites and the SSH and PGP keys that the Janitor uses.
+            </p>
+        {% endif %}
     </div>
 {% endblock body %}
