@@ -28,6 +28,18 @@
   no_log: true
   when: "'control' in group_names"
 
+- name: Deploy the S3 key for the runner and site
+  ansible.builtin.template:
+    src: s3.env.j2
+    dest: "{{ janitor_home }}/s3.env"
+    owner: "{{ ansible_user }}"
+    mode: "0600"
+  register: janitor_s3_env
+  no_log: true
+  when:
+    - "'control' in group_names"
+    - janitor_s3_access_key_id | length > 0
+
 - name: Wait for the control host's HTTPS port
   # Brought up together, a worker gets here long before control's Caddy.
   ansible.builtin.wait_for:
