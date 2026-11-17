@@ -1,8 +1,16 @@
 ---
-# Made as create-sbuild-chroot-unshare.py does, under a .partial name sbuild skips, then moved.
-janitor_quadlet_sbuild_chroot_build: >-
-  mmdebstrap --variant=buildd unstable
-  /root/.cache/sbuild/{{ janitor_sbuild_chroot }}.partial.tar.xz
-  http://deb.debian.org/debian --mode=unshare --arch=amd64 --components=main &&
-  mv /root/.cache/sbuild/{{ janitor_sbuild_chroot }}.partial.tar.xz
-  /root/.cache/sbuild/{{ janitor_sbuild_chroot }}.tar.xz
+janitor_quadlet_sbuild_apt_dir: "{{ janitor_home }}/sbuild-apt"
+# The shared extra apt sources, then each campaign's.
+janitor_quadlet_sbuild_all_sources: >-
+  {{ janitor_sbuild_extra_sources + (janitor_sbuild_campaign_extra_sources.values() | flatten(levels=1)) }}
+# The tarballs of the campaigns in janitor_sbuild_campaign_extra_sources.
+janitor_quadlet_sbuild_campaign_chroots: >-
+  {{ janitor_sbuild_campaign_extra_sources.keys() | map('extract', janitor_sbuild_campaigns)
+     | map('regex_replace', '$', '-amd64-sbuild') | list }}
+# Relative to janitor_quadlet_sbuild_apt_dir.
+janitor_quadlet_sbuild_apt_files: >-
+  {{ (janitor_quadlet_sbuild_all_sources | map(attribute='name')
+      | zip(janitor_quadlet_sbuild_all_sources | map(attribute='key') | map('splitext') | map('last'))
+      | map('join') | map('regex_replace', '^', 'keyrings/janitor-') | list)
+     + (janitor_quadlet_sbuild_all_sources | map(attribute='name')
+        | map('regex_replace', '^', 'sources.list.d/janitor-') | map('regex_replace', '$', '.sources') | list) }}
