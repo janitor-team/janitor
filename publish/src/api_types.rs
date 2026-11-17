@@ -46,14 +46,31 @@ pub struct NotFoundResponse {
     pub codebase: Option<CodebaseName>,
 }
 
-/// Response for `POST /{campaign}/{codebase}/publish` with an unknown
-/// mode.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct InvalidModeResponse {
-    /// Always `Invalid mode`.
-    pub error: String,
-    /// The mode that was requested.
-    pub mode: String,
+/// Modes accepted by `POST /{campaign}/{codebase}/publish`. A subset of
+/// `janitor::publish::Mode`: `skip`, `build-only` and `bts` are not
+/// selectable from the publish endpoint.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum PublishRequestMode {
+    /// Push the change to a derived branch.
+    PushDerived,
+    /// Push the change directly to the target branch.
+    Push,
+    /// Open a merge proposal for the change.
+    Propose,
+    /// Push if the forge allows it, otherwise propose.
+    AttemptPush,
+}
+
+impl From<PublishRequestMode> for janitor::publish::Mode {
+    fn from(mode: PublishRequestMode) -> Self {
+        match mode {
+            PublishRequestMode::PushDerived => janitor::publish::Mode::PushDerived,
+            PublishRequestMode::Push => janitor::publish::Mode::Push,
+            PublishRequestMode::Propose => janitor::publish::Mode::Propose,
+            PublishRequestMode::AttemptPush => janitor::publish::Mode::AttemptPush,
+        }
+    }
 }
 
 /// Response for `POST /{campaign}/{codebase}/publish` when there is
@@ -75,7 +92,7 @@ pub struct PublishStartedResponse {
     /// Run that is being published.
     pub run_id: RunId,
     /// Mode that was requested, if any.
-    pub mode: Option<String>,
+    pub mode: Option<PublishRequestMode>,
     /// Publish id for each branch role.
     pub publish_ids: BTreeMap<String, PublishId>,
 }
