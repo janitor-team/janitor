@@ -179,6 +179,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?,
         None => janitor_service::metrics::install(&[]),
     }
+    janitor_worker::client::register_metrics();
 
     let addr = SocketAddr::new(args.listen_address, args.port.unwrap_or(0));
     let listener = tokio::net::TcpListener::bind(addr).await?;
