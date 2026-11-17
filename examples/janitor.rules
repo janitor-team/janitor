@@ -46,29 +46,6 @@ groups:
     annotations:
       description: Job {{ $labels.job }} instance {{ $labels.instance }} is down.
       summary: Janitor archiver is down
-  - alert: JanitorArchiverDown
-    expr: up{job="janitor.archiver"} == 0
-    for: 1h
-    labels:
-      severity: critical
-      project: janitor
-    annotations:
-      description: Job {{ $labels.job }} instance {{ $labels.instance }} is down.
-      summary: Janitor archiver is down
-  - alert: JanitorScheduleNotRunning
-    expr: ((time() - job_last_success_unixtime{exported_job="janitor.schedule"}) / 3600) > 48
-    for: 1h
-    annotations:
-      summary: janitor.schedule not running
-  - alert: JanitorIrcRelayDown
-    expr: up{job="irc_relay"} == 0
-    for: 1h
-    labels:
-      severity: critical
-      project: janitor
-    annotations:
-      description: Job {{ $labels.job }} instance {{ $labels.instance }} is down.
-      summary: Prometheus IRC relay is down
   - alert: JanitorGitStoreDown
     expr: up{job="janitor.git_store"} == 0
     for: 1h
@@ -89,45 +66,25 @@ groups:
       description: Job {{ $labels.job }} instance {{ $labels.instance }} is down.
       summary: Janitor bzr store is down
 
-  - alert: JanitorRunFinishFailing
-    expr: increase(request_exceptions_total{job="janitor.runner",route="finish"}[5m]) > 0
+  - alert: JanitorHighRequestFailureRate
+    expr: increase(request_exceptions_total{job="janitor.site"}[30m]) > 5
     for: 0m
     labels:
       severity: critical
       project: janitor
     annotations:
-      description: Finish requests to the runner {{ $labels.instance }} are failing.
-      summary: Run finish requests are failing
+      description: "{{ $labels.route }} requests to {{ $labels.instance }} are failing."
+      summary: "{{ $labels.route }} requests are failing"
 
-  - alert: JanitorRunAssignFailing
-    expr: increase(request_exceptions_total{job="janitor.runner",route="assign"}[5m]) > 0
+  - alert: JanitorRequestFailures
+    expr: increase(request_exceptions_total{job="janitor.site"}[30m]) > 0
     for: 0m
     labels:
-      severity: critical
+      severity: warning
       project: janitor
     annotations:
-      description: "Assign requests to the runner {{ $labels.instance }} are failing."
-      summary: Run assign requests are failing
-
-#  - alert: JanitorHighRequestFailureRate
-#    expr: increase(request_exceptions_total[30m]) > 5
-#    for: 0m
-#    labels:
-#      severity: critical
-#      project: janitor
-#    annotations:
-#      description: "{{ $labels.route }} requests to {{ $labels.instance }} are failing."
-#      summary: {{ $labels.route }} requests are failing
-#
-#  - alert: JanitorRequestFailures
-#    expr: increase(request_exceptions_total[30m]) > 0
-#    for: 0m
-#    labels:
-#      severity: warning
-#      project: janitor
-#    annotations:
-#      description: "{{ $labels.route }} requests to {{ $labels.instance }} are failing."
-#      summary: {{ $labels.route }} requests are failing
+      description: "{{ $labels.route }} requests to {{ $labels.instance }} are failing."
+      summary: "{{ $labels.route }} requests are failing"
 
   - alert: JobRestarting
     expr: avg without(instance)(changes(process_start_time_seconds[1h])) > 3
@@ -135,6 +92,9 @@ groups:
     labels:
       severity: critical
       project: janitor
+    annotations:
+      description: Job {{ $labels.job }} restarted more than 3 times in the last hour.
+      summary: Janitor job {{ $labels.job }} is restarting
 
   - alert: SiteDown
     expr: probe_http_status_code{job="blackbox_https"} != 200
@@ -142,28 +102,34 @@ groups:
     labels:
       severity: critical
       project: janitor
+    annotations:
+      description: "{{ $labels.instance }} answered with HTTP status {{ $value }} (0 means no answer)."
+      summary: Janitor site is not returning HTTP 200
 
   - alert: WorkerCrashing
-    expr: avg without(instance)(changes(run{result_code="worker-failure"}[10m])) > 5
+    expr: sum without(instance, campaign)(increase(result_total{result_code="worker-failure"}[10m])) > 5
     for: 10m
     labels:
       severity: critical
       project: janitor
+    annotations:
+      description: More than 5 runs ended in worker-failure in the last 10 minutes.
+      summary: Workers are crashing
 
-#  - alert: UploadsFailing
-#    expr: increase(upload_failed_total) > 0
-#    labels:
-#      severity: warning
-#      project: janitor
-#    annotations:
-#      description: "Some uploads are failing {{ $labels.instance }}"
-#      summary: "Some uploads are failing"
+  - alert: UploadsFailing
+    expr: increase(upload_failed{job="janitor.auto_upload"}[1h]) > 0
+    labels:
+      severity: warning
+      project: janitor
+    annotations:
+      description: "Some uploads are failing on {{ $labels.instance }}."
+      summary: Some uploads are failing
 
-#  - alert: UploadSignFailing
-#    expr: increase(debsign_failed_total) > 0
-#    labels:
-#      severity: warning
-#      project: janitor
-#    annotations:
-#      description: "Some debsign commands are failing {{ $labels.instance }}"
-#      summary: "Some debsign commands are failing"
+  - alert: UploadSignFailing
+    expr: increase(debsign_failed{job="janitor.auto_upload"}[1h]) > 0
+    labels:
+      severity: warning
+      project: janitor
+    annotations:
+      description: "Some debsign commands are failing on {{ $labels.instance }}."
+      summary: Some debsign commands are failing
