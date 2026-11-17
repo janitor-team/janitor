@@ -447,6 +447,55 @@ async def test_codebase_unknown_returns_404(aiohttp_client, db):
     assert resp.status == 404
 
 
+_CAMPAIGN_CONFIG = """\
+campaign {
+  name: "lintian-fixes"
+  command: "lintian-brush"
+  branch_name: "lintian-fixes"
+  debian_build {
+    base_distribution: "unstable"
+    build_distribution: "lintian-fixes"
+    extra_build_distribution: "experimental"
+    build_suffix: "jan+lint"
+  }
+  merge_proposal {
+    value_threshold: 10
+    label: "janitor"
+  }
+  bugtracker {
+    kind: debian
+    url: "https://bugs.debian.org/lintian-brush"
+    name: "lintian-brush"
+  }
+}
+campaign {
+  name: "generic"
+  generic_build {
+    chroot: "bookworm"
+  }
+}
+"""
+
+
+async def test_campaign_list(aiohttp_client, db):
+    client = await create_client(aiohttp_client, db, config=_CAMPAIGN_CONFIG)
+    resp = await client.get("/cupboard/campaign/", allow_redirects=False)
+    assert resp.status == 200
+
+
+async def test_campaign(aiohttp_client, db):
+    client = await create_client(aiohttp_client, db, config=_CAMPAIGN_CONFIG)
+    for name in ["lintian-fixes", "generic"]:
+        resp = await client.get(f"/cupboard/campaign/{name}/", allow_redirects=False)
+        assert resp.status == 200
+
+
+async def test_campaign_unknown_returns_404(aiohttp_client, db):
+    client = await create_client(aiohttp_client, db, config=_CAMPAIGN_CONFIG)
+    resp = await client.get("/cupboard/campaign/nonexistent/", allow_redirects=False)
+    assert resp.status == 404
+
+
 async def test_run_redirect(aiohttp_client, db):
     client = await create_client(aiohttp_client, db)
     async with db.acquire() as conn:

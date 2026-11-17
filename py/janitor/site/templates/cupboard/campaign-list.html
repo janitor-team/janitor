@@ -1,0 +1,19 @@
+{% extends "layout.html" %}
+{% block sidebar %}
+    {% include "cupboard/sidebar.html" %}
+{% endblock sidebar %}
+{% block page_title %}
+    Cupboard - Campaigns
+{% endblock page_title %}
+{% block body %}
+    <div class="section">
+        <h1>Campaigns</h1>
+        <ul>
+            {% for campaign in campaigns %}
+                <li>
+                    <a href="/cupboard/campaign/{{ campaign.name }}/">{{ campaign.name }}</a>
+                </li>
+            {% endfor %}
+        </ul>
+    </div>
+{% endblock body %}

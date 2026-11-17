@@ -557,6 +557,23 @@ async def handle_codebase(request):
         return await generate_codebase(conn, request.match_info["codebase"])
 
 
+@routes.get("/cupboard/campaign/", name="cupboard-campaign-list")
+@html_template("cupboard/campaign-list.html", headers={"Vary": "Cookie"})
+async def handle_campaign_list(request):
+    return {"campaigns": request.app["config"].campaign}
+
+
+@routes.get("/cupboard/campaign/{campaign}/", name="cupboard-campaign")
+@html_template("cupboard/campaign.html", headers={"Vary": "Cookie"})
+async def handle_campaign(request):
+    name = request.match_info["campaign"]
+    try:
+        campaign = request.app["config"].find_campaign(name)
+    except KeyError as e:
+        raise web.HTTPNotFound(text=f"No such campaign: {name}") from e
+    return {"campaign": campaign}
+
+
 @routes.get("/cupboard/merge-proposals", name="cupboard-merge-proposals")
 @html_template("cupboard/merge-proposals.html", headers={"Vary": "Cookie"})
 async def handle_merge_proposals(request):
