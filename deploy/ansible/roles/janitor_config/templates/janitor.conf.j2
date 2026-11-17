@@ -45,6 +45,17 @@ campaign {
     base_distribution: "unstable"
   }
 }
+{% if enable_generic_campaign | bool %}
+
+campaign {
+  name: "generic"
+  command: "true"
+  branch_name: "generic"
+  force_build: true
+  generic_build {
+  }
+}
+{% endif %}
 
 apt_repository {
   name: "lintian-fixes"

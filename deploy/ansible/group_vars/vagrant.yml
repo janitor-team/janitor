@@ -42,6 +42,7 @@ auto_upload_distributions: ["{{ janitor_lintian_fixes_build_distribution }}"]
 
 # ognibuild's dependency server on control, for generic builds.
 enable_ognibuild_dep: true
+enable_generic_campaign: true
 
 # Gitea mails the bot's address on control, where Postfix pipes it into
 # the mail filter.
