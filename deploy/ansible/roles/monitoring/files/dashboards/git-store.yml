@@ -1,0 +1,464 @@
+---
+# Rendered by templates/dashboard.json.j2.
+title: 'Janitor: git store'
+uid: janitor-git_store
+description: The git repositories of the result branches.
+tags:
+  - janitor
+  - core
+  - storage
+  - control
+  - git-store
+panels:
+  - title: Health
+    type: row
+  - title: Metrics reachable
+    type: stat
+    targets:
+      - expr: max_over_time(up{job="git_store"}[2m])
+        legend: metrics
+    defaults:
+      mappings:
+        - type: value
+          options:
+            '0':
+              text: 'no'
+              color: red
+              index: 0
+            '1':
+              text: 'yes'
+              color: green
+              index: 1
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 2
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value
+    width: 12
+  - title: Health check passes
+    type: stat
+    targets:
+      - expr: max_over_time(probe_success{job="health", service="git_store"}[2m])
+        legend: health check
+    defaults:
+      mappings:
+        - type: value
+          options:
+            '0':
+              text: 'no'
+              color: red
+              index: 0
+            '1':
+              text: 'yes'
+              color: green
+              index: 1
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 2
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value
+    requires:
+      - enable_blackbox_exporter
+    description: 'no: it does not answer 200. no data: the health checker (blackbox exporter) does not answer, or
+      Prometheus does not answer.'
+    width: 12
+  - title: Service state
+    type: stat
+    targets:
+      - expr: |-
+          sort_by_label(max by (unit, host) (
+            6 * ((janitor_unit_state{state="failed", unit="janitor-git_store.service"} or
+          ((last_over_time(janitor_unit_state{state="failed", unit="janitor-git_store.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state="failed", unit="janitor-git_store.service"})[2m:10s]) >= on (host)
+          group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1)) == 1)
+            or 5 * ((round(increase(janitor_unit_restarts_total{unit="janitor-git_store.service"}[15m])) > 2 or
+          round(increase(janitor_unit_restarts_total{unit="janitor-git_store.service"}[1h])) > 3) > bool 0) and on (host, unit)
+          (janitor_unit_restarts_total{unit="janitor-git_store.service"} or
+          ((last_over_time(janitor_unit_restarts_total{unit="janitor-git_store.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_restarts_total{unit="janitor-git_store.service"})[2m:10s]) >= on (host) group_left
+          max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1))
+            or 4 * ((janitor_unit_state{state="inactive", unit="janitor-git_store.service"} or
+          ((last_over_time(janitor_unit_state{state="inactive", unit="janitor-git_store.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state="inactive", unit="janitor-git_store.service"})[2m:10s]) >= on (host)
+          group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1)) == 1)
+            or 2 * ((janitor_unit_state{state!~"active|inactive|failed", unit="janitor-git_store.service"} or
+          ((last_over_time(janitor_unit_state{state!~"active|inactive|failed", unit="janitor-git_store.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state!~"active|inactive|failed", unit="janitor-git_store.service"})[2m:10s])
+          >= on (host) group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on
+          (host) up{job="node"} == 1)) == 1)
+            or ((increase(janitor_unit_restarts_total{unit="janitor-git_store.service"}[1h]) > bool 0) and on (host, unit)
+          (janitor_unit_restarts_total{unit="janitor-git_store.service"} or
+          ((last_over_time(janitor_unit_restarts_total{unit="janitor-git_store.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_restarts_total{unit="janitor-git_store.service"})[2m:10s]) >= on (host) group_left
+          max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} ==
+          1)))
+            or 0 * ((janitor_unit_state{state="active", unit="janitor-git_store.service"} or
+          ((last_over_time(janitor_unit_state{state="active", unit="janitor-git_store.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state="active", unit="janitor-git_store.service"})[2m:10s]) >= on (host)
+          group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1)) == 1)
+          ), "host", "unit")
+        legend: '{{unit}} on {{host}}'
+    width: 8
+    height: 5
+    newline: true
+    requires:
+      - enable_node_exporter
+    defaults:
+      mappings:
+        - type: value
+          options:
+            '0':
+              text: up
+              color: green
+              index: 0
+            '1':
+              text: restarted
+              color: yellow
+              index: 1
+            '1.5':
+              text: mail held back
+              color: yellow
+              index: 2
+            '2':
+              text: starting, stopping or reloading
+              color: yellow
+              index: 3
+            '3':
+              text: unreachable
+              color: red
+              index: 4
+            '4':
+              text: stopped
+              color: red
+              index: 5
+            '5':
+              text: restarting in a loop
+              color: red
+              index: 6
+            '5.5':
+              text: mail held back for an hour
+              color: red
+              index: 7
+            '6':
+              text: failed
+              color: red
+              index: 8
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 99
+      color:
+        mode: thresholds
+      thresholds:
+        mode: absolute
+        steps:
+          - color: green
+            value: null
+          - color: yellow
+            value: 1
+          - color: red
+            value: 3
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value_and_name
+      justifyMode: center
+    description: 'up: running. restarted: systemd restarted it in the last hour. starting, stopping or reloading:
+      systemd is changing its state, or it is in another short-lived state such as maintenance. stopped: not running.
+      restarting in a loop: more than 2 restarts in 15 minutes or more than 3 in an hour. failed: systemd marked
+      it failed. A unit whose service state is gone leaves the tile: the unit was removed, the node exporter of
+      its host has not answered for 2 minutes ("Host metrics" on Hosts), or the service states file of its host
+      is missing or cannot be read. no data means none of its units has a service state. Its value comes from metrics
+      files the hosts write: an old, missing or unreadable file, or a node exporter that does not answer, makes
+      it wrong or empty ("Service state data age" on Janitor: overview shows the files'' age, "Host metrics" on
+      Hosts a node exporter that does not answer).'
+  - title: Last started and stopped
+    type: table
+    width: 16
+    height: 5
+    requires:
+      - enable_node_exporter
+    targets:
+      - expr: 1000 * last_over_time(janitor_unit_active_since_seconds{unit="janitor-git_store.service"}[2m])
+        format: table
+        instant: true
+      - expr: 1000 * last_over_time(janitor_unit_inactive_since_seconds{unit="janitor-git_store.service"}[2m])
+        format: table
+        instant: true
+      - expr: |-
+          round(increase(janitor_unit_restarts_total{unit="janitor-git_store.service"}[24h])) and on (host, unit)
+          last_over_time(janitor_unit_restarts_total{unit="janitor-git_store.service"}[2m])
+        format: table
+        instant: true
+      - expr: |-
+          (janitor_unit_result{unit="janitor-git_store.service"} or
+          ((last_over_time(janitor_unit_result{unit="janitor-git_store.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_result{unit="janitor-git_store.service"})[2m:10s]) >= on (host) group_left max by
+          (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1))
+        format: table
+        instant: true
+    transformations:
+      - id: merge
+        options: {}
+      - id: organize
+        options:
+          excludeByName:
+            Time: true
+            job: true
+            instance: true
+            __name__: true
+            'Value #D': true
+          renameByName:
+            'Value #A': last started
+            'Value #B': last stopped
+            'Value #C': restarts by systemd, 24 hours
+            result: last result
+      - id: sortBy
+        options:
+          sort:
+            - field: restarts by systemd, 24 hours
+              desc: true
+    overrides:
+      - matcher:
+          id: byRegexp
+          options: last (started|stopped)
+        properties:
+          - id: unit
+            value: dateTimeFromNow
+      - matcher:
+          id: byRegexp
+          options: restarts by systemd, 24 hours
+        properties:
+          - id: custom.cellOptions
+            value:
+              type: color-background
+          - id: color
+            value:
+              mode: thresholds
+          - id: thresholds
+            value:
+              mode: absolute
+              steps:
+                - color: green
+                  value: null
+                - color: yellow
+                  value: 1
+                - color: red
+                  value: 5
+          - id: custom.wrapHeaderText
+            value: true
+      - matcher:
+          id: byName
+          options: restarts by systemd, 24 hours
+        properties:
+          - id: mappings
+            value:
+              - type: special
+                options:
+                  match: 'null'
+                  result:
+                    text: no data
+                    color: transparent
+                    index: 9
+      - matcher:
+          id: byName
+          options: host
+        properties:
+          - id: custom.width
+            value: 90
+      - matcher:
+          id: byName
+          options: last started
+        properties:
+          - id: custom.width
+            value: 110
+      - matcher:
+          id: byName
+          options: last stopped
+        properties:
+          - id: custom.width
+            value: 110
+      - matcher:
+          id: byName
+          options: restarts by systemd, 24 hours
+        properties:
+          - id: custom.width
+            value: 120
+      - matcher:
+          id: byName
+          options: last result
+        properties:
+          - id: custom.width
+            value: 100
+      - matcher:
+          id: byName
+          options: last result
+        properties:
+          - id: custom.cellOptions
+            value:
+              type: color-text
+          - id: mappings
+            value:
+              - type: value
+                options:
+                  success:
+                    color: text
+                    index: 0
+              - type: regex
+                options:
+                  pattern: .+
+                  result:
+                    color: red
+                    index: 1
+    description: 'last result: systemd sets it back to success when it starts the unit again. A crash that systemd
+      restarted shows in the restart count, and in last stopped until the next manual restart. The cause is in the
+      unit''s journal. no data: the unit appeared less than a minute ago (the count needs two readings). Its value
+      comes from metrics files the hosts write: an old, missing or unreadable file, or a node exporter that does
+      not answer, makes it wrong or empty ("Service state data age" on Janitor: overview shows the files'' age,
+      "Host metrics" on Hosts a node exporter that does not answer). A unit whose service state is gone leaves the
+      table, for the same causes as on "Service state".'
+  - title: Memory
+    type: timeseries
+    unit: bytes
+    requires:
+      - enable_node_exporter
+    description: 'Memory in use, without file cache. Its lines come from metrics files the hosts write: an old,
+      missing or unreadable file, or a node exporter that does not answer, makes them wrong or leaves gaps ("Service
+      state data age" on Janitor: overview shows the files'' age, "Host metrics" on Hosts a node exporter that does
+      not answer).'
+    targets:
+      - expr: janitor_unit_memory_in_use_bytes{unit="janitor-git_store.service"}
+        legend: '{{unit}} on {{host}}'
+  - title: CPU, in cores
+    type: timeseries
+    unit: short
+    requires:
+      - enable_node_exporter
+    defaults:
+      custom:
+        axisSoftMax: 0.01
+    targets:
+      - expr: rate(janitor_unit_cpu_seconds_total{unit="janitor-git_store.service"}[5m])
+        legend: '{{unit}} on {{host}}'
+    description: 'Its lines come from metrics files the hosts write: an old, missing or unreadable file, or a node
+      exporter that does not answer, makes them wrong or leaves gaps ("Service state data age" on Janitor: overview
+      shows the files'' age, "Host metrics" on Hosts a node exporter that does not answer).'
+  - title: Requests
+    type: row
+  - title: Requests per second, by HTTP status
+    type: timeseries
+    unit: reqps
+    defaults:
+      noValue: no requests in this time range, or the counts could not be read
+      color:
+        mode: shades
+        fixedColor: blue
+    description: Not counting the metrics scrape and the health checks.
+    targets:
+      - expr: |-
+          sum by (status) ((((http_requests_total{job="git_store", path!~"/metrics|/health"} unless
+          http_requests_total{job="git_store", path!~"/metrics|/health"} offset 5m) and on (job, instance) (up offset 5m == 1)) or
+          increase(http_requests_total{job="git_store", path!~"/metrics|/health"}[5m])) / 300)
+        legend: '{{status}}'
+    overrides:
+      - matcher:
+          id: byRegexp
+          options: (^|.* )5[0-9][0-9]$
+        properties:
+          - id: color
+            value:
+              mode: fixed
+              fixedColor: red
+  - title: Server errors per hour
+    type: timeseries
+    defaults:
+      noValue: the counts could not be read in this time range
+      color:
+        mode: shades
+        fixedColor: red
+    description: The health check answers 200 when it passes and nothing when it fails, so it adds no error here.
+      See "Health check passes".
+    targets:
+      - expr: |-
+          sum((((http_requests_total{job="git_store", status=~"5.."} unless http_requests_total{job="git_store", status=~"5.."}
+          offset 1h) and on (job, instance) (up offset 1h == 1)) or increase(http_requests_total{job="git_store",
+          status=~"5.."}[1h]))) or (0 * (max(max_over_time(up{job="git_store"}[2m])) == 1))
+        legend: server errors (5xx)
+  - title: Request time
+    type: timeseries
+    unit: s
+    defaults:
+      noValue: no requests in this time range, or the counts could not be read
+    description: Not counting the metrics scrape and the health checks. The slowest 10% line is estimated from fixed
+      time buckets. When nearly every request is faster than the limit of the first bucket, the line reads just
+      under that limit, and the real time can be lower.
+    targets:
+      - expr: |-
+          sum((((http_request_duration_seconds_sum{job="git_store", path!~"/metrics|/health"} unless
+          http_request_duration_seconds_sum{job="git_store", path!~"/metrics|/health"} offset 5m) and on (job, instance) (up
+          offset 5m == 1)) or increase(http_request_duration_seconds_sum{job="git_store", path!~"/metrics|/health"}[5m])) / 300) /
+          (sum((((http_request_duration_seconds_count{job="git_store", path!~"/metrics|/health"} unless
+          http_request_duration_seconds_count{job="git_store", path!~"/metrics|/health"} offset 5m) and on (job, instance) (up
+          offset 5m == 1)) or increase(http_request_duration_seconds_count{job="git_store", path!~"/metrics|/health"}[5m])) / 300)
+          > 0)
+        legend: mean
+      - expr: |-
+          histogram_quantile(0.9, sum by (le) ((((http_request_duration_seconds_bucket{job="git_store", path!~"/metrics|/health"}
+          unless http_request_duration_seconds_bucket{job="git_store", path!~"/metrics|/health"} offset 5m) and on (job, instance)
+          (up offset 5m == 1)) or increase(http_request_duration_seconds_bucket{job="git_store", path!~"/metrics|/health"}[5m])) /
+          300)) and on () (sum((((http_request_duration_seconds_count{job="git_store", path!~"/metrics|/health"} unless
+          http_request_duration_seconds_count{job="git_store", path!~"/metrics|/health"} offset 5m) and on (job, instance) (up
+          offset 5m == 1)) or increase(http_request_duration_seconds_count{job="git_store", path!~"/metrics|/health"}[5m])) / 300)
+          > 0)
+        legend: slowest 10% take at least
+  - title: Busiest paths, last hour
+    type: bargauge
+    unit: short
+    height: 8
+    defaults:
+      color:
+        mode: fixed
+        fixedColor: blue
+      decimals: 0
+      noValue: no requests in the last hour
+      min: 0
+      displayName: ${__series.name}
+    targets:
+      - expr: |-
+          topk(10, round(sum by (path) ((((last_over_time(http_requests_total{job="git_store", path!~"/metrics|/health"}[2m])
+          unless last_over_time(http_requests_total{job="git_store", path!~"/metrics|/health"}[2m] offset 1h)) and on (job,
+          instance) (last_over_time(up[2m] offset 1h) == 1)) or increase(http_requests_total{job="git_store",
+          path!~"/metrics|/health"}[1h])))) > 0)
+        legend: '{{path}}'
+    options:
+      orientation: horizontal
+      displayMode: basic
+      showUnfilled: true
+      namePlacement: left
+      text:
+        titleSize: 14
+      reduceOptions:
+        values: true
+        calcs: []
+        fields: ''
+      valueMode: text
+    description: 'Requests in the last hour. Not counting the metrics scrape and the health checks. The store itself
+      reports codebase names as {codebase}. No bars: no requests in the last hour, or the counts could not be read.'

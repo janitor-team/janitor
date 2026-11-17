@@ -1,0 +1,115 @@
+#!/bin/sh
+# Managed by Ansible (roles/monitoring). Writes the run and pipeline
+# counts for the node exporter.
+set -eu
+out={{ host_metrics_textfile_dir }}/runs.prom
+rows=$(psql -X -q -A -t -F ' ' -d janitor -c "
+  SELECT c.code, count(run.id)
+  FROM unnest(ARRAY['worker-timeout', 'worker-failure', 'killed',
+                    'worker-disappeared', 'system-failure']) AS c (code)
+  LEFT JOIN run ON run.result_code = c.code
+    AND run.failure_details ->> 'termination_reason' = c.code
+    AND run.finish_time > (now() AT TIME ZONE 'UTC') - interval '1 hour'
+  GROUP BY 1")
+printf '%s\n' "$rows" | awk '
+  BEGIN {
+    print "# HELP janitor_watchdog_ended_runs_last_hour Runs the runner'\''s watchdog ended in the last hour."
+    print "# TYPE janitor_watchdog_ended_runs_last_hour gauge"
+  }
+  { printf "janitor_watchdog_ended_runs_last_hour{result_code=\"%s\"} %s\n", $1, $2 }' > "$out.tmp"
+# Queue items still claimed in Redis by runs no longer in progress, per
+# campaign. A claim younger than 2 minutes may be a run being handed out.
+redis=redis://{{ janitor_loopback }}:6379
+now=$(date +%s)
+ids='' claims_ok=''
+if claims=$(redis-cli -u "$redis" --raw hgetall assigned-queue-items) &&
+  runs=$(redis-cli -u "$redis" --raw hgetall runner:active-runs); then
+  claims_ok=yes
+  active=$(printf '%s\n' "$runs" | paste - - | cut -f 1)
+  # Runs in progress per worker login, from the runner's store.
+  printf '%s\n' "$runs" | paste - - | sed -n 's/^[^\t]*\t.*"worker_name":"\([^"]*\)".*/\1/p' | sort | uniq -c | awk '
+    BEGIN {
+      print "# HELP janitor_runs_in_progress Runs in progress per worker login, from the runner'\''s store in Redis."
+      print "# TYPE janitor_runs_in_progress gauge"
+    }
+    { printf "janitor_runs_in_progress{worker=\"%s\"} %d\n", $2, $1 }' >> "$out.tmp"
+  ids=$(printf '%s\n' "$claims" | paste - - |
+    sed -n 's/^\([0-9][0-9]*\)\t.*"log_id":"\([^"]*\)".*"assigned_at":"\([^"]*\)".*/\1 \2 \3/p' |
+    while read -r id log at; do
+      if [ $((now - $(date -d "$at" +%s))) -ge 120 ]; then echo "$id $log"; fi
+    done |
+    awk -v active="$active" '
+      BEGIN { n = split(active, a, "\n"); for (i = 1; i <= n; i++) running[a[i]] = 1 }
+      !($2 in running) { printf "%s%s", sep, $1; sep = "," }')
+fi
+# Every stage and campaign gets a line, 0 when empty. Waiting to publish
+# uses publish's own filter (iter_publish_ready).
+ready="change_set_state IN ('ready', 'publishing')
+  AND EXISTS (SELECT FROM unnest(unpublished_branches) b WHERE b.mode IN ('propose', 'attempt-push', 'push-derived', 'push'))
+  AND NOT EXISTS (SELECT FROM publish p WHERE p.revision = pr.revision AND p.result_code = 'success')"
+campaigns="SELECT campaign AS name FROM candidate UNION SELECT campaign FROM queue UNION SELECT campaign FROM change_set
+    UNION SELECT campaign FROM run WHERE start_time > (now() AT TIME ZONE 'UTC') - interval '30 days'
+    UNION SELECT '(no campaign yet)' WHERE NOT EXISTS (SELECT FROM candidate) AND NOT EXISTS (SELECT FROM queue)
+      AND NOT EXISTS (SELECT FROM change_set) AND NOT EXISTS (SELECT FROM run)"
+stages=$(psql -X -q -A -t -F '|' -v ON_ERROR_STOP=1 -d janitor <<EOM
+  WITH campaign AS ($campaigns),
+  stage AS (SELECT * FROM (VALUES ('in the queue (waiting or running)'), ('waiting for review'), ('waiting to publish'),
+                                  ('failed to publish, to fix'), ('failed to publish, will retry'), ('open merge proposals')) AS s (name)),
+  counted AS (
+    SELECT 'in the queue (waiting or running)' AS stage, campaign, count(*) AS n FROM queue
+      WHERE NOT (id = ANY('{$ids}'::bigint[])) GROUP BY 2
+    UNION ALL SELECT 'waiting for review', campaign, count(*) FROM publish_ready pr
+      WHERE publish_status IN ('unknown', 'needs-manual-review') AND $ready GROUP BY 2
+    UNION ALL SELECT 'waiting to publish', campaign, count(*) FROM publish_ready pr
+      WHERE publish_status = 'approved' AND $ready AND (SELECT l.code FROM new_result_branch b CROSS JOIN LATERAL (SELECT p.result_code AS code, p.timestamp FROM publish p WHERE p.revision = b.revision AND p.run_id = b.run_id ORDER BY p.timestamp DESC LIMIT 1) l WHERE b.run_id = pr.id AND l.code <> 'success' ORDER BY l.code IN ('nothing-to-do', 'empty-merge-proposal', 'merge-conflict', 'diverged-branches'), l.code ~ ('^(too-many-requests|differ-unreachable|branch-busy|network-error|service-unavailable|bad-gateway|' || 'differ-http-error|project-creation-timeout|.*-temporarily-unavailable|.*-rate-limited)$'), l.timestamp DESC LIMIT 1) IS NULL GROUP BY 2
+    UNION ALL SELECT CASE WHEN (SELECT l.code FROM new_result_branch b CROSS JOIN LATERAL (SELECT p.result_code AS code, p.timestamp FROM publish p WHERE p.revision = b.revision AND p.run_id = b.run_id ORDER BY p.timestamp DESC LIMIT 1) l WHERE b.run_id = pr.id AND l.code <> 'success' ORDER BY l.code IN ('nothing-to-do', 'empty-merge-proposal', 'merge-conflict', 'diverged-branches'), l.code ~ ('^(too-many-requests|differ-unreachable|branch-busy|network-error|service-unavailable|bad-gateway|' || 'differ-http-error|project-creation-timeout|.*-temporarily-unavailable|.*-rate-limited)$'), l.timestamp DESC LIMIT 1)
+        ~ ('^(too-many-requests|differ-unreachable|branch-busy|network-error|service-unavailable|bad-gateway|'
+           || 'differ-http-error|project-creation-timeout|.*-temporarily-unavailable|.*-rate-limited)$')
+        THEN 'failed to publish, will retry' ELSE 'failed to publish, to fix' END, campaign, count(*) FROM publish_ready pr
+      WHERE publish_status = 'approved' AND $ready AND (SELECT l.code FROM new_result_branch b CROSS JOIN LATERAL (SELECT p.result_code AS code, p.timestamp FROM publish p WHERE p.revision = b.revision AND p.run_id = b.run_id ORDER BY p.timestamp DESC LIMIT 1) l WHERE b.run_id = pr.id AND l.code <> 'success' ORDER BY l.code IN ('nothing-to-do', 'empty-merge-proposal', 'merge-conflict', 'diverged-branches'), l.code ~ ('^(too-many-requests|differ-unreachable|branch-busy|network-error|service-unavailable|bad-gateway|' || 'differ-http-error|project-creation-timeout|.*-temporarily-unavailable|.*-rate-limited)$'), l.timestamp DESC LIMIT 1) IS NOT NULL
+        AND (SELECT l.code FROM new_result_branch b CROSS JOIN LATERAL (SELECT p.result_code AS code, p.timestamp FROM publish p WHERE p.revision = b.revision AND p.run_id = b.run_id ORDER BY p.timestamp DESC LIMIT 1) l WHERE b.run_id = pr.id AND l.code <> 'success' ORDER BY l.code IN ('nothing-to-do', 'empty-merge-proposal', 'merge-conflict', 'diverged-branches'), l.code ~ ('^(too-many-requests|differ-unreachable|branch-busy|network-error|service-unavailable|bad-gateway|' || 'differ-http-error|project-creation-timeout|.*-temporarily-unavailable|.*-rate-limited)$'), l.timestamp DESC LIMIT 1)
+          NOT IN ('success', 'nothing-to-do', 'empty-merge-proposal', 'merge-conflict', 'diverged-branches') GROUP BY 1, 2
+    UNION ALL SELECT 'open merge proposals', cs.campaign, count(DISTINCT mp.url) FROM merge_proposal mp
+      JOIN publish p ON p.merge_proposal_url = mp.url JOIN change_set cs ON cs.id = p.change_set
+      WHERE mp.status = 'open' GROUP BY 2)
+  SELECT stage.name, campaign.name, coalesce(counted.n, 0) FROM stage CROSS JOIN campaign
+    LEFT JOIN counted ON counted.stage = stage.name AND counted.campaign = campaign.name
+EOM
+)
+# Without the claims the queue stage would count held items, so it is not written.
+printf '%s\n' "$stages" | awk -F '|' -v claims_ok="$claims_ok" '
+  BEGIN {
+    print "# HELP janitor_pipeline_items Items in each stage of the pipeline, by campaign."
+    print "# TYPE janitor_pipeline_items gauge"
+  }
+  NF == 3 && (claims_ok != "" || $1 !~ /^in the queue/) { printf "janitor_pipeline_items{stage=\"%s\",campaign=\"%s\"} %s\n", $1, $2, $3 }' >> "$out.tmp"
+pushes=$(psql -X -q -A -t -d janitor -c "
+  SELECT count(*) FROM run WHERE failure_stage ~ 'result-(push|sym)'
+    AND finish_time > (now() AT TIME ZONE 'UTC') - interval '1 hour'
+    AND start_time > (now() AT TIME ZONE 'UTC') - interval '1 day'")
+cat >> "$out.tmp" <<EOM
+# HELP janitor_result_push_failed_runs_last_hour Runs whose worker could not push the result branch in the last hour.
+# TYPE janitor_result_push_failed_runs_last_hour gauge
+janitor_result_push_failed_runs_last_hour $pushes
+EOM
+if [ -n "$claims_ok" ]; then
+  held=$(psql -X -q -A -t -F '|' -v ON_ERROR_STOP=1 -d janitor <<EOM
+WITH campaign AS ($campaigns),
+  held AS (SELECT campaign, count(*) AS n, extract(epoch FROM coalesce(sum(estimated_duration), interval '0')) AS s
+    FROM queue WHERE id = ANY('{$ids}'::bigint[]) GROUP BY 1)
+SELECT campaign.name, coalesce(held.n, 0), coalesce(held.s, 0) FROM campaign LEFT JOIN held ON held.campaign = campaign.name
+EOM
+)
+  printf '%s\n' "$held" | awk -F '|' '
+    BEGIN {
+      print "# HELP janitor_lost_queue_claims Queue items claimed by runs that are no longer in progress, so no worker gets them."
+      print "# TYPE janitor_lost_queue_claims gauge"
+    }
+    NF == 3 { printf "janitor_lost_queue_claims{campaign=\"%s\"} %s\n", $1, $2; e = e sprintf("janitor_lost_queue_claims_estimated_seconds{campaign=\"%s\"} %s\n", $1, $3) }
+    END {
+      print "# HELP janitor_lost_queue_claims_estimated_seconds Estimated run time of the queue items claimed by runs that are no longer in progress."
+      print "# TYPE janitor_lost_queue_claims_estimated_seconds gauge"
+      printf "%s", e
+    }' >> "$out.tmp"
+fi
+mv "$out.tmp" "$out"
