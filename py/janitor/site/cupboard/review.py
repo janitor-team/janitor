@@ -105,6 +105,7 @@ async def generate_review(
             {
                 "codebase": entry["codebase"],
                 "id": entry["id"],
+                "campaign": entry["campaign"],
             }
             for entry in entries
         ],
