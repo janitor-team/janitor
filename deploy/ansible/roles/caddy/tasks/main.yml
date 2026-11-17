@@ -1,23 +1,21 @@
 ---
 - name: Install Caddy
   ansible.builtin.apt:
-    name: caddy
+    name:
+      - caddy
+      - openssl
     state: present
 
-- name: Check for the names the self-signed certificate was made with
-  ansible.builtin.stat:
-    path: /etc/caddy/janitor.san
-  register: caddy_san_file
-  when: caddy_self_signed
-
-- name: Read the names the self-signed certificate was made with
-  ansible.builtin.slurp:
-    src: /etc/caddy/janitor.san
-  register: caddy_san
-  when: caddy_self_signed and caddy_san_file.stat.exists
+- name: Read the names of the self-signed certificate
+  # The names it was made with: openssl prints an IPv6 address in another form.
+  ansible.builtin.command: cat /etc/caddy/janitor.san /etc/caddy/janitor.crt
+  register: caddy_cert_names
+  changed_when: false
+  failed_when: false
+  when: caddy_self_signed | default(false) | bool
 
 - name: Generate a self-signed certificate for a host without a real domain
-  # Only for test hosts (caddy_self_signed). The worker trusts it.
+  # Only for test hosts (caddy_self_signed). Each worker host trusts it.
   # TLS clients match the name against subjectAltName, not the CN.
   ansible.builtin.shell: >
     openssl req -x509 -newkey rsa:2048 -nodes -days 3650
@@ -28,10 +26,11 @@
     -addext "basicConstraints=critical,CA:FALSE"
     && echo "{{ caddy_cert_sans | join(',') }}" > /etc/caddy/janitor.san
   when:
-    - caddy_self_signed
-    - not caddy_san_file.stat.exists or caddy_san.content | b64decode | trim != caddy_cert_sans | join(',')
+    - caddy_self_signed | default(false) | bool
+    - caddy_cert_names.rc != 0 or caddy_cert_names.stdout_lines[0] != caddy_cert_sans | join(',')
   vars:
-    caddy_cert_sans: "{{ [('IP:' if janitor_domain is match('^[0-9.]+$') else 'DNS:') + janitor_domain] }}"
+    caddy_cert_sans: >-
+      {{ [('IP:' if janitor_domain is match('^[0-9.]+$') or ':' in janitor_domain else 'DNS:') + janitor_domain] }}
   changed_when: true
   notify: Restart caddy
 
@@ -41,21 +40,8 @@
     owner: root
     group: caddy
     mode: "0640"
-  when: caddy_self_signed
+  when: caddy_self_signed | default(false) | bool
   notify: Restart caddy
-
-- name: Trust the self-signed certificate on this host
-  # The worker reaches the runner through Caddy and mounts the host's CA bundle.
-  ansible.builtin.copy:
-    src: /etc/caddy/janitor.crt
-    dest: /usr/local/share/ca-certificates/janitor.crt
-    remote_src: true
-    owner: root
-    group: root
-    mode: "0644"
-  register: caddy_cert_trust
-  notify: Update the host's CA bundle
-  when: caddy_self_signed
 
 - name: Deploy the Caddyfile
   ansible.builtin.template:
@@ -66,6 +52,13 @@
     mode: "0644"
     validate: caddy validate --adapter caddyfile --config %s
   notify: Restart caddy
+
+- name: Let the deploy user read Caddy's access log in the journal
+  # It runs the playbook with sudo already. This is only for reading logs.
+  ansible.builtin.user:
+    name: "{{ ansible_user }}"
+    groups: systemd-journal
+    append: true
 
 - name: Start caddy
   ansible.builtin.service:

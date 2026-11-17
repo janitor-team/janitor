@@ -1,8 +1,9 @@
 # -*- mode: ruby -*-
 # vi: set ft=ruby :
 #
-# One local VM running the whole playbook, to try a change before
-# deploying it.
+# One local VM running the whole playbook (every inventory group on one
+# host), to try a change before deploying it.
+# Vagrantfile.multi-host splits the same playbook over several VMs.
 
 USE_PREBUILT = ENV.fetch("JANITOR_USE_PREBUILT", "false") == "true"
 VM_CPUS = ENV.fetch("JANITOR_VM_CPUS", "8").to_i
@@ -46,9 +47,12 @@ Vagrant.configure("2") do |config|
     # Install the collections from requirements.yml.
     ansible.galaxy_command = "ansible-galaxy collection install --requirements-file=%{role_file}"
     ansible.compatibility_mode = "2.0"
+    # One host in every group, as inventory.ini describes for a single host.
     ansible.groups = {
       "janitor" => ["default"],
       "vagrant" => ["default"],
+      "control" => ["default"],
+      "worker" => ["default"],
     }
     ansible.extra_vars = {
       ansible_user: "vagrant",
