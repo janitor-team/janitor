@@ -25,6 +25,9 @@ rule_files:
 {% if enable_ognibuild_dep | bool %}
 {% set _ = probes.update({'ognibuild_dep': [{'url': janitor_health_urls.ognibuild_dep, 'labels': {}}]}) %}
 {% endif %}
+{% if enable_apt_cacher_ng | bool %}
+{% set _ = probes.update({'apt_cacher_ng': [{'url': apt_cacher_ng_url + 'acng-report.html', 'labels': {}}]}) %}
+{% endif %}
 scrape_configs:
 {% for job in prometheus_jobs %}
   - job_name: {{ job }}

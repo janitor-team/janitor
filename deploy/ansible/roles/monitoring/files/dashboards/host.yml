@@ -252,44 +252,44 @@ panels:
             (max_over_time(timestamp(janitor_unit_restarts_total)[2m:10s]) >= on (host) group_left
             max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1))
             or 4 * ((janitor_unit_state{state="inactive",
-            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
-            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot)[.]service"} or ((last_over_time(janitor_unit_state{state="inactive",
-            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
-            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot)[.]service"}[2m]) and
+            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|apt-cacher-ng)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
+            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot|apt-cacher-ng-metrics)[.]service"} or ((last_over_time(janitor_unit_state{state="inactive",
+            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|apt-cacher-ng)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
+            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot|apt-cacher-ng-metrics)[.]service"}[2m]) and
             (max_over_time(timestamp(janitor_unit_state{state="inactive",
-            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
-            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot)[.]service"})[2m:10s]) >= on (host) group_left
+            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|apt-cacher-ng)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
+            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot|apt-cacher-ng-metrics)[.]service"})[2m:10s]) >= on (host) group_left
             max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1)) == 1)
             or 2 * ((janitor_unit_state{state!~"active|inactive|failed",
-            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
-            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot)[.]service"} or
+            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|apt-cacher-ng)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
+            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot|apt-cacher-ng-metrics)[.]service"} or
             ((last_over_time(janitor_unit_state{state!~"active|inactive|failed",
-            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
-            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot)[.]service"}[2m]) and
+            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|apt-cacher-ng)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
+            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot|apt-cacher-ng-metrics)[.]service"}[2m]) and
             (max_over_time(timestamp(janitor_unit_state{state!~"active|inactive|failed",
-            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
-            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot)[.]service"})[2m:10s]) >= on (host) group_left
+            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|apt-cacher-ng)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
+            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot|apt-cacher-ng-metrics)[.]service"})[2m:10s]) >= on (host) group_left
             max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1)) == 1)
             or
-            ((increase(janitor_unit_restarts_total{unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
-            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot)[.]service"}[1h]) > bool 0)
+            ((increase(janitor_unit_restarts_total{unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|apt-cacher-ng)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
+            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot|apt-cacher-ng-metrics)[.]service"}[1h]) > bool 0)
             and on (host, unit) (janitor_unit_restarts_total{
-            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
-            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot)[.]service"} or ((last_over_time(janitor_unit_restarts_total{
-            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
-            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot)[.]service"}[2m]) and
+            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|apt-cacher-ng)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
+            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot|apt-cacher-ng-metrics)[.]service"} or ((last_over_time(janitor_unit_restarts_total{
+            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|apt-cacher-ng)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
+            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot|apt-cacher-ng-metrics)[.]service"}[2m]) and
             (max_over_time(timestamp(janitor_unit_restarts_total{
-            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
-            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot)[.]service"})[2m:10s]) >= on (host) group_left
+            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|apt-cacher-ng)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
+            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot|apt-cacher-ng-metrics)[.]service"})[2m:10s]) >= on (host) group_left
             max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1)))
             or 0 * ((janitor_unit_state{state="active",
-            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
-            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot)[.]service"} or ((last_over_time(janitor_unit_state{state="active",
-            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
-            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot)[.]service"}[2m]) and
+            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|apt-cacher-ng)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
+            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot|apt-cacher-ng-metrics)[.]service"} or ((last_over_time(janitor_unit_state{state="active",
+            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|apt-cacher-ng)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
+            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot|apt-cacher-ng-metrics)[.]service"}[2m]) and
             (max_over_time(timestamp(janitor_unit_state{state="active",
-            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
-            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot)[.]service"})[2m:10s]) >= on (host) group_left
+            unit=~"janitor-.*|(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|apt-cacher-ng)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service",
+            unit!~"janitor-(unit-metrics|run-metrics|sbuild-chroot|apt-cacher-ng-metrics)[.]service"})[2m:10s]) >= on (host) group_left
             max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1)) == 1)), "host", "unit")
         legend: "{{unit}} on {{host}}"
   - title: "Software Janitor runs on, and its monitoring: last started and stopped"
@@ -309,26 +309,26 @@ panels:
     targets:
       - expr: |-
           1000 *
-          last_over_time(janitor_unit_active_since_seconds{unit=~"(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service"}[2m])
+          last_over_time(janitor_unit_active_since_seconds{unit=~"(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|apt-cacher-ng)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service"}[2m])
         format: table
         instant: true
       - expr: |-
           1000 *
-          last_over_time(janitor_unit_inactive_since_seconds{unit=~"(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service"}[2m])
+          last_over_time(janitor_unit_inactive_since_seconds{unit=~"(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|apt-cacher-ng)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service"}[2m])
         format: table
         instant: true
       - expr: |-
-          round(increase(janitor_unit_restarts_total{unit=~"(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service"}[24h]))
+          round(increase(janitor_unit_restarts_total{unit=~"(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|apt-cacher-ng)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service"}[24h]))
           and on (host, unit)
-          last_over_time(janitor_unit_restarts_total{unit=~"(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service"}[2m])
+          last_over_time(janitor_unit_restarts_total{unit=~"(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|apt-cacher-ng)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service"}[2m])
         format: table
         instant: true
       - expr: |-
-          (janitor_unit_result{unit=~"(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service"}
+          (janitor_unit_result{unit=~"(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|apt-cacher-ng)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service"}
           or
-          ((last_over_time(janitor_unit_result{unit=~"(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service"}[2m])
+          ((last_over_time(janitor_unit_result{unit=~"(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|apt-cacher-ng)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service"}[2m])
           and
-          (max_over_time(timestamp(janitor_unit_result{unit=~"(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service"})[2m:10s])
+          (max_over_time(timestamp(janitor_unit_result{unit=~"(gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|apt-cacher-ng)[.]service|postfix[.]service|postgresql@.+[.]service|prometheus-.+[.]service"})[2m:10s])
           >= on (host) group_left
           max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1))
         format: table
@@ -404,13 +404,14 @@ panels:
       custom: {thresholdsStyle: {mode: line}, axisSoftMax: 360}
       thresholds: {mode: absolute, steps: [{color: transparent, value: null}, {color: red, value: 300}]}
     description: >-
-      How old each file of service states and run counts is. Over
+      How old each file of service states, run counts and apt-cacher-ng counts is. Over
       5 minutes (the red line), ServiceStatesMissingOrOld fires. "Service state data age" on Janitor: overview shows the oldest per host. A service
       states or run counts file that was never written has no line here, and "Service state data age" on Janitor: overview names its host.
     requires: [enable_node_exporter]
     targets:
       - expr: >-
-          label_replace(time() - (max_over_time(node_textfile_mtime_seconds{file=~".*(units|runs)[.]prom"}[24h])), "file", "$1", "file", ".*/(.+)")
+          label_replace(time() - (max_over_time(node_textfile_mtime_seconds{file=~".*(units|runs)[.]prom"}[24h])
+          or node_textfile_mtime_seconds{file=~".*apt_cacher_ng[.]prom"}), "file", "$1", "file", ".*/(.+)")
         legend: "{{host}} {{file}}"
   - title: Services
     type: row
