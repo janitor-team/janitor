@@ -799,8 +799,16 @@ INSERT INTO run (
             result.change_set = Some(change_set);
         }
 
-        self.store_run(&mut tx, result, command, instigated_context)
-            .await?;
+        match self
+            .store_run(&mut tx, result, command, instigated_context)
+            .await
+        {
+            // An overlapping /finish for this run stored it after our check above.
+            Err(sqlx::Error::Database(e)) if e.constraint() == Some("run_pkey") => {
+                return Ok(FinishOutcome::AlreadyStored);
+            }
+            r => r?,
+        }
 
         if let Some(builder_result) = &result.builder_result {
             self.store_builder_result_tx(&mut tx, &result.log_id, builder_result)

@@ -349,6 +349,49 @@ mod tests {
                     .await
                     .unwrap();
             assert_eq!(queue_remaining, 0);
+
+            // Another finish stores the run after this one's "already stored" check.
+            let mut overlapping = result.clone();
+            overlapping.log_id = janitor_types::RunId::new("finish-run-2").unwrap();
+            overlapping.change_set = Some(janitor_types::ChangeSetId::new("cs-earlier").unwrap());
+            let mut other = test_db.pool().begin().await.unwrap();
+            sqlx::query(
+                "INSERT INTO run (
+                     id, command, campaign, codebase, result_code,
+                     start_time, finish_time, logfilenames, change_set
+                 )
+                 VALUES (
+                     'finish-run-2', '', 'lintian-fixes', 'finish-run-codebase',
+                     'success', NOW() - INTERVAL '1 minute', NOW(), '{}', 'cs-earlier'
+                 )",
+            )
+            .execute(&mut *other)
+            .await
+            .unwrap();
+            let finish = tokio::spawn({
+                let runner_db = runner_db.clone();
+                async move {
+                    runner_db
+                        .finish_run(&mut overlapping, "lintian-brush", None, queue_id)
+                        .await
+                }
+            });
+            while !finish.is_finished()
+                && !sqlx::query_scalar::<_, bool>(
+                    "SELECT EXISTS (SELECT FROM pg_stat_activity
+                     WHERE datname = current_database() AND wait_event_type = 'Lock')",
+                )
+                .fetch_one(test_db.pool())
+                .await
+                .unwrap()
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            other.commit().await.unwrap();
+            assert_eq!(
+                finish.await.unwrap().unwrap(),
+                crate::database::FinishOutcome::AlreadyStored
+            );
         }
     }
 
