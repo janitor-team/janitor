@@ -878,14 +878,21 @@ async fn get_codebase_names(State(state): State<Arc<AppState>>) -> Response {
     }
 }
 
+/// Whether the site can link to `url`. A click on a `javascript:` or `data:`
+/// URL runs script or opens content the URL itself carries.
+fn is_linkable_url(url: &url::Url) -> bool {
+    !matches!(url.scheme(), "javascript" | "data")
+}
+
 /// `POST /codebases` -- bulk upsert codebases. Returns 200 with an
-/// empty object on success.
+/// empty object on success, or 400 for a `web_url` the site cannot link to.
 #[utoipa::path(
     post,
     path = "/codebases",
     request_body = Vec<crate::database::CodebaseUpload>,
     responses(
         (status = 200, description = "Codebases were stored", body = EmptyResponse),
+        (status = 400, description = "A `web_url` the site cannot link to", body = ReasonResponse),
         (status = 500, description = "Database error", body = ErrorResponse),
     )
 )]
@@ -893,6 +900,17 @@ async fn update_codebases(
     State(state): State<Arc<AppState>>,
     Json(codebases): Json<Vec<crate::database::CodebaseUpload>>,
 ) -> Response {
+    if let Some(web_url) = codebases
+        .iter()
+        .filter_map(|c| c.web_url.as_deref())
+        .find(|u| !url::Url::parse(u).is_ok_and(|u| is_linkable_url(&u)))
+    {
+        return reason(
+            StatusCode::BAD_REQUEST,
+            format!("web_url {} cannot be linked to", web_url),
+        );
+    }
+
     match state.database.upload_codebases(&codebases).await {
         Ok(()) => Json(EmptyResponse {}).into_response(),
         Err(e) => {
@@ -4598,7 +4616,7 @@ pub fn app(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::{
-        assignment_validation_outcome, candidate_preflight, AssignmentValidation,
+        assignment_validation_outcome, candidate_preflight, is_linkable_url, AssignmentValidation,
         CandidatePreflight, CandidateUpload,
     };
     use crate::CampaignConfig;
@@ -5857,6 +5875,20 @@ distribution {
             )
             .await,
             StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+
+    #[test]
+    fn test_is_linkable_url() {
+        let urls = [
+            "https://example.com/a",
+            "javascript:alert(1)",
+            "JavaScript:alert(1)",
+            "data:text/html,hi",
+        ];
+        assert_eq!(
+            urls.map(|u| is_linkable_url(&url::Url::parse(u).unwrap())),
+            [true, false, false, false]
         );
     }
 }
