@@ -75,11 +75,10 @@
                     loadRun(newJob.codebase, newJob.id, newJob.campaign);
                 } else {
                     {% if not publishable_only %}
-                        $('.branch').replaceWith('All done!');
+                        $('#evaluate').replaceWith('All done!');
                     {% else %}
-                        $('.branch').replaceWith('All done! <a href="{{ url_for('cupboard-review') }}?publishable_only=false">Review unpublishable</a>');
+                        $('#evaluate').replaceWith('All done! <a href="{{ url_for('cupboard-review') }}?publishable_only=false">Review unpublishable</a>');
                     {% endif %}
-                    $('#evaluate').replaceWith('');
                     $('#options').remove();
                     $('#full-run-link').remove();
                     $('#run-of').remove();
