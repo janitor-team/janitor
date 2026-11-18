@@ -6,7 +6,6 @@
 use crate::database::RunnerDatabase;
 use crate::{
     auth::{SecurityService, WorkerAuthService},
-    metrics::MetricsCollector,
     upload::UploadProcessor,
     vcs::RunnerVcsManager,
     AppState,
@@ -112,18 +111,27 @@ impl TestConfigBuilder {
     }
 }
 
-/// Create a wired-up test `AppState`.
+/// Insert a codebase row with a git branch URL under example.invalid.
 ///
-/// Errors if no database or Redis is available; use
-/// `create_test_app_state_if_available` for the skip-on-missing form.
-pub async fn create_test_app_state(
-) -> Result<Arc<AppState>, Box<dyn std::error::Error + Send + Sync>> {
-    create_test_app_state_with_config(TestConfigBuilder::new()).await
+/// The `codebase` table's check constraint requires
+/// `(branch_url IS NULL) = (url IS NULL)`, so set both.
+pub async fn insert_codebase(pool: &sqlx::PgPool, name: &str) {
+    let url = format!("https://example.invalid/{name}");
+    sqlx::query(
+        "INSERT INTO codebase (name, branch_url, url, vcs_type)
+         VALUES ($1, $2, $2, 'git')
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(name)
+    .bind(&url)
+    .execute(pool)
+    .await
+    .expect("codebase insert");
 }
 
-/// Like [`create_test_app_state`] but with a caller-provided
-/// [`TestConfigBuilder`], so tests can register campaigns and other
-/// config knobs the handlers read.
+/// Create a wired-up test `AppState` from a [`TestConfigBuilder`], so
+/// tests can register campaigns and other config knobs the handlers
+/// read. Errors if no database or Redis is available.
 pub async fn create_test_app_state_with_config(
     config_builder: TestConfigBuilder,
 ) -> Result<Arc<AppState>, Box<dyn std::error::Error + Send + Sync>> {
@@ -209,7 +217,6 @@ fn assemble_app_state(
         .unwrap_or_else(|| Arc::new(RunnerVcsManager::new(std::collections::HashMap::new())));
     let config = Arc::new(config_builder.build_janitor_config());
     crate::metrics::install();
-    let metrics = Arc::new(MetricsCollector);
 
     let temp_dir = std::env::temp_dir().join("janitor_test_uploads");
     let upload_processor = Arc::new(UploadProcessor::new(temp_dir));
@@ -230,9 +237,7 @@ fn assemble_app_state(
 
     let health_checker = Arc::new(crate::HealthChecker::new(
         runner_db_arc.clone(),
-        vcs_manager.clone(),
         log_manager.clone(),
-        artifact_manager.clone(),
     ));
 
     let public_vcs_managers =
@@ -246,7 +251,6 @@ fn assemble_app_state(
         artifact_manager,
         backup_log_manager: None,
         backup_artifact_manager,
-        metrics,
         config,
         upload_processor,
         auth_service,
@@ -279,21 +283,6 @@ pub async fn create_test_app_state_with_config_if_available(
             eprintln!("skipping test: could not create app state: {}", e);
             Ok(None)
         }
-    }
-}
-
-/// Build a test router around a real `AppState`.
-pub async fn create_test_app() -> Result<axum::Router, Box<dyn std::error::Error + Send + Sync>> {
-    let state = create_test_app_state().await?;
-    Ok(crate::web::app(state))
-}
-
-/// Build a test router, returning `Ok(None)` when app state is unavailable.
-pub async fn create_test_app_if_available(
-) -> Result<Option<axum::Router>, Box<dyn std::error::Error + Send + Sync>> {
-    match create_test_app_state_if_available().await? {
-        Some(state) => Ok(Some(crate::web::app(state))),
-        None => Ok(None),
     }
 }
 
@@ -354,7 +343,7 @@ mod redis_container {
     ///
     /// Idempotent: only the first call spins up a container.
     /// Respects `TEST_REDIS_URL` if the environment already sets it.
-    /// If Docker is unavailable, returns quietly so `create_test_app`
+    /// If Docker is unavailable, returns quietly so `create_test_app_state_with_config`
     /// can skip cleanly -- unless `TEST_REQUIRE_REDIS=1` is set, in
     /// which case a failed container start panics so CI signals loud.
     pub async fn ensure_redis() {

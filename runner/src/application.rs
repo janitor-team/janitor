@@ -1,12 +1,9 @@
 //! Application initialization and orchestration for the runner.
 
-use crate::{database::RunnerDatabase, metrics::MetricsCollector, vcs::RunnerVcsManager, AppState};
+use crate::{database::RunnerDatabase, vcs::RunnerVcsManager, AppState};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::signal;
-
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Application builder for configuring and initializing the runner.
 pub struct ApplicationBuilder {
@@ -140,13 +137,6 @@ impl ApplicationBuilder {
         Ok(())
     }
 
-    fn tracing_config(&self) -> crate::tracing::TracingConfig {
-        crate::tracing::TracingConfig {
-            log_level: if self.debug { "debug" } else { "info" }.to_string(),
-            ..Default::default()
-        }
-    }
-
     /// Build and initialize the application.
     pub async fn build(self) -> Result<Application, ApplicationError> {
         // Initialize tracing and logging first. Like Python, spans are
@@ -158,7 +148,7 @@ impl ApplicationBuilder {
                 .map(crate::tracing::init_span_export)
                 .transpose()
         } else {
-            crate::tracing::init_tracing(&self.tracing_config(), zipkin_address)
+            crate::tracing::init_tracing(if self.debug { "debug" } else { "info" }, zipkin_address)
         }
         .map_err(|e| {
             ApplicationError::Configuration(format!("Failed to initialize tracing: {}", e))
@@ -189,7 +179,6 @@ impl ApplicationBuilder {
 
         // Initialize metrics first so other systems can use them
         log::info!("Initializing metrics collection...");
-        let metrics = Arc::new(MetricsCollector {});
         crate::metrics::init_metrics();
 
         log::info!("Initializing database connection...");
@@ -310,9 +299,7 @@ impl ApplicationBuilder {
 
         let health_checker = Arc::new(crate::HealthChecker::new(
             database.clone(),
-            vcs_manager.clone(),
             log_manager.clone(),
-            artifact_manager.clone(),
         ));
 
         let app_state = Arc::new(AppState {
@@ -323,7 +310,6 @@ impl ApplicationBuilder {
             artifact_manager,
             backup_log_manager,
             backup_artifact_manager,
-            metrics,
             config: Arc::new(janitor_config),
             upload_processor,
             auth_service,
@@ -512,127 +498,11 @@ impl Application {
                 }
             }
             _ = &mut shutdown_rx => {
-                log::info!("Initiating graceful shutdown...");
-                self.shutdown().await?;
+                log::info!("Shutting down");
                 Ok(())
             }
         }
     }
-
-    /// Perform graceful shutdown of all systems.
-    async fn shutdown(&self) -> Result<(), ApplicationError> {
-        log::info!("Starting graceful shutdown sequence...");
-
-        let shutdown_future = async {
-            // 1. Stop accepting new work (this would be handled by the HTTP server)
-            log::info!("Stopping new work acceptance...");
-
-            // 3. Artifact manager doesn't have flush_all in janitor crate
-            log::info!("Artifact flush not needed for janitor artifact manager");
-
-            // 6. Close database connections (handled by connection pool drop)
-            log::info!("Closing database connections...");
-
-            log::info!("Graceful shutdown completed successfully");
-            Ok::<(), ApplicationError>(())
-        };
-
-        // Apply timeout to shutdown process
-        tokio::time::timeout(SHUTDOWN_TIMEOUT, shutdown_future)
-            .await
-            .map_err(|_| ApplicationError::ShutdownTimeout)?
-    }
-
-    /// Perform health checks on all systems.
-    pub async fn health_check(&self) -> HealthCheckResult {
-        let mut result = HealthCheckResult {
-            overall_healthy: true,
-            checks: Vec::new(),
-        };
-
-        // Database health check
-        let db_health = match self.state.database.health_check().await {
-            Ok(()) => ComponentHealth {
-                component: "database".to_string(),
-                healthy: true,
-                message: "Database connection healthy".to_string(),
-            },
-            Err(e) => {
-                result.overall_healthy = false;
-                ComponentHealth {
-                    component: "database".to_string(),
-                    healthy: false,
-                    message: format!("Database error: {}", e),
-                }
-            }
-        };
-        result.checks.push(db_health);
-
-        // VCS health check
-        let vcs_health = self.state.vcs_manager.health_check().await;
-        if !vcs_health.overall_healthy {
-            result.overall_healthy = false;
-        }
-        for (vcs_type, health) in vcs_health.vcs_statuses {
-            result.checks.push(ComponentHealth {
-                component: format!("vcs_{}", vcs_type),
-                healthy: matches!(health, crate::vcs::VcsHealth::Healthy),
-                message: match health {
-                    crate::vcs::VcsHealth::Healthy => "VCS healthy".to_string(),
-                    crate::vcs::VcsHealth::Warning(msg) => format!("VCS warning: {}", msg),
-                    crate::vcs::VcsHealth::Error(msg) => format!("VCS error: {}", msg),
-                },
-            });
-        }
-
-        // Log manager health check
-        let log_health = match self.state.log_manager.health_check().await {
-            Ok(()) => ComponentHealth {
-                component: "log_manager".to_string(),
-                healthy: true,
-                message: "Log manager healthy".to_string(),
-            },
-            Err(e) => {
-                result.overall_healthy = false;
-                ComponentHealth {
-                    component: "log_manager".to_string(),
-                    healthy: false,
-                    message: format!("Log manager error: {}", e),
-                }
-            }
-        };
-        result.checks.push(log_health);
-
-        // Artifact manager doesn't have health_check in janitor crate
-        let artifact_health = ComponentHealth {
-            component: "artifact_manager".to_string(),
-            healthy: true,
-            message: "Artifact manager assumed healthy".to_string(),
-        };
-        result.checks.push(artifact_health);
-
-        result
-    }
-}
-
-/// Health check result for the entire application.
-#[derive(Debug, Clone)]
-pub struct HealthCheckResult {
-    /// Whether the application is overall healthy.
-    pub overall_healthy: bool,
-    /// Individual component health checks.
-    pub checks: Vec<ComponentHealth>,
-}
-
-/// Health check result for a single component.
-#[derive(Debug, Clone)]
-pub struct ComponentHealth {
-    /// Name of the component.
-    pub component: String,
-    /// Whether the component is healthy.
-    pub healthy: bool,
-    /// Human-readable status message.
-    pub message: String,
 }
 
 /// Application initialization and runtime errors.
@@ -650,10 +520,6 @@ pub enum ApplicationError {
     #[error("Artifact management error: {0}")]
     ArtifactManagement(String),
 
-    /// VCS management errors.
-    #[error("VCS management error: {0}")]
-    VcsManagement(String),
-
     /// Configuration errors.
     #[error("Configuration error: {0}")]
     Configuration(String),
@@ -661,15 +527,6 @@ pub enum ApplicationError {
     /// Runtime errors.
     #[error("Runtime error: {0}")]
     Runtime(String),
-
-    /// Shutdown timeout error.
-    #[error("Shutdown timeout")]
-    ShutdownTimeout,
-}
-
-/// Initialize global metrics.
-pub fn init_metrics() {
-    crate::metrics::init_metrics();
 }
 
 #[cfg(test)]
