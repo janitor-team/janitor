@@ -26,17 +26,8 @@ pub enum ArchiveError {
         message: String,
     },
 
-    #[error("Failed to create temporary directory: {0}")]
-    TempDir(#[from] tempfile::PersistError),
-
     #[error("Repository generation failed: {0}")]
     RepositoryGeneration(String),
-
-    #[error("GPG operation failed: {0}")]
-    Gpg(String),
-
-    #[error("Compression failed: {0}")]
-    Compression(String),
 
     #[error("Invalid archive configuration: {0}")]
     InvalidConfiguration(String),
@@ -44,19 +35,8 @@ pub enum ArchiveError {
     #[error("Redis error: {0}")]
     Redis(String),
 
-    #[error("Serialization error: {0}")]
-    Serialization(String),
-
-    #[error("Resource limit exceeded: {0}")]
-    ResourceLimit(String),
-
     #[error("Resource not found: {0}")]
     NotFound(String),
-
-    /// Wraps `shared_config::ConfigError` directly rather than
-    /// stringifying, so callers can match on `ParseError`/`IoError`/etc.
-    #[error("Configuration error: {0}")]
-    Config(#[from] janitor::shared_config::ConfigError),
 }
 
 #[allow(missing_docs)]
