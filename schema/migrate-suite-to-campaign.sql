@@ -244,6 +244,7 @@ CREATE OR REPLACE VIEW absorbed_runs AS
     FROM merge_proposal
     INNER JOIN run ON merge_proposal.revision = run.revision
     WHERE run.result_code = 'success'
+    AND merge_proposal.status IN ('merged', 'applied')
     AND run.campaign not in ('unchanged', 'control')
  UNION
     SELECT
