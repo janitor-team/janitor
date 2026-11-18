@@ -25,6 +25,7 @@ from breezy.forge import UnsupportedForge, get_forge
 from breezy.git.mapping import default_mapping
 from breezy.git.refs import ref_to_branch_name
 from breezy.git.urls import git_url_to_bzr_url
+from marshmallow import EXCLUDE, Schema, fields
 from yarl import URL
 
 
@@ -240,6 +241,74 @@ WHERE
     return await conn.fetch(query, candidates)
 
 
+class PushSchema(Schema):
+    class Meta:
+        """Ignore the many fields a forge sends that nothing reads."""
+
+        unknown = EXCLUDE
+
+
+class GitHubRepositorySchema(PushSchema):
+    clone_url = fields.Str()
+    html_url = fields.Str()
+    git_url = fields.Str()
+    ssh_url = fields.Str()
+    default_branch = fields.Str(allow_none=True)
+
+
+class GitHubPushSchema(PushSchema):
+    """Push from GitHub, Gitea or Gogs."""
+
+    ref = fields.Str(required=True)
+    after = fields.Str(required=True)
+    repository = fields.Nested(GitHubRepositorySchema, required=True)
+
+
+class GitLabProjectSchema(PushSchema):
+    git_http_url = fields.Str(required=True)
+    git_ssh_url = fields.Str(required=True)
+    default_branch = fields.Str(allow_none=True)
+
+
+class GitLabPushSchema(PushSchema):
+    ref = fields.Str(required=True)
+    after = fields.Str(required=True)
+    project = fields.Nested(GitLabProjectSchema, required=True)
+
+
+class LaunchpadBzrRevisionSchema(PushSchema):
+    revision_id = fields.Str(required=True)
+
+
+class LaunchpadBzrPushSchema(PushSchema):
+    bzr_branch_path = fields.Str(required=True)
+    new = fields.Nested(LaunchpadBzrRevisionSchema, required=True)
+
+
+class LaunchpadGitCommitSchema(PushSchema):
+    commit_sha1 = fields.Str(required=True)
+
+
+class LaunchpadGitRefChangeSchema(PushSchema):
+    new = fields.Nested(LaunchpadGitCommitSchema, required=True, allow_none=True)
+
+
+class LaunchpadGitPushSchema(PushSchema):
+    git_repository = fields.Str(required=True)
+    git_repository_path = fields.Str(required=True)
+    ref_changes = fields.Dict(
+        keys=fields.Str(),
+        values=fields.Nested(LaunchpadGitRefChangeSchema),
+        required=True,
+    )
+
+
+def validate_push(schema, body):
+    errors = schema.validate(body)
+    if errors:
+        raise web.HTTPBadRequest(text=f"Invalid webhook body: {errors}")
+
+
 async def parse_webhook(request, db):
     if request.content_type == "application/json":
         try:
@@ -261,24 +330,28 @@ async def parse_webhook(request, db):
     if "X-Gitea-Event" in request.headers:
         if request.headers["X-Gitea-Event"] not in ("push",):
             return
+        validate_push(GitHubPushSchema(), body)
         changes = get_changes_from_github_webhook(
             body, ["clone_url", "html_url", "ssh_url"]
         )
     elif "X-Gogs-Event" in request.headers:
         if request.headers["X-Gogs-Event"] not in ("push",):
             return
+        validate_push(GitHubPushSchema(), body)
         changes = get_changes_from_github_webhook(
             body, ["clone_url", "html_url", "ssh_url"]
         )
     elif "X-Gitlab-Event" in request.headers:
         if request.headers["X-Gitlab-Event"] != "Push Hook":
             return
+        validate_push(GitLabPushSchema(), body)
         changes = get_changes_from_gitlab_webhook(body)
         # TODO(jelmer: If nothing found, then maybe fall back to
         # urlutils.basename(body['project']['path_with_namespace'])?
     elif "X-GitHub-Event" in request.headers:
         if request.headers["X-GitHub-Event"] not in ("push",):
             return
+        validate_push(GitHubPushSchema(), body)
         changes = get_changes_from_github_webhook(
             body, ["clone_url", "html_url", "git_url", "ssh_url"]
         )
@@ -289,8 +362,10 @@ async def parse_webhook(request, db):
         ):
             return
         if request.headers["X-Launchpad-Event-Type"] == "bzr:push:0.1":
+            validate_push(LaunchpadBzrPushSchema(), body)
             changes = get_bzr_changes_from_launchpad_webhook(body)
         elif request.headers["X-Launchpad-Event-Type"] == "git:push:0.1":
+            validate_push(LaunchpadGitPushSchema(), body)
             changes = get_git_changes_from_launchpad_webhook(body)
         else:
             return
