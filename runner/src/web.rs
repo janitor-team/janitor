@@ -3761,12 +3761,6 @@ async fn compute_resume_from(
     }
 }
 
-/// The committer from the configuration; like Python, an empty one
-/// counts as unset.
-fn configured_committer(config: &janitor::config::Config) -> Option<&str> {
-    config.committer.as_deref().filter(|c| !c.is_empty())
-}
-
 /// `active_runs_path` is the path of the active runs collection, used
 /// for the `Location` header of the new run.
 async fn assign_work_internal(
@@ -4070,10 +4064,9 @@ async fn assign_work_internal(
     // (DEB_UPDATE_CHANGELOG=auto ...). Copy into both codemod and
     // build environments so each execution context has a consistent
     // view.
-    let mut env: BTreeMap<String, String> =
-        crate::committer_env(configured_committer(&state.config))
-            .into_iter()
-            .collect();
+    // Like Python, an empty `committer` counts as unset.
+    let committer = state.config.committer.as_deref().filter(|c| !c.is_empty());
+    let mut env: BTreeMap<String, String> = crate::committer_env(committer).into_iter().collect();
     env.extend(extra_env);
 
     // The worker's `DebianBuildConfig` reads these hyphen-cased keys,
