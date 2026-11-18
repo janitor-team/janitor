@@ -1,0 +1,7 @@
+# Managed by Ansible (roles/monitoring).
+[Unit]
+Description=Write the run and pipeline counts for the node exporter
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/janitor-run-metrics

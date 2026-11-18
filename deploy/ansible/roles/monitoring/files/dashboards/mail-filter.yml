@@ -1,0 +1,460 @@
+---
+# Rendered by templates/dashboard.json.j2.
+title: 'Janitor: mail filter'
+uid: janitor-mail_filter
+description: Reads forge mail about merge proposals and asks publish to check them again. Each mail starts a short-lived
+  service, so its memory and CPU are not measured.
+tags:
+  - janitor
+  - optional
+  - publishing
+  - control
+  - mail-filter
+panels:
+  - title: Health
+    type: row
+  - title: Listening for mail
+    type: stat
+    targets:
+      - expr: |-
+          max((janitor_unit_state{unit="janitor-mail-filter.socket", state="active"} or
+          ((last_over_time(janitor_unit_state{unit="janitor-mail-filter.socket", state="active"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{unit="janitor-mail-filter.socket", state="active"})[2m:10s]) >= on (host)
+          group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1))) or 0 * max((janitor_unit_state{unit="janitor-mail-filter.socket"} or
+          ((last_over_time(janitor_unit_state{unit="janitor-mail-filter.socket"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{unit="janitor-mail-filter.socket"})[2m:10s]) >= on (host) group_left max by
+          (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1)))
+        legend: listening
+    width: 8
+    defaults:
+      mappings:
+        - type: value
+          options:
+            '0':
+              text: 'no'
+              color: red
+              index: 0
+            '1':
+              text: 'yes'
+              color: green
+              index: 1
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 2
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value
+    requires:
+      - enable_node_exporter
+    description: 'yes: janitor-mail-filter.socket listens. no: it is in another state. no data: there is no service
+      state for it, because the node exporter of the control host has not answered for 2 minutes ("Host metrics"
+      on Hosts), or its service states file is missing or cannot be read. MailFilterNotListening fires when the
+      tile shows no, or no data, for 5 minutes, unless the node exporter of the control host does not answer. Its
+      value comes from metrics files the hosts write: an old, missing or unreadable file, or a node exporter that
+      does not answer, makes it wrong or empty ("Service state data age" on Janitor: overview shows the files''
+      age, "Host metrics" on Hosts a node exporter that does not answer).'
+  - title: Mail Postfix holds back
+    type: stat
+    targets:
+      - expr: |-
+          sum(last_over_time(postfix_showq_message_size_bytes_count{queue="deferred"}[2m])) or (vector(0) and on ()
+          max(last_over_time(postfix_up{path=~".*showq"}[2m])) == 1)
+        legend: now
+      - expr: |-
+          min_over_time((sum(last_over_time(postfix_showq_message_size_bytes_count{queue="deferred"}[2m])) or vector(0))[1h:1m])
+          and on () max(last_over_time(postfix_up{path=~".*showq"}[2m])) == 1
+        legend: for the whole last hour
+    width: 8
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value_and_name
+      justifyMode: center
+    defaults:
+      color:
+        mode: thresholds
+      thresholds:
+        mode: absolute
+        steps:
+          - color: green
+            value: null
+          - color: yellow
+            value: 1
+      mappings:
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 99
+    requires:
+      - enable_mta
+      - enable_postfix_exporter
+    overrides:
+      - matcher:
+          id: byName
+          options: for the whole last hour
+        properties:
+          - id: thresholds
+            value:
+              mode: absolute
+              steps:
+                - color: green
+                  value: null
+                - color: red
+                  value: 1
+    description: 'Deferred mail, most often because the mail filter fails: Postfix keeps the mail and tries again.
+      "for the whole last hour" is the lowest count in the last hour, and turns red above 0, which is when MailHeldBack
+      fires. no data: the Postfix metrics collector does not answer ("Postfix metrics reachable" on Postfix and
+      the mail filter) or cannot read the queue, or Prometheus does not answer.'
+  - title: Failed mail filter runs, 1 hour
+    type: stat
+    targets:
+      - expr: max(last_over_time(janitor_mail_filter_failed_runs_last_hour[2m]))
+        legend: failed
+    width: 8
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value
+    defaults:
+      color:
+        mode: thresholds
+      thresholds:
+        mode: absolute
+        steps:
+          - color: green
+            value: null
+          - color: red
+            value: 1
+      mappings:
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 99
+    requires:
+      - enable_node_exporter
+    description: 'Mail filter runs that failed in the last hour, counted from the "Failed with result" line systemd
+      writes to the journal for each failed run. MailFilterRunsFailed fires when it is above 0. The journal on the
+      control host shows each run, and each failed one with that line: run journalctl --user -u "janitor-mail-filter@*"
+      there as ansible_user. Its value comes from metrics files the hosts write: an old, missing or unreadable file,
+      or a node exporter that does not answer, makes it wrong or empty ("Service state data age" on Janitor: overview
+      shows the files'' age, "Host metrics" on Hosts a node exporter that does not answer).'
+  - title: Service state
+    type: stat
+    targets:
+      - expr: |-
+          sort_by_label(max by (unit, host) (
+            6 * ((janitor_unit_state{state="failed", unit=~"janitor-mail-filter(@.+)?[.](service|socket)"} or
+          ((last_over_time(janitor_unit_state{state="failed", unit=~"janitor-mail-filter(@.+)?[.](service|socket)"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state="failed",
+          unit=~"janitor-mail-filter(@.+)?[.](service|socket)"})[2m:10s]) >= on (host) group_left max by (host)
+          (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1)) == 1)
+            or 5 * ((round(increase(janitor_unit_restarts_total{unit=~"janitor-mail-filter(@.+)?[.](service|socket)"}[15m])) > 2
+          or round(increase(janitor_unit_restarts_total{unit=~"janitor-mail-filter(@.+)?[.](service|socket)"}[1h])) > 3) > bool 0)
+          and on (host, unit) (janitor_unit_restarts_total{unit=~"janitor-mail-filter(@.+)?[.](service|socket)"} or
+          ((last_over_time(janitor_unit_restarts_total{unit=~"janitor-mail-filter(@.+)?[.](service|socket)"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_restarts_total{unit=~"janitor-mail-filter(@.+)?[.](service|socket)"})[2m:10s]) >=
+          on (host) group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1))
+            or 4 * ((janitor_unit_state{state="inactive", unit=~"janitor-mail-filter(@.+)?[.](service|socket)"} or
+          ((last_over_time(janitor_unit_state{state="inactive", unit=~"janitor-mail-filter(@.+)?[.](service|socket)"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state="inactive",
+          unit=~"janitor-mail-filter(@.+)?[.](service|socket)"})[2m:10s]) >= on (host) group_left max by (host)
+          (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1)) == 1)
+            or 2 * ((janitor_unit_state{state!~"active|inactive|failed", unit=~"janitor-mail-filter(@.+)?[.](service|socket)"} or
+          ((last_over_time(janitor_unit_state{state!~"active|inactive|failed",
+          unit=~"janitor-mail-filter(@.+)?[.](service|socket)"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state!~"active|inactive|failed",
+          unit=~"janitor-mail-filter(@.+)?[.](service|socket)"})[2m:10s]) >= on (host) group_left max by (host)
+          (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1)) == 1)
+            or ((increase(janitor_unit_restarts_total{unit=~"janitor-mail-filter(@.+)?[.](service|socket)"}[1h]) > bool 0) and on
+          (host, unit) (janitor_unit_restarts_total{unit=~"janitor-mail-filter(@.+)?[.](service|socket)"} or
+          ((last_over_time(janitor_unit_restarts_total{unit=~"janitor-mail-filter(@.+)?[.](service|socket)"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_restarts_total{unit=~"janitor-mail-filter(@.+)?[.](service|socket)"})[2m:10s]) >=
+          on (host) group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1)))
+            or 0 * ((janitor_unit_state{state="active", unit=~"janitor-mail-filter(@.+)?[.](service|socket)"} or
+          ((last_over_time(janitor_unit_state{state="active", unit=~"janitor-mail-filter(@.+)?[.](service|socket)"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state="active",
+          unit=~"janitor-mail-filter(@.+)?[.](service|socket)"})[2m:10s]) >= on (host) group_left max by (host)
+          (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1)) == 1)
+          ), "host", "unit")
+        legend: '{{unit}} on {{host}}'
+    width: 8
+    height: 5
+    newline: true
+    requires:
+      - enable_node_exporter
+    defaults:
+      mappings:
+        - type: value
+          options:
+            '0':
+              text: up
+              color: green
+              index: 0
+            '1':
+              text: restarted
+              color: yellow
+              index: 1
+            '1.5':
+              text: mail held back
+              color: yellow
+              index: 2
+            '2':
+              text: starting, stopping or reloading
+              color: yellow
+              index: 3
+            '3':
+              text: unreachable
+              color: red
+              index: 4
+            '4':
+              text: stopped
+              color: red
+              index: 5
+            '5':
+              text: restarting in a loop
+              color: red
+              index: 6
+            '5.5':
+              text: mail held back for an hour
+              color: red
+              index: 7
+            '6':
+              text: failed
+              color: red
+              index: 8
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 99
+      color:
+        mode: thresholds
+      thresholds:
+        mode: absolute
+        steps:
+          - color: green
+            value: null
+          - color: yellow
+            value: 1
+          - color: red
+            value: 3
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value_and_name
+      justifyMode: center
+    description: 'up: running. restarted: systemd restarted it in the last hour. starting, stopping or reloading:
+      systemd is changing its state, or it is in another short-lived state such as maintenance. stopped: not running.
+      restarting in a loop: more than 2 restarts in 15 minutes or more than 3 in an hour. failed: systemd marked
+      it failed. A unit whose service state is gone leaves the tile: the unit was removed, it was a mail filter
+      run that has ended (systemd then drops its unit), the node exporter of its host has not answered for 2 minutes
+      ("Host metrics" on Hosts), or the service states file of its host is missing or cannot be read. no data means
+      none of its units has a service state. Its value comes from metrics files the hosts write: an old, missing
+      or unreadable file, or a node exporter that does not answer, makes it wrong or empty ("Service state data
+      age" on Janitor: overview shows the files'' age, "Host metrics" on Hosts a node exporter that does not answer).'
+  - title: Last started and stopped
+    type: table
+    width: 16
+    height: 5
+    requires:
+      - enable_node_exporter
+    targets:
+      - expr: 1000 * last_over_time(janitor_unit_active_since_seconds{unit=~"janitor-mail-filter(@.+)?[.](service|socket)"}[2m])
+        format: table
+        instant: true
+      - expr: 1000 * last_over_time(janitor_unit_inactive_since_seconds{unit=~"janitor-mail-filter(@.+)?[.](service|socket)"}[2m])
+        format: table
+        instant: true
+      - expr: |-
+          round(increase(janitor_unit_restarts_total{unit=~"janitor-mail-filter(@.+)?[.](service|socket)"}[24h])) and on (host,
+          unit) last_over_time(janitor_unit_restarts_total{unit=~"janitor-mail-filter(@.+)?[.](service|socket)"}[2m])
+        format: table
+        instant: true
+      - expr: |-
+          (janitor_unit_result{unit=~"janitor-mail-filter(@.+)?[.](service|socket)"} or
+          ((last_over_time(janitor_unit_result{unit=~"janitor-mail-filter(@.+)?[.](service|socket)"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_result{unit=~"janitor-mail-filter(@.+)?[.](service|socket)"})[2m:10s]) >= on
+          (host) group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1))
+        format: table
+        instant: true
+    transformations:
+      - id: merge
+        options: {}
+      - id: organize
+        options:
+          excludeByName:
+            Time: true
+            job: true
+            instance: true
+            __name__: true
+            'Value #D': true
+          renameByName:
+            'Value #A': last started
+            'Value #B': last stopped
+            'Value #C': restarts by systemd, 24 hours
+            result: last result
+      - id: sortBy
+        options:
+          sort:
+            - field: restarts by systemd, 24 hours
+              desc: true
+    overrides:
+      - matcher:
+          id: byRegexp
+          options: last (started|stopped)
+        properties:
+          - id: unit
+            value: dateTimeFromNow
+      - matcher:
+          id: byRegexp
+          options: restarts by systemd, 24 hours
+        properties:
+          - id: custom.cellOptions
+            value:
+              type: color-background
+          - id: color
+            value:
+              mode: thresholds
+          - id: thresholds
+            value:
+              mode: absolute
+              steps:
+                - color: green
+                  value: null
+                - color: yellow
+                  value: 1
+                - color: red
+                  value: 5
+          - id: custom.wrapHeaderText
+            value: true
+      - matcher:
+          id: byName
+          options: restarts by systemd, 24 hours
+        properties:
+          - id: mappings
+            value:
+              - type: special
+                options:
+                  match: 'null'
+                  result:
+                    text: not measured
+                    color: transparent
+                    index: 9
+      - matcher:
+          id: byName
+          options: host
+        properties:
+          - id: custom.width
+            value: 90
+      - matcher:
+          id: byName
+          options: last started
+        properties:
+          - id: custom.width
+            value: 110
+      - matcher:
+          id: byName
+          options: last stopped
+        properties:
+          - id: custom.width
+            value: 110
+      - matcher:
+          id: byName
+          options: restarts by systemd, 24 hours
+        properties:
+          - id: custom.width
+            value: 120
+      - matcher:
+          id: byName
+          options: last result
+        properties:
+          - id: custom.width
+            value: 100
+      - matcher:
+          id: byName
+          options: last result
+        properties:
+          - id: custom.cellOptions
+            value:
+              type: color-text
+          - id: mappings
+            value:
+              - type: value
+                options:
+                  success:
+                    color: text
+                    index: 0
+              - type: regex
+                options:
+                  pattern: .+
+                  result:
+                    color: red
+                    index: 1
+    description: 'last result: systemd sets it back to success when it starts the unit again. A crash that systemd
+      restarted shows in the restart count, and in last stopped until the next manual restart. The cause is in the
+      unit''s journal. not measured: systemd counts restarts only for services, not for the socket, and a mail filter
+      run seen in only one reading has no count yet (the count needs two readings). Its value comes from metrics
+      files the hosts write: an old, missing or unreadable file, or a node exporter that does not answer, makes
+      it wrong or empty ("Service state data age" on Janitor: overview shows the files'' age, "Host metrics" on
+      Hosts a node exporter that does not answer). A unit whose service state is gone leaves the table, for the
+      same causes as on "Service state".'
+  - title: Work
+    type: row
+  - title: Merge proposal checks sent to publish, per hour
+    type: timeseries
+    width: 12
+    defaults:
+      noValue: no checks in this time range, or the counts could not be read
+      color:
+        mode: shades
+        fixedColor: blue
+    description: 'Requests to publish''s refresh-status endpoint: mostly from the mail filter, also from the site.'
+    targets:
+      - expr: |-
+          sum by (status) (((http_requests_total{job="publish", path=~".*refresh-status.*"} unless
+          http_requests_total{job="publish", path=~".*refresh-status.*"} offset 1h) and on (job, instance) (up offset 1h == 1)) or
+          increase(http_requests_total{job="publish", path=~".*refresh-status.*"}[1h]))
+        legend: HTTP {{status}}
+    overrides:
+      - matcher:
+          id: byRegexp
+          options: (^|.* )5[0-9][0-9]$
+        properties:
+          - id: color
+            value:
+              mode: fixed
+              fixedColor: red
+  - title: Failed mail filter runs, over time
+    type: timeseries
+    width: 12
+    requires:
+      - enable_node_exporter
+    description: 'The count over the hour before, written every 30 seconds, so a failed run shows for an hour. Its
+      lines come from metrics files the hosts write: an old, missing or unreadable file, or a node exporter that
+      does not answer, makes them wrong or leaves gaps ("Service state data age" on Janitor: overview shows the
+      files'' age, "Host metrics" on Hosts a node exporter that does not answer).'
+    targets:
+      - expr: max(janitor_mail_filter_failed_runs_last_hour)
+        legend: failed runs
+    defaults:
+      decimals: 0
+      color:
+        mode: shades
+        fixedColor: red

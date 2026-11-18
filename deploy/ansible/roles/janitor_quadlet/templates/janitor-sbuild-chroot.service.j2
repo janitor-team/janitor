@@ -1,0 +1,23 @@
+{#- Made as create-sbuild-chroot-unshare.py does, under a .partial name sbuild skips, then moved.
+    The extra apt sources are copied in after the bootstrap. mmdebstrap keeps
+    the apt cache settings in the chroot, so the builds use them too. -#}
+{% macro mmdebstrap(chroot, sources) -%}
+mmdebstrap --variant=buildd unstable /root/.cache/sbuild/{{ chroot }}.partial.tar.xz http://deb.debian.org/debian --mode=unshare --arch=amd64 --components=main
+{%- if sources | length > 0 %} --customize-hook='copy-in
+{%- for source in sources %} /etc/janitor/sbuild-apt/sources.list.d/janitor-{{ source.name }}.sources{% endfor %} /etc/apt/sources.list.d' --customize-hook='copy-in
+{%- for source in sources %} /etc/janitor/sbuild-apt/keyrings/janitor-{{ source.name }}{{ source.key | splitext | last }}{% endfor %} /etc/apt/keyrings'
+{%- endif %}
+{%- if enable_apt_cacher_ng | bool %} --aptopt=/etc/janitor/sbuild-apt/proxy.conf{% endif %} && mv /root/.cache/sbuild/{{ chroot }}.partial.tar.xz /root/.cache/sbuild/{{ chroot }}.tar.xz
+{%- endmacro -%}
+[Unit]
+Description=Remake the sbuild chroot tarballs (mmdebstrap)
+After=janitor-worker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/podman exec janitor-worker sh -c "{{ mmdebstrap(janitor_sbuild_chroot, janitor_sbuild_extra_sources) }}"
+{% for campaign, sources in janitor_sbuild_campaign_extra_sources.items() %}
+ExecStart=/usr/bin/podman exec janitor-worker sh -c "{{ mmdebstrap(janitor_sbuild_campaigns[campaign] + '-amd64-sbuild', janitor_sbuild_extra_sources + sources) }}"
+{% endfor %}
+Restart=on-failure
+RestartSec=1h

@@ -1,0 +1,145 @@
+---
+# Optional (enable_apt_cacher_ng): an apt cache on the control host for
+# the sbuild chroot tarballs and the builds in them.
+# Before the package, so its first start already listens only there.
+- name: Create apt-cacher-ng's configuration directory
+  ansible.builtin.file:
+    path: /etc/apt-cacher-ng
+    state: directory
+    mode: "0755"
+
+- name: Configure apt-cacher-ng's port, addresses and pass-through hosts
+  ansible.builtin.template:
+    src: zzz_janitor.conf.j2
+    dest: /etc/apt-cacher-ng/zzz_janitor.conf
+    owner: root
+    mode: "0644"
+  notify: Restart apt-cacher-ng
+
+- name: Install apt-cacher-ng
+  ansible.builtin.apt:
+    name: apt-cacher-ng
+    state: present
+
+- name: Set up the apt-cacher-ng firewall
+  block:
+    - name: Install nftables
+      ansible.builtin.apt:
+        name: nftables
+        state: present
+
+    - name: Resolve the addresses allowed to reach apt-cacher-ng
+      ansible.builtin.command:
+        cmd: getent ahosts {{ item }}
+      loop: "{{ apt_cacher_ng_clients }}"
+      register: apt_cacher_ng_resolved
+      changed_when: false
+      check_mode: false
+
+    - name: Write the apt-cacher-ng firewall's nftables table
+      ansible.builtin.template:
+        src: janitor-apt-cacher-ng-firewall.nft.j2
+        dest: /etc/janitor-apt-cacher-ng-firewall.nft
+        mode: "0644"
+        validate: nft -c -f %s
+      vars:
+        apt_cacher_ng_addresses: >-
+          {{ apt_cacher_ng_resolved.results | map(attribute='stdout_lines') | flatten
+             | map('split') | map('first') | unique | sort }}
+      register: apt_cacher_ng_rules
+
+    - name: Install the apt-cacher-ng firewall's unit
+      ansible.builtin.copy:
+        src: janitor-apt-cacher-ng-firewall.service
+        dest: /etc/systemd/system/janitor-apt-cacher-ng-firewall.service
+        mode: "0644"
+      register: apt_cacher_ng_firewall_unit
+
+    - name: Make the directory for nftables.service's drop-ins
+      ansible.builtin.file:
+        path: /etc/systemd/system/nftables.service.d
+        state: directory
+        mode: "0755"
+
+    - name: Load the apt-cacher-ng table again whenever nftables.service starts
+      ansible.builtin.copy:
+        src: nftables-janitor-apt-cacher-ng.conf
+        dest: /etc/systemd/system/nftables.service.d/janitor-apt-cacher-ng-firewall.conf
+        mode: "0644"
+      register: apt_cacher_ng_firewall_dropin
+
+    - name: Check that the apt-cacher-ng firewall's table is loaded
+      ansible.builtin.command:
+        cmd: nft list table inet janitor_apt_cacher_ng
+      register: apt_cacher_ng_table
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Load the apt-cacher-ng firewall, now and at boot
+      ansible.builtin.systemd:
+        name: janitor-apt-cacher-ng-firewall.service
+        daemon_reload: "{{ apt_cacher_ng_firewall_unit is changed or apt_cacher_ng_firewall_dropin is changed }}"
+        enabled: true
+        # Reloading replaces the table in one step.
+        state: >-
+          {{ 'reloaded' if apt_cacher_ng_rules is changed or apt_cacher_ng_firewall_unit is changed
+             or apt_cacher_ng_table.rc != 0 else 'started' }}
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Start apt-cacher-ng
+  ansible.builtin.systemd:
+    name: apt-cacher-ng.service
+    enabled: true
+    state: started
+
+- name: Wait for apt-cacher-ng's report page
+  ansible.builtin.uri:
+    url: "{{ apt_cacher_ng_url }}acng-report.html"
+  register: apt_cacher_ng_health
+  until: apt_cacher_ng_health.status == 200
+  retries: 30
+  delay: 2
+
+# The node exporter reads the counts from this role's directory.
+- name: Write apt-cacher-ng's metrics for the node exporter
+  when: enable_monitoring | bool and enable_node_exporter | bool
+  block:
+    - name: Create the directory for the counts
+      ansible.builtin.file:
+        path: /var/lib/janitor-apt-cacher-ng-metrics
+        state: directory
+        owner: apt-cacher-ng
+        group: apt-cacher-ng
+        mode: "0755"
+
+    - name: Create the directory of the metrics script
+      ansible.builtin.file:
+        path: /usr/local/lib/janitor
+        state: directory
+        mode: "0755"
+
+    - name: Install the script that writes apt-cacher-ng's metrics
+      ansible.builtin.copy:
+        src: apt-cacher-ng-metrics
+        dest: /usr/local/lib/janitor/apt-cacher-ng-metrics
+        mode: "0755"
+
+    - name: Install the unit and timer that run it every minute
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: "/etc/systemd/system/{{ item }}"
+        mode: "0644"
+      loop:
+        - janitor-apt-cacher-ng-metrics.service
+        - janitor-apt-cacher-ng-metrics.timer
+      register: apt_cacher_ng_metrics_units
+
+    - name: Start the timer
+      ansible.builtin.systemd:
+        name: janitor-apt-cacher-ng-metrics.timer
+        daemon_reload: "{{ apt_cacher_ng_metrics_units is changed }}"
+        enabled: true
+        state: started

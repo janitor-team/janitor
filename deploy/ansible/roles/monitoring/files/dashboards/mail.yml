@@ -1,0 +1,200 @@
+---
+# Rendered by templates/dashboard.json.j2.
+title: Postfix and the mail filter
+uid: janitor-mail
+tags: [janitor, optional, publishing, control, postfix, mail-filter]
+description: Postfix and the mail filter. Postfix's panels come from Postfix's service state and from Debian's Postfix metrics collector (Postfix exporter).
+panels:
+  - title: Status
+    type: row
+  - title: Postfix readable by its metrics collector
+    requires: [enable_mta, enable_postfix_exporter]
+    type: stat
+    unit: short
+    width: 6
+    defaults:
+      mappings:
+        - type: value
+          options:
+            "0": {text: "no", color: red, index: 0}
+            "1": {text: "yes", color: green, index: 1}
+        - type: special
+          options: {match: "null", result: {text: no data, color: red, index: 9}}
+    options: &background
+      colorMode: background
+      graphMode: none
+    targets:
+      - expr: last_over_time(postfix_up[2m])
+        legend: "{{path}}"
+  - title: Postfix metrics reachable
+    requires: [enable_mta, enable_postfix_exporter]
+    type: stat
+    width: 6
+    unit: short
+    defaults:
+      mappings:
+        - type: value
+          options:
+            "0": {text: down, color: red, index: 0}
+            "1": {text: up, color: green, index: 1}
+        - type: special
+          options: {match: "null", result: {text: no data, color: red, index: 9}}
+    options:
+      colorMode: background
+      graphMode: none
+    targets:
+      - expr: max_over_time(up{job="postfix"}[2m])
+        legend: metrics
+  - title: Mail filter listening for mail
+    type: stat
+    unit: short
+    width: 6
+    description: >-
+      yes: janitor-mail-filter.socket listens. no: it is in another state. no data: there is no service state for
+      it, because the node exporter of the control host has not answered for 2 minutes ("Host metrics" on Hosts), or
+      its service states file is missing or cannot be read. MailFilterNotListening fires when the tile shows no, or
+      no data, for 5 minutes, unless the node exporter of the control host does not answer. Its value comes from
+      metrics files the hosts write: an old, missing or unreadable file, or a node exporter that does not answer,
+      makes it wrong or empty ("Service state data age" on Janitor: overview shows the files' age, "Host metrics" on
+      Hosts a node exporter that does not answer).
+    requires: [enable_mail_filter, enable_node_exporter]
+    defaults:
+      mappings:
+        - type: value
+          options:
+            "0": {text: "no", color: red, index: 0}
+            "1": {text: "yes", color: green, index: 1}
+        - type: special
+          options: {match: "null", result: {text: no data, color: red, index: 9}}
+    options: *background
+    targets:
+      - expr: >-
+          max((janitor_unit_state{unit="janitor-mail-filter.socket",state="active"} or
+          ((last_over_time(janitor_unit_state{unit="janitor-mail-filter.socket",state="active"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{unit="janitor-mail-filter.socket",state="active"})[2m:10s]) >= on (host) group_left
+          max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1))) or 0 *
+          max((janitor_unit_state{unit="janitor-mail-filter.socket"} or ((last_over_time(janitor_unit_state{unit="janitor-mail-filter.socket"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{unit="janitor-mail-filter.socket"})[2m:10s]) >= on (host) group_left
+          max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1)))
+        legend: janitor-mail-filter.socket
+    links:
+      - {title: "Janitor: mail filter", url: "/d/janitor-mail_filter?${__url_time_range}"}
+  - title: Failed mail filter runs, 1 hour
+    type: stat
+    unit: short
+    width: 6
+    description: >-
+      Mail filter runs that failed in the last hour, counted from the journal as on Janitor: mail filter, whose
+      "Failed mail filter runs, 1 hour" says how to read the journal. MailFilterRunsFailed fires when it is above 0.
+      Its value comes from metrics files the hosts write: an old, missing or unreadable file, or a node exporter that does not answer,
+      makes it wrong or empty ("Service state data age" on Janitor: overview shows the files' age, "Host metrics" on
+      Hosts a node exporter that does not answer).
+    requires: [enable_mail_filter, enable_node_exporter]
+    defaults:
+      color: {mode: thresholds}
+      thresholds: {mode: absolute, steps: [{color: green, value: null}, {color: red, value: 1}]}
+      mappings:
+        - type: special
+          options: {match: "null", result: {text: no data, color: red, index: 99}}
+    options: {colorMode: background, graphMode: none, textMode: value}
+    links:
+      - {title: "Janitor: mail filter", url: "/d/janitor-mail_filter?${__url_time_range}"}
+    targets:
+      - expr: max(last_over_time(janitor_mail_filter_failed_runs_last_hour[2m]))
+        legend: failed
+  - title: Mail
+    type: row
+  - title: "Merge proposal checks sent to publish, per hour"
+    type: timeseries
+    defaults: {noValue: "no checks in this time range, or the counts could not be read", color: {mode: shades, fixedColor: blue}}
+    overrides:
+      - matcher: {id: byRegexp, options: "(^|.* )5[0-9][0-9]$"}
+        properties: [{id: color, value: {mode: fixed, fixedColor: red}}]
+    newline: true
+    unit: short
+    description: "Requests to publish's refresh-status endpoint: mostly from the mail filter, also from the site."
+    requires: [enable_mail_filter]
+    targets:
+      - expr: |-
+          sum by (status) (((http_requests_total{job="publish",path=~".*refresh-status.*"} unless http_requests_total{job="publish",path=~".*refresh-status.*"}
+          offset 1h) and on (job, instance) (up offset 1h == 1)) or increase(http_requests_total{job="publish",path=~".*refresh-status.*"}[1h]))
+        legend: "HTTP {{status}}"
+  - title: Mail in the queue
+    defaults: {color: {mode: shades, fixedColor: blue}}
+    overrides:
+      - matcher: {id: byRegexp, options: "^deferred$"}
+        properties: [{id: color, value: {mode: fixed, fixedColor: yellow}}]
+      - matcher: {id: byRegexp, options: "^hold$"}
+        properties: [{id: color, value: {mode: fixed, fixedColor: red}}]
+    requires: [enable_mta, enable_postfix_exporter]
+    type: timeseries
+    unit: short
+    targets:
+      - expr: sum by (queue) (postfix_showq_message_size_bytes_count)
+        legend: "{{queue}}"
+  - title: SMTP connections per hour
+    requires: [enable_mta, enable_postfix_exporter]
+    type: timeseries
+    unit: short
+    targets:
+      - expr: increase(postfix_smtpd_connects_total[1h])
+        legend: connections
+  - title: Mail received and rejected per hour
+    requires: [enable_mta, enable_postfix_exporter]
+    type: timeseries
+    unit: short
+    defaults: {noValue: "nothing counted in this time range, or the counts could not be read", color: {mode: shades, fixedColor: blue}}
+    overrides:
+      - matcher: {id: byRegexp, options: "^rejected 4.*"}
+        properties: [{id: color, value: {mode: fixed, fixedColor: yellow}}]
+      - matcher: {id: byRegexp, options: "^rejected 5.*"}
+        properties: [{id: color, value: {mode: fixed, fixedColor: red}}]
+    targets:
+      - expr: |-
+          sum(((postfix_smtpd_messages_processed_total unless postfix_smtpd_messages_processed_total offset 1h) and on (job, instance)
+          (up offset 1h == 1)) or increase(postfix_smtpd_messages_processed_total[1h]))
+        legend: received
+      - expr: |-
+          sum by (code) (((postfix_smtpd_messages_rejected_total unless postfix_smtpd_messages_rejected_total offset 1h) and on (job, instance) (up offset 1h ==
+          1)) or increase(postfix_smtpd_messages_rejected_total[1h]))
+        legend: "rejected {{code}}"
+  - title: Messages queued per hour
+    requires: [enable_mta, enable_postfix_exporter]
+    type: timeseries
+    unit: short
+    targets:
+      - expr: increase(postfix_qmgr_messages_inserted_receipients_count[1h])
+        legend: queued
+  - title: Messages removed from the queue per hour
+    requires: [enable_mta, enable_postfix_exporter]
+    type: timeseries
+    unit: short
+    targets:
+      - expr: increase(postfix_qmgr_messages_removed_total[1h])
+        legend: removed
+  - title: Memory and CPU
+    type: row
+    requires: [enable_mta, enable_node_exporter]
+  - title: Postfix memory
+    type: timeseries
+    unit: bytes
+    description: >-
+      Memory in use, without file cache. Its lines come from metrics files the hosts write: an old, missing or
+      unreadable file, or a node exporter that does not answer, makes them wrong or leaves gaps ("Service state data
+      age" on Janitor: overview shows the files' age, "Host metrics" on Hosts a node exporter that does not answer).
+    requires: [enable_mta, enable_node_exporter]
+    targets:
+      - expr: sum(janitor_unit_memory_in_use_bytes{unit="postfix.service"})
+        legend: postfix
+  - title: Postfix CPU
+    type: timeseries
+    defaults: {custom: {axisSoftMax: 0.01}}
+    unit: percentunit
+    description: >-
+      100% is one core. Its lines come from metrics files the hosts write: an old, missing or unreadable file, or a
+      node exporter that does not answer, makes them wrong or leaves gaps ("Service state data age" on Janitor:
+      overview shows the files' age, "Host metrics" on Hosts a node exporter that does not answer).
+    requires: [enable_mta, enable_node_exporter]
+    targets:
+      - expr: sum(rate(janitor_unit_cpu_seconds_total{unit="postfix.service"}[5m]))
+        legend: postfix

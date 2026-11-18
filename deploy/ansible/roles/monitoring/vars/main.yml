@@ -1,0 +1,90 @@
+---
+# Debian's exporter packages and the Pushgateway, each on loopback
+# through ARGS in its /etc/default file. roles/host_metrics runs the node
+# exporter.
+monitoring_exporter_settings:
+  postgres:
+    package: prometheus-postgres-exporter
+    port: "{{ postgres_exporter_port }}"
+    args: --web.listen-address={{ janitor_loopback }}:{{ postgres_exporter_port }}
+  redis:
+    package: prometheus-redis-exporter
+    port: "{{ redis_exporter_port }}"
+    args: -web.listen-address {{ janitor_loopback }}:{{ redis_exporter_port }} -redis.addr redis://{{ janitor_loopback }}:6379
+  postfix:
+    package: prometheus-postfix-exporter
+    port: "{{ postfix_exporter_port }}"
+    args: --web.listen-address={{ janitor_loopback }}:{{ postfix_exporter_port }}
+  blackbox:
+    package: prometheus-blackbox-exporter
+    port: "{{ blackbox_exporter_port }}"
+    args: --config.file=/etc/prometheus/janitor-blackbox.yml --web.listen-address={{ janitor_loopback }}:{{ blackbox_exporter_port }}
+  pushgateway:
+    package: prometheus-pushgateway
+    port: "{{ pushgateway_port }}"
+    args: --web.listen-address={{ janitor_loopback }}:{{ pushgateway_port }}
+monitoring_exporters: >-
+  {{ (['postgres'] if enable_postgres_exporter | bool else [])
+     + (['redis'] if enable_redis_exporter | bool else [])
+     + (['postfix'] if enable_postfix_exporter | bool and enable_mta | bool else [])
+     + (['blackbox'] if enable_blackbox_exporter | bool else [])
+     + (['pushgateway'] if enable_pushgateway | bool else []) }}
+# Grafana folders, {directory under grafana_home/dashboards: title}.
+monitoring_grafana_folders:
+  janitor: Janitor
+  infrastructure: Infrastructure
+  janitor.debian.net: From janitor.debian.net
+# The folder of each of the playbook's own dashboards (files/dashboards/).
+monitoring_dashboard_folder:
+  overview: janitor
+  runner: janitor
+  publish: janitor
+  site: janitor
+  archive: janitor
+  differ: janitor
+  git-store: janitor
+  bzr-store: janitor
+  auto-upload: janitor
+  mail-filter: janitor
+  worker: janitor
+  dependency-server: janitor
+  host: infrastructure
+  database: infrastructure
+  forge-and-storage: infrastructure
+  mail: infrastructure
+  apt-cache: infrastructure
+# The long-running Janitor services that have a dashboard of their own.
+monitoring_service_dashboards:
+  runner: runner
+  publish: publish
+  site: site
+  archive: archive
+  differ: differ
+  git_store: git-store
+  bzr_store: bzr-store
+  auto_upload: auto-upload
+  ognibuild_dep: dependency-server
+  worker: worker
+# The dashboards this host gets, from files/dashboards/.
+monitoring_dashboards: >-
+  {{ ['overview']
+     + (janitor_services | select('in', monitoring_service_dashboards)
+        | map('extract', monitoring_service_dashboards)
+        | reject('equalto', '' if enable_blackbox_exporter | bool or enable_node_exporter | bool
+                 else 'dependency-server') | list)
+     + (['worker'] if 'worker' not in janitor_services and monitoring_worker_addresses | length > 0 else [])
+     + (['mail-filter'] if enable_mail_filter | bool else [])
+     + ['host']
+     + (['database'] if enable_postgres_exporter | bool or enable_redis_exporter | bool
+        or enable_node_exporter | bool else [])
+     + ['forge-and-storage']
+     + (['mail'] if enable_mail_filter | bool
+        or (enable_mta | bool and (enable_postfix_exporter | bool or enable_node_exporter | bool)) else [])
+     + (['apt-cache'] if enable_apt_cacher_ng | bool
+        and (enable_blackbox_exporter | bool or enable_node_exporter | bool) else []) }}
+# The file of each dashboard on the host.
+monitoring_dashboard_paths: >-
+  {{ monitoring_dashboards | map('extract', monitoring_dashboard_folder)
+     | zip(monitoring_dashboards) | map('join', '/janitor-')
+     | map('regex_replace', '^', grafana_home + '/dashboards/')
+     | map('regex_replace', '$', '.json') | list }}
