@@ -1,3 +1,4 @@
+-- A change here also needs a file in schema/migrations for existing databases.
 CREATE TYPE vcs_type AS ENUM('bzr', 'git', 'svn', 'mtn', 'hg', 'arch', 'cvs', 'darcs');
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
