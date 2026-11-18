@@ -1,6 +1,7 @@
 use crate::get_build_arch;
 use backoff::ExponentialBackoff;
 use janitor::api::worker::{Assignment, Metadata};
+use janitor_types::api::runner::FinishResponse;
 use janitor_types::{Campaign, CodebaseName, RunId};
 use reqwest::multipart::{Form, Part};
 use reqwest::{Error as ReqwestError, Response, StatusCode, Url};
@@ -344,7 +345,7 @@ impl Client {
         run_id: &RunId,
         metadata: &Metadata,
         output_directory: Option<&Path>,
-    ) -> Result<serde_json::Value, UploadFailure> {
+    ) -> Result<FinishResponse, UploadFailure> {
         upload_results(
             &self.client,
             &self.credentials,
@@ -440,7 +441,7 @@ pub async fn upload_results(
     run_id: &RunId,
     metadata: &Metadata,
     output_directory: Option<&Path>,
-) -> Result<serde_json::Value, UploadFailure> {
+) -> Result<FinishResponse, UploadFailure> {
     upload_results_via(
         client,
         |request| client.execute(request),
@@ -462,7 +463,7 @@ async fn upload_results_via<F, Fut>(
     run_id: &RunId,
     metadata: &Metadata,
     output_directory: Option<&Path>,
-) -> Result<serde_json::Value, UploadFailure>
+) -> Result<FinishResponse, UploadFailure>
 where
     F: Fn(reqwest::Request) -> Fut,
     Fut: std::future::Future<Output = Result<Response, ReqwestError>>,
@@ -515,7 +516,7 @@ where
                 ))))
             }
             StatusCode::OK | StatusCode::CREATED => {
-                let json = response.json::<serde_json::Value>().await.map_err(|e| {
+                let finish = response.json::<FinishResponse>().await.map_err(|e| {
                     backoff::Error::permanent(UploadFailure(format!(
                         "Error parsing response: {}",
                         e
@@ -525,16 +526,8 @@ where
                     // Use the filenames we already collected during bundle creation
                     let local_filenames = &bundle_info.filenames;
 
-                    let runner_filenames: std::collections::HashSet<_> = json
-                        .get("filenames")
-                        .and_then(|f| f.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|name| name.as_str())
-                                .map(|name| name.to_owned())
-                                .collect()
-                        })
-                        .unwrap_or_else(std::collections::HashSet::new);
+                    let runner_filenames: std::collections::HashSet<_> =
+                        finish.filenames.iter().cloned().collect();
 
                     if local_filenames != &runner_filenames {
                         log::warn!(
@@ -545,7 +538,7 @@ where
                     }
                 }
 
-                Ok(json)
+                Ok(finish)
             }
             _ => {
                 let status = response.status();
@@ -707,7 +700,7 @@ mod tests {
     async fn upload_to_mock(
         state: MockState,
         run_id: &str,
-    ) -> Result<serde_json::Value, UploadFailure> {
+    ) -> Result<FinishResponse, UploadFailure> {
         let app = Router::new()
             .route("/active-runs/{run_id}/finish", post(mock_finish))
             .with_state(state);
@@ -743,14 +736,29 @@ mod tests {
         let hits = Arc::new(AtomicUsize::new(0));
         let state = MockState {
             status: AxumStatus::OK,
-            body: serde_json::json!({"filenames": []}),
+            body: serde_json::json!({
+                "id": "run-1",
+                "filenames": [],
+                "logs": [],
+                "artifacts": [],
+                "result": {"code": "success"},
+            }),
             hits: hits.clone(),
         };
         let result = upload_to_mock(state, "run-1")
             .await
             .expect("expected success");
 
-        assert_eq!(result, serde_json::json!({"filenames": []}));
+        assert_eq!(
+            result,
+            FinishResponse {
+                id: RunId::new("run-1").unwrap(),
+                filenames: vec![],
+                logs: vec![],
+                artifacts: Some(vec![]),
+                result: serde_json::json!({"code": "success"}),
+            }
+        );
         assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 

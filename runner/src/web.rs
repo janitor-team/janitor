@@ -3,7 +3,7 @@ use crate::api_types::{
     ActiveRunResponse, AssignRejectedResponse, AssignmentBranch, AssignmentBuild,
     AssignmentCodemod, AssignmentResponse, AssignmentTargetRepository, BuildAssignmentConfig,
     CleanupRunsResponse, CurrentStageResponse, DebianBuildAssignment, EmptyResponse, ErrorResponse,
-    FinishConflictResponse, FinishResponse, GenericBuildAssignment, MessageResponse, PeekResponse,
+    FinishConflictResponse, GenericBuildAssignment, MessageResponse, PeekResponse,
     PublishStatusUpdate, QueueEntry, QueuePositionResponse, QueueStatsResponse,
     RateLimitedResponse, ReasonResponse, ResultBranchEntry, ResumeAssignment, ResumeChainResponse,
     ResumeCheckResponse, ResumeDescendantsResponse, ResumeValidationResponse, RunDetailResponse,
@@ -25,6 +25,7 @@ use axum::{
     Extension, Json, Router,
 };
 use chrono::Utc;
+use janitor_types::api::runner::FinishResponse;
 use janitor_types::{ArtifactName, Campaign, ChangeSetId, CodebaseName, LogFilename, RunId};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};

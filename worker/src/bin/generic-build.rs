@@ -22,7 +22,7 @@ fn main() {
         let config = std::fs::read_to_string(config).unwrap();
         serde_json::from_str(&config).unwrap()
     } else {
-        serde_json::from_value(serde_json::json!({})).unwrap()
+        Default::default()
     };
 
     match janitor_worker::generic::build_from_config(
