@@ -1,6 +1,6 @@
 use crate::api_types::{
-    AutopublishResponse, EmptyResponse, ErrorResponse, InvalidModeResponse, NotFoundResponse,
-    PublishNothingResponse, PublishStartedResponse, SuccessWithUrlResponse,
+    AutopublishResponse, EmptyResponse, ErrorResponse, NotFoundResponse, PublishNothingResponse,
+    PublishRequestMode, PublishStartedResponse, SuccessWithUrlResponse,
 };
 use crate::health::{self, HealthCheckHandler};
 use crate::rate_limiter::RateLimitStatus;
@@ -1440,10 +1440,9 @@ WHERE publish.id = $1
 
 #[derive(serde::Deserialize, Default, utoipa::ToSchema)]
 struct PublishForm {
-    /// One of "push-derived" / "push" / "propose" / "attempt-push".
     /// When None, each role falls back to its configured publish
     /// policy mode (or MODE_SKIP).
-    mode: Option<String>,
+    mode: Option<PublishRequestMode>,
     /// Free-form text recorded on the publish row.
     requester: Option<String>,
 }
@@ -1480,7 +1479,7 @@ struct PublishQuery {
     responses(
         (status = 200, description = "Nothing to publish", body = PublishNothingResponse),
         (status = 202, description = "Publishing was started", body = PublishStartedResponse),
-        (status = 400, description = "Invalid mode; the body is empty when there is no run to publish", body = InvalidModeResponse),
+        (status = 400, description = "The body is empty when there is no run to publish or the mode is invalid", body = EmptyResponse),
         (status = 404, description = "No publish policy and no mode", body = NotFoundResponse),
         (status = 500, description = "Database error", body = ErrorResponse),
     )
@@ -1489,23 +1488,14 @@ async fn publish(
     State(state): State<Arc<AppState>>,
     Path((campaign, codebase)): Path<(Campaign, CodebaseName)>,
     Query(query): Query<PublishQuery>,
-    axum::extract::Form(form): axum::extract::Form<PublishForm>,
+    form: Result<axum::extract::Form<PublishForm>, axum::extract::rejection::FormRejection>,
 ) -> Response {
     log::info!("Handling request to publish {}/{}", codebase, campaign);
 
-    // Validate mode up-front if the caller supplied one.
-    if let Some(m) = form.mode.as_deref() {
-        if !matches!(m, "push-derived" | "push" | "propose" | "attempt-push") {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(InvalidModeResponse {
-                    error: "Invalid mode".to_string(),
-                    mode: m.to_string(),
-                }),
-            )
-                .into_response();
-        }
-    }
+    let form = match form {
+        Ok(axum::extract::Form(f)) => f,
+        Err(_) => return (StatusCode::BAD_REQUEST, Json(EmptyResponse {})).into_response(),
+    };
 
     let run = match crate::state::get_last_effective_run(&state.conn, &codebase, &campaign).await {
         Ok(Some(r)) => Arc::new(r),
@@ -1559,18 +1549,31 @@ async fn publish(
 
     // For each role, resolve the mode: either the form mode applied
     // to every role, or the per-role policy mode with MODE_SKIP as
-    // the fallback.
-    let branches: Vec<(String, String)> = if let Some(ref m) = form.mode {
-        roles.into_iter().map(|r| (r, m.clone())).collect()
+    // the fallback. The form mode is already typed; policy modes come
+    // out of the database as strings. None means skip/build-only (or
+    // an unparsable policy entry): the role gets a publish_id but no
+    // work.
+    let branches: Vec<(String, Option<crate::Mode>)> = if let Some(m) = form.mode {
+        let mode: crate::Mode = m.into();
+        roles.into_iter().map(|r| (r, Some(mode))).collect()
     } else {
         roles
             .into_iter()
             .map(|r| {
-                let mode = publish_policy
+                let mode_str = publish_policy
                     .get(&r)
-                    .map(|(m, _)| m.clone())
-                    .unwrap_or_else(|| "skip".to_string());
-                (r, mode)
+                    .map(|(m, _)| m.as_str())
+                    .unwrap_or("skip");
+                if matches!(mode_str, "skip" | "build-only") {
+                    return (r, None);
+                }
+                match <crate::Mode as std::str::FromStr>::from_str(mode_str) {
+                    Ok(m) => (r, Some(m)),
+                    Err(e) => {
+                        log::warn!("Invalid policy mode {:?} for role {}: {}", mode_str, r, e);
+                        (r, None)
+                    }
+                }
             })
             .collect()
     };
@@ -1579,28 +1582,13 @@ async fn publish(
     // Skip/build-only roles get recorded in publish_ids without
     // queuing any work.
     let mut publish_ids: BTreeMap<String, PublishId> = BTreeMap::new();
-    for (role, mode_str) in branches {
+    for (role, mode) in branches {
         let publish_id = crate::new_publish_id();
         publish_ids.insert(role.clone(), publish_id.clone());
 
-        log::info!(".. publishing for role {}: {}", role, mode_str);
+        let Some(mode) = mode else { continue };
 
-        if mode_str == "skip" || mode_str == "build-only" {
-            continue;
-        }
-
-        let mode = match <crate::Mode as std::str::FromStr>::from_str(&mode_str) {
-            Ok(m) => m,
-            Err(e) => {
-                log::warn!(
-                    "Invalid mode {:?} for role {} in publish request: {}",
-                    mode_str,
-                    role,
-                    e
-                );
-                continue;
-            }
-        };
+        log::info!(".. publishing for role {}: {}", role, mode);
 
         let state = state.clone();
         let run = run.clone();
@@ -1991,8 +1979,7 @@ async fn refresh_status(
             return error_response(
                 StatusCode::BAD_REQUEST,
                 format!("Invalid url parameter: {}", e),
-            )
-            .into_response();
+            );
         }
     };
     log::info!("Request to refresh proposal status for {}", url);
@@ -2338,7 +2325,6 @@ pub struct BlockerPreviousMpDetails {
 /// Details of the `propose_rate_limit` blocker when the bucket is not
 /// rate-limited.
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
 pub struct BlockerRateLimitAllowedDetails {
     /// Rate-limit bucket of the run; null if it has none.
     pub bucket: Option<String>,
@@ -2360,10 +2346,10 @@ pub struct BlockerRateLimitExceededDetails {
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 #[serde(untagged)]
 pub enum BlockerProposeRateLimitDetails {
-    /// The bucket is not rate-limited, or the run has no bucket.
-    Allowed(BlockerRateLimitAllowedDetails),
     /// The bucket is rate-limited.
     Exceeded(BlockerRateLimitExceededDetails),
+    /// The bucket is not rate-limited, or the run has no bucket.
+    Allowed(BlockerRateLimitAllowedDetails),
 }
 
 /// Response of `GET /blockers/{run_id}`.
