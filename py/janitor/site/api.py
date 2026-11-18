@@ -20,6 +20,7 @@ import logging
 from typing import Optional
 
 import aiozipkin
+import asyncpg
 import mimeparse
 from aiohttp import (
     ClientConnectorError,
@@ -623,16 +624,21 @@ async def handle_run_post(request, verdict=None, review_comment=None):
                     user = request["user"]["email"]
                 except KeyError:
                     user = request["user"]["name"]
-                await store_review(
-                    conn,
-                    request.app["http_client_session"],
-                    request.app["runner_url"],
-                    run_id,
-                    verdict=verdict,
-                    comment=review_comment,
-                    reviewer=user,
-                    is_qa_reviewer=is_qa_reviewer(request),
-                )
+                try:
+                    await store_review(
+                        conn,
+                        request.app["http_client_session"],
+                        request.app["runner_url"],
+                        run_id,
+                        verdict=verdict,
+                        comment=review_comment,
+                        reviewer=user,
+                        is_qa_reviewer=is_qa_reviewer(request),
+                    )
+                except asyncpg.ForeignKeyViolationError as e:
+                    if e.constraint_name != "review_run_id_fkey":
+                        raise
+                    raise web.HTTPNotFound(text=f"no run {run_id}") from e
         else:
             raise web.HTTPBadRequest(text="no verdict in the form")
         return web.json_response({"verdict": verdict, "review-comment": review_comment})
