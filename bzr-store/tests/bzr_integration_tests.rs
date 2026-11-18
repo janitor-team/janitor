@@ -62,6 +62,14 @@ async fn send(app: &Router, req: Request<Body>) -> Response {
     app.clone().oneshot(req).await.unwrap()
 }
 
+/// Serve `app` on a free port, for tests that drive the Breezy client.
+async fn spawn(app: Router) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (addr, handle)
+}
+
 fn get(uri: &str) -> Request<Body> {
     Request::get(uri).body(Body::empty()).unwrap()
 }
@@ -269,5 +277,33 @@ test_with_database! {
         assert!(body.exists);
         assert_eq!(body.branch_count, 1);
         assert_eq!(body.last_revision.as_deref(), Some(rev2.as_str()));
+    }
+}
+
+test_with_database! {
+    schema = Core;
+    async fn test_public_smart_protocol_open_branch(test_db: TestDatabase) {
+        seed_codebase(test_db.pool(), "foo").await;
+
+        let tmp = TempDir::new().unwrap();
+        let (_rev1, rev2) = build_two_commit_branch(&tmp.path().join("foo"));
+
+        let cfg = build_config(tmp.path(), test_db_url(&test_db));
+        let (_admin, public) = create_applications(cfg, janitor_config_with_campaign())
+            .await
+            .unwrap();
+        let (addr, handle) = spawn(public).await;
+
+        // The client blocks, so run it off the runtime that serves its requests.
+        let url: url::Url = format!("bzr+http://{}/bzr/foo", addr).parse().unwrap();
+        let last_revision = tokio::task::spawn_blocking(move || {
+            let branch = breezyshim::branch::open_as_generic(&url).unwrap();
+            branch.last_revision().as_str().to_string()
+        })
+        .await
+        .unwrap();
+        assert_eq!(last_revision, rev2);
+
+        handle.abort();
     }
 }
