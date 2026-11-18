@@ -1,0 +1,107 @@
+#!/bin/sh
+# Managed by Ansible (roles/host_metrics). Writes the state, memory, CPU
+# time, restarts, last result and last start and stop of this user's
+# systemd units and of Janitor's system units, the host's memory in use
+# and, on a worker host, the runs that crashed in the worker, and on the
+# control host the mail filter runs that failed, for the node exporter.
+set -eu
+out={{ host_metrics_textfile_dir }}/units.prom
+units=$(systemctl --user list-units --all --plain --no-legend --type=service,socket,timer | awk '{print $1}')
+{% if host_metrics_system_units | length > 0 %}
+system=$(systemctl list-units --all --plain --no-legend --type=service {{ host_metrics_system_units | map('quote') | join(' ') }} | awk '{print $1}')
+{% else %}
+system=
+{% endif %}
+props=Id,ActiveState,MemoryCurrent,CPUUsageNSec,NRestarts,Result,ActiveEnterTimestamp,InactiveEnterTimestamp,ControlGroup
+{
+  systemctl --user show --timestamp=unix --property=$props $units
+  echo
+  [ -z "$system" ] || systemctl show --timestamp=unix --property=$props $system
+} |
+  awk -F= '
+  function flush() {
+    if (id != "") {
+      gsub(/\\/, "\\\\", id)
+      st = st sprintf("janitor_unit_state{unit=\"%s\",state=\"%s\"} 1\n", id, state)
+      if (mem ~ /^[0-9]+$/) me = me sprintf("janitor_unit_memory_bytes{unit=\"%s\"} %s\n", id, mem)
+      # Memory in use: anonymous and shared memory, without file cache.
+      if (cg != "") {
+        anon = ""; shmem = ""
+        stat = "/sys/fs/cgroup" cg "/memory.stat"
+        while ((getline line < stat) > 0) { split(line, f, " "); if (f[1] == "anon") anon = f[2]; if (f[1] == "shmem") shmem = f[2] }
+        close(stat)
+        if (anon ~ /^[0-9]+$/) ws = ws sprintf("janitor_unit_memory_in_use_bytes{unit=\"%s\"} %d\n", id, anon + shmem)
+      }
+      if (cpu ~ /^[0-9]+$/) cp = cp sprintf("janitor_unit_cpu_seconds_total{unit=\"%s\"} %.3f\n", id, cpu / 1e9)
+      if (restarts ~ /^[0-9]+$/) rs = rs sprintf("janitor_unit_restarts_total{unit=\"%s\"} %s\n", id, restarts)
+      if (result != "") re = re sprintf("janitor_unit_result{unit=\"%s\",result=\"%s\"} 1\n", id, result)
+      if (up ~ /^@[0-9]+$/) ua = ua sprintf("janitor_unit_active_since_seconds{unit=\"%s\"} %s\n", id, substr(up, 2))
+      if (down ~ /^@[0-9]+$/) ui = ui sprintf("janitor_unit_inactive_since_seconds{unit=\"%s\"} %s\n", id, substr(down, 2))
+    }
+    id = ""; state = ""; mem = ""; cpu = ""; restarts = ""; result = ""; up = ""; down = ""; cg = ""
+  }
+  $0 == "" { flush(); next }
+  $1 == "Id" { id = $2 }
+  $1 == "ActiveState" { state = $2 }
+  $1 == "MemoryCurrent" { mem = $2 }
+  $1 == "CPUUsageNSec" { cpu = $2 }
+  $1 == "NRestarts" { restarts = $2 }
+  $1 == "Result" { result = $2 }
+  $1 == "ActiveEnterTimestamp" { up = $2 }
+  $1 == "InactiveEnterTimestamp" { down = $2 }
+  $1 == "ControlGroup" { cg = $2 }
+  END {
+    flush()
+    print "# HELP janitor_unit_state State of a systemd unit, 1 for its current state."
+    print "# TYPE janitor_unit_state gauge"
+    printf "%s", st
+    print "# HELP janitor_unit_memory_bytes Memory a systemd unit uses."
+    print "# TYPE janitor_unit_memory_bytes gauge"
+    printf "%s", me
+    print "# HELP janitor_unit_memory_in_use_bytes Anonymous and shared memory a systemd unit uses, without file cache."
+    print "# TYPE janitor_unit_memory_in_use_bytes gauge"
+    printf "%s", ws
+    print "# HELP janitor_unit_cpu_seconds_total CPU time a systemd unit used."
+    print "# TYPE janitor_unit_cpu_seconds_total counter"
+    printf "%s", cp
+    print "# HELP janitor_unit_restarts_total Times systemd restarted a unit by itself since it was last started."
+    print "# TYPE janitor_unit_restarts_total counter"
+    printf "%s", rs
+    print "# HELP janitor_unit_result Result of the last run of a unit, 1 for the current result."
+    print "# TYPE janitor_unit_result gauge"
+    printf "%s", re
+    print "# HELP janitor_unit_active_since_seconds When a unit last became active, in Unix time."
+    print "# TYPE janitor_unit_active_since_seconds gauge"
+    printf "%s", ua
+    print "# HELP janitor_unit_inactive_since_seconds When a unit last stopped or failed, in Unix time."
+    print "# TYPE janitor_unit_inactive_since_seconds gauge"
+    printf "%s", ui
+  }' > "$out.tmp"
+# The host's process memory, read in the same run as the units', so the two can be compared.
+awk '/^(AnonPages|Shmem):/ { kb += $2 }
+  END {
+    print "# HELP janitor_host_memory_in_use_bytes Anonymous and shared memory of all processes on the host."
+    print "# TYPE janitor_host_memory_in_use_bytes gauge"
+    printf "janitor_host_memory_in_use_bytes %d\n", kb * 1024
+  }' /proc/meminfo >> "$out.tmp"
+{% if 'worker' in janitor_services %}
+# Runs that crashed in the worker in the last hour, from the worker's own log line.
+panics=$(journalctl --user --since -1h --no-pager -q -o cat -u 'janitor-worker*' | grep -c 'ERROR janitor_worker\] job panicked: ' || true)
+cat >> "$out.tmp" <<EOM
+# HELP janitor_worker_job_panics_last_hour Runs whose job panicked in the worker in the last hour.
+# TYPE janitor_worker_job_panics_last_hour gauge
+janitor_worker_job_panics_last_hour $panics
+EOM
+{% endif %}
+{% if enable_mail_filter | bool and 'control' in group_names %}
+# Mail filter runs that failed in the last hour, from the entry systemd writes when one fails.
+# systemd drops a failed run at once, so its unit state never shows it. The message ID and
+# _COMM leave out the filter's own output, which can quote text from a mail.
+failed=$(journalctl --user --since -1h --no-pager -q -o cat -u 'janitor-mail-filter@*' MESSAGE_ID=d9b373ed55a64feb8242e02dbe79a49c _COMM=systemd | grep -c ': Failed with result ' || true)
+cat >> "$out.tmp" <<EOM
+# HELP janitor_mail_filter_failed_runs_last_hour Mail filter runs that failed in the last hour.
+# TYPE janitor_mail_filter_failed_runs_last_hour gauge
+janitor_mail_filter_failed_runs_last_hour $failed
+EOM
+{% endif %}
+mv "$out.tmp" "$out"

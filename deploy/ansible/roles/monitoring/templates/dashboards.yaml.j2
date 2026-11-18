@@ -1,0 +1,14 @@
+# Managed by Ansible (roles/monitoring). One provider, and so one Grafana
+# folder, per directory under grafana_home/dashboards.
+apiVersion: 1
+providers:
+{% for dir, title in monitoring_grafana_folders.items() %}
+  - name: {{ dir }}
+    folder: {{ title | to_json }}
+    folderUid: {{ dir | replace('.', '-') }}
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana-dashboards/{{ dir }}
+{% endfor %}

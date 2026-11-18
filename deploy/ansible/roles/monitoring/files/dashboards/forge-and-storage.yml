@@ -1,0 +1,244 @@
+---
+# Rendered by templates/dashboard.json.j2.
+title: Gitea, Garage and the VCS stores
+uid: janitor-forge-and-storage
+tags: [janitor, core, optional, storage, web, control, gitea, garage, git-store, bzr-store]
+description: The git and bzr stores, Gitea and Garage.
+panels:
+  - title: Status
+    type: row
+  - title: Git store metrics reachable
+    links:
+      - {title: "Janitor: git store", url: "/d/janitor-git_store?${__url_time_range}"}
+    type: stat
+    unit: short
+    width: 6
+    defaults: &up_down
+      mappings:
+        - type: value
+          options:
+            "0": {text: down, color: red, index: 0}
+            "1": {text: up, color: green, index: 1}
+        - type: special
+          options: {match: "null", result: {text: no data, color: red, index: 9}}
+    options: &background
+      colorMode: background
+      graphMode: none
+    targets:
+      - expr: max_over_time(up{job="git_store"}[2m])
+        legend: git store
+  - title: Bzr store metrics reachable
+    links:
+      - {title: "Janitor: bzr store", url: "/d/janitor-bzr_store?${__url_time_range}"}
+    type: stat
+    unit: short
+    width: 6
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: max_over_time(up{job="bzr_store"}[2m])
+        legend: bzr store
+  - title: Gitea metrics reachable
+    type: stat
+    unit: short
+    width: 6
+    requires: [enable_gitea]
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: max_over_time(up{job="gitea"}[2m])
+        legend: gitea
+  - title: Garage metrics reachable
+    type: stat
+    unit: short
+    width: 6
+    requires: [enable_garage]
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: max_over_time(up{job="garage"}[2m])
+        legend: garage
+  - title: VCS stores
+    type: row
+  - title: "Store requests per second, by store and HTTP status"
+    defaults: {color: {mode: shades, fixedColor: blue}}
+    overrides:
+      - matcher: {id: byRegexp, options: "(^|.* )5[0-9][0-9]$"}
+        properties: [{id: color, value: {mode: fixed, fixedColor: red}}]
+    type: timeseries
+    newline: true
+    unit: reqps
+    targets:
+      - expr: |-
+          label_replace(label_replace( sum by (job, status) ((((http_requests_total{job=~"git_store|bzr_store", path!~"/metrics|/health"} unless
+          http_requests_total{job=~"git_store|bzr_store", path!~"/metrics|/health"} offset 5m) and on (job, instance) (up offset 5m == 1)) or
+          increase(http_requests_total{job=~"git_store|bzr_store", path!~"/metrics|/health"}[5m])) / 300), "job", "git store", "job", "git_store"), "job",
+          "bzr store", "job", "bzr_store")
+        legend: "{{job}} {{status}}"
+  - title: Store server errors per hour
+    type: timeseries
+    unit: short
+    defaults: {noValue: "nothing counted in this time range, or the counts could not be read", color: {mode: shades, fixedColor: red}}
+    targets:
+      - expr: |-
+          label_replace(label_replace(
+          sum by (job) (((http_requests_total{job=~"git_store|bzr_store",status=~"5.."} unless http_requests_total{job=~"git_store|bzr_store",status=~"5.."}
+          offset 1h) and on (job, instance) (up offset 1h == 1)) or increase(http_requests_total{job=~"git_store|bzr_store",status=~"5.."}[1h])),
+          "job", "git store", "job", "git_store"), "job", "bzr store", "job", "bzr_store")
+        legend: "{{job}}"
+  - title: "Store request time, slowest 10% take at least"
+    type: timeseries
+    unit: s
+    description: >-
+      The line is estimated from fixed time buckets. When nearly every request is faster than the limit of the first
+      bucket, the line reads just under that limit, and the real time can be lower.
+    defaults: {noValue: "no requests in this time range, or the counts could not be read"}
+    targets:
+      - expr: |-
+          label_replace(label_replace( histogram_quantile(0.9, sum by (le, job) ((((http_request_duration_seconds_bucket{job=~"git_store|bzr_store",
+          path!~"/metrics|/health"} unless http_request_duration_seconds_bucket{job=~"git_store|bzr_store", path!~"/metrics|/health"} offset 5m) and on (job,
+          instance) (up offset 5m == 1)) or increase(http_request_duration_seconds_bucket{job=~"git_store|bzr_store", path!~"/metrics|/health"}[5m])) / 300))
+          and on (job) (sum by (job) ((((http_request_duration_seconds_count{job=~"git_store|bzr_store", path!~"/metrics|/health"} unless
+          http_request_duration_seconds_count{job=~"git_store|bzr_store", path!~"/metrics|/health"} offset 5m) and on (job, instance) (up offset 5m == 1)) or
+          increase(http_request_duration_seconds_count{job=~"git_store|bzr_store", path!~"/metrics|/health"}[5m])) / 300) > 0), "job", "git store", "job",
+          "git_store"), "job", "bzr store", "job", "bzr_store")
+        legend: "{{job}}"
+  - title: Memory of the git and bzr stores
+    type: timeseries
+    unit: bytes
+    description: >-
+      Memory in use, without file cache. Its lines come from metrics files the hosts write: an old, missing or
+      unreadable file, or a node exporter that does not answer, makes them wrong or leaves gaps ("Service state data
+      age" on Janitor: overview shows the files' age, "Host metrics" on Hosts a node exporter that does not answer).
+    requires: [enable_node_exporter]
+    targets:
+      - expr: janitor_unit_memory_in_use_bytes{unit=~"janitor-(git_store|bzr_store)[.]service"}
+        legend: "{{unit}}"
+  - title: CPU of the git and bzr stores
+    type: timeseries
+    defaults: {custom: {axisSoftMax: 0.01}}
+    width: 24
+    unit: percentunit
+    description: >-
+      100% is one core. Its lines come from metrics files the hosts write: an old, missing or unreadable file, or a
+      node exporter that does not answer, makes them wrong or leaves gaps ("Service state data age" on Janitor:
+      overview shows the files' age, "Host metrics" on Hosts a node exporter that does not answer).
+    requires: [enable_node_exporter]
+    targets:
+      - expr: rate(janitor_unit_cpu_seconds_total{unit=~"janitor-(git_store|bzr_store)[.]service"}[5m])
+        legend: "{{unit}}"
+  - title: Gitea
+    type: row
+    requires: [enable_gitea]
+  - title: "Gitea repositories, users and organisations"
+    type: timeseries
+    unit: short
+    requires: [enable_gitea]
+    targets:
+      - expr: gitea_repositories
+        legend: repositories
+      - expr: gitea_users
+        legend: "{{state}} users"
+      - expr: gitea_organizations
+        legend: organisations
+  - title: Gitea issues and webhook deliveries
+    type: timeseries
+    unit: short
+    requires: [enable_gitea]
+    targets:
+      - expr: gitea_issues_open
+        legend: open issues
+      - expr: gitea_issues_closed
+        legend: closed issues
+      - expr: gitea_hooktasks
+        legend: webhook deliveries
+  - title: Gitea memory
+    type: timeseries
+    unit: bytes
+    description: >-
+      Memory in use, without file cache. Its lines come from metrics files the hosts write: an old, missing or
+      unreadable file, or a node exporter that does not answer, makes them wrong or leaves gaps ("Service state data
+      age" on Janitor: overview shows the files' age, "Host metrics" on Hosts a node exporter that does not answer).
+    requires: [enable_gitea, enable_node_exporter]
+    targets:
+      - expr: janitor_unit_memory_in_use_bytes{unit="gitea.service"}
+        legend: gitea
+  - title: Gitea CPU
+    type: timeseries
+    defaults: {custom: {axisSoftMax: 0.01}}
+    unit: percentunit
+    description: >-
+      100% is one core. Its lines come from metrics files the hosts write: an old, missing or unreadable file, or a
+      node exporter that does not answer, makes them wrong or leaves gaps ("Service state data age" on Janitor:
+      overview shows the files' age, "Host metrics" on Hosts a node exporter that does not answer).
+    requires: [enable_gitea, enable_node_exporter]
+    targets:
+      - expr: rate(janitor_unit_cpu_seconds_total{unit="gitea.service"}[5m])
+        legend: gitea
+  - title: Garage
+    type: row
+    requires: [enable_garage]
+  - title: Garage S3 requests per second
+    type: timeseries
+    unit: reqps
+    requires: [enable_garage]
+    targets:
+      - expr: |-
+          sum by (api_endpoint) ((((api_s3_request_counter unless api_s3_request_counter offset 5m) and on (job, instance) (up offset 5m == 1)) or
+          increase(api_s3_request_counter[5m])) / 300)
+        legend: "{{api_endpoint}}"
+  - title: Garage S3 errors per hour
+    type: timeseries
+    unit: short
+    requires: [enable_garage]
+    defaults: {noValue: "nothing counted in this time range, or the counts could not be read", color: {mode: shades, fixedColor: red}}
+    targets:
+      - expr: |-
+          sum by (api_endpoint, status_code) (((api_s3_error_counter unless api_s3_error_counter offset 1h) and on (job, instance) (up offset 1h == 1)) or
+          increase(api_s3_error_counter[1h]))
+        legend: "{{api_endpoint}} {{status_code}}"
+  - title: "Garage S3 request time, slowest 10% take at least"
+    type: timeseries
+    unit: s
+    description: >-
+      The line is estimated from fixed time buckets. When nearly every request is faster than the limit of the first
+      bucket, the line reads just under that limit, and the real time can be lower.
+    requires: [enable_garage]
+    targets:
+      - expr: |-
+          histogram_quantile(0.9, sum by (le) ((((api_s3_request_duration_bucket unless api_s3_request_duration_bucket offset 5m) and on (job, instance) (up
+          offset 5m == 1)) or increase(api_s3_request_duration_bucket[5m])) / 300))
+        legend: slowest 10% take at least
+  - title: Garage disk free
+    type: timeseries
+    defaults: {color: {mode: shades, fixedColor: blue}}
+    unit: bytes
+    description: The free space of the filesystem Garage keeps its data and metadata on, which it may share with other services.
+    requires: [enable_garage]
+    targets:
+      - expr: garage_local_disk_avail
+        legend: "{{volume}}"
+  - title: Garage memory
+    type: timeseries
+    unit: bytes
+    description: >-
+      Memory in use, without file cache. Its lines come from metrics files the hosts write: an old, missing or
+      unreadable file, or a node exporter that does not answer, makes them wrong or leaves gaps ("Service state data
+      age" on Janitor: overview shows the files' age, "Host metrics" on Hosts a node exporter that does not answer).
+    requires: [enable_garage, enable_node_exporter]
+    targets:
+      - expr: janitor_unit_memory_in_use_bytes{unit="garage.service"}
+        legend: garage
+  - title: Garage CPU
+    type: timeseries
+    defaults: {custom: {axisSoftMax: 0.01}}
+    width: 12
+    unit: percentunit
+    description: >-
+      100% is one core. Its lines come from metrics files the hosts write: an old, missing or unreadable file, or a
+      node exporter that does not answer, makes them wrong or leaves gaps ("Service state data age" on Janitor:
+      overview shows the files' age, "Host metrics" on Hosts a node exporter that does not answer).
+    requires: [enable_garage, enable_node_exporter]
+    targets:
+      - expr: rate(janitor_unit_cpu_seconds_total{unit="garage.service"}[5m])
+        legend: garage
