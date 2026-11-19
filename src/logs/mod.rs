@@ -300,6 +300,95 @@ pub async fn import_logs_from_entries(
 mod tests {
     use super::*;
 
+
+    /// Pin the Display output for every Error variant. These strings
+    /// end up in user-facing error bodies / logs and changing them
+    /// silently would break log grep patterns.
+    #[test]
+    fn error_display_matrix() {
+        assert_eq!(Error::NotFound.to_string(), "Not found");
+        assert_eq!(Error::ServiceUnavailable.to_string(), "Service unavailable");
+        assert_eq!(Error::PermissionDenied.to_string(), "Permission denied");
+        assert_eq!(Error::Timeout.to_string(), "Operation timed out");
+        assert_eq!(
+            Error::Io("disk full".to_string()).to_string(),
+            "I/O error: disk full"
+        );
+        assert_eq!(
+            Error::LogRetrieval("bad".to_string()).to_string(),
+            "Log retrieval error: bad"
+        );
+        // `Other` is passed through verbatim.
+        assert_eq!(Error::Other("custom".to_string()).to_string(), "custom");
+    }
+
+    /// `From<io::Error>` must always produce Io regardless of the
+    /// io::ErrorKind — callers that want finer resolution map
+    /// PermissionDenied etc. themselves.
+    #[test]
+    fn from_io_error_produces_io_variant_for_every_kind() {
+        for kind in [
+            io::ErrorKind::NotFound,
+            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::Other,
+        ] {
+            let io_err = io::Error::new(kind, "kaboom");
+            let err: Error = io_err.into();
+            assert!(
+                matches!(err, Error::Io(_)),
+                "From<io::Error> must produce Io for kind {:?}",
+                kind
+            );
+        }
+    }
+
+    /// Tokio timeout errors always map to Error::Timeout — services
+    /// wrap log reads in tokio::time::timeout and branch on this.
+    #[tokio::test]
+    async fn from_tokio_elapsed_produces_timeout_variant() {
+        let elapsed = tokio::time::timeout(
+            std::time::Duration::from_millis(0),
+            std::future::pending::<()>(),
+        )
+        .await
+        .unwrap_err();
+        let err: Error = elapsed.into();
+        assert!(matches!(err, Error::Timeout));
+    }
+
+    /// Error must be std::error::Error to plug into boxed-error
+    /// callsites. Also confirms the `impl` from line 57 still links.
+    #[test]
+    fn error_implements_std_error_trait() {
+        fn _requires<E: std::error::Error>(_: E) {}
+        _requires(Error::NotFound);
+        _requires(Error::Other("x".into()));
+    }
+
+    /// Error is Clone — this is why Io/LogRetrieval/Other carry a
+    /// String instead of the underlying typed error.
+    #[test]
+    fn error_is_cloneable_even_for_io_variant() {
+        let err = Error::Io("disk full".to_string());
+        let copy = err.clone();
+        assert_eq!(format!("{}", err), format!("{}", copy));
+    }
+
+    /// LogEntry is a trivial struct — pin the field layout so
+    /// downstream callers depending on `{ name, path }` don't
+    /// silently break on a rename.
+    #[test]
+    fn log_entry_field_layout() {
+        let e = LogEntry {
+            name: LogFilename::new("build.log").unwrap(),
+            path: "/tmp/build.log".to_string(),
+        };
+        assert_eq!(e.name.as_str(), "build.log");
+        assert_eq!(e.path, "/tmp/build.log");
+        let cloned = e.clone();
+        assert_eq!(cloned.name, e.name);
+    }
+
     #[test]
     fn test_create_log_manager_s3() {
         create_log_manager("s3://janitor-logs").unwrap();
