@@ -7,10 +7,10 @@ use crate::api_types::{
     PublishStatusUpdate, QueueEntry, QueuePositionResponse, QueueStatsResponse,
     RateLimitedResponse, ReasonResponse, ResultBranchEntry, ResumeAssignment, ResumeChainResponse,
     ResumeCheckResponse, ResumeDescendantsResponse, ResumeValidationResponse, RunDetailResponse,
-    RunFollowup, RunFollowupsResponse, RunHealthSummary, RunListResponse, RunSummary,
-    ScheduleControlResponse, ScheduleResponse, ScheduledCandidate, StatusResponse,
-    UploadCandidatesResponse, WatchdogHealthResponse, WorkerInfo, WorkerListResponse,
-    WorkerSummary,
+    RunFollowup, RunFollowupsResponse, RunHealthSummary, RunListResponse, RunStatsBucket,
+    RunStatsResponse, RunSummary, ScheduleControlResponse, ScheduleResponse, ScheduledCandidate,
+    StatusResponse, UnprocessedCandidate, UnprocessedCandidatesResponse, UploadCandidatesResponse,
+    WatchdogHealthResponse, WorkerInfo, WorkerListResponse, WorkerSummary,
 };
 use crate::{
     get_builder, metrics::MetricsCollector, ActiveRun, AppState, Backchannel, BuilderResult,
@@ -1716,6 +1716,319 @@ fn run_detail_to_response(detail: crate::database::RunDetail) -> RunDetailRespon
             lintian_result: db.lintian_result,
             binary_packages: db.binary_packages,
         }),
+    }
+}
+
+/// Query parameters for `GET /candidates/unprocessed`.
+#[derive(serde::Deserialize, Default, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct UnprocessedCandidatesQuery {
+    /// Restrict to candidates targeting any of these campaigns.
+    /// Repeat `?campaign=X&campaign=Y` to pass multiple values.
+    #[serde(default)]
+    campaign: Vec<Campaign>,
+}
+
+/// `GET /candidates/unprocessed` -- candidates that have no run yet.
+#[utoipa::path(
+    get,
+    path = "/candidates/unprocessed",
+    params(UnprocessedCandidatesQuery),
+    responses(
+        (status = 200, description = "Unprocessed candidates", body = UnprocessedCandidatesResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
+async fn list_unprocessed_candidates(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<UnprocessedCandidatesQuery>,
+) -> Response {
+    let mut query = String::from(
+        "SELECT c.codebase AS codebase, c.suite AS campaign \
+         FROM candidate c \
+         WHERE NOT EXISTS ( \
+             SELECT FROM run WHERE run.codebase = c.codebase AND c.suite = suite \
+         )",
+    );
+    if !params.campaign.is_empty() {
+        query.push_str(" AND c.suite = ANY($1::text[])");
+    }
+    query.push_str(" ORDER BY c.codebase, c.suite");
+
+    let mut q = sqlx::query_as::<_, UnprocessedCandidate>(sqlx::AssertSqlSafe(&*query));
+    if !params.campaign.is_empty() {
+        q = q.bind(&params.campaign);
+    }
+
+    match q.fetch_all(state.database.pool()).await {
+        Ok(candidates) => Json(UnprocessedCandidatesResponse { candidates }).into_response(),
+        Err(e) => {
+            log::error!("Failed to list unprocessed candidates: {}", e);
+            db_error()
+        }
+    }
+}
+
+/// Query parameters for `GET /runs/current` and `GET /runs/current/stats`.
+#[derive(serde::Deserialize, Default, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct CurrentRunsQuery {
+    /// Restrict to runs for any of these campaigns.
+    #[serde(default)]
+    campaign: Vec<Campaign>,
+    /// Restrict to runs on this codebase.
+    codebase: Option<CodebaseName>,
+    /// Restrict to runs with any of these result codes.
+    #[serde(default)]
+    result_code: Vec<String>,
+    /// When true, include runs from the full `last_runs` view (which
+    /// counts `nothing-new-to-do` incremental attempts). Default is to
+    /// use `last_effective_runs`, which treats those as the resumed-
+    /// from run's result.
+    #[serde(default)]
+    include_transient: bool,
+    /// When false (default), only count runs for (codebase, campaign)
+    /// pairs that still have an active candidate. When true, also
+    /// include runs where the candidate has been retired.
+    #[serde(default)]
+    include_historical: bool,
+}
+
+fn current_runs_table(include_transient: bool) -> &'static str {
+    if include_transient {
+        "last_runs"
+    } else {
+        "last_effective_runs"
+    }
+}
+
+/// Append the shared WHERE-clause fragment used by `/runs/current` and
+/// `/runs/current/stats`. Returns the parameter count used.
+fn append_current_runs_filters(
+    query: &mut String,
+    params: &CurrentRunsQuery,
+    base_idx: usize,
+) -> usize {
+    let mut idx = base_idx;
+    let mut conditions: Vec<String> = Vec::new();
+    if !params.campaign.is_empty() {
+        idx += 1;
+        conditions.push(format!("suite = ANY(${}::text[])", idx));
+    }
+    if params.codebase.is_some() {
+        idx += 1;
+        conditions.push(format!("codebase = ${}", idx));
+    }
+    if !params.result_code.is_empty() {
+        idx += 1;
+        conditions.push(format!("result_code = ANY(${}::text[])", idx));
+    }
+    if !params.include_historical {
+        conditions.push(
+            "EXISTS (SELECT FROM candidate \
+             WHERE run.codebase = candidate.codebase \
+             AND run.suite = candidate.suite \
+             AND (run.change_set = candidate.change_set OR candidate.change_set IS NULL))"
+                .to_string(),
+        );
+    }
+    if !conditions.is_empty() {
+        query.push_str(" WHERE ");
+        query.push_str(&conditions.join(" AND "));
+    }
+    idx
+}
+
+fn bind_current_runs_filters<'q>(
+    mut q: sqlx::query::QueryAs<'q, sqlx::Postgres, RunSummary, sqlx::postgres::PgArguments>,
+    params: &'q CurrentRunsQuery,
+) -> sqlx::query::QueryAs<'q, sqlx::Postgres, RunSummary, sqlx::postgres::PgArguments> {
+    if !params.campaign.is_empty() {
+        q = q.bind(&params.campaign);
+    }
+    if let Some(cb) = params.codebase.as_ref() {
+        q = q.bind(cb);
+    }
+    if !params.result_code.is_empty() {
+        q = q.bind(&params.result_code);
+    }
+    q
+}
+
+/// `GET /runs/current` -- the current (most recent) run per
+/// (codebase, campaign), representing the system's current state.
+#[utoipa::path(
+    get,
+    path = "/runs/current",
+    params(CurrentRunsQuery),
+    responses(
+        (status = 200, description = "Current runs per (codebase, campaign)", body = RunListResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
+async fn list_current_runs(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<CurrentRunsQuery>,
+) -> Response {
+    let table = current_runs_table(params.include_transient);
+    let mut query = format!(
+        "SELECT id, codebase, suite::text AS campaign, result_code, \
+                (start_time AT TIME ZONE 'UTC') AS start_time, \
+                (finish_time AT TIME ZONE 'UTC') AS finish_time, \
+                EXTRACT(epoch FROM (finish_time - start_time))::bigint AS duration_seconds, \
+                description, \
+                worker AS worker_name, worker_link, \
+                failure_transient, revision, main_branch_revision \
+         FROM {} AS run",
+        table,
+    );
+    append_current_runs_filters(&mut query, &params, 0);
+    query.push_str(" ORDER BY finish_time DESC");
+
+    let q = sqlx::query_as::<_, RunSummary>(sqlx::AssertSqlSafe(&*query));
+    let q = bind_current_runs_filters(q, &params);
+
+    match q.fetch_all(state.database.pool()).await {
+        Ok(runs) => Json(RunListResponse { runs }).into_response(),
+        Err(e) => {
+            log::error!("Failed to list current runs: {}", e);
+            db_error()
+        }
+    }
+}
+
+/// How to group `/runs/current/stats` results.
+#[derive(serde::Deserialize, Clone, Copy, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+enum RunStatsGroup {
+    /// Group by `result_code`.
+    ResultCode,
+    /// Group by `failure_stage`.
+    FailureStage,
+}
+
+impl RunStatsGroup {
+    fn column(self) -> &'static str {
+        match self {
+            RunStatsGroup::ResultCode => "result_code",
+            RunStatsGroup::FailureStage => "failure_stage",
+        }
+    }
+}
+
+/// Query parameters for `GET /runs/current/stats`.
+#[derive(serde::Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct CurrentRunsStatsQuery {
+    /// Column to group runs by.
+    group_by: RunStatsGroup,
+    /// Restrict to runs for any of these campaigns.
+    #[serde(default)]
+    campaign: Vec<Campaign>,
+    /// Restrict to runs with any of these result codes.
+    #[serde(default)]
+    result_code: Vec<String>,
+    /// When true, group over `last_runs` (which counts transient
+    /// `nothing-new-to-do` attempts as themselves). Default folds them
+    /// into the resumed-from run via `last_effective_runs`.
+    #[serde(default)]
+    include_transient: bool,
+    /// When false (default), only count runs whose candidate still
+    /// exists.
+    #[serde(default)]
+    include_historical: bool,
+    /// When grouping by result code, also emit a `never-processed`
+    /// row counting candidates that have no run yet. Only meaningful
+    /// when `group_by=result_code`.
+    #[serde(default)]
+    include_never_processed: bool,
+}
+
+/// `GET /runs/current/stats` -- aggregate counts of current runs
+/// grouped by result code or failure stage.
+#[utoipa::path(
+    get,
+    path = "/runs/current/stats",
+    params(CurrentRunsStatsQuery),
+    responses(
+        (status = 200, description = "Run count buckets", body = RunStatsResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
+async fn list_current_run_stats(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<CurrentRunsStatsQuery>,
+) -> Response {
+    let table = current_runs_table(params.include_transient);
+    let column = params.group_by.column();
+    // Transient runs fold `nothing-new-to-do` back into `success` for
+    // `result_code` grouping, matching the cupboard behaviour.
+    let label_expr = match (params.group_by, params.include_transient) {
+        (RunStatsGroup::ResultCode, true) => {
+            "CASE WHEN result_code = 'nothing-new-to-do' THEN 'success' ELSE result_code END"
+                .to_string()
+        }
+        _ => column.to_string(),
+    };
+    let base_params = CurrentRunsQuery {
+        campaign: params.campaign.clone(),
+        codebase: None,
+        result_code: params.result_code.clone(),
+        include_transient: params.include_transient,
+        include_historical: params.include_historical,
+    };
+    let mut query = format!(
+        "SELECT {label} AS label, COUNT({column}) AS count \
+         FROM {table} AS run",
+        label = label_expr,
+        column = column,
+        table = table,
+    );
+    let idx = append_current_runs_filters(&mut query, &base_params, 0);
+    query.push_str(" GROUP BY label");
+
+    if matches!(params.group_by, RunStatsGroup::ResultCode) && params.include_never_processed {
+        let next = idx + 1;
+        query = format!(
+            "({main}) UNION ALL \
+             SELECT 'never-processed' AS label, COUNT(*) AS count \
+             FROM candidate c \
+             WHERE NOT EXISTS ( \
+                 SELECT FROM run WHERE run.codebase = c.codebase AND c.suite = suite \
+             ){campaign_filter} \
+             ORDER BY count DESC",
+            main = query,
+            campaign_filter = if base_params.campaign.is_empty() {
+                String::new()
+            } else {
+                format!(" AND c.suite = ANY(${}::text[])", next)
+            },
+        );
+    } else {
+        query.push_str(" ORDER BY count DESC");
+    }
+
+    let mut q = sqlx::query_as::<_, RunStatsBucket>(sqlx::AssertSqlSafe(&*query));
+    if !base_params.campaign.is_empty() {
+        q = q.bind(&base_params.campaign);
+    }
+    if !base_params.result_code.is_empty() {
+        q = q.bind(&base_params.result_code);
+    }
+    // never-processed branch binds campaign again as a separate param.
+    if matches!(params.group_by, RunStatsGroup::ResultCode)
+        && params.include_never_processed
+        && !base_params.campaign.is_empty()
+    {
+        q = q.bind(&base_params.campaign);
+    }
+
+    match q.fetch_all(state.database.pool()).await {
+        Ok(buckets) => Json(RunStatsResponse { buckets }).into_response(),
+        Err(e) => {
+            log::error!("Failed to compute run stats: {}", e);
+            db_error()
+        }
     }
 }
 
@@ -4364,7 +4677,8 @@ const WORKER_AUTH: &str = "worker_auth";
     CodebaseName,
     Campaign,
     LogFilename,
-    ArtifactName
+    ArtifactName,
+    RunStatsGroup
 )))]
 struct RunnerApi;
 
@@ -4504,6 +4818,9 @@ fn private_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(get_candidate))
         .routes(routes!(delete_candidate))
         .routes(routes!(list_runs))
+        .routes(routes!(list_current_runs))
+        .routes(routes!(list_current_run_stats))
+        .routes(routes!(list_unprocessed_candidates))
         .routes(routes!(get_run, update_run))
         .routes(routes!(get_run_followups))
         .routes(routes!(get_last_unabsorbed_run))
