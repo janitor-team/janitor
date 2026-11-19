@@ -352,6 +352,78 @@ async fn get_artifact_file(
     (StatusCode::OK, headers, body).into_response()
 }
 
+/// Terminate the worker gracefully
+#[utoipa::path(
+    post,
+    path = "/terminate",
+    responses((status = 200, description = "Worker is exiting"))
+)]
+async fn terminate() -> Response {
+    log::info!("Received terminate request via HTTP backchannel");
+    // For now, terminate is the same as kill - could be enhanced to flush logs, etc.
+    std::process::exit(0);
+}
+
+/// Get detailed status information from the worker
+#[utoipa::path(
+    get,
+    path = "/status",
+    responses(
+        (status = 200, description = "Worker status", body = crate::api_types::WorkerStatusInfo),
+        (status = 500, description = "Worker state lock poisoned", body = String, content_type = "text/plain"),
+    )
+)]
+async fn status(State(state): State<Arc<RwLock<AppState>>>) -> Response {
+    let state = match state.read() {
+        Ok(state) => state,
+        Err(_) => {
+            log::error!("Worker state lock poisoned in status endpoint");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error").into_response();
+        }
+    };
+
+    let current_run_id = state
+        .assignment
+        .as_ref()
+        .map(|a| a.id.clone());
+
+    let alive = true; // Worker is responding if we're here
+    let status_str = if state.assignment.is_some() {
+        "processing"
+    } else {
+        "idle"
+    };
+
+    // Process uptime in seconds since this worker started. The
+    // previous implementation reported wall-clock seconds since
+    // the Unix epoch (~1.7 B), which downstream consumers
+    // (cupboard /workers, runner watchdog telemetry) couldn't
+    // distinguish from a uniformly-aged worker.
+    let uptime_seconds = state.started_at.elapsed().as_secs();
+
+    let metadata = state.metadata.as_ref().and_then(|m| {
+        serde_json::to_value(m).ok().and_then(|v| {
+            if let serde_json::Value::Object(map) = v {
+                Some(map.into_iter().collect())
+            } else {
+                None
+            }
+        })
+    });
+
+    let current_stage = state.current_stage.clone();
+
+    let status_info = crate::api_types::WorkerStatusInfo {
+        alive,
+        current_run_id: current_run_id.map(|id| id.to_string()),
+        status: status_str.to_string(),
+        uptime_seconds,
+        metadata,
+        current_stage,
+    };
+
+    Json(status_info).into_response()
+}
 #[derive(utoipa::OpenApi)]
 struct WorkerApi;
 
@@ -366,6 +438,8 @@ fn routes() -> OpenApiRouter<Arc<RwLock<AppState>>> {
         .routes(routes!(get_log_id))
         .routes(routes!(get_artifacts))
         .routes(routes!(get_artifact_file))
+        .routes(routes!(terminate))
+        .routes(routes!(status))
 }
 
 /// OpenAPI document for the worker's API.
@@ -383,7 +457,19 @@ pub fn app(state: Arc<RwLock<AppState>>) -> Router {
             "/openapi.json",
             get(move || async move { ([("content-type", "application/json")], spec) }),
         )
-        .with_state(state.clone().clone())
+        .with_state(state.clone())
+        .merge(ready_route(state))
+}
+
+/// `/ready`, as every other janitor service serves it. Kept out of the
+/// OpenAPI document: infrastructure, not part of the worker's API.
+fn ready_route(state: Arc<RwLock<AppState>>) -> Router {
+    Router::new()
+        .route(
+            "/ready",
+            get(janitor::shared_web::health::readiness_handler::<crate::WorkerAppState>),
+        )
+        .with_state(crate::WorkerAppState(state))
 }
 
 #[cfg(test)]
@@ -1033,5 +1119,76 @@ mod tests {
 
         let body = get_body(response).await;
         assert_eq!(body, "test");
+    }
+
+    #[tokio::test]
+    async fn test_status_idle() {
+        let state = Arc::new(RwLock::new(AppState::default()));
+        let app = app(state.clone());
+        let request = Request::builder()
+            .uri("/status")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+
+        let body = get_body(response).await;
+        let status: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(status["alive"], true);
+        assert_eq!(status["current_run_id"], serde_json::Value::Null);
+        assert_eq!(status["status"], "idle");
+    }
+
+    #[tokio::test]
+    async fn test_status_processing() {
+        let state = Arc::new(RwLock::new(AppState::default()));
+        
+        // Set up an assignment to simulate processing state
+        if let Ok(mut state) = state.write() {
+            state.assignment = Some(Assignment {
+                id: janitor_types::RunId::new("test-run").unwrap(),
+                queue_id: 1,
+                campaign: janitor_types::Campaign::new("test-campaign").unwrap(),
+                codebase: janitor_types::CodebaseName::new("test-codebase").unwrap(),
+                force_build: false,
+                branch: janitor::api::worker::Branch {
+                    cached_url: None,
+                    vcs_type: janitor::vcs::VcsType::Git,
+                    url: Some("https://example.com/vcs".parse().unwrap()),
+                    subpath: std::path::PathBuf::from(""),
+                    additional_colocated_branches: Some(vec![]),
+                    default_empty: false,
+                },
+                resume: None,
+                target_repository: janitor::api::worker::TargetRepository {
+                    url: "https://example.com/".parse().unwrap(),
+                },
+                skip_setup_validation: false,
+                codemod: janitor::api::worker::Codemod {
+                    command: "echo".to_string(),
+                    environment: std::collections::HashMap::new(),
+                },
+                env: std::collections::HashMap::new(),
+                build: janitor::api::worker::Build {
+                    config: serde_json::Value::Null,
+                    environment: None,
+                    target: "test".to_string(),
+                },
+            });
+        }
+
+        let app = app(state.clone());
+        let request = Request::builder()
+            .uri("/status")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+
+        let body = get_body(response).await;
+        let status: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(status["alive"], true);
+        assert_eq!(status["current_run_id"], "test-run");
+        assert_eq!(status["status"], "processing");
     }
 }

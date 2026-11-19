@@ -19,6 +19,7 @@ use url::Url;
 
 pub const DEFAULT_USER_AGENT: &str = concat!("janitor/worker (", env!("CARGO_PKG_VERSION"), ")");
 
+pub mod api_types;
 pub mod client;
 
 #[cfg(feature = "debian")]
@@ -32,11 +33,102 @@ pub mod web;
 
 mod tee;
 
-#[derive(Clone, Default)]
+use janitor::shared_web::{BaseAppState, health::{BasicHealthChecker, HealthCheckHandler}};
+use std::sync::Arc;
+
+#[derive(Clone)]
 pub struct AppState {
     pub output_directory: Option<std::path::PathBuf>,
     pub assignment: Option<janitor::api::worker::Assignment>,
     pub metadata: Option<Metadata>,
+    pub health_checker: Option<Arc<BasicHealthChecker>>,
+    /// Wall-clock time when the worker process started. Used to
+    /// compute `uptime_seconds` in /status — the previous code
+    /// reported `SystemTime::now().duration_since(UNIX_EPOCH)`,
+    /// which is roughly 1.7 billion seconds and obviously wrong.
+    pub started_at: std::time::Instant,
+    /// Current stage in the run lifecycle, written by
+    /// [`run_worker`] at each transition (`"setup"` → `"codemod"`
+    /// → `"build"` → `"push"` → `"finish"`) and exposed via
+    /// `WorkerStatusInfo::current_stage`. The active-run page
+    /// reads this through the runner's backchannel-status proxy
+    /// to pick which log file to auto-open. `None` between runs.
+    pub current_stage: Option<String>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            output_directory: None,
+            assignment: None,
+            metadata: None,
+            health_checker: None,
+            started_at: std::time::Instant::now(),
+            current_stage: None,
+        }
+    }
+}
+
+impl AppState {
+    /// Create a new AppState with health checker
+    pub fn with_health_checker(mut self) -> Self {
+        self.health_checker = Some(Arc::new(
+            BasicHealthChecker::with_info(
+                "worker".to_string(),
+                env!("CARGO_PKG_VERSION").to_string(),
+            )
+        ));
+        self
+    }
+}
+
+impl BaseAppState for AppState {
+    fn service_name(&self) -> &str {
+        "worker"
+    }
+    
+    fn service_version(&self) -> &str {
+        env!("CARGO_PKG_VERSION")
+    }
+    
+    fn health_checker(&self) -> Arc<dyn HealthCheckHandler> {
+        self.health_checker
+            .as_ref()
+            .map(|hc| hc.clone() as Arc<dyn HealthCheckHandler>)
+            .unwrap_or_else(|| {
+                Arc::new(BasicHealthChecker::with_info(
+                    "worker".to_string(),
+                    env!("CARGO_PKG_VERSION").to_string(),
+                ))
+            })
+    }
+}
+
+// Wrapper type to work around orphan rules
+#[derive(Clone)]
+pub struct WorkerAppState(pub Arc<std::sync::RwLock<AppState>>);
+
+impl BaseAppState for WorkerAppState {
+    fn service_name(&self) -> &str {
+        "worker"
+    }
+    
+    fn service_version(&self) -> &str {
+        env!("CARGO_PKG_VERSION")
+    }
+    
+    fn health_checker(&self) -> Arc<dyn HealthCheckHandler> {
+        match self.0.read() {
+            Ok(state) => state.health_checker(),
+            Err(_) => {
+                // If lock is poisoned, return a basic health checker
+                Arc::new(BasicHealthChecker::with_info(
+                    "worker".to_string(),
+                    env!("CARGO_PKG_VERSION").to_string(),
+                ))
+            }
+        }
+    }
 }
 
 pub fn is_gce_instance() -> std::io::Result<bool> {
@@ -193,7 +285,27 @@ pub fn run_worker(
     additional_colocated_branches: Option<HashMap<String, String>>,
     skip_setup_validation: Option<bool>,
     default_empty: Option<bool>,
+    // Optional handle on the worker's shared AppState so this
+    // function can update `current_stage` at each transition
+    // ("setup" → "codemod" → "build" → "push" → "finish"). The
+    // stage is exposed via /status and the active-run page reads
+    // it to decide which log to auto-open. None for in-process
+    // callers / tests that don't run a backchannel.
+    app_state: Option<std::sync::Arc<std::sync::RwLock<AppState>>>,
 ) -> Result<(), WorkerFailure> {
+    // Helper closure: update `current_stage` if we have a handle
+    // on AppState. Failures (poisoned lock) are logged and
+    // swallowed — stage tracking is observability, not
+    // correctness, so a failed update mustn't abort the run.
+    let set_stage = |stage: &str| {
+        if let Some(ref s) = app_state {
+            match s.write() {
+                Ok(mut guard) => guard.current_stage = Some(stage.to_string()),
+                Err(_) => log::warn!("AppState lock poisoned; can't record stage {}", stage),
+            }
+        }
+    };
+    set_stage("setup");
     let force_build = force_build.unwrap_or(false);
     let tee = tee.unwrap_or(false);
     let skip_setup_validation = skip_setup_validation.unwrap_or(false);
@@ -626,6 +738,7 @@ pub fn run_worker(
     };
 
     log::info!("Workspace ready - starting.");
+    set_stage("codemod");
 
     let has_changes = ws.local_tree().has_changes().map_err(|e| {
         WorkerFailure::new(
@@ -814,6 +927,7 @@ pub fn run_worker(
     };
 
     let target_details = if should_build {
+        set_stage("build");
         build_target.build(ws.local_tree(), subpath, output_directory, build_config)?
     } else {
         serde_json::Value::Null
@@ -939,7 +1053,12 @@ pub async fn process_single_item(
         .get_assignment(my_url, node_name, jenkins_build_url, codebase, campaign)
         .await?;
 
-    state.write().unwrap().assignment = Some(assignment.clone());
+    state
+        .write()
+        .map_err(|_| {
+            SingleItemError::WorkerPanicked("Failed to acquire write lock on state".to_string())
+        })?
+        .assignment = Some(assignment.clone());
 
     log::debug!("Got back assignment: {:?}", &assignment);
 
@@ -987,8 +1106,20 @@ pub async fn process_single_item(
     };
 
     let assignment_ = assignment.clone();
+    let state_clone = state.clone();
 
     let output_directory_ = output_directory.path().to_path_buf();
+
+    // Publish the per-run output directory to AppState so the
+    // worker's `/logs` and `/logs/{filename}` endpoints can serve
+    // the live worker.log / codemod.log / build.log being written
+    // by this run. Without this, /logs reports "Log directory not
+    // created yet" the entire time a run is in flight, and the
+    // runner's `GET /log/{run_id}/{filename}` proxy returns 404 to
+    // anyone trying to tail logs from /cupboard/active-runs.
+    if let Ok(mut s) = state.write() {
+        s.output_directory = Some(output_directory_.clone());
+    }
 
     let metadata = match tokio::task::spawn_blocking(move || {
         let mut metadata = Metadata {
@@ -999,7 +1130,19 @@ pub async fn process_single_item(
             ..Metadata::default()
         };
 
-        // TODO: Update metadata in appstate while working
+        // Update metadata in appstate while working for real-time monitoring
+        {
+            let mut app_state = match state_clone.write() {
+                Ok(state) => state,
+                Err(_) => {
+                    log::error!("Failed to acquire write lock on state for metadata update");
+                    return Err(SingleItemError::WorkerPanicked(
+                        "Failed to acquire write lock on state".to_string(),
+                    ));
+                }
+            };
+            app_state.metadata = Some(metadata.clone());
+        }
 
         let result = run_worker(
             &assignment_.codebase,
@@ -1037,6 +1180,11 @@ pub async fn process_single_item(
             }),
             Some(assignment_.skip_setup_validation),
             Some(assignment_.branch.default_empty),
+            // Hand the AppState down so `run_worker` can record
+            // its current stage; the active-run page polls this
+            // through the runner's `/active-runs/{id}` proxy and
+            // uses it to decide which log file to auto-open.
+            Some(state_clone.clone()),
         );
 
         match result {
@@ -1066,11 +1214,21 @@ pub async fn process_single_item(
         metadata.finish_time = Some(finish_time);
         log::info!("Elapsed time: {}", finish_time - start_time);
 
-        metadata
+        // Update final metadata in appstate
+        {
+            if let Ok(mut app_state) = state_clone.write() {
+                app_state.metadata = Some(metadata.clone());
+            } else {
+                log::error!("Failed to acquire write lock on state for final metadata update");
+                // Don't fail the operation just because we couldn't update the state
+            }
+        }
+
+        Ok::<_, SingleItemError>(metadata)
     })
     .await
     {
-        Ok(metadata) => metadata,
+        Ok(result) => result?,
         Err(e) => {
             // The build task panicked. Report the run as a worker failure;
             // returning an error here instead skips the upload, and the
@@ -1097,6 +1255,20 @@ pub async fn process_single_item(
     log::info!("Results uploaded");
 
     log::debug!("Result: {:?}", result);
+
+    // Clear the run assignment + output_directory now that results
+    // are uploaded. Without this, /status keeps reporting
+    // `processing` with the *previous* run's id between iterations
+    // of the worker loop — feeding the runner's watchdog stale data
+    // and producing the "advanced from … to …" / "different-run"
+    // race we saw in production — and /logs/{filename} keeps
+    // pointing at the just-removed tempdir. The metadata is left
+    // intact so post-run debugging pages can still show what just
+    // finished.
+    if let Ok(mut s) = state.write() {
+        s.assignment = None;
+        s.output_directory = None;
+    }
 
     if let Some(prometheus) = prometheus {
         if let Err(e) = push_to_gateway(
@@ -1324,6 +1496,7 @@ check:
             None,
             None,
             None,
+            None, // app_state — tests don't share AppState
         )
         .unwrap();
         let found_logfiles = std::fs::read_dir(&output_dir)
@@ -1462,6 +1635,7 @@ check:
             None,
             None,
             &mut None,
+            None,
             None,
             None,
             None,
