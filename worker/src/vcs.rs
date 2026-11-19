@@ -208,7 +208,15 @@ fn import_branches_git(
     update_current: bool,
     possible_transports: &mut Option<Vec<Transport>>,
 ) -> Result<(), BrzError> {
-    let transport = breezyshim::transport::get_transport(repo_url, possible_transports.as_mut())?;
+    let transport = breezyshim::transport::get_transport(repo_url, possible_transports.as_mut())
+        .map_err(|e| {
+            log::error!(
+                "Failed to get transport for repo URL '{}': {}",
+                sanitise_for_log(repo_url),
+                e
+            );
+            e
+        })?;
     let vcs_result_controldir = match breezyshim::controldir::open_from_transport(&transport, None)
     {
         Err(BrzError::NotBranchError(..)) => {
@@ -227,7 +235,7 @@ fn import_branches_git(
             // locally.
             let format = breezyshim::controldir::FORMAT_REGISTRY
                 .make_controldir("git-bare")
-                .unwrap();
+                .expect("git-bare format is always registered");
             format.initialize_on_transport(&transport)?
         }
         Ok(cd) => cd,

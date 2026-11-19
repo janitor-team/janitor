@@ -31,7 +31,17 @@ pub fn generic_make_changes(
 
     let codemod_log_path = log_directory.join("codemod.log");
 
-    let f = File::create(codemod_log_path).unwrap();
+    let f = match File::create(&codemod_log_path) {
+        Ok(f) => f,
+        Err(e) => {
+            return Err(WorkerFailure::io_error(
+                "Failed to create codemod log file",
+                codemod_log_path.display(),
+                e,
+                ["codemod"],
+            ));
+        }
+    };
 
     let committer = env.get("COMMITTER").map(|s| s.to_string());
 
@@ -165,7 +175,14 @@ fn build(
                 ["build"],
             )
         })?;
-    session.chdir(project.internal_path()).unwrap();
+    if let Err(e) = session.chdir(project.internal_path()) {
+        return Err(WorkerFailure::io_error(
+            "Failed to change directory",
+            project.internal_path().display(),
+            e,
+            ["setup"],
+        ));
+    };
     let installer = ognibuild::installer::auto_installer(session.as_ref(), scope, dep_server_url);
     let fixers = [Box::new(ognibuild::fixers::InstallFixer::new(
         installer.as_ref(),
