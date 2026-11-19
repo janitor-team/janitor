@@ -4281,13 +4281,16 @@ fn scan_forge(
         let (forge, mp, status) = match item {
             Ok(t) => t,
             Err(e) => {
-                iter_errors += 1;
-                if iter_errors <= 5 {
-                    log::warn!("iter_all_mps yielded error (continuing): {}", e);
-                } else if iter_errors == 6 {
-                    log::warn!("iter_all_mps: further errors suppressed; will summarise at end");
-                }
-                continue;
+                // The forge's listing failed, outright or part-way, so
+                // this pass has an incomplete view of it: fail the pass.
+                log::error!(
+                    "Listing merge proposals on forge {} failed, abandoning this scan: {}",
+                    forge_name,
+                    e
+                );
+                limits.give_up.store(true, Ordering::SeqCst);
+                scan.gave_up = true;
+                break;
             }
         };
         *scan.status_count.entry(status.into()).or_insert(0) += 1;
