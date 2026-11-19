@@ -3283,6 +3283,7 @@ dependencies = [
  "janitor",
  "janitor-service",
  "janitor-types",
+ "metrics",
  "num_cpus",
  "opentelemetry",
  "opentelemetry-otlp",

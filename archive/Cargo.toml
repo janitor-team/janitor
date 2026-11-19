@@ -26,6 +26,7 @@ sqlx = { workspace = true, features = ["postgres", "chrono", "uuid", "migrate", 
 janitor = { path = ".." }
 janitor-types = { workspace = true, features = ["sqlx", "utoipa"] }
 janitor-service = { workspace = true }
+metrics = { workspace = true }
 # Reading .deb file trees in-process (for Contents-<arch>): outer
 # ar archive, inner data.tar.{,gz,bz2,xz,zst}.
 ar = "0.9"
@@ -52,5 +53,6 @@ opentelemetry-otlp = { version = "0.33", default-features = false, features = ["
 
 [dev-dependencies]
 janitor = { path = "..", features = ["testing"] }
+janitor-service = { workspace = true, features = ["testing"] }
 serial_test = "3"
 tempfile = "3"
