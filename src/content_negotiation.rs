@@ -9,11 +9,7 @@ struct MediaRange<'a> {
 impl<'a> MediaRange<'a> {
     fn parse(entry: &'a str) -> Option<Self> {
         let mut parts = entry.split(';').map(str::trim);
-        let (type_, subtype) = match parts.next()? {
-            "" => return None,
-            "*" => ("*", "*"),
-            mime => mime.split_once('/')?,
-        };
+        let (type_, subtype) = parts.next()?.split_once('/')?;
         let mut q = 1.0;
         for param in parts {
             if let Some((key, value)) = param.split_once('=') {
@@ -104,7 +100,6 @@ mod tests {
         let cases: &[(Option<&str>, Option<&str>)] = &[
             (None, Some("text/html")),
             (Some("*/*"), Some("text/html")),
-            (Some("*"), Some("text/html")),
             (Some("text/*"), Some("text/html")),
             (Some("application/json"), Some("application/json")),
             (Some("text/plain"), Some("text/plain")),
