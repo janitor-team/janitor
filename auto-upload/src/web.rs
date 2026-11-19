@@ -1,13 +1,56 @@
 //! Minimal web server for the auto-upload service.
 //!
-//! An axum server with a single `/metrics` route.
+//! An axum server exposing `/metrics` plus the `/health` and `/ready`
+//! endpoints every other janitor service serves, so monitoring does not
+//! have to special-case this one.
+
+use std::sync::Arc;
 
 use axum::{response::Response, routing::get, Router};
+use janitor::shared_web::{self, BaseAppState, BasicHealthChecker, HealthCheckHandler};
 use tracing::info;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use crate::error::Result;
+
+/// State behind the health endpoints.
+#[derive(Clone)]
+pub struct AppState {
+    health_checker: Arc<BasicHealthChecker>,
+}
+
+impl AppState {
+    /// Build state with a health checker naming this service.
+    pub fn new() -> Self {
+        Self {
+            health_checker: Arc::new(BasicHealthChecker::with_info(
+                "auto-upload".to_string(),
+                env!("CARGO_PKG_VERSION").to_string(),
+            )),
+        }
+    }
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BaseAppState for AppState {
+    fn service_name(&self) -> &str {
+        "auto-upload"
+    }
+
+    fn service_version(&self) -> &str {
+        env!("CARGO_PKG_VERSION")
+    }
+
+    fn health_checker(&self) -> Arc<dyn HealthCheckHandler> {
+        self.health_checker.clone()
+    }
+}
 
 #[derive(utoipa::OpenApi)]
 struct AutoUploadApi;
@@ -28,10 +71,26 @@ pub fn create_app() -> Router {
     let spec = openapi
         .to_json()
         .expect("OpenAPI document can be serialized");
-    router.route(
-        "/openapi.json",
-        get(move || async move { ([("content-type", "application/json")], spec) }),
-    )
+    router
+        .route(
+            "/openapi.json",
+            get(move || async move { ([("content-type", "application/json")], spec) }),
+        )
+        .merge(health_routes())
+}
+
+/// `/health` and `/ready`, served by every janitor service.
+fn health_routes() -> Router {
+    Router::new()
+        .route(
+            "/health",
+            get(shared_web::health::health_check_handler::<AppState>),
+        )
+        .route(
+            "/ready",
+            get(shared_web::health::readiness_handler::<AppState>),
+        )
+        .with_state(AppState::new())
 }
 
 #[utoipa::path(
