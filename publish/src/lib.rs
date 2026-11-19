@@ -437,8 +437,8 @@ pub struct PublishOneRequest {
     pub differ_url: url::Url,
     /// The name of the derived branch.
     pub derived_branch_name: String,
-    /// Optional map of tags to revision IDs.
-    pub tags: Option<HashMap<String, RevisionId>>,
+    /// Optional map of tags to revision IDs; no revision for a removed tag.
+    pub tags: Option<HashMap<String, Option<RevisionId>>>,
     /// Whether to allow creating a new proposal.
     pub allow_create_proposal: bool,
     /// The URL of the source branch.
@@ -862,7 +862,7 @@ impl PublishWorker {
         require_binary_diff: bool,
         allow_create_proposal: bool,
         reviewers: Option<Vec<&str>>,
-        tags: Option<Vec<(String, RevisionId)>>,
+        tags: Option<Vec<(String, Option<RevisionId>)>>,
         commit_message_template: Option<&str>,
         title_template: Option<&str>,
         codemod_result: &serde_json::Value,
@@ -2689,7 +2689,7 @@ pub async fn publish_from_policy(
         }
     };
 
-    let tags: Option<Vec<(String, RevisionId)>> = run.result_tags.as_ref().map(|t| {
+    let tags: Option<Vec<(String, Option<RevisionId>)>> = run.result_tags.as_ref().map(|t| {
         t.iter()
             .map(|tag| (tag.actual_name.clone(), tag.revision.clone()))
             .collect()
@@ -2959,7 +2959,7 @@ pub async fn publish_and_store(
         .ok_or_else(|| format!("no VcsManager registered for vcs_type {:?}", run.vcs_type))?
         .as_ref();
 
-    let tags: Option<Vec<(String, RevisionId)>> = run.result_tags.as_ref().map(|t| {
+    let tags: Option<Vec<(String, Option<RevisionId>)>> = run.result_tags.as_ref().map(|t| {
         t.iter()
             .map(|tag| (tag.actual_name.clone(), tag.revision.clone()))
             .collect()
@@ -4011,7 +4011,7 @@ async fn check_existing_mp(
             }
         };
 
-        let tags_for_publish: Option<Vec<(String, RevisionId)>> =
+        let tags_for_publish: Option<Vec<(String, Option<RevisionId>)>> =
             last_run.result_tags.as_ref().map(|tags| {
                 tags.iter()
                     .map(|tag| (tag.actual_name.clone(), tag.revision.clone()))
