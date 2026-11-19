@@ -110,7 +110,7 @@ impl ProposalInfoManager {
                 merge_proposal.target_branch_url,
                 merge_proposal.codebase,
                 merge_proposal.can_be_merged,
-                (merge_proposal.last_scanned AT TIME ZONE 'UTC') AS last_scanned
+                merge_proposal.last_scanned
             FROM merge_proposal
             WHERE merge_proposal.url = $1"#,
         )
