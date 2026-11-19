@@ -4133,7 +4133,70 @@ fn finish_check_existing_mp_no_action(
     Ok(false)
 }
 
-/// Iterate over all merge proposals.
+/// The merge-proposal statuses a scan walks when none are given.
+const DEFAULT_SCAN_STATUSES: &[breezyshim::forge::MergeProposalStatus] = &[
+    breezyshim::forge::MergeProposalStatus::Open,
+    breezyshim::forge::MergeProposalStatus::Closed,
+    breezyshim::forge::MergeProposalStatus::Merged,
+];
+
+/// Iterate over the merge proposals we own on one forge.
+///
+/// # Arguments
+/// * `forge` - The forge to list proposals on
+/// * `statuses` - Optional list of statuses to filter by
+///
+/// # Returns
+/// An iterator over results containing the forge, merge proposal, and status
+pub fn iter_forge_mps(
+    forge: Forge,
+    statuses: Option<&[breezyshim::forge::MergeProposalStatus]>,
+) -> impl Iterator<
+    Item = Result<
+        (
+            Forge,
+            breezyshim::forge::MergeProposal,
+            breezyshim::forge::MergeProposalStatus,
+        ),
+        BrzError,
+    >,
+> + '_ {
+    let statuses = statuses.unwrap_or(DEFAULT_SCAN_STATUSES);
+
+    // Each item from `iter_my_proposals_lazy` is itself a `Result`. A
+    // listing that fails, outright or part-way through (breezy's
+    // iterator stops after the first exception), is yielded as an
+    // error so the caller can tell its view of the forge is incomplete.
+    // Only a forge we have no credentials for, or one breezy doesn't
+    // support, is skipped quietly.
+    statuses
+        .iter()
+        .filter_map(move |&status| -> Option<Box<dyn Iterator<Item = _>>> {
+            match forge.iter_my_proposals_lazy(Some(status), None) {
+                Ok(proposals) => {
+                    let forge = forge.clone();
+                    Some(Box::new(proposals.map(move |item| {
+                        item.map(|proposal| (forge.clone(), proposal, status))
+                    })))
+                }
+                Err(BrzError::ForgeLoginRequired) => {
+                    log::info!(
+                        "Skipping forge {}, no credentials known",
+                        forge.forge_name()
+                    );
+                    None
+                }
+                Err(BrzError::UnsupportedForge(msg)) => {
+                    log::warn!("Unsupported forge {}: {}", forge.forge_name(), msg);
+                    None
+                }
+                Err(e) => Some(Box::new(std::iter::once(Err(e)))),
+            }
+        })
+        .flatten()
+}
+
+/// Iterate over all merge proposals, one forge after another.
 ///
 /// # Arguments
 /// * `statuses` - Optional list of statuses to filter by
@@ -4152,75 +4215,7 @@ pub fn iter_all_mps(
         BrzError,
     >,
 > + '_ {
-    let statuses = statuses.unwrap_or(&[
-        breezyshim::forge::MergeProposalStatus::Open,
-        breezyshim::forge::MergeProposalStatus::Closed,
-        breezyshim::forge::MergeProposalStatus::Merged,
-    ]);
-
-    // Lazy variant: each item from `iter_my_proposals_lazy` is itself
-    // a `Result<MergeProposal, Error>`, so a per-item Python exception
-    // (the GitHub plugin checks auth on first `__next__`, GitLab can
-    // 502 mid-page, ...) is surfaced as a normal stream error instead of
-    // panicking out of the iterator. The eager `iter_my_proposals`
-    // wrapper short-circuits on the first such error and loses every
-    // proposal after it; the lazy form lets us keep going.
-    //
-    // Top-level errors (e.g. login required for the whole forge)
-    // still come back from the call itself and short-circuit the
-    // forge - we want that, since a credential failure is per-forge,
-    // not per-MP.
-    breezyshim::forge::iter_forge_instances().flat_map(move |forge| {
-        statuses
-            .iter()
-            .filter_map(
-                move |&status| match forge.iter_my_proposals_lazy(Some(status), None) {
-                    Ok(proposals) => {
-                        let forge_for_items = forge.clone();
-                        let forge_for_errors = forge.clone();
-                        Some(proposals.filter_map(move |item| match item {
-                            Ok(proposal) => Some(Ok((forge_for_items.clone(), proposal, status))),
-                            Err(e) => {
-                                log::warn!(
-                                    "Skipping a proposal on forge {} ({}): {}",
-                                    forge_for_errors.forge_name(),
-                                    status,
-                                    e
-                                );
-                                None
-                            }
-                        }))
-                    }
-                    Err(BrzError::ForgeLoginRequired) => {
-                        log::info!(
-                            "Skipping forge {}, no credentials known",
-                            forge.forge_name()
-                        );
-                        None
-                    }
-                    Err(BrzError::UnexpectedHttpStatus { .. }) => {
-                        log::warn!(
-                            "Got unexpected HTTP status, skipping forge {}",
-                            forge.forge_name()
-                        );
-                        None
-                    }
-                    Err(BrzError::UnsupportedForge(msg)) => {
-                        log::warn!("Unsupported forge {}: {}", forge.forge_name(), msg);
-                        None
-                    }
-                    Err(e) => {
-                        log::error!(
-                            "Error iterating proposals for forge {}: {}",
-                            forge.forge_name(),
-                            e
-                        );
-                        None
-                    }
-                },
-            )
-            .flatten()
-    })
+    breezyshim::forge::iter_forge_instances().flat_map(move |forge| iter_forge_mps(forge, statuses))
 }
 
 /// What one forge's scan thread found during a `check_existing` pass.
