@@ -27,7 +27,9 @@ RUN apt-get update --yes \
 
 COPY . /code
 
-RUN cargo build --release --manifest-path /code/git-store/Cargo.toml --bin janitor-git-store
+RUN --mount=type=cache,target=/root/.cargo --mount=type=cache,id=janitor-git-store-target,target=/code/target \
+    cargo build --release --manifest-path /code/git-store/Cargo.toml --bin janitor-git-store \
+ && cp /code/target/release/janitor-git-store /usr/local/bin/
 
 FROM docker.io/debian:testing-slim
 MAINTAINER Jelmer Vernooij <jelmer@jelmer.uk>
@@ -49,7 +51,7 @@ RUN apt-get update --yes \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /code/target/release/janitor-git-store /usr/local/bin/janitor-git-store
+COPY --from=build /usr/local/bin/janitor-git-store /usr/local/bin/janitor-git-store
 
 VOLUME /git
 
