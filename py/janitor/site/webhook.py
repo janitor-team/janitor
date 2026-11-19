@@ -229,7 +229,7 @@ async def get_codebases_by_change(
 ):
     query = """
 SELECT
-  name, branch_url
+  name, branch_url, vcs_last_revision
 FROM
   codebase
 WHERE
@@ -310,6 +310,12 @@ def validate_push(schema, body):
 
 
 async def parse_webhook(request, db):
+    """Yield (codebase name, branch URL, known) for each codebase a push touches.
+
+    known is True when the pushed revision equals the codebase's
+    vcs_last_revision, the branch revision Janitor last saw; such a push
+    needs no reschedule.
+    """
     if request.content_type == "application/json":
         try:
             body = await request.json()
@@ -374,16 +380,10 @@ async def parse_webhook(request, db):
 
     async with db.acquire() as conn:
         for change in changes:
+            after = change.after_revision_id()
             for row in await get_codebases_by_change(conn, change):
-                if change.after_revision_id() is not None:
-                    await conn.execute(
-                        "UPDATE codebase SET "
-                        "vcs_last_revision = $1, last_scanned = NOW() "
-                        "WHERE branch_url = $2",
-                        change.after_revision_id().decode("utf-8"),
-                        row["branch_url"],
-                    )
-                yield row
+                known = after is not None and after.decode() == row["vcs_last_revision"]
+                yield row["name"], row["branch_url"], known
 
 
 async def get_codebases(runner_url):
