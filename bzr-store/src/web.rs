@@ -504,7 +504,8 @@ fn negotiate_content_type(accept: &str) -> Option<AcceptMatch> {
     )? {
         "text/html" => Some(AcceptMatch::Html),
         "application/json" => Some(AcceptMatch::Json),
-        _ => Some(AcceptMatch::Text),
+        "text/plain" => Some(AcceptMatch::Text),
+        other => unreachable!("best_match returned unsupported type: {other}"),
     }
 }
 

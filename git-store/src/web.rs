@@ -241,7 +241,8 @@ fn negotiate_content_type(accept_header: Option<&str>) -> Option<ContentType> {
     )? {
         "text/html" => Some(ContentType::Html),
         "application/json" => Some(ContentType::Json),
-        _ => Some(ContentType::Plain),
+        "text/plain" => Some(ContentType::Plain),
+        other => unreachable!("best_match returned unsupported type: {other}"),
     }
 }
 
