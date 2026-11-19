@@ -106,6 +106,15 @@ async fn health() -> String {
 
 #[utoipa::path(
     get,
+    path = "/metrics",
+    responses((status = 200, description = "Prometheus metrics", body = String, content_type = "text/plain"))
+)]
+async fn metrics() -> Response {
+    janitor_service::metrics::metrics_handler().await
+}
+
+#[utoipa::path(
+    get,
     path = "/assignment",
     responses((status = 200, description = "The current assignment; null when there is none", body = Option<Assignment>))
 )]
@@ -359,6 +368,7 @@ fn routes() -> OpenApiRouter<Arc<RwLock<AppState>>> {
     OpenApiRouter::with_openapi(<WorkerApi as utoipa::OpenApi>::openapi())
         .routes(routes!(index))
         .routes(routes!(health))
+        .routes(routes!(metrics))
         .routes(routes!(kill))
         .routes(routes!(assignment))
         .routes(routes!(get_logs))
@@ -383,6 +393,7 @@ pub fn app(state: Arc<RwLock<AppState>>) -> Router {
             "/openapi.json",
             get(move || async move { ([("content-type", "application/json")], spec) }),
         )
+        .route("/ready", get(health))
         .with_state(state.clone().clone())
 }
 
@@ -465,6 +476,34 @@ mod tests {
 
         let body = get_body(response).await;
         assert_eq!(body, "ok");
+    }
+
+    #[tokio::test]
+    async fn test_ready() {
+        let app = app(Arc::new(RwLock::new(AppState::default())));
+        let request = Request::builder()
+            .uri("/ready")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(get_body(response).await, "ok");
+    }
+
+    #[tokio::test]
+    async fn test_metrics() {
+        janitor_service::metrics::install(&[]);
+        let app = app(Arc::new(RwLock::new(AppState::default())));
+        let request = Request::builder()
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            response.headers()[axum::http::header::CONTENT_TYPE],
+            janitor_service::metrics::CONTENT_TYPE
+        );
     }
 
     #[tokio::test]
