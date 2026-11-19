@@ -556,10 +556,10 @@ async fn handle_diffoscope_inner(
     let runs = runs.parse()?;
 
     let offered = &[
-        "text/plain",
-        "text/html",
-        "application/json",
         "text/markdown",
+        "application/json",
+        "text/html",
+        "text/plain",
     ];
     let content_type =
         negotiate(headers, offered).ok_or_else(|| Error::ContentNegotiationFailed {
@@ -853,7 +853,7 @@ async fn handle_debdiff_inner(
 ) -> Result<Response> {
     let runs = runs.parse()?;
 
-    let offered = &["text/x-diff", "text/plain", "text/markdown", "text/html"];
+    let offered = &["text/html", "text/markdown", "text/plain", "text/x-diff"];
     let content_type =
         negotiate(headers, offered).ok_or_else(|| Error::ContentNegotiationFailed {
             offered: offered.join(", "),
@@ -1336,14 +1336,13 @@ fn typed_text_response(content_type: &str, body: impl Into<String>) -> Response 
         .into_response()
 }
 
-/// Content negotiation where `offered` lists the least preferred type
-/// first, so the last entry wins ties.
+/// Content negotiation where `offered` lists the most preferred type
+/// first, so the first entry wins ties.
 fn negotiate<'a>(headers: &HeaderMap, offered: &[&'a str]) -> Option<&'a str> {
-    let preference: Vec<&'a str> = offered.iter().rev().copied().collect();
     let accept = headers
         .get(axum::http::header::ACCEPT)
         .and_then(|v| v.to_str().ok());
-    janitor::content_negotiation::best_match(&preference, accept)
+    janitor::content_negotiation::best_match(offered, accept)
 }
 
 fn os_pairs(
@@ -1588,34 +1587,34 @@ mod tests {
             HeaderValue::from_static("text/html, text/plain;q=0.5"),
         );
         assert_eq!(
-            negotiate(&headers, &["text/plain", "text/html"]),
+            negotiate(&headers, &["text/html", "text/plain"]),
             Some("text/html"),
         );
     }
 
     #[test]
-    fn negotiate_wildcard_picks_last_supported() {
+    fn negotiate_wildcard_picks_first_supported() {
         let mut headers = HeaderMap::new();
         headers.insert(axum::http::header::ACCEPT, HeaderValue::from_static("*/*"));
         assert_eq!(
-            negotiate(&headers, &["text/plain", "text/html"]),
+            negotiate(&headers, &["text/html", "text/plain"]),
             Some("text/html"),
         );
     }
 
     #[test]
     fn negotiate_diffoscope_default_is_markdown() {
-        // */* against the debdiff list gives text/markdown (last entry).
+        // */* against the diffoscope list gives text/markdown (first entry).
         let mut headers = HeaderMap::new();
         headers.insert(axum::http::header::ACCEPT, HeaderValue::from_static("*/*"));
         assert_eq!(
             negotiate(
                 &headers,
                 &[
-                    "text/plain",
-                    "text/html",
+                    "text/markdown",
                     "application/json",
-                    "text/markdown"
+                    "text/html",
+                    "text/plain",
                 ]
             ),
             Some("text/markdown"),
@@ -1629,7 +1628,7 @@ mod tests {
             axum::http::header::ACCEPT,
             HeaderValue::from_static("image/png"),
         );
-        assert_eq!(negotiate(&headers, &["text/plain", "text/html"]), None);
+        assert_eq!(negotiate(&headers, &["text/html", "text/plain"]), None);
     }
 
     #[test]
@@ -1640,7 +1639,7 @@ mod tests {
             HeaderValue::from_static("text/plain;q=0.5, text/html"),
         );
         assert_eq!(
-            negotiate(&headers, &["text/plain", "text/html"]),
+            negotiate(&headers, &["text/html", "text/plain"]),
             Some("text/html"),
         );
     }
