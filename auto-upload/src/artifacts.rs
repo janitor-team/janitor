@@ -52,9 +52,16 @@ impl ArtifactProcessor {
                 warn!(%run_id, error = %e, "artifact store timed out");
                 Err(UploadError::ArtifactRetrievalTimeout(run_id.to_string()))
             }
-            Ok(Err(e)) => {
-                warn!(%run_id, error = ?e, "artifacts missing");
+            Ok(Err(janitor::artifacts::Error::ArtifactsMissing)) => {
+                warn!(%run_id, "artifacts missing");
                 Err(UploadError::ArtifactsMissing(run_id.to_string()))
+            }
+            Ok(Err(e)) => {
+                warn!(%run_id, error = ?e, "artifact retrieval failed");
+                Err(UploadError::ArtifactRetrievalFailed {
+                    run_id: run_id.to_string(),
+                    reason: e.to_string(),
+                })
             }
         }
     }
