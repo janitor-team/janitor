@@ -30,6 +30,10 @@ pub struct GitStoreConfig {
 
     #[serde(default = "default_git_timeout")]
     pub git_timeout: u64,
+
+    /// Path a reverse proxy serves the public app under, e.g. `/janitor`.
+    #[serde(default)]
+    pub path_prefix: String,
 }
 
 impl Default for GitStoreConfig {
@@ -41,6 +45,7 @@ impl Default for GitStoreConfig {
             host: default_host(),
             templates_path: None,
             git_timeout: default_git_timeout(),
+            path_prefix: String::new(),
         }
     }
 }
@@ -79,6 +84,7 @@ impl FromEnv for GitStoreConfig {
             git_timeout: parser
                 .get_u64("GIT_TIMEOUT")?
                 .unwrap_or(default_git_timeout()),
+            path_prefix: parser.get_string("PATH_PREFIX").unwrap_or_default(),
         })
     }
 }

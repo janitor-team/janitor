@@ -337,6 +337,7 @@ async fn list_repositories(
             let mut context = tera::Context::new();
             context.insert("vcs", "git");
             context.insert("repositories", &repos);
+            context.insert("path_prefix", &state.config.git.path_prefix);
             let html = state
                 .tera
                 .render("index.html", &context)
@@ -432,7 +433,7 @@ pub fn init_templates(templates_path: Option<&std::path::Path>) -> Result<Tera> 
     <ul class="repo-list">
     {% for repo in repositories %}
         <li class="repo-item">
-            <a href="/git/{{ repo }}/">{{ repo }}</a>
+            <a href="{{ path_prefix | safe }}/git/{{ repo }}/">{{ repo }}</a>
         </li>
     {% endfor %}
     </ul>
@@ -503,6 +504,7 @@ mod tests {
         let tera = init_templates(None).unwrap();
         let mut ctx = tera::Context::new();
         ctx.insert("repositories", &vec!["a52dec", "abi-tracker"]);
+        ctx.insert("path_prefix", "");
         let html = tera.render("index.html", &ctx).unwrap();
 
         for repo in ["a52dec", "abi-tracker"] {
