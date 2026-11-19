@@ -27,7 +27,8 @@ RUN apt-get update --yes \
 
 COPY . /code
 
-RUN cargo build --release --manifest-path /code/runner/Cargo.toml --features gcp --bin janitor-runner
+RUN cargo build --verbose --release --manifest-path /code/runner/Cargo.toml
+
 
 
 # https://hub.docker.com/_/debian

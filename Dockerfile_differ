@@ -27,7 +27,8 @@ RUN apt-get update --yes \
 
 COPY . /code
 
-RUN cargo build --release --manifest-path /code/differ/Cargo.toml --bin janitor-differ
+RUN cargo build --verbose --release --manifest-path /code/differ/Cargo.toml
+
 
 # https://hub.docker.com/_/debian
 FROM docker.io/debian:sid-slim

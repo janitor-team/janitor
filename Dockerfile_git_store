@@ -27,7 +27,9 @@ RUN apt-get update --yes \
 
 COPY . /code
 
-RUN cargo build --release --manifest-path /code/git-store/Cargo.toml --bin janitor-git-store
+RUN cargo build --verbose --release --manifest-path /code/git-store/Cargo.toml
+
+
 
 # https://hub.docker.com/_/debian
 FROM docker.io/debian:sid-slim
