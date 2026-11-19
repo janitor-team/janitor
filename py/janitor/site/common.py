@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 import aiohttp_jinja2
 import asyncpg
+import mimeparse
 from aiohttp import ClientConnectorError, ClientResponseError, web
 from breezy.revision import NULL_REVISION
 from yarl import URL
@@ -458,3 +459,33 @@ def html_template(template_name, headers={}):  # noqa: B006
 async def render_template_for_request(templatename, request, vs: dict[str, Any]):
     update_vars_from_request(vs, request)
     return await aiohttp_jinja2.render_string_async(templatename, request, vs)
+
+
+async def log_response(
+    request: web.Request, log: bytes, run_id: str, filename: str, run_url: URL
+) -> web.Response:
+    """Return a run log as plain text, or as a page when the client prefers HTML."""
+    best_match = mimeparse.best_match(
+        ["text/html", "text/plain"], request.headers.get("Accept", "*/*")
+    )
+    if not best_match:
+        raise web.HTTPNotAcceptable(
+            text="Acceptable content types: text/html, text/plain"
+        )
+    if best_match == "text/html":
+        text = await render_template_for_request(
+            "log.html",
+            request,
+            {
+                "log": log.decode("utf-8", "replace"),
+                "run_id": run_id,
+                "filename": filename,
+                "run_url": run_url,
+            },
+        )
+        return web.Response(
+            text=text, content_type="text/html", headers={"Vary": "Accept"}
+        )
+    return web.Response(
+        body=log, content_type="text/plain", charset="utf-8", headers={"Vary": "Accept"}
+    )

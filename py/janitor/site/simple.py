@@ -42,11 +42,11 @@ from ..vcs import VcsManager, get_vcs_managers_from_config
 from . import (
     TEMPLATE_ENV,
     hide_private_worker_links,
-    serve_run_log,
+    read_run_log,
     template_loader,
 )
 from .api_tokens import setup_api_tokens
-from .common import html_template, render_template_for_request
+from .common import html_template, log_response, render_template_for_request
 from .openid import setup_openid
 from .pubsub import Topic, pubsub_handler
 from .setup import (
@@ -270,7 +270,13 @@ async def handle_result_file(request):
         if not re.match("^[+a-z0-9\\.]+$", filename) or len(filename) < 3:
             raise web.HTTPNotFound(text=f"No log file {filename} for run {run_id}")
 
-        return await serve_run_log(request, run_id, filename)
+        log = await read_run_log(request, run_id, filename)
+        run_url = request.app.router["generic-run"].url_for(
+            campaign=request.match_info["campaign"],
+            codebase=request.match_info["pkg"],
+            run_id=run_id,
+        )
+        return await log_response(request, log, run_id, filename, run_url)
     else:
         return await serve_artifact(request, run_id, filename)
 

@@ -144,3 +144,10 @@ ul.empty-state {
     list-style: none;
     padding-left: 0;
 }
+
+/* Full log pages */
+pre.log {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    text-indent: 2ch hanging each-line;
+}
