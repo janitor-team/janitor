@@ -23,13 +23,13 @@ pub use config::Config;
 pub use error::UploadError;
 
 /// Counter for failed package signings.
-pub const DEBSIGN_FAILED_COUNT: &str = "debsign_failed";
+pub const DEBSIGN_FAILED_COUNT: &str = "debsign_failures_total";
 
 /// Counter for failed package uploads.
-pub const UPLOAD_FAILED_COUNT: &str = "upload_failed";
+pub const UPLOAD_FAILED_COUNT: &str = "upload_failures_total";
 
 /// Counter for result messages that could not be handled.
-pub const RESULT_HANDLING_FAILED_COUNT: &str = "result_handling_failed";
+pub const RESULT_HANDLING_FAILED_COUNT: &str = "result_handling_failures_total";
 
 /// Install the metrics recorder and register the auto-upload metrics.
 pub fn install_metrics() {
@@ -96,9 +96,9 @@ mod tests {
         assert_eq!(
             capture(register_metrics),
             Snapshot::from([
-                ("debsign_failed".to_string(), Value::Counter(0)),
-                ("result_handling_failed".to_string(), Value::Counter(0)),
-                ("upload_failed".to_string(), Value::Counter(0)),
+                (DEBSIGN_FAILED_COUNT.to_string(), Value::Counter(0)),
+                (RESULT_HANDLING_FAILED_COUNT.to_string(), Value::Counter(0)),
+                (UPLOAD_FAILED_COUNT.to_string(), Value::Counter(0)),
             ])
         );
     }

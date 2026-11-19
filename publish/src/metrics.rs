@@ -10,61 +10,60 @@
 use ::metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge};
 
 /// Delay between a build finishing and its result being published.
-pub const PUBLISH_LATENCY: &str = "publish_latency";
+pub const PUBLISH_LATENCY: &str = "publish_latency_seconds";
 
 /// Number of open proposals.
-pub const OPEN_PROPOSAL_COUNT: &str = "open_proposal_count";
+pub const OPEN_PROPOSAL_COUNT: &str = "open_proposals";
 
 /// Number of proposals per bucket (labelled by `bucket`).
-pub const BUCKET_PROPOSAL_COUNT: &str = "bucket_proposal_count";
+pub const BUCKET_PROPOSAL_COUNT: &str = "bucket_proposals";
 
 /// Number of merge proposals by status (labelled by `status`).
-pub const MERGE_PROPOSAL_COUNT: &str = "merge_proposal_count";
+pub const MERGE_PROPOSAL_COUNT: &str = "merge_proposals";
 
 /// Number of new merge proposals opened.
-pub const NEW_MERGE_PROPOSAL_COUNT: &str = "new_merge_proposal_count";
+pub const NEW_MERGE_PROPOSAL_COUNT: &str = "new_merge_proposals_total";
 
 /// Last time pending changes were successfully published (unix ts).
-pub const LAST_PUBLISH_PENDING_SUCCESS: &str = "last_publish_pending_success";
+pub const LAST_PUBLISH_PENDING_SUCCESS: &str = "last_publish_pending_success_timestamp_seconds";
 
 /// Last time existing merge proposals were successfully scanned (unix ts).
-pub const LAST_SCAN_EXISTING_SUCCESS: &str = "last_scan_existing_success";
+pub const LAST_SCAN_EXISTING_SUCCESS: &str = "last_scan_existing_success_timestamp_seconds";
 
 /// Publishing skipped due to exponential backoff.
-pub const EXPONENTIAL_BACKOFF_COUNT: &str = "exponential_backoff_count";
+pub const EXPONENTIAL_BACKOFF_COUNT: &str = "exponential_backoff_total";
 
 /// Pushes blocked because the per-cycle push limit was hit.
-pub const PUSH_LIMIT_COUNT: &str = "push_limit_count";
+pub const PUSH_LIMIT_COUNT: &str = "push_limit_total";
 
 /// Runs not published due to a missing branch URL.
-pub const MISSING_BRANCH_URL_COUNT: &str = "missing_branch_url_count";
+pub const MISSING_BRANCH_URL_COUNT: &str = "missing_branch_url_total";
 
-/// Last merge proposal was rejected. Unsuffixed name for dashboard
-/// parity.
-pub const REJECTED_LAST_MP_COUNT: &str = "rejected_last_mp";
+/// Last merge proposal was rejected.
+pub const REJECTED_LAST_MP_COUNT: &str = "rejected_last_mp_total";
 
 /// Runs not published due to missing publish mode (labelled by `role`).
-pub const MISSING_PUBLISH_MODE_COUNT: &str = "missing_publish_mode_count";
+pub const MISSING_PUBLISH_MODE_COUNT: &str = "missing_publish_mode_total";
 
 /// Branches not published because auxiliary branches aren't yet
 /// published (labelled by `role`).
-pub const UNPUBLISHED_AUX_BRANCHES_COUNT: &str = "unpublished_aux_branches_count";
+pub const UNPUBLISHED_AUX_BRANCHES_COUNT: &str = "unpublished_aux_branches_total";
 
 /// Runs not published because the codemod command changed.
-pub const COMMAND_CHANGED_COUNT: &str = "command_changed_count";
+pub const COMMAND_CHANGED_COUNT: &str = "command_changed_total";
 
 /// Runs not published because there were no result branches.
-pub const NO_RESULT_BRANCHES_COUNT: &str = "no_result_branches_count";
+pub const NO_RESULT_BRANCHES_COUNT: &str = "no_result_branches_total";
 
 /// Runs not published due to missing main result branch.
-pub const MISSING_MAIN_RESULT_BRANCH_COUNT: &str = "missing_main_result_branch_count";
+pub const MISSING_MAIN_RESULT_BRANCH_COUNT: &str = "missing_main_result_branch_total";
 
 /// Runs not published because the forge is rate-limiting us
 /// (labelled by `forge`).
-pub const FORGE_RATE_LIMITED_COUNT: &str = "forge_rate_limited_count";
+pub const FORGE_RATE_LIMITED_COUNT: &str = "forge_rate_limited_total";
 
 /// Unexpected HTTP responses during checks of existing proposals.
-pub const UNEXPECTED_HTTP_RESPONSE_COUNT: &str = "unexpected_http_response_count";
+pub const UNEXPECTED_HTTP_RESPONSE_COUNT: &str = "unexpected_http_responses_total";
 
 fn describe() {
     describe_histogram!(PUBLISH_LATENCY, "Delay between build finish and publish.");
@@ -163,24 +162,24 @@ mod tests {
     use janitor_service::testing::{capture, Snapshot, Value};
 
     #[test]
-    fn unlabelled_metrics_registered_under_python_names() {
+    fn unlabelled_metrics_registered_at_zero() {
         let counter = |name: &str| (name.to_string(), Value::Counter(0));
         let gauge = |name: &str| (name.to_string(), Value::Gauge(0.0));
         assert_eq!(
             capture(register),
             Snapshot::from([
-                counter("command_changed_count"),
-                counter("exponential_backoff_count"),
-                gauge("last_publish_pending_success"),
-                gauge("last_scan_existing_success"),
-                counter("missing_branch_url_count"),
-                counter("missing_main_result_branch_count"),
-                counter("new_merge_proposal_count"),
-                counter("no_result_branches_count"),
-                gauge("open_proposal_count"),
-                counter("push_limit_count"),
-                counter("rejected_last_mp"),
-                counter("unexpected_http_response_count"),
+                counter(COMMAND_CHANGED_COUNT),
+                counter(EXPONENTIAL_BACKOFF_COUNT),
+                gauge(LAST_PUBLISH_PENDING_SUCCESS),
+                gauge(LAST_SCAN_EXISTING_SUCCESS),
+                counter(MISSING_BRANCH_URL_COUNT),
+                counter(MISSING_MAIN_RESULT_BRANCH_COUNT),
+                counter(NEW_MERGE_PROPOSAL_COUNT),
+                counter(NO_RESULT_BRANCHES_COUNT),
+                gauge(OPEN_PROPOSAL_COUNT),
+                counter(PUSH_LIMIT_COUNT),
+                counter(REJECTED_LAST_MP_COUNT),
+                counter(UNEXPECTED_HTTP_RESPONSE_COUNT),
             ])
         );
     }

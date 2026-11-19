@@ -117,7 +117,7 @@ groups:
       summary: Workers are crashing
 
   - alert: UploadsFailing
-    expr: increase(upload_failed{job="janitor.auto_upload"}[1h]) > 0
+    expr: increase(upload_failures_total{job="janitor.auto_upload"}[1h]) > 0
     labels:
       severity: warning
       project: janitor
@@ -126,7 +126,7 @@ groups:
       summary: Some uploads are failing
 
   - alert: UploadSignFailing
-    expr: increase(debsign_failed{job="janitor.auto_upload"}[1h]) > 0
+    expr: increase(debsign_failures_total{job="janitor.auto_upload"}[1h]) > 0
     labels:
       severity: warning
       project: janitor
