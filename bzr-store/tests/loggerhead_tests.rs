@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::http::Request;
+use axum::http::{Request, StatusCode};
 use axum::response::Response;
 use axum::Router;
 use breezyshim::tree::{MutableTree, WorkingTree};
@@ -140,31 +140,10 @@ fn test_loggerhead_browse_known_codebase_renders() {
             .await
             .unwrap();
 
-        // GET /bzr/foo/ should either (a) 503 if loggerhead static dir
-        // couldn't be located in this test environment, or (b) redirect
-        // to /bzr/foo/changes (loggerhead's root_redirect), or (c)
-        // 200 with HTML. Accept any of those as proof the integration
-        // is wired up.
+        // loggerhead redirects the branch root to its changes page.
         let resp = get(public, "/bzr/foo/").await;
-        let status = resp.status().as_u16();
-        assert!(
-            status == 301
-                || status == 302
-                || status == 307
-                || status == 308
-                || status == 200
-                || status == 503,
-            "unexpected status {} for /bzr/foo/",
-            status
-        );
-        if status / 100 == 3 {
-            let loc = resp.headers().get("Location").and_then(|v| v.to_str().ok());
-            assert!(
-                loc.map(|s| s.contains("/bzr/foo/")).unwrap_or(false),
-                "redirect Location should preserve /bzr/foo/ prefix, got {:?}",
-                loc
-            );
-        }
+        assert_eq!(resp.status(), StatusCode::PERMANENT_REDIRECT);
+        assert_eq!(resp.headers()["Location"], "/bzr/foo/changes");
     });
 }
 
@@ -205,14 +184,17 @@ fn test_loggerhead_changes_endpoint_reachable() {
             .await
             .unwrap();
 
-        let resp = get(public, "/bzr/foo/changes").await;
-        // Expected 200 (rendered HTML) when loggerhead's static dir
-        // is wired; 503 otherwise. Anything else is a routing bug.
-        let status = resp.status().as_u16();
-        assert!(
-            status == 200 || status == 503,
-            "unexpected status {} for /bzr/foo/changes",
-            status
-        );
+        for page in [
+            "changes",
+            "changes/1",
+            "files/1",
+            "revision/1",
+            "view/1/README",
+            "annotate/1/README",
+            "download/1/README",
+        ] {
+            let resp = get(public.clone(), &format!("/bzr/foo/{}", page)).await;
+            assert_eq!(resp.status(), StatusCode::OK, "/bzr/foo/{}", page);
+        }
     });
 }

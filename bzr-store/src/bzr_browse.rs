@@ -12,15 +12,16 @@
 //! by `smart_protocol_dispatch` and don't come through this module.
 
 use axum::body::Body;
-use axum::extract::{Path, Request, State};
+use axum::extract::{Request, State};
 use axum::http::{StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tower::ServiceExt;
 
-use crate::error::Result;
+use crate::error::{BzrError, Result};
 use crate::web::AppState;
+use crate::web_utils::MetricsPath;
 use janitor_types::CodebaseName;
 
 /// Insert-once cache of `(codebase) -> loggerhead Router`. Routers are
@@ -72,27 +73,24 @@ impl BrowseRouters {
     }
 }
 
-/// `GET /bzr/{codebase}/{*sub_path}` — dispatch to per-codebase
-/// loggerhead. The `_path` capture isn't used because we rebuild the
-/// rewritten URI from the original `req.uri().path()` minus the
-/// `/bzr/{codebase}` prefix.
-pub async fn bzr_browse_handler(
-    State(state): State<AppState>,
-    Path((codebase, _sub_path)): Path<(CodebaseName, String)>,
-    req: Request,
-) -> Result<Response> {
-    dispatch(&state, &codebase, req).await
+/// The codebase of a `/{codebase}/{rest}` path.
+fn split_codebase(path: &str) -> Result<CodebaseName> {
+    let path = path.strip_prefix('/').unwrap_or(path);
+    let name = path.split_once('/').map_or(path, |(name, _)| name);
+    CodebaseName::new(name).map_err(|e| BzrError::invalid_request(e.to_string()))
 }
 
-/// `GET /bzr/{codebase}` and `/bzr/{codebase}/` — same dispatch but
-/// with an empty sub-path. Kept as a separate handler because axum
-/// 0.8's `{*path}` wildcard requires at least one segment.
-pub async fn bzr_browse_root(
-    State(state): State<AppState>,
-    Path(codebase): Path<CodebaseName>,
-    req: Request,
-) -> Result<Response> {
-    dispatch(&state, &codebase, req).await
+/// `GET /bzr/{codebase}/...`, the fallback of the router nested at `/bzr`.
+pub async fn bzr_browse_handler(State(state): State<AppState>, req: Request) -> Response {
+    let mut response = match split_codebase(req.uri().path()) {
+        Ok(codebase) => dispatch(&state, &codebase, req).await.into_response(),
+        Err(e) => e.into_response(),
+    };
+    // A fallback has no `MatchedPath`, so label every loggerhead page the same in the metrics.
+    response
+        .extensions_mut()
+        .insert(MetricsPath("/bzr/{codebase}/*"));
+    response
 }
 
 async fn dispatch(state: &AppState, codebase: &CodebaseName, mut req: Request) -> Result<Response> {
@@ -120,9 +118,9 @@ async fn dispatch(state: &AppState, codebase: &CodebaseName, mut req: Request) -
         .browse_routers
         .get_or_build(codebase, &repo_path, &static_dir);
 
-    // Strip `/bzr/<codebase>` from the request URI so loggerhead's
+    // Strip `/<codebase>` from the request URI so loggerhead's
     // routes (mounted at `/`, `/changes`, `/atom`, etc) match.
-    let prefix = format!("/bzr/{}", codebase);
+    let prefix = format!("/{}", codebase);
     let original = req.uri();
     let rest = original.path().strip_prefix(&prefix).unwrap_or("");
     let rest = if rest.is_empty() { "/" } else { rest };
@@ -153,5 +151,39 @@ mod tests {
     fn get_returns_none_for_unknown_codebase() {
         let cache = BrowseRouters::new();
         assert!(cache.get(&CodebaseName::new("nothing").unwrap()).is_none());
+    }
+
+    #[test]
+    fn split_codebase_valid() {
+        let foo = CodebaseName::new("foo").unwrap();
+        for (path, expected) in [
+            ("/foo", foo.clone()),
+            ("/foo/", foo.clone()),
+            ("/foo/changes/1", foo.clone()),
+            ("/foo/view/1/README", foo.clone()),
+            ("/foo/main/.bzr/smart", foo.clone()),
+            ("/g++/files", CodebaseName::new("g++").unwrap()),
+        ] {
+            assert_eq!(split_codebase(path).unwrap(), expected, "{path}");
+        }
+    }
+
+    #[test]
+    fn split_codebase_invalid() {
+        for (path, name) in [
+            ("", ""),
+            ("/", ""),
+            ("//changes", ""),
+            ("/Foo", "Foo"),
+            ("/../changes", ".."),
+            ("/foo_bar/changes/1", "foo_bar"),
+            ("/%66oo/changes", "%66oo"),
+        ] {
+            assert_eq!(
+                split_codebase(path).unwrap_err().to_string(),
+                format!("Invalid request: invalid codebase name: {name:?}"),
+                "{path}"
+            );
+        }
     }
 }
