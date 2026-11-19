@@ -130,11 +130,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
 
     // Load breezy plugins so VCS URL handlers (notably
-    // breezy.plugins.debian.directory, which normalises
-    // "https://.../pkg.git -b branch" into ",branch=branch") are
-    // registered before the first open_branch_ext call. Without
-    // this, Debian Vcs-Git-style URLs intermittently hit
-    // "Connection closed early".
+    // `breezy.plugins.debian.directory` which normalises
+    // `https://...pkg.git -b branch` → `…,branch=branch`) are
+    // registered before the first `open_branch_ext` call. Without
+    // this every queued package with a Debian Vcs-Git-style URL
+    // hit-and-miss-ed "Connection closed early".
     if !breezyshim::plugin::load_plugins() {
         log::debug!("breezy plugins were already loaded");
     }
@@ -150,8 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let global_config = breezyshim::config::global_stack()
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
-    global_config
-        .set("branch.fetch_tags", true)
+    global_config.set("branch.fetch_tags", true)
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
     let base_url = args.base_url;
