@@ -144,10 +144,10 @@ WHERE failure_transient is not True
         query.push(" AND campaign = ");
         query.push_bind(campaign);
     }
-    // AVG(...) with no matching rows returns a single-row NULL, not
-    // zero rows -- so we must decode the scalar as Option<PgInterval>
-    // and flatten, otherwise fetch_optional returns Some(NULL) and
-    // decoding blows up.
+    // AVG() returns a single row with NULL if the WHERE doesn't match
+    // anything, so decode the scalar as Option<PgInterval> — otherwise
+    // fetch_optional would try to unwrap the NULL and fail with
+    // "unexpected null".
     let query = query.build_query_scalar::<Option<PgInterval>>();
     let duration: Option<PgInterval> = query.fetch_optional(conn).await?.flatten();
     Ok(duration.as_ref().map(interval_to_duration))
@@ -233,12 +233,15 @@ async fn estimate_success_probability_and_duration(
         }
     }
 
+    // run.start_time is TIMESTAMP (no TZ); cast to TIMESTAMPTZ via
+    // `AT TIME ZONE 'UTC'` so sqlx's `DateTime<Utc>` decoder accepts
+    // it (this query 500ed every POST /candidates without the cast).
     let query = sqlx::query_as::<_, Run>(
         r#"
 SELECT
   result_code, instigated_context, context, failure_details,
   finish_time - start_time AS duration,
-  start_time
+  (start_time AT TIME ZONE 'UTC') AS start_time
 FROM run
 WHERE codebase = $1 AND campaign = $2 AND failure_transient IS NOT True
 ORDER BY start_time DESC
@@ -439,8 +442,11 @@ pub async fn do_schedule_regular(
             });
         };
         (
-            candidate_value.or_else(|| candidate.0.map(|v| v as f64)),
-            success_chance.or(candidate.1),
+            // candidate.value is `integer`; the scheduler works in f64.
+            candidate_value
+                .or_else(|| candidate.0.map(|v| v as f64))
+                .unwrap_or(0.0),
+            success_chance.or(candidate.1).unwrap_or(1.0),
             command.unwrap_or(&candidate.2).to_owned(),
             if let Some(context) = context {
                 Some(context.to_string())
@@ -450,8 +456,8 @@ pub async fn do_schedule_regular(
         )
     } else {
         (
-            candidate_value,
-            success_chance,
+            candidate_value.unwrap(),
+            success_chance.unwrap(),
             command.unwrap().to_string(),
             context.map(|s| s.to_owned()),
         )
@@ -469,19 +475,25 @@ pub async fn do_schedule_regular(
     );
 
     if normalized_codebase_value.is_none() {
-        // `1.0 * value` produces NUMERIC in Postgres; cast the outer
-        // result to double precision so sqlx can decode into f64.
-        normalized_codebase_value = sqlx::query_scalar::<_, f64>(
-            "select coalesce(least(1.0 * value / (select max(value) from codebase), 1.0), 1.0)::float8 from codebase WHERE name = $1").bind(codebase).fetch_optional(conn).await?
+        // `1.0 * integer` returns numeric in postgres; cast to float8
+        // so sqlx can decode it into f64 without a type mismatch.
+        // Decode as Option<f64> so a NULL codebase.value doesn't blow
+        // up — the outer Option just stays None and calculate_offset
+        // handles it.
+        normalized_codebase_value = sqlx::query_scalar::<_, Option<f64>>(
+            "select coalesce(least(1.0 * value / (select max(value) from codebase), 1.0), 1.0)::float8 from codebase WHERE name = $1").bind(codebase).fetch_optional(conn).await.map_err(|e| {
+                log::error!("normalized_codebase_value query failed for {}: {}", codebase, e);
+                e
+            })?.flatten();
     }
 
     let offset = calculate_offset(
         estimated_duration,
         normalized_codebase_value,
         estimated_probability_of_success,
-        candidate_value,
+        Some(candidate_value),
         total_previous_runs,
-        success_chance,
+        Some(success_chance),
     );
     assert!(offset > 0.0);
     let offset = default_offset + offset;
