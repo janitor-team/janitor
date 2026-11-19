@@ -401,13 +401,8 @@ def main(argv=None):
 
     import breezy.bzr  # noqa: F401
     import breezy.git  # noqa: F401
-    from silver_platter import (
-        BranchMissing,
-        BranchUnavailable,
-    )
-    from silver_platter import (
-        _open_branch as open_branch,
-    )
+
+    from janitor.vcs import BranchOpenFailure, open_branch_ext
 
     parser = argparse.ArgumentParser(
         prog="janitor.site.webhook",
@@ -425,8 +420,8 @@ def main(argv=None):
         if not codebase["branch_url"]:
             continue
         try:
-            b = open_branch(codebase["branch_url"])
-        except (BranchUnavailable, BranchMissing):
+            b = open_branch_ext(codebase["branch_url"])
+        except BranchOpenFailure:
             continue
         try:
             present = subscribe_webhook(b, args.callback_url)
