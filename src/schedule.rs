@@ -40,6 +40,28 @@ pub struct ScheduleRequest {
     change_set: Option<ChangeSetId>,
 }
 
+impl ScheduleRequest {
+    /// Codebase this request would schedule.
+    pub fn codebase(&self) -> &CodebaseName {
+        &self.codebase
+    }
+
+    /// Campaign this request would schedule.
+    pub fn campaign(&self) -> &Campaign {
+        &self.campaign
+    }
+
+    /// Command the run would execute.
+    pub fn command(&self) -> &str {
+        &self.command
+    }
+
+    /// Candidate value used to order the queue.
+    pub fn value(&self) -> i64 {
+        self.value
+    }
+}
+
 #[derive(sqlx::FromRow)]
 struct ScheduleRequestRow {
     #[sqlx(flatten)]
