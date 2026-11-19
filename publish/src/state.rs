@@ -473,8 +473,6 @@ pub struct MergeProposalRun {
     pub campaign: Campaign,
     /// URL of the codebase branch the run targeted.
     pub branch_url: Option<String>,
-    /// Command that produced the run.
-    pub command: String,
     /// Configured value of the candidate that scheduled this run.
     pub value: Option<i32>,
     /// Role of the result branch that matched the merge proposal
@@ -503,7 +501,6 @@ SELECT
     run.id AS id,
     run.campaign,
     run.branch_url AS branch_url,
-    run.command AS command,
     run.value AS value,
     rb.role AS role,
     rb.remote_name AS remote_branch_name,
