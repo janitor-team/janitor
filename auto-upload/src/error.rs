@@ -30,6 +30,12 @@ pub enum UploadError {
     #[error("Artifacts missing for run {0}")]
     ArtifactsMissing(String),
 
+    /// The artifact download did not complete in time. Distinct from
+    /// `ArtifactsMissing`: a stalled store is transient and worth
+    /// retrying, whereas missing artifacts are permanent.
+    #[error("Timed out retrieving artifacts for run {0}")]
+    ArtifactRetrievalTimeout(String),
+
     /// No `.changes` files were found under the retrieved artifacts.
     #[error("No changes files found in artifacts")]
     NoChangesFiles,

@@ -12,6 +12,9 @@ pub struct ArtifactProcessor {
     artifact_manager: ArtifactManager,
 }
 
+/// Cap on a single artifact retrieval, matching differ's bound.
+const ARTIFACT_RETRIEVE_TIMEOUT_SECS: u64 = 300;
+
 impl ArtifactProcessor {
     /// Open the artifact store at `artifact_location`.
     pub async fn new(artifact_location: &str) -> Result<Self> {
@@ -29,16 +32,30 @@ impl ArtifactProcessor {
         info!(%run_id, "retrieving artifacts");
 
         let temp_dir = TempDir::new().map_err(UploadError::Io)?;
-        match self
+        // Bound the download: an artifact store that accepts the
+        // connection and then stalls would otherwise wedge this upload
+        // indefinitely. differ bounds the same call at 300s.
+        let retrieval = self
             .artifact_manager
-            .retrieve_artifacts(run_id, temp_dir.path(), None)
-            .await
-        {
-            Ok(_) => {
+            .retrieve_artifacts(run_id, temp_dir.path(), None);
+        let retrieval = tokio::time::timeout(
+            std::time::Duration::from_secs(ARTIFACT_RETRIEVE_TIMEOUT_SECS),
+            retrieval,
+        );
+        match retrieval.await {
+            Err(_) => {
+                warn!(%run_id, "timed out retrieving artifacts");
+                Err(UploadError::ArtifactRetrievalTimeout(run_id.to_string()))
+            }
+            Ok(Ok(_)) => {
                 debug!(%run_id, path = ?temp_dir.path(), "retrieved");
                 Ok(temp_dir)
             }
-            Err(e) => {
+            Ok(Err(janitor::artifacts::Error::Timeout(e))) => {
+                warn!(%run_id, error = %e, "artifact store timed out");
+                Err(UploadError::ArtifactRetrievalTimeout(run_id.to_string()))
+            }
+            Ok(Err(e)) => {
                 warn!(%run_id, error = ?e, "artifacts missing");
                 Err(UploadError::ArtifactsMissing(run_id.to_string()))
             }
