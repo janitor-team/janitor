@@ -116,3 +116,6 @@ reformat-html:
 
 codespell:
 	codespell
+
+build:
+	cargo build --workspace
