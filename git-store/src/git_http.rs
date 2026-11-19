@@ -856,6 +856,12 @@ pub async fn git_backend(
     // read and a failing write are handled separately.
     if let Some(mut stdin) = process.stdin.take() {
         let mut body_stream = body.into_data_stream();
+        // Only the two services, so a client cannot make one series per path.
+        let service = match subpath.as_str() {
+            "git-receive-pack" => Some("git-receive-pack"),
+            "git-upload-pack" => Some("git-upload-pack"),
+            _ => None,
+        };
         tokio::spawn(async move {
             while let Some(chunk) = body_stream.next().await {
                 match chunk {
@@ -871,6 +877,13 @@ pub async fn git_backend(
                     }
                     Err(e) => {
                         debug!("request body did not arrive in full: {}", e);
+                        if let Some(service) = service {
+                            metrics::counter!(
+                                crate::web_utils::INCOMPLETE_REQUEST_BODIES_TOTAL,
+                                "service" => service
+                            )
+                            .increment(1);
+                        }
                         break;
                     }
                 }
