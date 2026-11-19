@@ -3014,54 +3014,43 @@ async fn check_existing_mp(
     }
 
     // Forge calls: source revision, source branch URL, can_be_merged,
-    // target branch URL. Each runs on a blocking thread because
-    // breezyshim is synchronous. tokio::join! kicks all four off
-    // concurrently; the GIL still serialises the Python work, but each
-    // call releases it during the underlying network I/O.
+    // target branch URL, made one after another on a single blocking
+    // thread (breezyshim is synchronous). They must not run
+    // concurrently: each releases the GIL during network I/O, and the
+    // calls share the forge's HTTP connection, so overlapping calls
+    // corrupt the TLS state and abort the process with heap corruption.
     //
     // Log-and-continue on failure: bailing out of the whole MP would
     // mean last_scanned never gets updated and the next scan retries
     // the same broken MP forever.
-    let (revision_res, source_branch_url_res, can_be_merged_res, target_branch_url_res) = tokio::join!(
+    let (revision_res, source_branch_url_res, can_be_merged_res, target_branch_url_res) =
         tokio::task::spawn_blocking({
             let mp = mp.clone();
-            move || mp.get_source_revision()
-        }),
-        tokio::task::spawn_blocking({
-            let mp = mp.clone();
-            move || mp.get_source_branch_url()
-        }),
-        tokio::task::spawn_blocking({
-            let mp = mp.clone();
-            move || mp.can_be_merged()
-        }),
-        tokio::task::spawn_blocking({
-            let mp = mp.clone();
-            move || mp.get_target_branch_url()
-        }),
-    );
+            move || {
+                (
+                    mp.get_source_revision(),
+                    mp.get_source_branch_url(),
+                    mp.can_be_merged(),
+                    mp.get_target_branch_url(),
+                )
+            }
+        })
+        .await
+        .map_err(|_| CheckMpError::Brz("forge call task join error".to_string()))?;
 
-    let mut revision: Option<RevisionId> = revision_res
-        .map_err(|_| CheckMpError::Brz("get_source_revision task join error".to_string()))?
-        .unwrap_or_else(|e| {
-            log::debug!("Failed to get source revision for {}: {}", mp_url, e);
-            None
-        });
-    let source_branch_url = source_branch_url_res
-        .map_err(|_| CheckMpError::Brz("get_source_branch_url task join error".to_string()))?
-        .unwrap_or_else(|e| {
-            log::debug!("Failed to get source branch URL for {}: {}", mp_url, e);
-            None
-        });
-    let can_be_merged = can_be_merged_res
-        .map_err(|_| CheckMpError::Brz("can_be_merged task join error".to_string()))?
-        .ok();
-    let target_branch_url = target_branch_url_res
-        .map_err(|_| CheckMpError::Brz("get_target_branch_url task join error".to_string()))?
-        .unwrap_or_else(|e| {
-            log::debug!("Failed to get target branch URL for {}: {}", mp_url, e);
-            None
-        });
+    let mut revision: Option<RevisionId> = revision_res.unwrap_or_else(|e| {
+        log::debug!("Failed to get source revision for {}: {}", mp_url, e);
+        None
+    });
+    let source_branch_url = source_branch_url_res.unwrap_or_else(|e| {
+        log::debug!("Failed to get source branch URL for {}: {}", mp_url, e);
+        None
+    });
+    let can_be_merged = can_be_merged_res.ok();
+    let target_branch_url = target_branch_url_res.unwrap_or_else(|e| {
+        log::debug!("Failed to get target branch URL for {}: {}", mp_url, e);
+        None
+    });
 
     // Resolve the source branch name. Python prefers the
     // opened branch's `.name` (set in the silver_platter fallback
