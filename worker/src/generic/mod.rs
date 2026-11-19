@@ -64,13 +64,13 @@ pub fn generic_make_changes(
         }
         Err(GenericCodemodError::ExitCode(i)) => Err(convert_codemod_script_failed(
             i,
-            shlex::try_join(argv.to_vec()).unwrap().as_str(),
+            &shlex::try_join(argv.to_vec()).unwrap_or_else(|_| format!("<invalid command: {:?}>", argv)),
         )),
         Err(GenericCodemodError::ScriptNotFound) => Err(WorkerFailure::new(
             "codemod-not-found",
             format!(
                 "Codemod script {} not found",
-                shlex::try_join(argv.to_vec()).unwrap()
+                shlex::try_join(argv.to_vec()).unwrap_or_else(|_| format!("<invalid command: {:?}>", argv))
             ),
             ["codemod"],
         )),
