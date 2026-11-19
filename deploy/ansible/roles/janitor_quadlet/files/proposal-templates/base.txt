@@ -1,0 +1,39 @@
+{# Maximum number of lines of debdiff to inline in the merge request
+   description. If this threshold is reached, we'll just include a link to the
+   debdiff.
+-#}
+{% set DEBDIFF_INLINE_THRESHOLD = 40 -%}
+{% block codemod %}{% endblock %}
+
+This merge proposal was created automatically by the Janitor bot.
+For more information, including instructions on how to disable
+these merge proposals, see {{ external_url }}/{{ campaign }}.
+
+You can follow up to this merge proposal as you normally would.
+
+The bot will automatically update the merge proposal to resolve merge conflicts
+or close the merge proposal when all changes are applied through other means
+(e.g. cherry-picks). Updates may take several hours to propagate.
+
+Build and test logs for this branch can be found at
+{{ external_url }}/run/{{ log_id }}.
+{% if role == 'main' and debdiff %}
+
+{% if debdiff_is_empty(debdiff) %}
+These changes have no impact on the binary debdiff. See
+{{ external_url }}/api/run/{{ log_id }}/debdiff?filter_boring=1 to
+download the raw debdiff.
+{% elif debdiff|lines|length < DEBDIFF_INLINE_THRESHOLD %}
+These changes affect the binary packages:
+
+{{ debdiff }}
+{% else %}
+These changes affect the binary packages. See the build logs page
+or download the full debdiff from
+{{ external_url }}/api/run/{{ log_id }}/debdiff?filter_boring=1
+{% endif %}
+
+You can also view the diffoscope diff at
+{{ external_url }}/api/run/{{ log_id }}/diffoscope?filter_boring=1,
+or unfiltered at {{ external_url }}/api/run/{{ log_id }}/diffoscope.
+{% endif %}
