@@ -23,7 +23,7 @@ stackdriver_logger = { version = "0.8", optional = true }
 url = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive", "env"] }
 silver-platter = { workspace = true }
-tokio = { workspace = true, features = ["fs", "process", "rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = ["fs", "process", "rt-multi-thread", "signal", "sync"] }
 regex = "1.11.0"
 lazy-regex = "3.2.0"
 fancy-regex = ">=0.17,<0.20"
@@ -42,14 +42,28 @@ debversion = { workspace = true, optional = true, features = ["sqlx"] }
 reqwest = { workspace = true, features = ["json", "query"] }
 debian-control.workspace = true
 shlex.workspace = true
+base64.workspace = true
+axum.workspace = true
 metrics = { workspace = true }
+# janitor-schedule pushes to a Prometheus pushgateway, which the
+# metrics-crate exporter in service/ does not do.
+prometheus = { version = "0.14.0", features = ["reqwest", "push"] }
 buildlog-consultant = { workspace = true }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
 redis = { workspace = true }
-axum = { workspace = true }
-base64 = ">=0.22,<0.24"
+uuid = { version = "1.11.0", features = ["v4", "serde"] }
+tera = { version = "1.19", optional = true }
+tower-http = { version = "0.6", features = ["cors", "trace", "timeout", "limit", "compression-gzip"] }
+tower = { version = "0.5", features = ["util"] }
+lazy_static = "1.4"
+tokio-stream = { workspace = true }
+urlencoding = "2.1"
+toml = "0.8"
+configparser = "3"
+# src/utils.rs drives diffoscope through CPython; auto-initialize so
+# callers don't have to stand the interpreter up themselves.
 pyo3 = { workspace = true, features = ["auto-initialize"] }
 opentelemetry = { version = "0.33", optional = true }
 opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"], optional = true }

@@ -928,30 +928,6 @@ checksum = "36f64beae40a84da1b4b26ff2761a5b895c12adc41dc25aaee1c4f2bbfe97a6e"
 
 [[package]]
 name = "breezyshim"
-version = "0.7.31"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2e741209ad8a1e9bf79995496a7e557a6ece771c6fa2ab0e8ad0640cbd85a60"
-dependencies = [
- "bazaar",
- "chrono",
- "ctor",
- "lazy-regex",
- "lazy_static",
- "log",
- "patchkit",
- "percent-encoding",
- "pyo3",
- "pyo3-filelike",
- "regex",
- "serde",
- "tempfile",
- "url",
- "vcs-graph",
- "whoami 1.6.1",
-]
-
-[[package]]
-name = "breezyshim"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e81a65cf11ef065794bdada1cd5f0fe042057bf7a94a6558ef750d009ce99eca"
@@ -1276,7 +1252,7 @@ dependencies = [
 name = "common-py"
 version = "0.0.0"
 dependencies = [
- "breezyshim 0.8.0",
+ "breezyshim",
  "bytes",
  "chrono",
  "futures",
@@ -1288,7 +1264,7 @@ dependencies = [
  "pyo3-async-runtimes",
  "pyo3-filelike",
  "pyo3-log",
- "reqwest",
+ "reqwest 0.13.5",
  "serde_json",
  "silver-platter",
  "tokio",
@@ -1616,7 +1592,7 @@ version = "0.160.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6171e65feff0b9cc2b9c79e43249dd552dae9ab5223e636258203d1af944d610"
 dependencies = [
- "breezyshim 0.8.0",
+ "breezyshim",
  "chrono",
  "configparser",
  "deb822-lossless",
@@ -1639,7 +1615,7 @@ dependencies = [
  "pyo3",
  "quote",
  "regex",
- "reqwest",
+ "reqwest 0.13.5",
  "semver",
  "serde",
  "serde_json",
@@ -2843,6 +2819,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyper-tls"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70206fc6890eaca9fde8a0bf71caa2ddfc9fe045ac9e5c70df101a7dbde866e0"
+dependencies = [
+ "bytes",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "native-tls",
+ "tokio",
+ "tokio-native-tls",
+ "tower-service",
+]
+
+[[package]]
 name = "hyper-util"
 version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3214,12 +3206,13 @@ dependencies = [
  "async-compression",
  "async-trait",
  "axum",
- "base64 0.23.1",
- "breezyshim 0.8.0",
+ "base64 0.22.1",
+ "breezyshim",
  "buildlog-consultant",
  "bytes",
  "chrono",
  "clap",
+ "configparser",
  "debian-control",
  "debversion",
  "env_logger 0.11.11",
@@ -3229,6 +3222,7 @@ dependencies = [
  "janitor",
  "janitor-types",
  "lazy-regex",
+ "lazy_static",
  "log",
  "metrics",
  "object_store",
@@ -3236,13 +3230,14 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "percent-encoding",
+ "prometheus",
  "protobuf 3.7.2",
  "protobuf-codegen 3.7.2",
  "protoc-rust",
  "pyo3",
  "redis 1.7.0",
  "regex",
- "reqwest",
+ "reqwest 0.13.5",
  "serde",
  "serde_json",
  "shlex 2.0.1",
@@ -3252,14 +3247,21 @@ dependencies = [
  "sqlx-postgres",
  "stackdriver_logger",
  "tempfile",
+ "tera",
  "tokio",
+ "tokio-stream",
  "tokio-util",
+ "toml 0.8.23",
+ "tower 0.5.3",
+ "tower-http 0.6.11",
  "tracing",
  "tracing-appender",
  "tracing-opentelemetry",
  "tracing-subscriber",
  "url",
+ "urlencoding",
  "utoipa",
+ "uuid",
 ]
 
 [[package]]
@@ -3343,7 +3345,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
- "breezyshim 0.8.0",
+ "breezyshim",
  "bytes",
  "clap",
  "janitor",
@@ -3375,9 +3377,10 @@ name = "janitor-differ"
 version = "0.0.0"
 dependencies = [
  "axum",
- "breezyshim 0.8.0",
+ "breezyshim",
  "clap",
  "debversion",
+ "futures-util",
  "janitor",
  "janitor-service",
  "janitor-types",
@@ -3385,6 +3388,7 @@ dependencies = [
  "nix",
  "patchkit",
  "pyo3",
+ "redis 1.7.0",
  "serde",
  "serde_json",
  "serial_test 3.5.0",
@@ -3447,7 +3451,7 @@ dependencies = [
  "clap",
  "log",
  "mailparse",
- "reqwest",
+ "reqwest 0.13.5",
  "select",
  "serde_json",
 ]
@@ -3459,7 +3463,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "axum",
- "breezyshim 0.8.0",
+ "breezyshim",
  "bytes",
  "chrono",
  "clap",
@@ -3476,7 +3480,7 @@ dependencies = [
  "protobuf 3.7.2",
  "pyo3",
  "redis 1.7.0",
- "reqwest",
+ "reqwest 0.13.5",
  "rslock",
  "sequoia-openpgp",
  "serde",
@@ -3500,7 +3504,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
- "breezyshim 0.8.0",
+ "breezyshim",
  "chrono",
  "clap",
  "debian-control",
@@ -3519,7 +3523,7 @@ dependencies = [
  "object_store",
  "percent-encoding",
  "redis 1.7.0",
- "reqwest",
+ "reqwest 0.13.5",
  "serde",
  "serde_json",
  "serde_with",
@@ -3554,7 +3558,7 @@ dependencies = [
  "metrics-exporter-prometheus",
  "metrics-process",
  "metrics-util",
- "reqwest",
+ "reqwest 0.13.5",
  "tokio",
  "tower 0.5.3",
  "url",
@@ -3571,7 +3575,7 @@ dependencies = [
 name = "janitor-types"
 version = "0.1.0"
 dependencies = [
- "breezyshim 0.8.0",
+ "breezyshim",
  "pyo3",
  "serde",
  "serde_json",
@@ -3586,7 +3590,7 @@ dependencies = [
  "askama 0.16.1",
  "axum",
  "backoff",
- "breezyshim 0.8.0",
+ "breezyshim",
  "buildlog-consultant",
  "chrono",
  "clap",
@@ -3606,7 +3610,7 @@ dependencies = [
  "ognibuild",
  "percent-encoding",
  "pyo3",
- "reqwest",
+ "reqwest 0.13.5",
  "serde",
  "serde_json",
  "serial_test 4.0.1",
@@ -3828,7 +3832,7 @@ dependencies = [
  "mime",
  "percent-encoding",
  "rand 0.9.5",
- "reqwest",
+ "reqwest 0.13.5",
  "serde",
  "serde_json",
  "url",
@@ -4034,7 +4038,7 @@ dependencies = [
  "anyhow",
  "askama 0.12.1",
  "axum",
- "breezyshim 0.7.31",
+ "breezyshim",
  "chrono",
  "clap",
  "httpdate",
@@ -4708,7 +4712,7 @@ dependencies = [
  "percent-encoding",
  "quick-xml",
  "rand 0.10.2",
- "reqwest",
+ "reqwest 0.13.5",
  "rustls-pki-types",
  "serde",
  "serde_json",
@@ -4730,7 +4734,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8f600ae365a73c584711cb3f88c1aa50a40139545270f3f51555621f86a8008"
 dependencies = [
  "apt-sources",
- "breezyshim 0.8.0",
+ "breezyshim",
  "buildlog-consultant",
  "chrono",
  "deb822-lossless",
@@ -4758,7 +4762,7 @@ dependencies = [
  "r-description",
  "rand 0.10.2",
  "regex",
- "reqwest",
+ "reqwest 0.13.5",
  "semver",
  "sequoia-openpgp",
  "serde",
@@ -4858,7 +4862,7 @@ dependencies = [
  "bytes",
  "http",
  "opentelemetry",
- "reqwest",
+ "reqwest 0.13.5",
 ]
 
 [[package]]
@@ -4874,7 +4878,7 @@ dependencies = [
  "opentelemetry-proto",
  "opentelemetry_sdk",
  "prost",
- "reqwest",
+ "reqwest 0.13.5",
  "thiserror 2.0.20",
 ]
 
@@ -5386,6 +5390,23 @@ checksum = "e6401bf7b6af22f78b563665d15a22e9aef27775b79b149a66ca022468a4e405"
 dependencies = [
  "bitflags 2.13.2",
  "hex",
+]
+
+[[package]]
+name = "prometheus"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ca5326d8d0b950a9acd87e6a3f94745394f62e4dae1b1ee22b2bc0c394af43a"
+dependencies = [
+ "cfg-if",
+ "fnv",
+ "lazy_static",
+ "libc",
+ "memchr",
+ "parking_lot",
+ "protobuf 3.7.2",
+ "reqwest 0.12.28",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -5988,6 +6009,48 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "reqwest"
+version = "0.12.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "encoding_rs",
+ "futures-channel",
+ "futures-core",
+ "futures-util",
+ "h2",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-tls",
+ "hyper-util",
+ "js-sys",
+ "log",
+ "mime",
+ "native-tls",
+ "percent-encoding",
+ "pin-project-lite",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sync_wrapper",
+ "tokio",
+ "tokio-native-tls",
+ "tower 0.5.3",
+ "tower-http 0.6.11",
+ "tower-service",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
 
 [[package]]
 name = "reqwest"
@@ -6658,7 +6721,7 @@ version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e96fa4d9742ce66f630a5624f8b4a7eb5fe2ea653fb7efc9aaef6647533d59f"
 dependencies = [
- "breezyshim 0.8.0",
+ "breezyshim",
  "chrono",
  "clap",
  "debian-analyzer",
@@ -6674,7 +6737,7 @@ dependencies = [
  "percent-encoding",
  "rand 0.9.5",
  "regex",
- "reqwest",
+ "reqwest 0.13.5",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -7521,6 +7584,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-native-tls"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbae76ab933c85776efabc971569dd6119c580d8f5d448769dec1764bf796ef2"
+dependencies = [
+ "native-tls",
+ "tokio",
+]
+
+[[package]]
 name = "tokio-rustls"
 version = "0.26.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8153,6 +8226,7 @@ checksum = "2ef6dac1e96601b4fb3acccccff2139741fcb757cb9a36089bf5be91cfb285ce"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
+ "serde_core",
  "wasm-bindgen",
 ]
 
@@ -8213,7 +8287,7 @@ dependencies = [
  "mime",
  "proc-macro2",
  "quote",
- "reqwest",
+ "reqwest 0.13.5",
  "serde_json",
  "syn 2.0.119",
  "url",
