@@ -18,7 +18,10 @@ pub mod review;
 pub mod schedule;
 pub mod schema;
 pub mod shared_config;
+pub mod shared_web;
 pub mod state;
+// Test helpers have no business in a production build; the crates that
+// need them re-declare janitor with the `testing` feature.
 #[cfg(feature = "testing")]
 pub mod test_utils;
 pub mod utils;
