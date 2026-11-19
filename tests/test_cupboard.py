@@ -47,7 +47,7 @@ from janitor.site.cupboard import (
 )
 from janitor.site.cupboard.api import create_app as create_api_app
 from janitor.site.cupboard.api import select_runs_to_reprocess
-from janitor.site.pkg import read_log
+from janitor.site.pkg import primary_log_for_failure_stage, read_log
 
 from .conftest import _insert_codebase, _insert_run
 
@@ -536,6 +536,19 @@ async def test_read_log(error, expected):
             raise error
 
     assert await read_log(LogFileManager(), "foo", "somerun", "worker.log") == expected
+
+
+@pytest.mark.parametrize(
+    "failure_stage,expected",
+    [
+        ("codemod", "codemod"),
+        ("codemod/dist", "dist"),
+        ("build", "build"),
+        ("setup/clone", "worker"),
+    ],
+)
+def test_primary_log_for_failure_stage(failure_stage, expected):
+    assert primary_log_for_failure_stage(failure_stage) == expected
 
 
 async def test_evaluate_unknown_run_returns_404(db):
