@@ -1,0 +1,19 @@
+# Managed by Ansible (roles/janitor_quadlet).
+[Unit]
+Description=Janitor publisher
+After=janitor-runner.service janitor-differ.service
+
+[Container]
+Image=ghcr.io/jelmer/janitor/publish:latest
+ContainerName=janitor-publish
+Network=host
+# The whole command line is given here.
+Entrypoint=janitor-publish
+Exec={% for a in janitor_listen_addresses %}--listen-address {{ a }} {% endfor %}--port 9912 --config /mnt/janitor/janitor.conf --differ-url http://{{ janitor_loopback }}:9920/ --external-url {{ janitor_external_url }} --template-env-path /mnt/janitor/proposal-templates
+Volume={{ janitor_home }}/janitor.conf:/mnt/janitor/janitor.conf:ro
+# The text of the merge proposals, one template per campaign.
+Volume={{ janitor_home }}/proposal-templates:/mnt/janitor/proposal-templates:ro
+Volume={{ janitor_breezy_dir }}/publish:/root/.config/breezy:ro
+# Only the bot's SSH key and pinned host keys (roles/janitor_config).
+Volume={{ janitor_ssh_dir }}:/root/.ssh:ro
+{% include 'common.j2' %}
