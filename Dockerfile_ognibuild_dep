@@ -62,6 +62,8 @@ RUN apt-get update --yes \
         iproute2 \
  && apt-get upgrade --yes \
  && apt-get satisfy --yes --no-install-recommends \
+        ca-certificates \
+        dpkg-dev \
         python3-breezy \
  && apt-get satisfy --yes --no-install-recommends \
         "libpython$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')" \
