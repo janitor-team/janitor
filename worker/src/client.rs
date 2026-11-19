@@ -367,7 +367,9 @@ pub struct BundleInfo {
 
 /// Build a multipart form containing `metadata` and every file directly under `directory`.
 ///
-/// Files are attached as streaming parts so the whole bundle never has to be held in memory.
+/// Files are attached as streaming parts so the whole bundle never has to be held in
+/// memory, and the returned `filenames` set lets the caller validate the runner's
+/// response without re-scanning the directory.
 pub async fn bundle_results<'a>(
     metadata: &'a Metadata,
     directory: Option<&'a Path>,
@@ -475,7 +477,11 @@ where
         log::info!("Uploading results to {}", &finish_url);
         let builder = client.post(finish_url).timeout(std::time::Duration::from_secs(60));
         let builder = credentials.set_credentials(builder);
-        log::debug!("Uploading results: {}", serde_json::to_string(metadata).unwrap());
+        if let Ok(metadata_str) = serde_json::to_string(metadata) {
+            log::debug!("Uploading results: {}", metadata_str);
+        } else {
+            log::debug!("Uploading results: <serialization failed>");
+        }
         let bundle_info = bundle_results(metadata, output_directory)
             .await
             .map_err(|e| {
@@ -550,9 +556,16 @@ where
                     )))
                 })?;
                 log::warn!("Error uploading results: {}: {}", status, text);
-                // 4xx means the runner rejected the request (e.g. 409
-                // Conflict when the run was already stored); no point
-                // retrying. 5xx and connection errors stay transient.
+                // 4xx is the runner saying "this request is bad,
+                // retrying won't help". The specific case that pinned
+                // tyr's worker for ~21h on 2026-05-02 was 409
+                // Conflict from the runner's idempotency guard
+                // (`FinishOutcome::AlreadyStored`) — treat as
+                // permanent so backoff stops and the worker can move
+                // on to its next assignment.
+                //
+                // 5xx and connection errors stay transient: those
+                // genuinely warrant a retry.
                 if status.is_client_error() {
                     Err(backoff::Error::permanent(UploadFailure(format!(
                         "ResultUploadFailure: terminal {}: {}",
@@ -582,6 +595,10 @@ pub async fn abort_run(client: &Client, run_id: &RunId, metadata: &Metadata, des
         }
     }
 }
+
+#[cfg(test)]
+#[path = "client_tests.rs"]
+mod client_tests;
 
 #[cfg(test)]
 mod tests {
