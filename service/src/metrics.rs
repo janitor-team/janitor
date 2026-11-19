@@ -135,9 +135,57 @@ pub async fn push_to_gateway(
     Ok(())
 }
 
+/// The `path` label for HTTP request metrics: the matched route
+/// template (e.g. `/pkg/{name}`), so each route is a single series no
+/// matter how many distinct URLs hit it. Requests that matched no route
+/// share the label `unmatched`.
+pub fn path_label(req: &axum::extract::Request) -> String {
+    req.extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_else(|| "unmatched".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn test_path_label_uses_route_template() {
+        use axum::{body::Body, extract::Request, middleware::Next, routing::get, Router};
+        use std::sync::{Arc, Mutex};
+        use tower::ServiceExt;
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorder = seen.clone();
+        let app = Router::new()
+            .route("/pkg/{name}", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(
+                move |req: Request, next: Next| {
+                    let recorder = recorder.clone();
+                    async move {
+                        recorder.lock().unwrap().push(path_label(&req));
+                        next.run(req).await
+                    }
+                },
+            ));
+
+        for uri in ["/pkg/foo", "/pkg/bar"] {
+            let response = app
+                .clone()
+                .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        assert_eq!(*seen.lock().unwrap(), vec!["/pkg/{name}", "/pkg/{name}"]);
+    }
+
+    #[test]
+    fn test_path_label_unmatched() {
+        let req = axum::extract::Request::new(axum::body::Body::empty());
+        assert_eq!(path_label(&req), "unmatched");
+    }
 
     const TEST_BUCKETS: BucketOverrides = &[("test_histogram", &[1.0, 2.0])];
 

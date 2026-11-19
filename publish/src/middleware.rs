@@ -18,7 +18,7 @@ pub async fn metrics_middleware(
 ) -> axum::response::Response {
     let start = Instant::now();
     let method = req.method().to_string();
-    let path = req.uri().path().to_string();
+    let path = janitor_service::metrics::path_label(&req);
 
     let response = next.run(req).await;
     let status = response.status().as_u16().to_string();
