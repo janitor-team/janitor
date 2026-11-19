@@ -73,6 +73,9 @@ CREATE TABLE IF NOT EXISTS change_set (
   campaign campaign_name not null,
   state change_set_state default 'created' not null
 );
+-- Covering index: publish_ready filters change_set by state and immediately
+-- needs id + campaign; INCLUDE avoids a heap fetch for those columns.
+CREATE INDEX ON change_set (state) INCLUDE (id, campaign);
 
 CREATE INDEX ON result_tag (revision);
 CREATE TYPE publish_status AS ENUM ('unknown', 'blocked', 'needs-manual-review', 'rejected', 'approved', 'ignored');
