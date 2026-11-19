@@ -96,6 +96,7 @@ async fn build_app_with_rate_limiter(
         unexpected_mp_limit: None,
         gpg: Arc::new(breezyshim::gpg::GPGContext::new()),
         require_binary_diff: false,
+        auto_publish: true,
         health_checker,
         last_full_scan_at: tokio::sync::watch::channel(None).0,
     });
