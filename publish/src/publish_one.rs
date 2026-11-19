@@ -588,9 +588,6 @@ pub fn publish(
         }
     };
 
-    let target_lock = target_branch.lock_read();
-    let source_lock = source_branch.lock_read();
-
     match merge_conflicts(&target_branch, &source_branch, stop_revision) {
         Ok(true) => {
             return Err(PublishError::Failure {
@@ -727,20 +724,16 @@ pub fn publish(
             code: "empty-merge-proposal".to_string(),
             description: "No changes to propose; changes made independently upstream?".to_string(),
         }),
-        Ok(publish_result) => {
-            std::mem::drop(target_lock);
-            std::mem::drop(source_lock);
-            Ok((
-                PublishOneResult {
-                    mode,
-                    proposal: publish_result.proposal,
-                    is_new: publish_result.is_new,
-                    target_branch,
-                    forge: publish_result.forge,
-                },
-                derived_branch_name.to_string(),
-            ))
-        }
+        Ok(publish_result) => Ok((
+            PublishOneResult {
+                mode,
+                proposal: publish_result.proposal,
+                is_new: publish_result.is_new,
+                target_branch,
+                forge: publish_result.forge,
+            },
+            derived_branch_name.to_string(),
+        )),
         Err(e) => Err(PublishError::Failure {
             description: format!("Publish error: {}", e),
             code: "publish-error".to_string(),
