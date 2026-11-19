@@ -1,0 +1,14 @@
+---
+# Only for the local test VM (../Vagrantfile). Every secret here is a
+# fake, local-only value. The Vagrantfile passes janitor_domain as an
+# extra var.
+# HTTPS with a self-signed certificate, which the worker trusts.
+caddy_self_signed: true
+janitor_github_org: vagrant-test
+
+janitor_db_password: vagrant-dev-only-db
+worker_password: vagrant-dev-only-worker
+breezy_whoami: "Vagrant Test Bot <vagrant-test@example.invalid>"
+
+# The lintian-fixes campaign needs lintian-brush on the worker.
+janitor_worker_extra_packages: [lintian-brush]
