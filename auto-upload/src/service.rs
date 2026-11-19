@@ -9,6 +9,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::signal::unix::{signal, SignalKind};
 use tracing::{error, info, warn};
 
 use crate::backfill::BackfillProcessor;
@@ -71,7 +72,39 @@ pub async fn run(
     tokio::select! {
         res = web_task => join_result("web", res),
         res = redis_task => join_result("redis", res),
+        // This service shells out to dput; being SIGKILLed mid-upload
+        // leaves a half-transferred changes file on the far side. Catch
+        // the ordinary termination signals and return cleanly so the
+        // runtime can finish what is in flight.
+        signal = wait_for_shutdown_signal() => {
+            match signal {
+                Ok(name) => {
+                    info!("received {name}, shutting down");
+                    Ok(())
+                }
+                Err(e) => {
+                    warn!("could not install signal handlers: {e}");
+                    // Without handlers there is nothing to wait on, so
+                    // keep serving rather than exiting immediately.
+                    std::future::pending::<()>().await;
+                    unreachable!()
+                }
+            }
+        }
     }
+}
+
+/// Resolve when SIGTERM, SIGINT or SIGHUP arrives, yielding its name.
+async fn wait_for_shutdown_signal() -> std::io::Result<&'static str> {
+    let mut sigterm = signal(SignalKind::terminate())?;
+    let mut sigint = signal(SignalKind::interrupt())?;
+    let mut sighup = signal(SignalKind::hangup())?;
+
+    Ok(tokio::select! {
+        _ = sigterm.recv() => "SIGTERM",
+        _ = sigint.recv() => "SIGINT",
+        _ = sighup.recv() => "SIGHUP",
+    })
 }
 
 async fn run_backfill_task(
