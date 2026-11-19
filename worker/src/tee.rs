@@ -2,6 +2,7 @@ use nix::unistd::{dup, dup2};
 use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::{BorrowedFd, FromRawFd, OwnedFd};
+use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -94,9 +95,11 @@ impl CopyOutput {
 
     /// Set up redirection through the `tee` command
     fn setup_tee_redirection(&mut self, output_log: &std::path::Path) -> io::Result<()> {
+        // Its own process group, so a kill of the run's processes leaves it alone.
         let process = Command::new("tee")
             .arg(output_log)
             .stdin(Stdio::piped())
+            .process_group(0)
             .spawn()
             .map_err(|e| {
                 io::Error::new(

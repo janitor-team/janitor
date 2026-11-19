@@ -76,23 +76,26 @@ async fn index(State(state): State<Arc<RwLock<AppState>>>) -> Response {
     post,
     path = "/kill",
     responses(
+        (status = 202, description = "The running codemod or build is being stopped", body = String, content_type = "text/plain"),
         (status = 410, description = "No run in progress", body = String, content_type = "text/plain"),
-        (status = 501, description = "Killing runs is not supported yet", body = String, content_type = "text/plain"),
+        (status = 501, description = "This worker cannot stop its codemod or build", body = String, content_type = "text/plain"),
     )
 )]
 async fn kill(State(state): State<Arc<RwLock<AppState>>>) -> Response {
-    // There is no cancellation handle threaded through run_worker's actual
-    // command execution yet, so an in-progress build cannot be forcibly
-    // stopped from here. Reporting this honestly (501) rather than 404ing
-    // lets the runner's existing "kill not supported" handling deal with
-    // it cleanly instead of crashing on an unexpected response.
-    if state.read().unwrap().assignment.is_none() {
+    let state = state.read().unwrap();
+    if state.assignment.is_none() {
         // The run existed but is gone now (e.g. this worker restarted
         // since the run was assigned) - GONE fits that better than
         // NOT_FOUND.
         return (StatusCode::GONE, "no run in progress").into_response();
     }
-    (StatusCode::NOT_IMPLEMENTED, "kill is not yet supported").into_response()
+    match &state.kill {
+        Some(kill) => {
+            kill.cancel();
+            (StatusCode::ACCEPTED, "kill requested").into_response()
+        }
+        None => (StatusCode::NOT_IMPLEMENTED, "kill is not yet supported").into_response(),
+    }
 }
 
 #[utoipa::path(
@@ -579,17 +582,23 @@ mod tests {
             });
         };
 
-        let app = super::app(state.clone());
-        let request = Request::builder()
-            .method(axum::http::Method::POST)
-            .uri("/kill")
-            .body(Body::empty())
-            .unwrap();
-        let response = app.oneshot(request).await.unwrap();
+        let kill = || {
+            Request::builder()
+                .method(axum::http::Method::POST)
+                .uri("/kill")
+                .body(Body::empty())
+                .unwrap()
+        };
+        let response = super::app(state.clone()).oneshot(kill()).await.unwrap();
         assert_eq!(response.status(), 501);
+        assert_eq!(get_body(response).await, "kill is not yet supported");
 
-        let body = get_body(response).await;
-        assert_eq!(body, "kill is not yet supported");
+        let token = tokio_util::sync::CancellationToken::new();
+        state.write().unwrap().kill = Some(token.clone());
+        let response = super::app(state.clone()).oneshot(kill()).await.unwrap();
+        assert_eq!(response.status(), 202);
+        assert_eq!(get_body(response).await, "kill requested");
+        assert!(token.is_cancelled());
     }
 
     #[tokio::test]
