@@ -728,3 +728,19 @@ CREATE INDEX ON run (codebase, campaign, start_time, result_code);
 CREATE INDEX ON queue (bucket);
 CREATE INDEX ON queue (codebase);
 CREATE INDEX ON queue (campaign, priority, id);
+CREATE UNIQUE INDEX ON candidate (codebase, campaign, coalesce(change_set, ''));
+
+-- Audit log for admin actions performed via the site's cupboard UI.
+CREATE TABLE IF NOT EXISTS admin_audit_log (
+    id SERIAL PRIMARY KEY,
+    timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    admin_user TEXT NOT NULL,
+    action TEXT NOT NULL,
+    target TEXT,
+    details JSONB,
+    ip_address TEXT,
+    user_agent TEXT
+);
+CREATE INDEX IF NOT EXISTS admin_audit_log_timestamp_idx ON admin_audit_log (timestamp DESC);
+CREATE INDEX IF NOT EXISTS admin_audit_log_admin_user_idx ON admin_audit_log (admin_user);
+CREATE INDEX IF NOT EXISTS admin_audit_log_action_idx ON admin_audit_log (action);
