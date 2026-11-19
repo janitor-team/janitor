@@ -14,13 +14,15 @@ impl<'a> MediaRange<'a> {
         for param in parts {
             if let Some((key, value)) = param.split_once('=') {
                 if key.trim().eq_ignore_ascii_case("q") {
-                    // Out-of-range or malformed quality values count as 1.
+                    // A malformed or out-of-range q rejects the range
+                    // rather than silently reverting to 1.0: we'd rather
+                    // drop a bad entry than let a client's typo pick its
+                    // first media type.
                     q = value
                         .trim()
                         .parse()
                         .ok()
-                        .filter(|q| (0.0..=1.0).contains(q))
-                        .unwrap_or(1.0);
+                        .filter(|q| (0.0..=1.0).contains(q))?;
                 }
             }
         }
@@ -123,11 +125,13 @@ mod tests {
             (Some("text/*, application/json"), Some("application/json")),
             (Some("text/html;q=0, text/*"), Some("text/plain")),
             (Some("*/*;q=0"), None),
+            // A malformed or out-of-range q drops that range so the
+            // client's typo doesn't silently win.
             (
                 Some("text/plain;q=bogus, text/html;q=0.5"),
-                Some("text/plain"),
+                Some("text/html"),
             ),
-            (Some("text/plain;q=2, text/html;q=0.5"), Some("text/plain")),
+            (Some("text/plain;q=2, text/html;q=0.5"), Some("text/html")),
             (Some("image/png"), None),
             (Some(""), None),
             (Some(" , ,"), None),
