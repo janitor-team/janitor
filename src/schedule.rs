@@ -403,9 +403,17 @@ fn calculate_offset(
     estimated_cost / estimated_value
 }
 
-/// Schedule a regular (non-control) queue item for the given campaign
-/// and codebase, computing an offset from the estimated success
-/// probability, duration and candidate value.
+/// Schedule a follow-up regular run after a previous run finished.
+///
+/// Mirrors `py/janitor/schedule.py::do_schedule_regular`. Looks up
+/// the candidate row for `(codebase, campaign, change_set)` to fill
+/// in any missing value/success_chance/command/context, computes an
+/// offset based on the run's estimated cost vs estimated value,
+/// and adds the new entry to the queue. Raises
+/// [`Error::CandidateUnavailable`] when the codebase no longer has
+/// a candidate for this campaign — callers in the runner's
+/// finish-run path treat that as a non-error since the candidate
+/// may simply have been removed.
 pub async fn do_schedule_regular(
     conn: &PgPool,
     codebase: &CodebaseName,
