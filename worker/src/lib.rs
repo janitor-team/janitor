@@ -532,6 +532,7 @@ pub fn run_worker(
     metadata.codebase = Some(codebase.clone());
 
     let build_target: Box<dyn Target> = match target {
+        #[cfg(feature = "debian")]
         "debian" => Box::new(crate::debian::DebianTarget::new(env)),
         "generic" => Box::new(crate::generic::GenericTarget::new(env)),
         n => {
@@ -1531,11 +1532,14 @@ fn push_error_to_worker_failure(e: BrzError, stage: Vec<String>) -> WorkerFailur
 mod tests {
     use super::*;
     use crate::WorkerFailure;
+    // Both globs above export a `Branch`; import the trait anonymously so
+    // method resolution works without the name clash.
+    use breezyshim::branch::Branch as _;
     use breezyshim::controldir;
     use janitor::api::worker::*;
     use serial_test::serial;
-    use std::path::{Path, PathBuf};
-    use std::str::FromStr;
+    use std::path::Path;
+
     use test_log::test;
 
     #[test]
@@ -1598,12 +1602,14 @@ mod tests {
 
     #[serial]
     #[test]
+    #[ignore = "Requires Git/Breezy system dependencies and permissions"]
     fn test_run_worker_existing_git() {
         test_run_worker_existing(VcsType::Git);
     }
 
     #[serial]
     #[test]
+    #[ignore = "Requires Bazaar/Breezy system dependencies and permissions"]
     fn test_run_worker_existing_bzr() {
         test_run_worker_existing(VcsType::Bzr);
     }
@@ -2163,3 +2169,7 @@ check:
         }
     }
 }
+
+#[cfg(test)]
+#[path = "lib_tests.rs"]
+mod lib_tests;

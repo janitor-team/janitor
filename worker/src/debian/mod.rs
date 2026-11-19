@@ -832,4 +832,79 @@ mod tests {
         assert_eq!(failure.stage, vec!["build".to_string()]);
         assert_eq!(failure.transient, Some(false));
     }
+
+    #[test]
+    #[ignore = "Requires Breezy python runtime + bzr plugin"]
+    fn test_tree_set_changelog_version_rewrites_version() {
+        let td = tempfile::tempdir().unwrap();
+        let tree = create_standalone_workingtree(td.path(), &ControlDirFormat::default()).unwrap();
+        tree.mkdir(std::path::Path::new("debian")).unwrap();
+        tree.put_file_bytes_non_atomic(
+            std::path::Path::new("debian/changelog"),
+            b"blah (0.39) UNRELEASED; urgency=medium\n\
+              \n  * Properly cope with trailing commas when adding dependencies.\n\
+              \n -- Jelmer Vernooij <jelmer@debian.org>  Sat, 19 Oct 2019 15:50:25 +0000\n",
+        )
+        .unwrap();
+        tree.add(&[
+            std::path::Path::new("debian"),
+            std::path::Path::new("debian/changelog"),
+        ])
+        .unwrap();
+        tree.build_commit().message("add changelog").commit().unwrap();
+
+        let new_version: debversion::Version = "0.39~jan+lint1".parse().unwrap();
+        tree_set_changelog_version(&tree, &new_version, std::path::Path::new("")).unwrap();
+
+        let content = tree
+            .get_file(std::path::Path::new("debian/changelog"))
+            .unwrap();
+        use std::io::Read;
+        let mut buf = String::new();
+        std::io::BufReader::new(content)
+            .read_to_string(&mut buf)
+            .unwrap();
+        assert!(
+            buf.starts_with("blah (0.39~jan+lint1) UNRELEASED;"),
+            "expected new version in changelog, got:\n{}",
+            buf
+        );
+    }
+
+    #[test]
+    #[ignore = "Requires Breezy python runtime + bzr plugin"]
+    fn test_tree_set_changelog_version_skips_when_current_is_higher() {
+        let td = tempfile::tempdir().unwrap();
+        let tree = create_standalone_workingtree(td.path(), &ControlDirFormat::default()).unwrap();
+        tree.mkdir(std::path::Path::new("debian")).unwrap();
+        let original = b"blah (0.40) UNRELEASED; urgency=medium\n\
+                        \n  * Properly cope with trailing commas when adding dependencies.\n\
+                        \n -- Jelmer Vernooij <jelmer@debian.org>  Sat, 19 Oct 2019 15:50:25 +0000\n";
+        tree.put_file_bytes_non_atomic(std::path::Path::new("debian/changelog"), original)
+            .unwrap();
+        tree.add(&[
+            std::path::Path::new("debian"),
+            std::path::Path::new("debian/changelog"),
+        ])
+        .unwrap();
+        tree.build_commit().message("add changelog").commit().unwrap();
+
+        let new_version: debversion::Version = "0.39~jan+lint1".parse().unwrap();
+        tree_set_changelog_version(&tree, &new_version, std::path::Path::new("")).unwrap();
+
+        let content = tree
+            .get_file(std::path::Path::new("debian/changelog"))
+            .unwrap();
+        use std::io::Read;
+        let mut buf = String::new();
+        std::io::BufReader::new(content)
+            .read_to_string(&mut buf)
+            .unwrap();
+        assert!(
+            buf.starts_with("blah (0.40) UNRELEASED;"),
+            "expected original version preserved, got:\n{}",
+            buf
+        );
+    }
+
 }
