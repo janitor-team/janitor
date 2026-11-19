@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS codebase (
    subpath text,
    -- last revision, if known
    vcs_last_revision text,
-   last_scanned timestamp,
+   last_scanned timestamptz,
 
    web_url text,
 
@@ -40,11 +40,15 @@ CREATE TABLE IF NOT EXISTS merge_proposal (
    revision text,
    merged_by text,
    merged_at timestamp,
-   last_scanned timestamp,
+   last_scanned timestamptz,
    can_be_merged boolean,
    rate_limit_bucket text,
    primary key(url)
 );
+-- last_scanned is decoded as chrono::DateTime<Utc>; CREATE TABLE is
+-- skipped on an existing database, so upgrade older columns here.
+ALTER TABLE codebase ALTER COLUMN last_scanned TYPE timestamptz;
+ALTER TABLE merge_proposal ALTER COLUMN last_scanned TYPE timestamptz;
 CREATE INDEX ON merge_proposal (revision);
 CREATE INDEX ON merge_proposal (url);
 CREATE INDEX ON merge_proposal (status);
@@ -144,8 +148,17 @@ CREATE TABLE IF NOT EXISTS publish (
    description text,
    requester text,
    codebase text references codebase(name) on delete set null,
-   timestamp timestamp default now(),
-   run_id text references run(id) on delete set null
+   -- The publisher writes run_id on every insert, linking a publish
+   -- attempt to the run that produced its branches. ON DELETE SET NULL
+   -- so deleting a run keeps the record that it was published.
+   run_id text references run(id) on delete set null,
+   -- TIMESTAMPTZ to match the rest of the Rust port's
+   -- chrono::DateTime<Utc>-decoded columns. Plain TIMESTAMP made
+   -- /cupboard/publish 500 with "mismatched types ... not
+   -- compatible with SQL type TIMESTAMP". Migration also drops
+   -- and recreates absorbed_runs / absorbed_lintian_fixes /
+   -- absorbed_multiarch_hints since they reference this column.
+   timestamp timestamptz default now()
 );
 -- CREATE TABLE above is skipped on an existing database, so upgrades need this.
 ALTER TABLE publish ADD COLUMN IF NOT EXISTS run_id text references run(id) on delete set null;
@@ -519,8 +532,8 @@ CREATE OR REPLACE TRIGGER publish_refresh_change_set_state
 
 CREATE TABLE site_session (
   id text primary key,
-  timestamp timestamp not null default now(),
-  userinfo json
+  timestamp timestamptz not null default now(),
+  userinfo jsonb
 );
 
 
