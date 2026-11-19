@@ -289,6 +289,22 @@ async fn serve_suite_file(
     serve_from_suite(&state, suite, request).await
 }
 
+/// Build the "suite not yet published" response: 503 with
+/// Retry-After and a plaintext body naming the suite. Extracted so
+/// tests can assert on the exact shape without constructing an
+/// AppState.
+fn suite_not_yet_published_response(suite: &str) -> Response {
+    let mut headers = HeaderMap::new();
+    headers.insert("Content-Type", HeaderValue::from_static("text/plain"));
+    headers.insert("Retry-After", HeaderValue::from_static("300"));
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        headers,
+        format!("Suite {} has not been published yet\n", suite),
+    )
+        .into_response()
+}
+
 async fn serve_from_suite(
     state: &AppState,
     suite: &str,
@@ -299,7 +315,20 @@ async fn serve_from_suite(
         .repositories
         .get(suite)
         .ok_or(StatusCode::NOT_FOUND)?;
-    serve_from_dir(repo_config.suite_path(), 2, request).await
+
+    // A configured suite that hasn't been published yet reports 503
+    // for its Release file so clients can distinguish "not yet
+    // available" from "unknown suite" (404).
+    let wants_release = matches!(
+        request.uri().path().rsplit('/').next(),
+        Some("Release" | "Release.gpg" | "InRelease")
+    );
+    match serve_from_dir(repo_config.suite_path(), 2, request).await {
+        Err(StatusCode::NOT_FOUND) if wants_release => {
+            Ok(suite_not_yet_published_response(suite))
+        }
+        other => other,
+    }
 }
 
 /// Serve `/dists/{a}/{b}/{file}`. On-demand repositories only have
@@ -980,5 +1009,25 @@ mod tests {
         );
         assert!(is_valid_on_demand_kind("lintian-fixes", None, &ac));
         assert!(!is_valid_on_demand_kind("fresh-releases", None, &ac));
+    }
+
+    /// A configured suite with no Release yet returns 503 with
+    /// Retry-After, not 404, so clients can tell "unpublished"
+    /// apart from "unknown suite".
+    #[tokio::test]
+    async fn suite_not_yet_published_response_is_503_with_retry_after() {
+        use axum::body::to_bytes;
+        let response = suite_not_yet_published_response("lintian-fixes");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response.headers().get("Retry-After").unwrap(),
+            &HeaderValue::from_static("300"),
+        );
+        assert_eq!(
+            response.headers().get("Content-Type").unwrap(),
+            &HeaderValue::from_static("text/plain"),
+        );
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        assert_eq!(&body[..], b"Suite lintian-fixes has not been published yet\n");
     }
 }
