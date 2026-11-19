@@ -3556,6 +3556,7 @@ dependencies = [
  "metrics-util",
  "reqwest",
  "tokio",
+ "tower 0.5.3",
  "url",
 ]
 

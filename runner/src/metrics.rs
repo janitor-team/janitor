@@ -348,7 +348,7 @@ pub async fn metrics_middleware(
 ) -> axum::response::Response {
     let start = std::time::Instant::now();
     let method = request.method().to_string();
-    let path = request.uri().path().to_string();
+    let path = janitor_service::metrics::path_label(&request);
 
     let response = next.run(request).await;
 
