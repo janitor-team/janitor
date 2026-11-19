@@ -49,9 +49,8 @@ async def generate_review(
     campaigns=None,
     publishable_only=True,
     required_only=None,
+    limit=100,
 ):
-    limit = int(request.query.get("limit", "100"))
-
     span = aiozipkin.request_span(request)
 
     if request.get("user"):

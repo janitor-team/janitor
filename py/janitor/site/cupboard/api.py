@@ -38,6 +38,7 @@ from janitor import CAMPAIGN_REGEX, utcnow, version_string
 
 from .. import check_admin, worker_link_is_global
 from ..api_tokens import api_token_middleware
+from ..common import ROW_COUNT
 from ..setup import setup_logfile_manager, setup_postgres
 
 BUILD_LOG_FILENAME = "build.log"
@@ -195,7 +196,7 @@ class NeedsReviewQuerySchema(Schema):
     reviewer = fields.Str(metadata={"description": "defaults to the current user"})
     publishable_only = fields.Str(load_default="true")
     required_only = fields.Str()
-    limit = fields.Int(load_default=200)
+    limit = fields.Int(load_default=200, validate=ROW_COUNT)
 
 
 class NeedsReviewSchema(Schema):
@@ -208,7 +209,8 @@ class NeedsReviewSchema(Schema):
 @querystring_schema(NeedsReviewQuerySchema())
 @response_schema(NeedsReviewSchema(many=True))
 @routes.get("/needs-review", name="needs-review")
-async def handle_needs_review(request):
+@use_kwargs(NeedsReviewQuerySchema(only=["limit"]), locations=("query",))
+async def handle_needs_review(request, limit):
     from . import iter_needs_review
 
     requested_campaign = request.match_info.get("campaign")
@@ -221,11 +223,6 @@ async def handle_needs_review(request):
         required_only = request.query["required_only"] == "true"
     else:
         required_only = None
-    limit = request.query.get("limit", "200")
-    if limit:
-        limit = int(limit)
-    else:
-        limit = None
     ret = []
     async with request.app["pool"].acquire() as conn:
         with span.new_child("sql:needs-review"):
