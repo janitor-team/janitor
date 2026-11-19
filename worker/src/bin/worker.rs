@@ -81,6 +81,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     args.logging.init();
     janitor_service::metrics::install(&[]);
 
+    // Install a panic hook that captures panic location + backtrace
+    // to /tmp/janitor-worker-panics.log. tokio captures task panics
+    // into `JoinError` carrying only the message string, not the
+    // location, so the caller (`bin/worker.rs::handle SingleItemError::
+    // WorkerError`) just sees "Worker task panicked: …" with no clue
+    // which unwrap fired. Earlier attempts using `log::error!` from
+    // the hook didn't surface in the journal because
+    // `tee::CopyOutput::setup_file_redirection` redirects stdout/stderr
+    // to the per-run worker.log file BEFORE the panic — and that file
+    // is inside a `tempfile::TempDir` that gets cleaned up at next
+    // assignment. Append to a fixed path instead so the trace
+    // survives the tempdir rotation. Capture verbosity follows
+    // RUST_BACKTRACE (set in the systemd unit).
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "<non-string panic payload>".to_string()
+        };
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let now = chrono::Utc::now().to_rfc3339();
+        let entry = format!(
+            "\n[{}] PANIC at {}: {}\nbacktrace:\n{}\n",
+            now, location, payload, backtrace
+        );
+        // Best-effort append; ignore I/O errors so the hook can't
+        // cause a secondary panic. Open with O_APPEND so concurrent
+        // workers don't clobber each other.
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/janitor-worker-panics.log")
+        {
+            use std::io::Write;
+            let _ = f.write_all(entry.as_bytes());
+        }
+        // Still call the default hook so stderr / abort behaviour is
+        // unchanged for non-tokio panics.
+        default_hook(info);
+    }));
+
     // Load breezy plugins so VCS URL handlers (notably
     // breezy.plugins.debian.directory, which normalises
     // "https://.../pkg.git -b branch" into ",branch=branch") are
