@@ -679,6 +679,9 @@ pub struct DebianBuildAssignment {
     /// Chroot to build in.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chroot: Option<String>,
+    /// Session to build in, in ognibuild's syntax.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
     /// Extra apt sources, as `deb ...` lines.
     #[serde(rename = "build-extra-repositories")]
     pub extra_repositories: Vec<String>,

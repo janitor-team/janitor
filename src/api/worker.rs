@@ -255,6 +255,7 @@ pub struct Assignment {
 #[derive(serde::Deserialize, serde::Serialize, Default)]
 pub struct GenericBuildConfig {
     pub chroot: Option<String>,
+    pub session: Option<String>,
     pub dep_server_url: Option<url::Url>,
 }
 
@@ -278,6 +279,7 @@ pub struct DebianBuildConfig {
     #[serde(rename = "last-build-version")]
     pub last_build_version: Option<debversion::Version>,
     pub chroot: Option<String>,
+    pub session: Option<String>,
     pub lintian: LintianConfig,
     #[serde(rename = "base-apt-repository")]
     pub apt_repository: Option<String>,
