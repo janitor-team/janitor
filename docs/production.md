@@ -12,6 +12,9 @@ $ sudo apt install \
 $ make build-all
 ```
 
+[deploy/](../deploy/README.md) has an Ansible playbook that deploys an
+instance onto one host.
+
 ## PostgreSQL
 
 The services share a single PostgreSQL database. Before starting anything,

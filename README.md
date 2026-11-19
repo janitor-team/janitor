@@ -82,7 +82,7 @@ Installation
 There are two common ways of deploying a new janitor instance.
 
  * On top of kubernetes (see the configuration for the Debian & Upstream janitor)
- * Using e.g. ansible
+ * Using e.g. ansible ([deploy/](deploy/README.md) has a playbook for one host)
 
 See [docs/production.md](docs/production.md) for running an instance.
 
