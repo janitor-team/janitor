@@ -96,6 +96,16 @@ pub fn is_authenticated_url(url: &Url) -> bool {
     ["git+ssh", "bzr+ssh"].contains(&url.scheme())
 }
 
+/// Return a copy of `url` with any embedded basic-auth userinfo stripped,
+/// suitable for logging. Worker credentials are embedded in cache URLs so
+/// HTTP git push can authenticate, but they must never reach a log line.
+pub fn sanitise_for_log(url: &Url) -> Url {
+    let mut out = url.clone();
+    let _ = out.set_password(None);
+    let _ = out.set_username("");
+    out
+}
+
 #[derive(
     Debug, Clone, PartialEq, Eq, Copy, std::hash::Hash, Serialize, Deserialize, sqlx::Type,
 )]
@@ -241,6 +251,45 @@ mod tests {
         assert!(!is_alioth_url(
             &Url::parse("https://github.com/foo/bar").unwrap()
         ));
+    }
+
+    #[test]
+    fn test_sanitise_for_log_strips_password() {
+        let url = Url::parse("https://worker:secret@vcs.example.com/git/mycodebase").unwrap();
+        let sanitised = sanitise_for_log(&url);
+        assert_eq!(sanitised.as_str(), "https://vcs.example.com/git/mycodebase");
+    }
+
+    #[test]
+    fn test_sanitise_for_log_strips_username_only() {
+        let url = Url::parse("https://worker@vcs.example.com/git/mycodebase").unwrap();
+        let sanitised = sanitise_for_log(&url);
+        assert_eq!(sanitised.as_str(), "https://vcs.example.com/git/mycodebase");
+    }
+
+    #[test]
+    fn test_sanitise_for_log_leaves_clean_url_unchanged() {
+        let url = Url::parse("https://vcs.example.com/git/mycodebase").unwrap();
+        let sanitised = sanitise_for_log(&url);
+        assert_eq!(sanitised, url);
+    }
+
+    #[test]
+    fn test_sanitise_for_log_preserves_path_and_query() {
+        let url = Url::parse("https://worker:secret@vcs.example.com/git/mycodebase?ref=main#frag")
+            .unwrap();
+        let sanitised = sanitise_for_log(&url);
+        assert_eq!(
+            sanitised.as_str(),
+            "https://vcs.example.com/git/mycodebase?ref=main#frag"
+        );
+    }
+
+    #[test]
+    fn test_sanitise_for_log_file_url_unchanged() {
+        let url = Url::parse("file:///srv/git/mycodebase").unwrap();
+        let sanitised = sanitise_for_log(&url);
+        assert_eq!(sanitised, url);
     }
 
     #[test]

@@ -3,7 +3,7 @@ use breezyshim::error::Error as BrzError;
 use breezyshim::repository::Repository;
 use breezyshim::transport::Transport;
 use breezyshim::RevisionId;
-use janitor::vcs::VcsType;
+use janitor::vcs::{sanitise_for_log, VcsType};
 use janitor_types::{Campaign, RunId};
 use std::collections::HashMap;
 use url::Url;
