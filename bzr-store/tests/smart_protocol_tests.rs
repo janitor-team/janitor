@@ -193,7 +193,7 @@ test_with_database! {
             .await
             .unwrap();
 
-        // Accept */* should pick HTML, matching Python mimeparse.
+        // Accept */* should pick HTML.
         let resp = send(&public, get_accept("/bzr/", "*/*")).await;
         assert_eq!(resp.status(), 200);
         let content_type = resp

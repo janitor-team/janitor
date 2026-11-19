@@ -556,10 +556,10 @@ async fn handle_diffoscope_inner(
     let runs = runs.parse()?;
 
     let offered = &[
-        "text/plain",
-        "text/html",
-        "application/json",
         "text/markdown",
+        "application/json",
+        "text/html",
+        "text/plain",
     ];
     let content_type =
         negotiate(headers, offered).ok_or_else(|| Error::ContentNegotiationFailed {
@@ -853,7 +853,7 @@ async fn handle_debdiff_inner(
 ) -> Result<Response> {
     let runs = runs.parse()?;
 
-    let offered = &["text/x-diff", "text/plain", "text/markdown", "text/html"];
+    let offered = &["text/html", "text/markdown", "text/plain", "text/x-diff"];
     let content_type =
         negotiate(headers, offered).ok_or_else(|| Error::ContentNegotiationFailed {
             offered: offered.join(", "),
@@ -1336,73 +1336,13 @@ fn typed_text_response(content_type: &str, body: impl Into<String>) -> Response 
         .into_response()
 }
 
-/// Content negotiation matching Python `mimeparse.best_match`: for each
-/// supported type, score against the Accept header; on ties, the last
-/// supported type wins (so the caller lists least-preferred first).
-fn negotiate<'a>(headers: &HeaderMap, supported: &'a [&'a str]) -> Option<&'a str> {
-    let raw = headers
+/// Content negotiation where `offered` lists the most preferred type
+/// first, so the first entry wins ties.
+fn negotiate<'a>(headers: &HeaderMap, offered: &[&'a str]) -> Option<&'a str> {
+    let accept = headers
         .get(axum::http::header::ACCEPT)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("*/*");
-    let ranges = parse_accept(raw);
-
-    let mut best: Option<(f32, &str)> = None;
-    for candidate in supported {
-        let (ct, cs) = split_mime(candidate)?;
-        let score = ranges
-            .iter()
-            .filter_map(|r| match_range(r, ct, cs))
-            .fold(0.0_f32, f32::max);
-        if score > 0.0 {
-            // `>=` so later entries overwrite earlier ones on ties.
-            if best.is_none_or(|(prev, _)| score >= prev) {
-                best = Some((score, candidate));
-            }
-        }
-    }
-    best.map(|(_, s)| s)
-}
-
-/// Accept range: (type, subtype, q, specificity). Specificity is 3 for
-/// `type/subtype`, 2 for `type/*`, 1 for `*/*`.
-fn parse_accept(header: &str) -> Vec<(&str, &str, f32, u8)> {
-    header
-        .split(',')
-        .filter_map(|entry| {
-            let mut parts = entry.trim().split(';').map(str::trim);
-            let mime = parts.next()?;
-            let (t, s) = split_mime(mime)?;
-            let mut q = 1.0;
-            for p in parts {
-                if let Some(v) = p.strip_prefix("q=") {
-                    q = v.parse().unwrap_or(1.0);
-                }
-            }
-            let spec = match (t, s) {
-                ("*", "*") => 1,
-                (_, "*") => 2,
-                _ => 3,
-            };
-            Some((t, s, q, spec))
-        })
-        .collect()
-}
-
-fn split_mime(s: &str) -> Option<(&str, &str)> {
-    s.split_once('/')
-}
-
-fn match_range(range: &(&str, &str, f32, u8), ct: &str, cs: &str) -> Option<f32> {
-    let (rt, rs, q, spec) = *range;
-    let type_ok = rt == "*" || rt.eq_ignore_ascii_case(ct);
-    let sub_ok = rs == "*" || rs.eq_ignore_ascii_case(cs);
-    if type_ok && sub_ok {
-        // Boost by specificity so `text/plain` beats `text/*` beats `*/*`
-        // when the same client sends multiple ranges.
-        Some(q * spec as f32)
-    } else {
-        None
-    }
+        .and_then(|v| v.to_str().ok());
+    janitor_service::content_negotiation::best_match(offered, accept)
 }
 
 fn os_pairs(
@@ -1647,35 +1587,34 @@ mod tests {
             HeaderValue::from_static("text/html, text/plain;q=0.5"),
         );
         assert_eq!(
-            negotiate(&headers, &["text/plain", "text/html"]),
+            negotiate(&headers, &["text/html", "text/plain"]),
             Some("text/html"),
         );
     }
 
     #[test]
-    fn negotiate_wildcard_picks_last_supported() {
+    fn negotiate_wildcard_picks_first_supported() {
         let mut headers = HeaderMap::new();
         headers.insert(axum::http::header::ACCEPT, HeaderValue::from_static("*/*"));
         assert_eq!(
-            negotiate(&headers, &["text/plain", "text/html"]),
+            negotiate(&headers, &["text/html", "text/plain"]),
             Some("text/html"),
         );
     }
 
     #[test]
     fn negotiate_diffoscope_default_is_markdown() {
-        // Matches Python's mimeparse.best_match: */* against the debdiff
-        // list gives text/markdown (last entry).
+        // */* against the diffoscope list gives text/markdown (first entry).
         let mut headers = HeaderMap::new();
         headers.insert(axum::http::header::ACCEPT, HeaderValue::from_static("*/*"));
         assert_eq!(
             negotiate(
                 &headers,
                 &[
-                    "text/plain",
-                    "text/html",
+                    "text/markdown",
                     "application/json",
-                    "text/markdown"
+                    "text/html",
+                    "text/plain",
                 ]
             ),
             Some("text/markdown"),
@@ -1689,7 +1628,7 @@ mod tests {
             axum::http::header::ACCEPT,
             HeaderValue::from_static("image/png"),
         );
-        assert_eq!(negotiate(&headers, &["text/plain", "text/html"]), None);
+        assert_eq!(negotiate(&headers, &["text/html", "text/plain"]), None);
     }
 
     #[test]
@@ -1700,7 +1639,7 @@ mod tests {
             HeaderValue::from_static("text/plain;q=0.5, text/html"),
         );
         assert_eq!(
-            negotiate(&headers, &["text/plain", "text/html"]),
+            negotiate(&headers, &["text/html", "text/plain"]),
             Some("text/html"),
         );
     }
