@@ -1,16 +1,22 @@
 use chrono::TimeDelta;
 use janitor_types::{Campaign, ChangeSetId, CodebaseName};
+use serde::{Deserialize, Serialize};
 use sqlx::postgres::types::PgInterval;
 use sqlx::{Error, FromRow, PgPool};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 #[derive(Debug, FromRow)]
 pub struct QueueItem {
     pub id: i32,
     pub context: Option<String>,
-    pub command: Option<String>,
-    // queue.estimated_duration is nullable (schema/state.sql).
+    pub command: String,
+    // `queue.estimated_duration` is an `interval` in the schema and
+    // is NULLable. Most rows have it (the scheduler estimates from
+    // historical runs), but manual inserts — admin reschedules,
+    // cleanup operations — leave it unset. Decoding as the
+    // non-nullable `PgInterval` made `iter_queue` 500 the moment a
+    // single such row entered the queue.
     pub estimated_duration: Option<PgInterval>,
     pub campaign: Campaign,
     pub refresh: Option<bool>,
@@ -55,7 +61,7 @@ pub struct ETA {
     pub wait_time: Option<PgInterval>,
 }
 
-#[derive(Debug, Default, Clone, FromRow, serde::Serialize, serde::Deserialize)]
+#[derive(FromRow, Debug, Clone, Serialize, Deserialize, Default)]
 pub struct VcsInfo {
     pub branch_url: Option<String>,
     pub subpath: Option<String>,
