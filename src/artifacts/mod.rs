@@ -10,6 +10,12 @@ pub use store::ArtifactManager;
 /// The contents of an artifact, as a stream of chunks.
 pub type ArtifactStream = BoxStream<'static, Result<bytes::Bytes, Error>>;
 
+/// Default cap on a single artifact retrieval, in seconds. Matches
+/// Python's `PRECACHE_RETRIEVE_TIMEOUT`. Services that bound
+/// `retrieve_artifacts` to keep a stalled backend from wedging a
+/// request or worker should use this value.
+pub const RETRIEVE_TIMEOUT_SECS: u64 = 300;
+
 #[derive(Debug)]
 pub enum Error {
     ServiceUnavailable,

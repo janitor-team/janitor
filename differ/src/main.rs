@@ -26,10 +26,6 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 const TMP_PREFIX: &str = "janitor-differ";
-/// Matches Python's PRECACHE_RETRIEVE_TIMEOUT. Also used by request-path
-/// artifact retrieval so a hung backend surfaces as 504 rather than
-/// hanging the handler indefinitely.
-const ARTIFACT_RETRIEVE_TIMEOUT_SECS: u64 = 300;
 
 /// Parse a run id from a request path. Run ids end up in cache
 /// filenames, so this also keeps them from escaping the cache dir.
@@ -328,7 +324,7 @@ async fn fetch_binaries(
     let old_dir = tempfile::TempDir::with_prefix(TMP_PREFIX)?;
     let new_dir = tempfile::TempDir::with_prefix(TMP_PREFIX)?;
 
-    let timeout = std::time::Duration::from_secs(ARTIFACT_RETRIEVE_TIMEOUT_SECS);
+    let timeout = std::time::Duration::from_secs(janitor::artifacts::RETRIEVE_TIMEOUT_SECS);
     let span = info_span!(
         "fetch-artifacts",
         old_run_id = old_id.as_str(),

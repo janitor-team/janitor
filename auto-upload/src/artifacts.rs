@@ -4,16 +4,13 @@ use tempfile::TempDir;
 use tracing::{debug, info, warn};
 
 use crate::error::{Result, UploadError};
-use janitor::artifacts::{get_artifact_manager, ArtifactManager};
+use janitor::artifacts::{get_artifact_manager, ArtifactManager, RETRIEVE_TIMEOUT_SECS};
 use janitor_types::RunId;
 
 /// Wraps the shared [`ArtifactManager`] and downloads runs into a fresh temp dir.
 pub struct ArtifactProcessor {
     artifact_manager: ArtifactManager,
 }
-
-/// Cap on a single artifact retrieval, matching differ's bound.
-const ARTIFACT_RETRIEVE_TIMEOUT_SECS: u64 = 300;
 
 impl ArtifactProcessor {
     /// Open the artifact store at `artifact_location`.
@@ -34,12 +31,12 @@ impl ArtifactProcessor {
         let temp_dir = TempDir::new().map_err(UploadError::Io)?;
         // Bound the download: an artifact store that accepts the
         // connection and then stalls would otherwise wedge this upload
-        // indefinitely. differ bounds the same call at 300s.
+        // indefinitely.
         let retrieval = self
             .artifact_manager
             .retrieve_artifacts(run_id, temp_dir.path(), None);
         let retrieval = tokio::time::timeout(
-            std::time::Duration::from_secs(ARTIFACT_RETRIEVE_TIMEOUT_SECS),
+            std::time::Duration::from_secs(RETRIEVE_TIMEOUT_SECS),
             retrieval,
         );
         match retrieval.await {
