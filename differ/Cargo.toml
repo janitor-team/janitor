@@ -37,6 +37,11 @@ janitor = { path = "..", features = ["testing"] }
 janitor-service = { workspace = true, features = ["testing"] }
 serial_test = "3"
 tower = { workspace = true, features = ["util"] }
+# Needed by our own test files, which upstream's differ does not carry:
+# tests/redis_integration_tests.rs and tests/performance_tests.rs.
+redis = { workspace = true, features = ["aio", "tokio-comp"] }
+futures-util = "0.3"
+tempfile = "3"
 
 [features]
 cli = ["dep:clap"]
