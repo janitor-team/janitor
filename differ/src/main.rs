@@ -2041,15 +2041,19 @@ mod tests {
             .await
             .unwrap();
 
-            let msg = ResultMessage {
-                code: "success".to_string(),
-                log_id: run_id("control-run"),
-                revision: "base-rev".to_string(),
-                main_branch_revision: "base-rev".to_string(),
-                codebase: CodebaseName::new("pkg").unwrap(),
-            };
+            // `other-run` shares base-rev but belongs to another codebase, so
+            // it must not be paired with this one.
+            let base = RevisionId::from(b"base-rev".to_vec());
             assert_eq!(
-                candidate_pairs(db.pool(), &msg).await.unwrap(),
+                candidate_pairs(
+                    db.pool(),
+                    &run_id("control-run"),
+                    &CodebaseName::new("pkg").unwrap(),
+                    &base,
+                    &base,
+                )
+                .await
+                .unwrap(),
                 vec![(run_id("control-run"), run_id("lint-run"))]
             );
         }
