@@ -274,3 +274,63 @@ fn classify_forge_rate_limit_past_deadline_is_expired() {
         ForgeRateLimitDecision::Expired,
     );
 }
+
+// A proposal whose one connection fails when two calls overlap, like breezy's forges.
+const ONE_CONNECTION_PROPOSAL: &std::ffi::CStr = c"
+import threading
+import time
+
+
+class Proposal:
+    def __init__(self):
+        self.connection = threading.Lock()
+
+    def request(self, value):
+        if not self.connection.acquire(blocking=False):
+            raise ConnectionError('connection busy')
+        try:
+            time.sleep(0.2)
+            return value
+        finally:
+            self.connection.release()
+
+    def get_source_revision(self):
+        return self.request(b'source-rev')
+
+    def get_source_branch_url(self):
+        return self.request('https://forge.example/source')
+
+    def can_be_merged(self):
+        return self.request(True)
+
+    def get_target_branch_url(self):
+        return self.request('https://forge.example/target')
+";
+
+#[tokio::test]
+async fn test_get_mp_forge_info_calls_one_at_a_time() {
+    use pyo3::prelude::*;
+    let mp = Python::attach(|py| -> PyResult<Py<PyAny>> {
+        let module = PyModule::from_code(py, ONE_CONNECTION_PROPOSAL, c"proposal.py", c"proposal")?;
+        Ok(module.getattr("Proposal")?.call0()?.unbind())
+    })
+    .unwrap();
+    let mp = breezyshim::forge::MergeProposal::from(mp);
+
+    let (revision, source_branch_url, can_be_merged, target_branch_url) =
+        get_mp_forge_info(&mp).await.unwrap();
+
+    assert_eq!(
+        revision.unwrap(),
+        Some(RevisionId::from(b"source-rev".to_vec()))
+    );
+    assert_eq!(
+        source_branch_url.unwrap().unwrap().as_str(),
+        "https://forge.example/source"
+    );
+    assert!(can_be_merged.unwrap());
+    assert_eq!(
+        target_branch_url.unwrap().unwrap().as_str(),
+        "https://forge.example/target"
+    );
+}
