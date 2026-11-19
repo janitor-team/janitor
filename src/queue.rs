@@ -205,6 +205,8 @@ impl<'a> Queue<'a> {
         refresh: bool,
         requester: Option<&str>,
     ) -> Result<(i32, String), Error> {
+        // bucket and campaign are a Postgres enum and domain, so binding
+        // &str/newtypes needs the explicit casts.
         sqlx::query_as(
             "INSERT INTO queue (command, priority, bucket, context, estimated_duration, campaign, refresh, requester, change_set, codebase)
              VALUES ($1, (SELECT COALESCE(MIN(priority), 0) FROM queue) + $2::bigint, $3::queue_bucket, $4, $5, $6::campaign_name, $7, $8, $9, $10)
@@ -216,6 +218,8 @@ impl<'a> Queue<'a> {
              RETURNING id, bucket::text"
         )
         .bind(command)
+        // queue.priority is bigint; bind as i64 so Postgres doesn't refuse
+        // the float8 literal when adding it to MIN(priority).
         .bind(offset as i64)
         .bind(bucket)
         .bind(context)
@@ -229,7 +233,22 @@ impl<'a> Queue<'a> {
         .await
     }
 
-    /// Iterate items currently queued.
+    pub async fn get_buckets(&self) -> Result<Vec<(String, i64)>, Error> {
+        // bucket::text so the queue_bucket enum decodes as a String.
+        sqlx::query_as(
+            "SELECT bucket::text, count(*) FROM queue GROUP BY bucket ORDER BY bucket ASC",
+        )
+        .fetch_all(self.pool)
+        .await
+    }
+
+    /// Iterator for queue items with filtering and limiting capabilities
+    ///
+    /// This matches the Python iter_queue() method functionality
+    ///
+    /// # Arguments
+    /// * `limit` - Optional limit on number of items to return
+    /// * `campaign` - Optional campaign filter
     ///
     /// Rows are ordered the same way `next_item` would pick them
     /// (bucket, priority, id ascending); `limit` caps the number of
