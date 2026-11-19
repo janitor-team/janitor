@@ -37,6 +37,7 @@ ognibuild = { workspace = true }
 debversion = { workspace = true, optional = true }
 debian-changelog = { workspace = true, optional = true }
 tokio-util = "0.7.14"
+pyo3 = { workspace = true }
 utoipa.workspace = true
 utoipa-axum.workspace = true
 dns-lookup = "4.0.2"

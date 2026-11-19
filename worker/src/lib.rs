@@ -1,3 +1,17 @@
+// BEHAVIORAL COMPATIBILITY ANALYSIS WITH PYTHON
+//
+// Critical Notes: The Worker service appears to be implemented entirely in Rust
+// using PyO3 for breezyshim integration. There is no equivalent Python implementation
+// to compare against - the Python codebase only contains worker_creds.py for
+// authentication helpers. The Worker is a pure Rust service that integrates with
+// the Python breezy library via PyO3.
+//
+// Key Compatibility Considerations:
+// 1. PyO3 Integration: Uses breezyshim for VCS operations
+// 2. API Compatibility: Interfaces with runner/site services via HTTP APIs
+// 3. Authentication: Uses worker credentials for service authentication
+// 4. Metadata Format: Must match expected JSON structure for other services
+
 use breezyshim::branch::Branch;
 use breezyshim::controldir::ControlDirFormat;
 use breezyshim::error::Error as BrzError;
@@ -6,6 +20,7 @@ use breezyshim::tree::{MutableTree, WorkingTree};
 use breezyshim::workingtree::PyWorkingTree;
 pub use breezyshim::RevisionId;
 use reqwest::header::{HeaderMap, HeaderValue};
+use silver_platter::CodemodResult;
 use std::collections::HashMap;
 
 use dns_lookup::{getaddrinfo, LookupErrorKind};
@@ -258,6 +273,195 @@ pub trait Target {
         log_directory: &std::path::Path,
         resume_metadata: Option<&serde_json::Value>,
     ) -> Result<Box<dyn silver_platter::CodemodResult>, WorkerFailure>;
+}
+
+/// Decide what changer_result to feed the build stage given the
+/// codemod outcome and the workspace state. Pulled out of `run_worker`
+/// so the dispatch is unit-testable without standing up a real
+/// `Workspace`.
+///
+/// Inputs come straight off `silver_platter::Workspace` accessors
+/// (`any_branch_changes`, `changes_since_main`, `resume_branch`,
+/// `main_branch`); `local_revision` is the local tree's last revision
+/// and `main_revision` is `Some(rev)` only when the workspace has a
+/// main branch.
+fn decide_changer_result(
+    codemod_result: Result<Box<dyn CodemodResult>, WorkerFailure>,
+    force_build: bool,
+    any_branch_changes: bool,
+    changes_since_main: bool,
+    has_resume_branch: bool,
+    main_revision: Option<RevisionId>,
+    local_revision: RevisionId,
+) -> Result<Box<dyn CodemodResult>, WorkerFailure> {
+    let no_change_build = || -> Box<dyn CodemodResult> {
+        Box::new(silver_platter::codemod::CommandResult {
+            description: Some("No change build".to_owned()),
+            context: None,
+            tags: Vec::new(),
+            value: Some(0),
+            old_revision: local_revision.clone(),
+            new_revision: local_revision.clone(),
+            title: None,
+            commit_message: None,
+            serialized_context: None,
+            target_branch_url: None,
+        })
+    };
+    match codemod_result {
+        Ok(r) => {
+            if !any_branch_changes {
+                if force_build {
+                    // force_build → build even without VCS changes
+                    // (mirrors the Err(nothing-to-do) branch below).
+                    Ok(no_change_build())
+                } else {
+                    Err(WorkerFailure {
+                        code: "nothing-to-do".to_owned(),
+                        description: "Nothing to do.".to_owned(),
+                        stage: vec!["codemod".to_owned()],
+                        transient: Some(false),
+                        details: None,
+                    })
+                }
+            } else {
+                Ok(r)
+            }
+        }
+        Err(e) if e.code.as_str() == "nothing-to-do" => {
+            if changes_since_main {
+                // This should only ever happen if we were resuming
+                let main_revision = main_revision.ok_or_else(|| WorkerFailure {
+                    code: "main-branch-missing".to_owned(),
+                    description: "Main branch is missing when checking for changes".to_string(),
+                    stage: vec!["codemod".to_owned()],
+                    transient: Some(false),
+                    details: None,
+                })?;
+                if !has_resume_branch {
+                    return Err(WorkerFailure {
+                        code: "unexpected-existing-changes".to_owned(),
+                        description: format!(
+                            "Found existing changes despite not having resumed. Mainline: {}, local: {}",
+                            main_revision, local_revision
+                        ),
+                        stage: vec!["codemod".to_owned()],
+                        transient: Some(false),
+                        details: None,
+                    });
+                }
+                Err(WorkerFailure {
+                    code: "nothing-new-to-do".to_owned(),
+                    description: e.description.clone(),
+                    stage: vec!["codemod".to_owned()],
+                    transient: Some(false),
+                    details: None,
+                })
+            } else if force_build {
+                Ok(no_change_build())
+            } else {
+                Err(e)
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
+#[cfg(feature = "cli")]
+pub fn py_to_serde_json(obj: &pyo3::Bound<pyo3::PyAny>) -> pyo3::PyResult<serde_json::Value> {
+    use pyo3::prelude::*;
+    if obj.is_none() {
+        Ok(serde_json::Value::Null)
+    } else if let Ok(b) = obj.cast::<pyo3::types::PyBool>() {
+        Ok(serde_json::Value::Bool(b.is_true()))
+    } else if let Ok(i) = obj.cast::<pyo3::types::PyInt>() {
+        // Try to extract as i64 first, then as u64, then as f64
+        if let Ok(val) = i.extract::<i64>() {
+            Ok(serde_json::Value::Number(serde_json::Number::from(val)))
+        } else if let Ok(val) = i.extract::<u64>() {
+            Ok(serde_json::Value::Number(serde_json::Number::from(val)))
+        } else if let Ok(val) = i.extract::<f64>() {
+            Ok(serde_json::Value::Number(
+                serde_json::Number::from_f64(val).unwrap_or_else(|| serde_json::Number::from(0)),
+            ))
+        } else {
+            Err(pyo3::exceptions::PyTypeError::new_err(
+                ("integer too large",),
+            ))
+        }
+    } else if let Ok(f) = obj.cast::<pyo3::types::PyFloat>() {
+        let float_val = f.value();
+        if let Some(num) = serde_json::Number::from_f64(float_val) {
+            Ok(serde_json::Value::Number(num))
+        } else {
+            // Handle special float values (NaN, Infinity, -Infinity)
+            Err(pyo3::exceptions::PyValueError::new_err(
+                format!("Cannot convert float value {} to JSON", float_val),
+            ))
+        }
+    } else if let Ok(s) = obj.cast::<pyo3::types::PyString>() {
+        Ok(serde_json::Value::String(s.to_string_lossy().to_string()))
+    } else if let Ok(l) = obj.cast::<pyo3::types::PyList>() {
+        Ok(serde_json::Value::Array(
+            l.iter()
+                .map(|x| py_to_serde_json(&x))
+                .collect::<PyResult<Vec<_>>>()?,
+        ))
+    } else if let Ok(d) = obj.cast::<pyo3::types::PyDict>() {
+        let mut ret = serde_json::Map::new();
+        for (k, v) in d.iter() {
+            let k = k.extract::<String>()?;
+            let v = py_to_serde_json(&v)?;
+            ret.insert(k, v);
+        }
+        Ok(serde_json::Value::Object(ret))
+    } else {
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            ("unsupported type",),
+        ))
+    }
+}
+
+#[cfg(feature = "cli")]
+pub fn serde_json_to_py(value: &serde_json::Value) -> pyo3::Py<pyo3::PyAny> {
+    use pyo3::prelude::*;
+    use pyo3::IntoPyObject;
+    Python::attach(|py| match value {
+        serde_json::Value::Null => py.None(),
+        serde_json::Value::Bool(b) => pyo3::types::PyBool::new(py, *b).to_owned().into_any().unbind(),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                i.into_pyobject(py).unwrap().into_any().unbind()
+            } else if let Some(u) = n.as_u64() {
+                u.into_pyobject(py).unwrap().into_any().unbind()
+            } else if let Some(f) = n.as_f64() {
+                pyo3::types::PyFloat::new(py, f).into_any().unbind()
+            } else {
+                py.None()
+            }
+        }
+        serde_json::Value::String(s) => {
+            pyo3::types::PyString::new(py, s.as_str()).into_any().unbind()
+        }
+        serde_json::Value::Array(a) => {
+            pyo3::types::PyList::new(
+                py,
+                a.iter().map(serde_json_to_py).collect::<Vec<_>>(),
+            )
+            .unwrap()
+            .into_any()
+            .unbind()
+        }
+        serde_json::Value::Object(o) => {
+            let ret = pyo3::types::PyDict::new(py);
+            for (k, v) in o.into_iter() {
+                if let Err(e) = ret.set_item(k, serde_json_to_py(v)) {
+                    log::warn!("Failed to set dict item {}: {}", k, e);
+                }
+            }
+            ret.into_any().unbind()
+        }
+    })
 }
 
 pub fn run_worker(
@@ -789,56 +993,20 @@ pub fn run_worker(
     );
     metadata.revision = Some(ws.local_tree().branch().last_revision());
 
-    let changer_result = match r {
-        Ok(r) => {
-            if !ws.any_branch_changes() {
-                return Err(
-                    WorkerFailure::new("nothing-to-do", "Nothing to do.", ["codemod"])
-                        .with_transient(false),
-                );
-            }
-            r
-        }
-        Err(
-            ref e @ WorkerFailure {
-                ref code,
-                ref description,
-                ..
-            },
-        ) if code.as_str() == "nothing-to-do" => {
-            if ws.changes_since_main() {
-                // This should only ever happen if we were resuming
-                assert!(
-                    ws.resume_branch().is_some(),
-                    "Found existing changes despite not having resumed. Mainline: {}, local: {}",
-                    ws.main_branch().unwrap().last_revision(),
-                    ws.local_tree().branch().last_revision()
-                );
-                return Err(WorkerFailure::new(
-                    "nothing-new-to-do",
-                    description.clone(),
-                    ["codemod"],
-                )
-                .with_transient(false));
-            } else if force_build {
-                Box::new(silver_platter::codemod::CommandResult {
-                    description: Some("No change build".to_owned()),
-                    context: None,
-                    tags: Vec::new(),
-                    value: Some(0),
-                    old_revision: ws.local_tree().last_revision().unwrap(),
-                    new_revision: ws.local_tree().last_revision().unwrap(),
-                    title: None,
-                    commit_message: None,
-                    serialized_context: None,
-                    target_branch_url: None,
-                })
-            } else {
-                return Err(e.clone());
-            }
-        }
-        Err(e) => return Err(e),
-    };
+    let local_revision = ws.local_tree().last_revision().unwrap_or_else(|e| {
+        log::warn!("Failed to get last revision: {:?}", e);
+        RevisionId::null()
+    });
+    let main_revision = ws.main_branch().map(|b| b.last_revision());
+    let changer_result = decide_changer_result(
+        r,
+        force_build,
+        ws.any_branch_changes(),
+        ws.changes_since_main(),
+        ws.resume_branch().is_some(),
+        main_revision,
+        local_revision,
+    )?;
 
     metadata.refreshed = Some(ws.refreshed());
     metadata.value = changer_result.value().map(|i| i as u64);
@@ -1791,4 +1959,207 @@ check:
         }
     }
     */
+
+    /// Codemod succeeded with VCS changes — return the codemod's own
+    /// result unchanged regardless of force_build.
+    #[test]
+    fn decide_changer_result_ok_with_changes_passes_through() {
+        let original = Box::new(silver_platter::codemod::CommandResult {
+            description: Some("real codemod".to_owned()),
+            value: Some(42),
+            ..Default::default()
+        });
+        let out = decide_changer_result(
+            Ok(original),
+            /*force_build=*/ false,
+            /*any_branch_changes=*/ true,
+            /*changes_since_main=*/ false,
+            /*has_resume_branch=*/ false,
+            /*main_revision=*/ Some(RevisionId::null()),
+            /*local_revision=*/ RevisionId::null(),
+        );
+        match out {
+            Ok(r) => {
+                assert_eq!(r.description().as_deref(), Some("real codemod"));
+                assert_eq!(r.value(), Some(42));
+            }
+            Err(e) => panic!("ok-with-changes should succeed; got {:?}", e),
+        }
+    }
+
+    /// Codemod returned Ok but produced no VCS changes; without
+    /// force_build this is a `nothing-to-do` failure (the historical
+    /// behavior).
+    #[test]
+    fn decide_changer_result_ok_no_changes_no_force_build_is_nothing_to_do() {
+        let original = Box::new(silver_platter::codemod::CommandResult::default());
+        let out = decide_changer_result(
+            Ok(original),
+            /*force_build=*/ false,
+            /*any_branch_changes=*/ false,
+            /*changes_since_main=*/ false,
+            /*has_resume_branch=*/ false,
+            /*main_revision=*/ Some(RevisionId::null()),
+            /*local_revision=*/ RevisionId::null(),
+        );
+        match out {
+            Ok(_) => panic!("must bail with nothing-to-do"),
+            Err(err) => {
+                assert_eq!(err.code, "nothing-to-do");
+                assert_eq!(err.stage, vec!["codemod"]);
+            }
+        }
+    }
+
+    /// Regression for the control-campaign success path. Codemod
+    /// returned Ok with no VCS changes (typical for the `control`
+    /// suite running `brz up`), and `force_build=true` says we still
+    /// want a build out of this. Must produce a synthetic
+    /// `No change build` result and let the build stage proceed —
+    /// not bail with `nothing-to-do`.
+    #[test]
+    fn decide_changer_result_ok_no_changes_force_build_yields_no_change_build() {
+        let local_rev = RevisionId::null();
+        let original = Box::new(silver_platter::codemod::CommandResult::default());
+        let out = decide_changer_result(
+            Ok(original),
+            /*force_build=*/ true,
+            /*any_branch_changes=*/ false,
+            /*changes_since_main=*/ false,
+            /*has_resume_branch=*/ false,
+            /*main_revision=*/ Some(local_rev.clone()),
+            local_rev,
+        );
+        match out {
+            Ok(r) => {
+                assert_eq!(r.description().as_deref(), Some("No change build"));
+                assert_eq!(r.value(), Some(0));
+            }
+            Err(e) => panic!("force_build should produce a synthetic ok result; got {:?}", e),
+        }
+    }
+
+    /// Same shape as above, but on the `Err(nothing-to-do)` side —
+    /// the original force_build branch that the new Ok-side mirrors.
+    /// Kept as a regression so refactors that touch one branch don't
+    /// silently diverge from the other.
+    #[test]
+    fn decide_changer_result_err_nothing_to_do_force_build_yields_no_change_build() {
+        let nothing_to_do = WorkerFailure {
+            code: "nothing-to-do".to_owned(),
+            description: "no changes".to_owned(),
+            stage: vec!["codemod".to_owned()],
+            transient: Some(false),
+            details: None,
+        };
+        let out = decide_changer_result(
+            Err(nothing_to_do),
+            /*force_build=*/ true,
+            /*any_branch_changes=*/ false,
+            /*changes_since_main=*/ false,
+            /*has_resume_branch=*/ false,
+            /*main_revision=*/ Some(RevisionId::null()),
+            /*local_revision=*/ RevisionId::null(),
+        );
+        match out {
+            Ok(r) => assert_eq!(r.description().as_deref(), Some("No change build")),
+            Err(e) => panic!("force_build should turn nothing-to-do into a build; got {:?}", e),
+        }
+    }
+
+    /// `nothing-to-do` with pre-existing main-branch changes and no
+    /// resume branch → `unexpected-existing-changes`. The error
+    /// description must include both revisions so the failure_details
+    /// triage page is useful.
+    #[test]
+    fn decide_changer_result_err_nothing_to_do_changes_since_main_no_resume_is_unexpected() {
+        let nothing_to_do = WorkerFailure {
+            code: "nothing-to-do".to_owned(),
+            description: "ignored".to_owned(),
+            stage: vec!["codemod".to_owned()],
+            transient: Some(false),
+            details: None,
+        };
+        let main_rev = RevisionId::from(b"main-rev".to_vec());
+        let local_rev = RevisionId::from(b"local-rev".to_vec());
+        let out = decide_changer_result(
+            Err(nothing_to_do),
+            /*force_build=*/ false,
+            /*any_branch_changes=*/ false,
+            /*changes_since_main=*/ true,
+            /*has_resume_branch=*/ false,
+            Some(main_rev),
+            local_rev,
+        );
+        match out {
+            Ok(_) => panic!("must report unexpected-existing-changes"),
+            Err(err) => {
+                assert_eq!(err.code, "unexpected-existing-changes");
+                assert!(
+                    err.description.contains("main-rev")
+                        && err.description.contains("local-rev"),
+                    "description should include both revisions, got: {}",
+                    err.description
+                );
+            }
+        }
+    }
+
+    /// Same as above but `has_resume_branch=true` → `nothing-new-to-do`
+    /// (resume scenario, the codemod re-ran but didn't add anything
+    /// beyond what the resume branch already had).
+    #[test]
+    fn decide_changer_result_err_nothing_to_do_changes_since_main_with_resume_is_nothing_new() {
+        let nothing_to_do = WorkerFailure {
+            code: "nothing-to-do".to_owned(),
+            description: "carried-through".to_owned(),
+            stage: vec!["codemod".to_owned()],
+            transient: Some(false),
+            details: None,
+        };
+        let out = decide_changer_result(
+            Err(nothing_to_do),
+            /*force_build=*/ false,
+            /*any_branch_changes=*/ false,
+            /*changes_since_main=*/ true,
+            /*has_resume_branch=*/ true,
+            Some(RevisionId::null()),
+            RevisionId::null(),
+        );
+        match out {
+            Ok(_) => panic!("must report nothing-new-to-do"),
+            Err(err) => {
+                assert_eq!(err.code, "nothing-new-to-do");
+                assert_eq!(err.description, "carried-through");
+            }
+        }
+    }
+
+    /// Non-`nothing-to-do` errors propagate untouched.
+    #[test]
+    fn decide_changer_result_err_other_propagates() {
+        let other = WorkerFailure {
+            code: "build-failed".to_owned(),
+            description: "boom".to_owned(),
+            stage: vec!["build".to_owned()],
+            transient: Some(true),
+            details: None,
+        };
+        let out = decide_changer_result(
+            Err(other),
+            /*force_build=*/ true, // even with force_build set
+            /*any_branch_changes=*/ false,
+            /*changes_since_main=*/ false,
+            /*has_resume_branch=*/ false,
+            Some(RevisionId::null()),
+            RevisionId::null(),
+        );
+        match out {
+            Ok(_) => panic!("non-nothing-to-do must propagate"),
+            Err(err) => {
+                assert_eq!(err.code, "build-failed");
+                assert_eq!(err.transient, Some(true));
+            }
+        }
+    }
 }
