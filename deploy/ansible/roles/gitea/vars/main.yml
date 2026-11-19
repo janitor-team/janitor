@@ -1,0 +1,3 @@
+---
+# The admin first: it creates the others.
+gitea_users: "{{ [gitea_admin_user, gitea_bot_user] + gitea_test_users }}"
