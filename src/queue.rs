@@ -122,24 +122,29 @@ impl<'a> Queue<'a> {
              LEFT JOIN codebase ON codebase.name = queue.codebase",
         );
 
-        let mut conditions = Vec::new();
+        let mut conditions: Vec<String> = Vec::new();
+        let mut next_param: usize = 1;
 
         if assigned_queue_items.is_some() {
-            conditions.push("NOT (queue.id = ANY($1::int[]))");
+            conditions.push(format!("NOT (queue.id = ANY(${}::int[]))", next_param));
+            next_param += 1;
         }
 
         if codebase.is_some() {
-            conditions.push("queue.codebase = $2");
+            conditions.push(format!("queue.codebase = ${}", next_param));
+            next_param += 1;
         }
 
         if campaign.is_some() {
-            conditions.push("queue.campaign = $3");
+            conditions.push(format!("queue.campaign = ${}", next_param));
+            next_param += 1;
         }
 
         if exclude_hosts.is_some() {
-            conditions.push(
-                "NOT (codebase.branch_url IS NOT NULL AND SUBSTRING(codebase.branch_url from '.*://(?:[^/@]*@)?([^/]*)') = ANY($4::text[]))"
-            );
+            conditions.push(format!(
+                "NOT (codebase.branch_url IS NOT NULL AND SUBSTRING(codebase.branch_url from '.*://(?:[^/@]*@)?([^/]*)') = ANY(${}::text[]))",
+                next_param
+            ));
         }
 
         if !conditions.is_empty() {
