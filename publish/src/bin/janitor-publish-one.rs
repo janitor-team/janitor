@@ -54,14 +54,10 @@ fn main() {
 
     args.logs.init();
 
-    // Mirror janitor-publish: init breezy (registers RemoteGitProber so
-    // `Branch.open(<git url>)` works) and load plugins (registers the
-    // gitlab/github/launchpad forge plugins so `get_forge(branch)`
-    // resolves to a real forge instead of returning UnsupportedForge).
-    // Without this the subprocess opens the target branch fine via
-    // silver_platter's prober list but then fails forge lookup with
+    // Load the forge connectors, which live on BRZ_PLUGIN_PATH rather
+    // than in breezy's built-in submodules. Without this the subprocess
+    // opens the target branch fine but fails the forge lookup with
     // `Failed(hoster-unsupported): Forge unsupported: salsa.debian.org.`
-    breezyshim::init();
     let _ = breezyshim::plugin::load_plugins();
 
     let request: janitor_publish::PublishOneRequest = serde_json::from_reader(std::io::stdin())

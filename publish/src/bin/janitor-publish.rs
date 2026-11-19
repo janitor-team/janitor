@@ -66,8 +66,9 @@ struct Args {
     #[clap(long)]
     modify_mp_limit: Option<i32>,
 
-    /// Maximum number of unexpected errors to encounter before stopping.
-    #[clap(long)]
+    /// Maximum number of merge proposals that may fail to check during a
+    /// scan before the pass is abandoned (and publishing stays gated).
+    #[clap(long, default_value = "5")]
     unexpected_mp_limit: Option<i32>,
 
     /// External URL
@@ -116,22 +117,17 @@ async fn main() -> Result<(), i32> {
     args.logging.init();
     janitor_publish::metrics::install();
 
-    // breezyshim::init() runs init_git() + init_bzr() which import
-    // breezy.git and breezy.bzr — that's what registers
-    // RemoteGitProber / LocalGitProber and the Bazaar formats.
-    // Without this, Branch.open(<git url>) falls through every
-    // registered prober (only the Bazaar ones load eagerly) and
-    // raises NotBranchError; silver_platter logs it as "Failed to
-    // open VCS branch (treating as unguessable)" and publish_one
-    // surfaces it as `result_code=local-branch-missing` for every
-    // git-store push attempt. Calling load_plugins() alone isn't
-    // enough — that walks BRZ_PLUGIN_PATH (gitlab/github/launchpad
-    // forges) but doesn't touch the built-in breezy submodules.
-    // spawn_blocking because Python initialization (and plugin loading,
-    // which may do network probing for forge connectors) must not run
-    // directly on the Tokio executor thread.
+    // Load the forge connectors before any publish attempt. They live
+    // on BRZ_PLUGIN_PATH rather than in breezy's built-in submodules,
+    // so without this get_forge answers UnsupportedForge and every push
+    // fails as hoster-unsupported. breezyshim's constructor already
+    // imports breezy.git and breezy.bzr, which is what registers the
+    // probers.
+    //
+    // spawn_blocking because loading the plugins may probe the network
+    // for forge connectors, which must not run on the Tokio executor
+    // thread.
     tokio::task::spawn_blocking(|| {
-        breezyshim::init();
         let _ = breezyshim::plugin::load_plugins();
     })
     .await
