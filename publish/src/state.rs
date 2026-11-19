@@ -115,14 +115,32 @@ pub async fn store_publish(
 pub(crate) async fn already_published(
     conn: &PgPool,
     target_branch_url: &Url,
-    branch_name: &str,
+    branch_names: &[&str],
     revision: &RevisionId,
     modes: &[Mode],
-) -> Result<bool, sqlx::Error> {
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let modes = modes.iter().map(|m| m.to_string()).collect::<Vec<_>>();
-    let row = sqlx::query(
-        "SELECT * FROM publish WHERE mode = ANY($1::publish_mode[]) AND revision = $2 AND target_branch_url = $3 AND branch_name = $4").bind(modes).bind(revision.to_string()).bind(target_branch_url.to_string()).bind(branch_name).fetch_optional(conn).await?;
-    Ok(row.is_some())
+    let urls: Vec<String> = sqlx::query_scalar(
+        "SELECT target_branch_url FROM publish WHERE mode = ANY($1::publish_mode[]) AND revision = $2 AND branch_name = ANY($3) AND result_code IN ('success', 'nothing-to-do') AND target_branch_url IS NOT NULL").bind(modes).bind(revision.to_string()).bind(branch_names).fetch_all(conn).await?;
+    let urls = urls
+        .iter()
+        .map(|url| url.parse())
+        .collect::<Result<Vec<Url>, _>>()
+        .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
+    let target_branch_url = target_branch_url.clone();
+    tokio::task::spawn_blocking(move || -> Result<bool, String> {
+        for url in urls {
+            if crate::branches_match(Some(&url), Some(&target_branch_url), None)
+                .map_err(|e| e.to_string())?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    })
+    .await
+    .expect("branches_match panicked")
+    .map_err(Into::into)
 }
 
 pub(crate) async fn get_open_merge_proposal(
@@ -787,6 +805,48 @@ pub async fn iter_publish_ready(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use janitor::test_with_database;
+
+    test_with_database! {
+        schema = Core;
+        async fn test_already_published(test_db: TestDatabase) {
+            let pool = test_db.pool();
+            for query in [
+                "INSERT INTO change_set (id, campaign) VALUES ('cs', 'lintian-fixes')",
+                "INSERT INTO publish (id, change_set, mode, result_code, revision, branch_name, target_branch_url) VALUES
+                    ('p1', 'cs', 'propose', 'success', 'rev-1', 'lintian-fixes', 'https://example.com/cb.git,branch=master'),
+                    ('p2', 'cs', 'push', 'nothing-to-do', 'rev-2', 'lintian-fixes', 'https://example.com/cb.git,branch=master'),
+                    ('p3', 'cs', 'propose', 'publisher-invalid-response', 'rev-3', 'lintian-fixes', 'https://example.com/cb.git,branch=master'),
+                    ('p4', 'cs', 'propose', 'success', 'rev-4', 'lintian-fixes/main', 'https://example.com/cb.git,branch=master')",
+            ] {
+                sqlx::query(query).execute(pool).await.unwrap();
+            }
+            let url: Url = "https://example.com/cb.git,branch=master".parse().unwrap();
+            let mut found = Vec::new();
+            for (revision, mode) in [
+                ("rev-1", Mode::Propose),
+                ("rev-1", Mode::Push),
+                ("rev-2", Mode::Push),
+                ("rev-3", Mode::Propose),
+                ("rev-4", Mode::Propose),
+                ("rev-5", Mode::Propose),
+            ] {
+                let revision = RevisionId::from(revision.as_bytes().to_vec());
+                found.push(
+                    already_published(
+                        pool,
+                        &url,
+                        &["lintian-fixes", "lintian-fixes/main"],
+                        &revision,
+                        &[mode],
+                    )
+                    .await
+                    .unwrap(),
+                );
+            }
+            assert_eq!(found, vec![true, false, true, false, true, false]);
+        }
+    }
 
     #[test]
     fn guess_codebase_query_sql_has_no_quoted_identifier_artifact() {

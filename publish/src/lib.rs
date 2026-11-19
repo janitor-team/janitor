@@ -1135,25 +1135,25 @@ fn resolve_redirects(url: &url::Url) -> url::Url {
 /// * `possible_transports` - Optional list of transports to reuse
 ///
 /// # Returns
-/// `true` if the branches match, `false` otherwise
+/// `Ok(true)` if the branches match, `Ok(false)` if not or one is missing, else the open error
 pub fn branches_match(
     url_a: Option<&url::Url>,
     url_b: Option<&url::Url>,
     mut possible_transports: Option<&mut Vec<breezyshim::transport::Transport>>,
-) -> bool {
+) -> Result<bool, silver_platter::vcs::BranchOpenError> {
     use silver_platter::vcs::{open_branch, BranchOpenError};
     if url_a == url_b {
-        return true;
+        return Ok(true);
     }
     let (url_a, url_b) = match (url_a, url_b) {
         (Some(a), Some(b)) => (a, b),
-        _ => return false,
+        _ => return Ok(false),
     };
     let (Some((base_url_a, _)), Some((base_url_b, _))) = (
         split_segment_parameters(url_a),
         split_segment_parameters(url_b),
     ) else {
-        return false;
+        return Ok(false);
     };
     // Support following redirects by normalizing URLs
     let normalized_url_a = resolve_redirects(&base_url_a);
@@ -1162,19 +1162,19 @@ pub fn branches_match(
     if normalized_url_a.to_string().trim_end_matches('/')
         != normalized_url_b.to_string().trim_end_matches('/')
     {
-        return false;
+        return Ok(false);
     }
     let branch_a = match open_branch(url_a, possible_transports.as_deref_mut(), None, None) {
         Ok(branch) => branch,
-        Err(BranchOpenError::Missing { .. }) => return false,
-        Err(e) => panic!("Unexpected error: {:?}", e),
+        Err(BranchOpenError::Missing { .. }) => return Ok(false),
+        Err(e) => return Err(e),
     };
     let branch_b = match open_branch(url_b, possible_transports, None, None) {
         Ok(branch) => branch,
-        Err(BranchOpenError::Missing { .. }) => return false,
-        Err(e) => panic!("Unexpected error: {:?}", e),
+        Err(BranchOpenError::Missing { .. }) => return Ok(false),
+        Err(e) => return Err(e),
     };
-    branch_a.name() == branch_b.name()
+    Ok(branch_a.name() == branch_b.name())
 }
 
 /// Get the URL for a user who merged a branch.
@@ -2572,6 +2572,7 @@ pub async fn publish_from_policy(
         }
     };
     let target_branch_url = role_branch_url(target_branch_url, Some(&remote_branch_name));
+    let derived_name = derived_branch_name(conn, campaign_config, run, role).await?;
 
     // Bail if this run has already been published for this
     // (target_url, branch_name, revision) tuple.
@@ -2585,7 +2586,7 @@ pub async fn publish_from_policy(
         if crate::state::already_published(
             conn,
             &target_branch_url,
-            branch_name_for_lookup,
+            &[branch_name_for_lookup, &derived_name],
             &revision,
             &modes_to_check,
         )
@@ -2675,8 +2676,6 @@ pub async fn publish_from_policy(
             require_binary_diff = false;
         }
     }
-
-    let derived_name = derived_branch_name(conn, campaign_config, run, role).await?;
 
     let vcs_manager = match run.vcs_type.and_then(|v| vcs_managers.get(&v)) {
         Some(m) => m.as_ref(),
@@ -3902,11 +3901,35 @@ async fn check_existing_mp(
         u.parse::<url::Url>()
             .expect("run has an invalid branch URL")
     });
-    if !branches_match(
+    let same_branch = match branches_match(
         mp_branch.as_ref(),
         last_run_branch.as_ref(),
         possible_transports.as_deref_mut(),
     ) {
+        Ok(same_branch) => same_branch,
+        Err(silver_platter::vcs::BranchOpenError::RateLimited {
+            url, retry_after, ..
+        }) => {
+            return Err(CheckMpError::BranchRateLimited {
+                retry_after: retry_after.and_then(|secs| {
+                    janitor::vcs::retry_after_duration(secs)
+                        .inspect_err(|e| log::error!("{} from {}", e, url))
+                        .ok()
+                }),
+            });
+        }
+        Err(e) => {
+            log::warn!(
+                "{}: unable to compare branches {:?} and {:?}, skipping: {}",
+                mp_url,
+                mp_run.branch_url,
+                last_run.branch_url,
+                e,
+            );
+            return Ok(false);
+        }
+    };
+    if !same_branch {
         log::warn!(
             "{}: Remote branch URL appears to have moved: {:?} -> {:?}",
             mp_url,
