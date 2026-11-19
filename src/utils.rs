@@ -69,6 +69,22 @@ pub fn service_user_agent(service_name: &str) -> String {
     format!("janitor-{}/{}", service_name, VERSION)
 }
 
+/// Return `url` without the password in its user info, for log messages.
+pub fn url_without_password(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let Some(at) = rest[..authority_end].rfind('@') else {
+        return url.to_string();
+    };
+    match rest[..at].split_once(':') {
+        Some(("", _password)) => format!("{}://{}", scheme, &rest[at + 1..]),
+        Some((user, _password)) => format!("{}://{}{}", scheme, user, &rest[at..]),
+        None => url.to_string(),
+    }
+}
+
 /// Override the User-Agent used by Python-backed HTTP clients.
 ///
 /// Mirrors `py/janitor/__init__.set_user_agent`: rebinds
@@ -116,6 +132,27 @@ pub fn set_user_agent(user_agent: Option<&str>) -> pyo3::PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_url_without_password() {
+        assert_eq!(
+            [
+                "postgresql://janitor:secret@db.example.com/janitor",
+                "postgresql://janitor:secret@/janitor?host=/run/postgresql",
+                "redis://:secret@localhost:6379/0",
+                "redis://localhost:6379/0",
+                "postgresql:///janitor?host=/run/postgresql",
+            ]
+            .map(url_without_password),
+            [
+                "postgresql://janitor@db.example.com/janitor",
+                "postgresql://janitor@/janitor?host=/run/postgresql",
+                "redis://localhost:6379/0",
+                "redis://localhost:6379/0",
+                "postgresql:///janitor?host=/run/postgresql",
+            ]
+        );
+    }
 
     #[test]
     fn test_splitout_env_no_env() {

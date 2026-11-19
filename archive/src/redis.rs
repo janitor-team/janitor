@@ -66,7 +66,10 @@ impl RedisSubscriber {
         config: RedisConfig,
         generator_manager: Arc<GeneratorManager>,
     ) -> ArchiveResult<Self> {
-        info!("Creating Redis subscriber with URL: {}", config.url);
+        info!(
+            "Creating Redis subscriber with URL: {}",
+            janitor::utils::url_without_password(&config.url)
+        );
 
         let redis_manager =
             Arc::new(RedisManager::new(config).map_err(|e| {
