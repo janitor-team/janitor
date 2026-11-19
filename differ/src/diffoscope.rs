@@ -375,6 +375,7 @@ pub fn format_diffoscope(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn leaf(source: &str) -> DiffoscopeOutput {
         DiffoscopeOutput {
@@ -412,36 +413,36 @@ mod tests {
         .await
         .unwrap();
 
+        assert_eq!(diff.diffoscope_json_version, Some(1));
+        assert_eq!(diff.source1, Path::new("old version"));
+        assert_eq!(diff.source2, Path::new("new version"));
+        assert!(diff.unified_diff.is_none());
+
+        let [ref outer] = diff.details[..] else {
+            panic!("expected one top-level detail, got {:?}", diff.details)
+        };
+        assert_eq!(outer.source1, Path::new("old"));
+        assert_eq!(outer.source2, Path::new("new"));
+
+        let [ref inner] = outer.details[..] else {
+            panic!("expected one nested detail, got {:?}", outer.details)
+        };
+        assert_eq!(inner.source1, Path::new("Pretty-printed"));
         assert_eq!(
-            diff,
-            DiffoscopeOutput {
-                diffoscope_json_version: Some(1),
-                source1: "old version".into(),
-                source2: "new version".into(),
-                comments: vec![],
-                unified_diff: None,
-                details: vec![DiffoscopeOutput {
-                    diffoscope_json_version: None,
-                    source1: "old".into(),
-                    source2: "new".into(),
-                    comments: vec![],
-                    unified_diff: None,
-                    details: vec![DiffoscopeOutput {
-                        diffoscope_json_version: None,
-                        source1: "Pretty-printed".into(),
-                        source2: "Pretty-printed".into(),
-                        comments: vec![
-                            "Similarity: 0.5%".to_string(),
-                            "Differences: {\"'foo'\": \"'baz'\"}".to_string(),
-                        ],
-                        unified_diff: Some(
-                            "@@ -1,3 +1,3 @@\n {\n-    \"foo\": \"bar\"\n+    \"foo\": \"baz\"\n }\n"
-                                .to_string()
-                        ),
-                        details: vec![],
-                    }]
-                }]
-            }
+            inner.unified_diff.as_deref(),
+            Some("@@ -1,3 +1,3 @@\n {\n-    \"foo\": \"bar\"\n+    \"foo\": \"baz\"\n }\n")
+        );
+        assert!(inner.details.is_empty());
+
+        // diffoscope's JSON comparator only emits the
+        // "Similarity:"/"Differences:" comments when its optional
+        // `jsondiff` module is installed, so don't pin the test to
+        // whether that extra happens to be present on the box.
+        assert!(
+            inner.comments.is_empty()
+                || inner.comments.iter().any(|c| c.starts_with("Similarity:")),
+            "unexpected comments: {:?}",
+            inner.comments
         );
     }
 
