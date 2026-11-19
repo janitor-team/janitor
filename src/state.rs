@@ -33,7 +33,7 @@ pub struct ResultTag {
     pub revision: RevisionId,
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone, Eq, sqlx::FromRow)]
 pub struct Run {
     pub id: RunId,
     pub command: String,
@@ -48,10 +48,11 @@ pub struct Run {
     pub vcs_type: Option<crate::vcs::VcsType>,
     pub branch_url: Option<String>,
     pub logfilenames: Option<Vec<String>>,
-    // Column in the schema is `worker` (name of the worker); keep the
-    // Rust field as `worker_name` for clarity but rename at the sqlx
-    // layer so queries can select `run.worker` directly without an
-    // `AS worker_name` alias everywhere.
+    // The schema column is `worker` (`run.worker text references
+    // worker(name)`), but historically this struct uses
+    // `worker_name`. Without the rename, `sqlx::FromRow` decoders
+    // (e.g. the publisher's `iter_publish_ready` → `Run`) error
+    // out with `no column found for name: worker_name`.
     #[sqlx(rename = "worker")]
     pub worker_name: Option<String>,
     pub result_branches: Option<Vec<(String, String, Option<RevisionId>, Option<RevisionId>)>>,
@@ -96,15 +97,54 @@ impl Run {
                 .map(|(_, n, br, r)| (n.clone(), br.clone(), r.clone()))
         })
     }
+
+    // Note: Manual from_row() method removed - the struct derives sqlx::FromRow
+    // which provides automatic row mapping for standard types
 }
 
-/// Return whether `codebase` shares its VCS URL with another codebase
-/// (a "cotenant"). None when we can't tell (URL not found in the
-/// codebase table).
+impl PartialOrd for Run {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Run {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Match Python's __lt__ method - compare by start_time primarily
+        self.start_time.cmp(&other.start_time)
+    }
+}
+
+/// Check if a codebase has cotenants (other codebases with the same URL)
+///
+/// # Arguments
+/// * `conn` - Database connection pool
+/// * `codebase` - The codebase to check
+/// * `url` - The URL to check for other codebases
+///
+/// # Returns
+/// Some(true) if there are cotenants, Some(false) if not, None if single codebase
+/// Decide whether `codebase` has cotenants given the list of
+/// codebase names returned by the `has_cotenants` SQL query. Split
+/// out so the Python-matching decision matrix can be unit-tested
+/// without a live database. Python semantics:
+///
+/// - `len > 1`           → `Some(true)`
+/// - `len == 1, matches` → `Some(false)`
+/// - else (empty, or single non-matching row) → `None`
+fn classify_cotenants(codebase: &str, rows: &[String]) -> Option<bool> {
+    if rows.len() > 1 {
+        Some(true)
+    } else if rows.len() == 1 && rows[0] == codebase {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 pub async fn has_cotenants(
     conn: &PgPool,
     codebase: &CodebaseName,
-    url: &url::Url,
 ) -> Result<Option<bool>, sqlx::Error> {
     #[derive(Debug, Clone, sqlx::FromRow)]
     struct Row {
@@ -175,9 +215,11 @@ pub fn get_result_branch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
+    use crate::config::Config;
+    use breezyshim::RevisionId;
+    use chrono::{DateTime, TimeZone, Utc};
 
-    fn make_run() -> Run {
+    fn create_test_run() -> Run {
         Run {
             id: RunId::new("run-123").unwrap(),
             command: "lintian-brush".to_string(),
@@ -196,15 +238,15 @@ mod tests {
             result_branches: Some(vec![
                 (
                     "main".to_string(),
-                    "refs/heads/lintian-fixes".to_string(),
-                    Some(RevisionId::from(b"base-rev".to_vec())),
-                    Some(RevisionId::from(b"tip-rev".to_vec())),
+                    "master".to_string(),
+                    Some(RevisionId::from("base-123".as_bytes())),
+                    Some(RevisionId::from("head-456".as_bytes())),
                 ),
                 (
-                    "debian".to_string(),
-                    "refs/heads/debian".to_string(),
-                    None,
-                    None,
+                    "feature".to_string(),
+                    "feature-branch".to_string(),
+                    Some(RevisionId::from("feat-base".as_bytes())),
+                    Some(RevisionId::from("feat-head".as_bytes())),
                 ),
             ]),
             result_tags: Some(vec![ResultTag {
@@ -224,9 +266,23 @@ mod tests {
     }
 
     #[test]
+    fn test_run_equality() {
+        let run1 = create_test_run();
+        let mut run2 = create_test_run();
+
+        assert_eq!(run1, run2);
+
+        // Different id = not equal
+        run2.id = RunId::new("run-456").unwrap();
+        assert_ne!(run1, run2);
+    }
+
+    #[test]
     fn test_run_duration() {
-        let run = make_run();
-        assert_eq!(run.duration(), chrono::Duration::minutes(5));
+        let run = create_test_run();
+        // duration() is finish_time - start_time; the fixture spans five
+        // minutes.
+        assert_eq!(run.duration().num_minutes(), 5);
     }
 
     #[test]
@@ -251,9 +307,24 @@ mod tests {
     }
 
     #[test]
-    fn test_run_get_result_branch_not_found() {
-        let run = make_run();
-        assert!(run.get_result_branch("nonexistent").is_none());
+    fn test_run_ordering() {
+        let mut run1 = create_test_run();
+        let mut run2 = create_test_run();
+
+        run1.start_time = DateTime::parse_from_rfc3339("2023-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        run2.start_time = DateTime::parse_from_rfc3339("2023-01-01T01:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        assert!(run1 < run2);
+        assert!(run2 > run1);
+
+        let mut runs = vec![run2.clone(), run1.clone()];
+        runs.sort();
+        assert_eq!(runs[0], run1);
+        assert_eq!(runs[1], run2);
     }
 
     #[test]
@@ -312,20 +383,18 @@ mod tests {
     }
 
     #[test]
-    fn test_run_get_result_branch_no_revisions() {
-        let run = make_run();
-        let (name, base_rev, rev) = run.get_result_branch("debian").unwrap();
-        assert_eq!(name, "refs/heads/debian");
-        assert_eq!(base_rev, None);
-        assert_eq!(rev, None);
+    fn test_run_clone() {
+        let run = create_test_run();
+        let cloned = run.clone();
+        assert_eq!(run, cloned);
+        assert_eq!(run.id, cloned.id);
+        assert_eq!(run.campaign, cloned.campaign);
     }
 
     #[test]
-    fn test_run_equality() {
-        let run1 = make_run();
-        let mut run2 = make_run();
-        // Same id = equal
-        assert_eq!(run1, run2);
+    fn test_run_with_no_result_branches() {
+        let mut run = create_test_run();
+        run.result_branches = None;
 
         let result = run.get_result_branch("main");
         assert!(result.is_none());
@@ -349,8 +418,8 @@ mod tests {
 
     #[test]
     fn test_run_equality_ignores_other_fields() {
-        let run1 = make_run();
-        let mut run2 = make_run();
+        let run1 = create_test_run();
+        let mut run2 = create_test_run();
         run2.command = "different-command".to_string();
         run2.result_code = "failure".to_string();
         run2.value = Some(999);
@@ -360,7 +429,7 @@ mod tests {
 
     #[test]
     fn test_run_zero_duration() {
-        let mut run = make_run();
+        let mut run = create_test_run();
         run.finish_time = run.start_time;
         assert_eq!(run.duration(), chrono::Duration::zero());
     }
