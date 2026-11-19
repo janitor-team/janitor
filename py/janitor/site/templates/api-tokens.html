@@ -32,7 +32,7 @@
                             <td>{{ format_timestamp(token.created) }}</td>
                             <td>{{ format_timestamp(token.expires_at) }}</td>
                             <td>
-                                <form method="post" action="/api-tokens/{{ token.hash }}/delete">
+                                <form method="post" action="{{ site_root }}/api-tokens/{{ token.hash }}/delete">
                                     <input type="submit"
                                            value="Delete"
                                            aria-label="Delete the token that expires {{ format_timestamp(token.expires_at) }}" />

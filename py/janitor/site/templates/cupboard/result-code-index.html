@@ -97,7 +97,7 @@
                     url = '{{ url_for('never-processed') }}';
                     url += '?' + '{{ {'campaign': campaign } | urlencode }}';
                 } else {
-                    url = '/cupboard/result-codes/' + code;
+                    url = '{{ site_root }}/cupboard/result-codes/' + code;
                     url += '?' + "{{ {'campaign': campaign or '_all', 'include_transient': 'on' if include_transient else 'off', 'include_historical': 'on' if include_historical else 'off' } | urlencode }}";
                 }
                 window.open(url, "_self");

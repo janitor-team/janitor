@@ -63,10 +63,10 @@
             {% endif %}
             {% if revision and campaign_name not in ('unchanged', 'control') %}
                 <li>
-                    Diff: <a href="/api/run/{{ run_id }}/diff">raw diff</a>,
+                    Diff: <a href="{{ site_root }}/api/run/{{ run_id }}/diff">raw diff</a>,
                     {% if debdiff %}
-                        <a href="/api/run/{{ run_id }}/debdiff?filter_boring=true">raw debdiff</a>,
-                        <a href="/api/run/{{ run_id }}/diffoscope?filter_boring=true">diffoscope</a> (<a href="/api/run/{{ run_id }}/diffoscope">unfiltered</a>)
+                        <a href="{{ site_root }}/api/run/{{ run_id }}/debdiff?filter_boring=true">raw debdiff</a>,
+                        <a href="{{ site_root }}/api/run/{{ run_id }}/diffoscope?filter_boring=true">diffoscope</a> (<a href="{{ site_root }}/api/run/{{ run_id }}/diffoscope">unfiltered</a>)
                     {% else %}
                         binary diffs are not available (missing control run - {{ schedule_control_button(run.id, "schedule control run", id="schedule-control-diff", accesskey=None) }})
                     {% endif %}
@@ -136,7 +136,7 @@
                 {{ debdiff|safe }}
             {% else %}
                 <p>
-                    Debdiff is too long (more than 200 lines). Download the <a href="/api/run/{{ run_id }}/debdiff?filter_boring=1">raw debdiff</a>.
+                    Debdiff is too long (more than 200 lines). Download the <a href="{{ site_root }}/api/run/{{ run_id }}/debdiff?filter_boring=1">raw debdiff</a>.
                 </p>
             {% endif %}
         {% endif %}
@@ -169,7 +169,7 @@
             <ul>
                 {% for followup in followups %}
                     <li>
-                        <a href="/cupboard/c/{{ followup['campaign'] }}/{{ followup['package'] }}">
+                        <a href="{{ site_root }}/cupboard/c/{{ followup['campaign'] }}/{{ followup['package'] }}">
                         {{ followup['campaign'] }} for {{ followup['package'] }}</a>
                     </li>
                 {% endfor %}

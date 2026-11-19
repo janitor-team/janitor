@@ -11,7 +11,7 @@
         <ul>
             {% for campaign in campaigns %}
                 <li>
-                    <a href="/cupboard/campaign/{{ campaign.name }}/">{{ campaign.name }}</a>
+                    <a href="{{ site_root }}/cupboard/campaign/{{ campaign.name }}/">{{ campaign.name }}</a>
                 </li>
             {% endfor %}
         </ul>

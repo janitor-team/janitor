@@ -33,19 +33,13 @@ def setup_gpg(app):
 
     import gpg
 
-    async def start_gpg_context(app):
-        gpg_home = tempfile.TemporaryDirectory(prefix="janitor-gpg")
-        gpg_home.__enter__()
-        gpg_context = gpg.Context(home_dir=gpg_home.name)
-        app["gpg"] = gpg_context.__enter__()
+    async def gpg_context(app):
+        with tempfile.TemporaryDirectory(prefix="janitor-gpg") as gpg_home:
+            with gpg.Context(home_dir=gpg_home) as context:
+                app["gpg"] = context
+                yield
 
-        async def cleanup_gpg(app):
-            gpg_context.__exit__(None, None, None)
-            gpg_home.__exit__(None, None, None)
-
-        app.on_cleanup.append(cleanup_gpg)
-
-    app.on_startup.append(start_gpg_context)
+    app.cleanup_ctx.append(gpg_context)
 
 
 def setup_postgres(app):

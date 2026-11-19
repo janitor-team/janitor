@@ -85,6 +85,11 @@ def json_chart_data(max_age=None):
     return decorator
 
 
+def site_root(request) -> str:
+    """Return the path the site is served under, "" at the root of its host."""
+    return request.config_dict.get("site_root", "")
+
+
 def update_vars_from_request(vs, request):
     vs["is_admin"] = is_admin(request)
     vs["is_qa_reviewer"] = is_qa_reviewer(request)
@@ -295,7 +300,7 @@ def check_admin(request: web.Request) -> None:
 def check_logged_in(request: web.Request) -> None:
     if not request["user"]:
         if request.headers.get("Sec-Fetch-Mode") == "navigate":
-            login = URL("/login")
+            login = URL(site_root(request) + "/login")
             # Login can only go back with a GET, so a POST returns to the form's page.
             if request.method in ("GET", "HEAD"):
                 url = (request.config_dict["external_url"] or request.url).join(
