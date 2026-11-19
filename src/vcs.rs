@@ -615,10 +615,195 @@ mod tests {
             "https://vcs.example.com/bzr/mycodebase"
         );
     }
+
+    /// Bzr-only form mirrors the existing git-only test. Pin so a
+    /// future refactor that accepts only one variant breaks loudly.
+    #[test]
+    fn test_get_vcs_managers_bzr_only() {
+        let managers = get_vcs_managers("bzr=https://bzr.example.com/").unwrap();
+        assert!(!managers.contains_key(&VcsType::Git));
+        assert!(managers.contains_key(&VcsType::Bzr));
+    }
+
+    /// An unknown key (not git/bzr) is rejected. We return
+    /// `ParseError::EmptyHost` as a stand-in for a dedicated error —
+    /// pin the fact that it's an Err, not a silent accept.
+    #[test]
+    fn test_get_vcs_managers_rejects_unknown_key() {
+        assert!(get_vcs_managers("svn=https://svn.example.com/").is_err());
+    }
+
+    /// A bare segment without `=` inside a comma-separated list is
+    /// rejected (the function assumes the explicit form once it
+    /// sees any `=`).
+    #[test]
+    fn test_get_vcs_managers_mixed_explicit_and_bare_is_err() {
+        assert!(get_vcs_managers("git=https://git.example.com/,bare").is_err());
+    }
+
+    /// Malformed URLs surface as Err from the inner `Url::parse`.
+    #[test]
+    fn test_get_vcs_managers_rejects_malformed_url() {
+        assert!(get_vcs_managers("git=not a url").is_err());
+        assert!(get_vcs_managers("not a url").is_err());
+    }
+
+    /// A base URL without a trailing slash used to silently produce
+    /// wrong URLs (url::Url::join replaces the last path segment
+    /// when the base doesn't end in `/`). The constructors now
+    /// normalize for this. Verify the full URL round-trip matches
+    /// what operators expect: `/api/git/pkg`, not `/pkg`.
+    #[test]
+    fn test_get_vcs_managers_base_without_trailing_slash_is_fixed_up() {
+        let managers = get_vcs_managers("https://vcs.example.com/api").unwrap();
+        let git = managers.get(&VcsType::Git).unwrap();
+        assert_eq!(
+            git.get_repository_url(&CodebaseName::new("pkg").unwrap()).as_str(),
+            "https://vcs.example.com/api/git/pkg",
+        );
+        let bzr = managers.get(&VcsType::Bzr).unwrap();
+        assert_eq!(
+            bzr.get_repository_url(&CodebaseName::new("pkg").unwrap()).as_str(),
+            "https://vcs.example.com/api/bzr/pkg",
+        );
+    }
+
+    /// Directly constructing RemoteGitVcsManager with a base URL
+    /// that lacks a trailing slash must also work — the constructor
+    /// normalizes.
+    #[test]
+    fn test_remote_git_vcs_manager_new_normalizes_missing_trailing_slash() {
+        let mgr = RemoteGitVcsManager::new(Url::parse("https://vcs.example.com/git").unwrap());
+        assert_eq!(
+            mgr.get_repository_url(&CodebaseName::new("pkg").unwrap()).as_str(),
+            "https://vcs.example.com/git/pkg",
+        );
+    }
+
+    #[test]
+    fn test_remote_bzr_vcs_manager_new_normalizes_missing_trailing_slash() {
+        let mgr = RemoteBzrVcsManager::new(Url::parse("https://vcs.example.com/bzr").unwrap());
+        assert_eq!(
+            mgr.get_repository_url(&CodebaseName::new("pkg").unwrap()).as_str(),
+            "https://vcs.example.com/bzr/pkg",
+        );
+    }
+
+    /// The helper is idempotent — a URL that already ends in `/`
+    /// is returned unchanged.
+    #[test]
+    fn ensure_trailing_slash_is_idempotent_when_already_slashed() {
+        let url = Url::parse("https://vcs.example.com/git/").unwrap();
+        assert_eq!(
+            ensure_trailing_slash(url.clone()).as_str(),
+            url.as_str(),
+        );
+    }
+
+    /// VcsConfigError wraps url::ParseError via From. Services that
+    /// use `?` on URL parsing in config loading rely on this.
+    #[test]
+    fn test_vcs_config_error_from_url_parse_error() {
+        let parse_err = Url::parse("not a url").unwrap_err();
+        let cfg_err: VcsConfigError = parse_err.into();
+        assert!(matches!(cfg_err, VcsConfigError::InvalidUrl(_)));
+    }
+
+    /// get_vcs_managers_from_config returns an empty map when
+    /// neither git nor bzr location is set — pin the no-op
+    /// behaviour so a refactor doesn't start erroring out when the
+    /// feature is intentionally disabled.
+    #[test]
+    fn test_get_vcs_managers_from_config_empty_when_no_locations_set() {
+        let config = crate::config::read_string("").unwrap();
+        let managers = get_vcs_managers_from_config(&config).unwrap();
+        assert!(
+            managers.is_empty(),
+            "no-location config should produce empty manager map, got {} entries",
+            managers.len()
+        );
+    }
+
+    /// get_vcs_managers_from_config routes http(s) locations to the
+    /// Remote manager.
+    #[test]
+    fn test_get_vcs_managers_from_config_http_yields_remote_manager() {
+        let config = crate::config::read_string(
+            r#"
+            git_location: "https://git.example.com/"
+            bzr_location: "https://bzr.example.com/"
+            "#,
+        )
+        .unwrap();
+        let managers = get_vcs_managers_from_config(&config).unwrap();
+        assert_eq!(managers.len(), 2);
+        // Exercise the trait to prove they were constructed.
+        let git = managers.get(&VcsType::Git).unwrap();
+        assert_eq!(
+            git.get_repository_url(&CodebaseName::new("pkg").unwrap()).as_str(),
+            "https://git.example.com/pkg"
+        );
+    }
+
+    /// get_vcs_managers_from_config: file:// routes to Local
+    /// managers. Exercise against a real tempdir.
+    #[test]
+    fn test_get_vcs_managers_from_config_file_url_yields_local_manager() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", dir.path().display());
+        let source = format!(
+            r#"
+            git_location: "{url}"
+            "#,
+            url = url
+        );
+        let config = crate::config::read_string(&source).unwrap();
+        let managers = get_vcs_managers_from_config(&config).unwrap();
+        assert_eq!(managers.len(), 1);
+        assert!(managers.contains_key(&VcsType::Git));
+    }
+
+    /// Only one of git/bzr set is fine — the other entry just
+    /// isn't in the map.
+    #[test]
+    fn test_get_vcs_managers_from_config_only_git() {
+        let config = crate::config::read_string(
+            r#"
+            git_location: "https://git.example.com/"
+            "#,
+        )
+        .unwrap();
+        let managers = get_vcs_managers_from_config(&config).unwrap();
+        assert_eq!(managers.len(), 1);
+        assert!(managers.contains_key(&VcsType::Git));
+        assert!(!managers.contains_key(&VcsType::Bzr));
+    }
+
+    // The slow path of `normalise_debian_vcs_url` calls into breezy
+    // and panics in test envs that don't have brz-debian. Only the
+    // fast-path (no `-b ` token, returns None without touching
+    // Python) is unit-tested here.
+    #[test]
+    fn test_normalise_debian_vcs_url_passthrough_plain_https() {
+        let url = Url::parse("https://salsa.debian.org/foo/bar.git").unwrap();
+        assert!(normalise_debian_vcs_url(&url).is_none());
+    }
+
+    #[test]
+    fn test_normalise_debian_vcs_url_passthrough_already_breezy() {
+        let url =
+            Url::parse("https://salsa.debian.org/foo/bar.git,branch=debian/sid").unwrap();
+        assert!(normalise_debian_vcs_url(&url).is_none());
+    }
 }
 
 /// Add a `,branch=` segment parameter for a colocated git branch. The
 /// name is escaped like breezy does, since it may contain slashes.
+/// Append `,branch=<name>` to `url`, percent-encoding the value.
+///
+/// `safe=Some("")` is required: `join_segment_parameters` escapes only `,` and
+/// `=`, so a slash in the branch name survives and downstream parsers read it
+/// as a path separator, losing the segment entirely.
 fn join_branch_parameter(url: &Url, branch_name: &str) -> Url {
     let params = HashMap::from([(
         "branch".to_string(),
@@ -659,9 +844,53 @@ pub fn open_branch_ext(
     possible_transports: Option<&mut Vec<breezyshim::transport::Transport>>,
     probers: Option<&[&dyn breezyshim::controldir::PyProber]>,
 ) -> Result<breezyshim::branch::GenericBranch, BranchOpenFailure> {
-    match silver_platter::vcs::open_branch(vcs_url, possible_transports, probers, None) {
+    // Translate Debian Vcs-Git style URLs (`https://...pkg.git -b
+    // branch`, which round-trips through the codebase table with a
+    // `%20-b%20branch` tail) to breezy's native `?branch=…` form
+    // before open. Otherwise breezy treats the space-including URL
+    // as a literal HTTP path and gets "Connection closed early".
+    // Python relied on breezy's `breezy.plugins.debian.directory`
+    // URL handler being auto-registered, but the Rust binaries
+    // don't always call `load_plugins()` early enough for that to
+    // kick in. Do the conversion ourselves as a belt-and-braces
+    // measure — it's a no-op for URLs that don't need it.
+    let normalised = normalise_debian_vcs_url(vcs_url);
+    let effective_url = normalised.as_ref().unwrap_or(vcs_url);
+    match silver_platter::vcs::open_branch(effective_url, possible_transports, probers, None) {
         Ok(branch) => Ok(branch),
-        Err(e) => Err(convert_branch_exception(vcs_url, e)),
+        Err(e) => Err(convert_branch_exception(effective_url, e)),
+    }
+}
+
+/// Returns `Some(converted)` when the URL looks like a Debian
+/// Vcs-Git field (`https://…/pkg.git -b branch`, possibly
+/// URL-encoded). Returns `None` when no conversion is needed or
+/// when the Python converter isn't available (e.g. in tests with
+/// no breezy debian plugin installed).
+fn normalise_debian_vcs_url(vcs_url: &Url) -> Option<Url> {
+    let raw = vcs_url.as_str();
+    // Quick string filter so we don't pay a Python round-trip on every
+    // regular URL (the queue sees tens of thousands per scan).
+    if !(raw.contains(" -b ")
+        || raw.contains("%20-b%20")
+        || raw.contains("%20-b ")
+        || raw.contains(" -b%20"))
+    {
+        return None;
+    }
+    // Decode %20 back to space so `vcs_git_url_to_bzr_url` sees the
+    // canonical Debian form. Only touch the " -b " separator
+    // encoding — don't run url-decode on the whole string (the path
+    // already parsed).
+    let decoded = raw.replace("%20-b%20", " -b ");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        breezyshim::debian::directory::vcs_git_url_to_bzr_url(&decoded)
+    }))
+    .ok()?;
+    if result.as_str() == raw {
+        None
+    } else {
+        Some(result)
     }
 }
 
