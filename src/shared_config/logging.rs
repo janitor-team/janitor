@@ -294,7 +294,7 @@ pub fn init_logging(config: &LoggingConfig) -> Result<(), LoggingError> {
         }
         (true, None) => {
             // Console output only
-            init_console_only(config, env_filter);
+            init_console_only(config, env_filter)?;
         }
         (false, Some(file_config)) => {
             // File output only
@@ -302,7 +302,10 @@ pub fn init_logging(config: &LoggingConfig) -> Result<(), LoggingError> {
         }
         (false, None) => {
             // Neither console nor file output (should not happen due to validation)
-            tracing_subscriber::registry().with(env_filter).init();
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .try_init()
+                .map_err(|e| LoggingError::InitError(e.to_string()))?;
         }
     }
 
@@ -340,7 +343,8 @@ fn init_with_both_outputs(
                     .with_writer(file_appender)
                     .with_ansi(false),
             )
-            .init();
+            .try_init()
+            .map_err(|e| LoggingError::InitError(e.to_string()))?;
     } else {
         tracing_subscriber::registry()
             .with(env_filter)
@@ -357,14 +361,18 @@ fn init_with_both_outputs(
                     .with_writer(file_appender)
                     .with_ansi(false),
             )
-            .init();
+            .try_init()
+            .map_err(|e| LoggingError::InitError(e.to_string()))?;
     }
 
     Ok(())
 }
 
 /// Initialize console output only
-fn init_console_only(config: &LoggingConfig, env_filter: tracing_subscriber::EnvFilter) {
+fn init_console_only(
+    config: &LoggingConfig,
+    env_filter: tracing_subscriber::EnvFilter,
+) -> Result<(), LoggingError> {
     use tracing_subscriber::{fmt, prelude::*};
 
     if config.json_format {
@@ -376,7 +384,8 @@ fn init_console_only(config: &LoggingConfig, env_filter: tracing_subscriber::Env
                     .with_current_span(false)
                     .with_span_list(true),
             )
-            .init();
+            .try_init()
+            .map_err(|e| LoggingError::InitError(e.to_string()))?;
     } else {
         tracing_subscriber::registry()
             .with(env_filter)
@@ -386,8 +395,11 @@ fn init_console_only(config: &LoggingConfig, env_filter: tracing_subscriber::Env
                     .with_target(config.include_module_path)
                     .with_line_number(config.include_line_numbers),
             )
-            .init();
+            .try_init()
+            .map_err(|e| LoggingError::InitError(e.to_string()))?;
     }
+
+    Ok(())
 }
 
 /// Initialize file output only
@@ -415,7 +427,8 @@ fn init_file_only(
                     .with_writer(file_appender)
                     .with_ansi(false),
             )
-            .init();
+            .try_init()
+            .map_err(|e| LoggingError::InitError(e.to_string()))?;
     } else {
         tracing_subscriber::registry()
             .with(env_filter)
@@ -426,7 +439,8 @@ fn init_file_only(
                     .with_writer(file_appender)
                     .with_ansi(false),
             )
-            .init();
+            .try_init()
+            .map_err(|e| LoggingError::InitError(e.to_string()))?;
     }
 
     Ok(())
