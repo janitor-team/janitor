@@ -10,6 +10,32 @@ homepage = "https://github.com/jelmer/janitor"
 build = "build.rs"
 include = ["src/**/*", "schema/state.sql", "schema/debian/debian.sql", "README.md"]
 
+
+[[bin]]
+name = "cleanup-repositories"
+path = "src/bin/cleanup-repositories.rs"
+
+[[bin]]
+name = "render-publish-template"
+path = "src/bin/render-publish-template.rs"
+required-features = ["tera"]
+
+[[bin]]
+name = "create-sbuild-chroot-schroot"
+path = "src/bin/create-sbuild-chroot-schroot.rs"
+
+[[bin]]
+name = "create-sbuild-chroot-unshare"
+path = "src/bin/create-sbuild-chroot-unshare.rs"
+
+[[bin]]
+name = "reschedule"
+path = "src/bin/reschedule.rs"
+
+[[bin]]
+name = "reprocess-build-results"
+path = "src/bin/reprocess-build-results.rs"
+
 [dependencies]
 breezyshim = { workspace = true, features = ["sqlx"] }
 janitor-types = { workspace = true, features = ["breezyshim", "pyo3", "sqlx"] }
