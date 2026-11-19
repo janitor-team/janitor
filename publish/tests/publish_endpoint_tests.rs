@@ -98,6 +98,7 @@ async fn build_app_with_rate_limiter(
         require_binary_diff: false,
         health_checker,
         last_full_scan_at: tokio::sync::watch::channel(None).0,
+        http_client: janitor_publish::http_client().unwrap(),
     });
     janitor_publish::web::app(state)
 }
