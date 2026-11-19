@@ -4347,9 +4347,9 @@ fn scan_forge(
         )) {
             Ok(modified) => modified,
             Err(CheckMpError::NoRunForMergeProposal(url)) => {
-                no_run_for_mp += 1;
-                if no_run_first.is_none() {
-                    no_run_first = Some(url.clone());
+                scan.no_run_for_mp += 1;
+                if scan.no_run_first.is_none() {
+                    scan.no_run_first = Some(url.clone());
                 }
                 log::debug!("Unable to find metadata for {}, skipping.", url);
                 false
