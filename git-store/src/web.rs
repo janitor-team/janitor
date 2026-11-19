@@ -235,7 +235,7 @@ async fn home_handler() -> Response {
 }
 
 fn negotiate_content_type(accept_header: Option<&str>) -> Option<ContentType> {
-    match janitor::content_negotiation::best_match(
+    match janitor_service::content_negotiation::best_match(
         &["text/html", "application/json", "text/plain"],
         accept_header,
     )? {

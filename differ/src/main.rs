@@ -1342,7 +1342,7 @@ fn negotiate<'a>(headers: &HeaderMap, offered: &[&'a str]) -> Option<&'a str> {
     let accept = headers
         .get(axum::http::header::ACCEPT)
         .and_then(|v| v.to_str().ok());
-    janitor::content_negotiation::best_match(offered, accept)
+    janitor_service::content_negotiation::best_match(offered, accept)
 }
 
 fn os_pairs(

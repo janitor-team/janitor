@@ -498,7 +498,7 @@ enum AcceptMatch {
 }
 
 fn negotiate_content_type(accept: &str) -> Option<AcceptMatch> {
-    match janitor::content_negotiation::best_match(
+    match janitor_service::content_negotiation::best_match(
         &["text/html", "application/json", "text/plain"],
         Some(accept),
     )? {

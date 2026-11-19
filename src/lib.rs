@@ -2,7 +2,6 @@ pub mod analyze_log;
 pub mod api;
 pub mod artifacts;
 pub mod config;
-pub mod content_negotiation;
 pub mod database;
 pub mod debdiff;
 pub mod error;
