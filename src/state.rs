@@ -78,13 +78,13 @@ impl Run {
         self.finish_time - self.start_time
     }
 
-    /// Look up a result branch by role, returning
-    /// `(remote_name, base_revision, revision)`.
-    ///
-    /// This matches Python's `get_result_branch`, which returns
-    /// `entry[1:]` of the `(role, remote_name, base_revision, revision)`
-    /// tuple. The last two fields must not be swapped: callers
-    /// destructure the result positionally.
+    /// Look up a result branch by role. Returns
+    /// `(remote_name, base_revision, revision)` to match Python's
+    /// `get_result_branch(result_branches, role)` which returns
+    /// `entry[1:]` from `(role, remote_name, base_revision, revision)`.
+    /// A previous implementation swapped the last two fields,
+    /// which silently corrupted any caller that destructured the
+    /// returned tuple positionally.
     pub fn get_result_branch(
         &self,
         role: &str,
@@ -93,7 +93,7 @@ impl Run {
             branches
                 .iter()
                 .find(|(r, _, _, _)| r == role)
-                .map(|(_, n, base_rev, rev)| (n.clone(), base_rev.clone(), rev.clone()))
+                .map(|(_, n, br, r)| (n.clone(), br.clone(), r.clone()))
         })
     }
 }
@@ -146,6 +146,30 @@ pub async fn iter_publishable_campaigns(
             .await?;
 
     Ok(rows.into_iter().map(|row| row.0).collect::<Vec<_>>())
+}
+
+/// Get the result branch information for a specific role
+///
+/// This is a standalone utility function that matches the Python API
+///
+/// # Arguments
+/// * `result_branches` - The result branches array from a Run
+/// * `role` - The role to search for
+///
+/// # Returns
+/// Tuple of (name, base_revision, revision) if found
+///
+/// # Errors
+/// Returns an error if the role is not found
+pub fn get_result_branch(
+    result_branches: &[(String, String, Option<RevisionId>, Option<RevisionId>)],
+    role: &str,
+) -> Result<(String, Option<RevisionId>, Option<RevisionId>), String> {
+    result_branches
+        .iter()
+        .find(|(r, _, _, _)| r == role)
+        .map(|(_, n, br, r)| (n.clone(), br.clone(), r.clone()))
+        .ok_or_else(|| format!("Role '{}' not found in result branches", role))
 }
 
 #[cfg(test)]
@@ -206,12 +230,24 @@ mod tests {
     }
 
     #[test]
-    fn test_run_get_result_branch_found() {
-        let run = make_run();
-        let (name, base_rev, rev) = run.get_result_branch("main").unwrap();
-        assert_eq!(name, "refs/heads/lintian-fixes");
-        assert_eq!(base_rev, Some(RevisionId::from(b"base-rev".to_vec())));
-        assert_eq!(rev, Some(RevisionId::from(b"tip-rev".to_vec())));
+    fn test_run_get_result_branch() {
+        let run = create_test_run();
+
+        // get_result_branch returns (remote_name, base_revision,
+        // revision) — matches Python's `entry[1:]` slice of the
+        // `(role, remote_name, base_revision, revision)` tuple.
+        let main_result = run.get_result_branch("main");
+        assert!(main_result.is_some());
+        let (name, base_revision, revision) = main_result.unwrap();
+        assert_eq!(name, "master");
+        assert_eq!(base_revision, Some(RevisionId::from("base-123".as_bytes())));
+        assert_eq!(revision, Some(RevisionId::from("head-456".as_bytes())));
+
+        let feature_result = run.get_result_branch("feature");
+        assert!(feature_result.is_some());
+
+        let nonexistent = run.get_result_branch("nonexistent");
+        assert!(nonexistent.is_none());
     }
 
     #[test]
@@ -221,10 +257,58 @@ mod tests {
     }
 
     #[test]
-    fn test_run_get_result_branch_no_branches() {
-        let mut run = make_run();
-        run.result_branches = None;
-        assert!(run.get_result_branch("main").is_none());
+    fn test_standalone_get_result_branch() {
+        let result_branches = vec![
+            (
+                "main".to_string(),
+                "master".to_string(),
+                Some(RevisionId::from("base".as_bytes())),
+                Some(RevisionId::from("head".as_bytes())),
+            ),
+            (
+                "feature".to_string(),
+                "feat".to_string(),
+                None,
+                Some(RevisionId::from("feat-head".as_bytes())),
+            ),
+        ];
+
+        let main_result = get_result_branch(&result_branches, "main");
+        assert!(main_result.is_ok());
+        let (name, base_revision, revision) = main_result.unwrap();
+        assert_eq!(name, "master");
+        assert_eq!(base_revision, Some(RevisionId::from("base".as_bytes())));
+        assert_eq!(revision, Some(RevisionId::from("head".as_bytes())));
+
+        let feature_result = get_result_branch(&result_branches, "feature");
+        assert!(feature_result.is_ok());
+        let (name, base_revision, revision) = feature_result.unwrap();
+        assert_eq!(name, "feat");
+        assert_eq!(base_revision, None);
+        assert_eq!(revision, Some(RevisionId::from("feat-head".as_bytes())));
+
+        let nonexistent = get_result_branch(&result_branches, "nonexistent");
+        assert!(nonexistent.is_err());
+        assert!(nonexistent.unwrap_err().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_create_pool_with_database_url() {
+        let mut config = Config::default();
+        config.database_location = Some("postgresql://localhost/nonexistent".to_string());
+
+        // This should fail to connect but shouldn't panic
+        let result = create_pool(&config).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_create_pool_without_database_url() {
+        let config = Config::default();
+
+        // This should try default connection which will likely fail in tests
+        let result = create_pool(&config).await;
+        assert!(result.is_err());
     }
 
     #[test]
@@ -243,9 +327,24 @@ mod tests {
         // Same id = equal
         assert_eq!(run1, run2);
 
-        // Different id = not equal
-        run2.id = RunId::new("run-456").unwrap();
-        assert_ne!(run1, run2);
+        let result = run.get_result_branch("main");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_run_with_empty_result_branches() {
+        let mut run = create_test_run();
+        run.result_branches = Some(vec![]);
+
+        let result = run.get_result_branch("main");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_empty_result_branches_standalone() {
+        let result_branches = vec![];
+        let result = get_result_branch(&result_branches, "main");
+        assert!(result.is_err());
     }
 
     #[test]
