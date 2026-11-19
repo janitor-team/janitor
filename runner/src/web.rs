@@ -4688,6 +4688,13 @@ mod tests {
         );
     }
 
+    /// The branch name is percent-encoded inside the segment
+    /// parameter. breezy's `join_segment_parameters` escapes only `,`
+    /// and `=`, so a composite branch like `debian/latest` would come
+    /// out as `,branch=debian/latest`; a downstream parser (ours and
+    /// breezy's own `urlutils.URL.from_string`) then reads the `/` as a
+    /// path separator and `strip_segment_parameters` stops seeing the
+    /// segment at all, silently losing the branch.
     #[test]
     fn test_worker_vcs_urls_inserts_vcs_segment() {
         let managers = janitor::vcs::get_vcs_managers("https://janitor.example.com/").unwrap();
