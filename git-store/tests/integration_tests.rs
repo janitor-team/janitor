@@ -282,6 +282,20 @@ async fn seed_codebase(pool: &PgPool, name: &str) {
     .unwrap();
 }
 
+/// Create a bare repo with one empty commit so `list_repositories`
+/// picks it up (it filters out ref-less placeholders).
+fn populated_bare_repo(path: &std::path::Path) {
+    let repo = git2::Repository::init_bare(path).unwrap();
+    let sig = git2::Signature::now("test", "test@example.com").unwrap();
+    let tree_oid = {
+        let tb = repo.treebuilder(None).unwrap();
+        tb.write().unwrap()
+    };
+    let tree = repo.find_tree(tree_oid).unwrap();
+    repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+        .unwrap();
+}
+
 async fn seed_worker(pool: &PgPool, name: &str, password: &str) {
     sqlx::query(
         "INSERT INTO worker (name, password, link)
@@ -366,8 +380,8 @@ db_test! {
 db_test! {
     async fn test_public_repo_list_json(test_db: TestDatabase) {
         let tmp = TempDir::new().unwrap();
-        std::fs::create_dir(tmp.path().join("alpha")).unwrap();
-        std::fs::create_dir(tmp.path().join("beta")).unwrap();
+        populated_bare_repo(&tmp.path().join("alpha"));
+        populated_bare_repo(&tmp.path().join("beta"));
 
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
@@ -388,7 +402,7 @@ db_test! {
 db_test! {
     async fn test_public_repo_list_text(test_db: TestDatabase) {
         let tmp = TempDir::new().unwrap();
-        std::fs::create_dir(tmp.path().join("gamma")).unwrap();
+        populated_bare_repo(&tmp.path().join("gamma"));
 
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
@@ -704,7 +718,7 @@ db_test! {
     async fn test_admin_repo_list_at_root(test_db: TestDatabase) {
         // The admin app exposes `list_repositories` at `/`.
         let tmp = TempDir::new().unwrap();
-        std::fs::create_dir(tmp.path().join("only-one")).unwrap();
+        populated_bare_repo(&tmp.path().join("only-one"));
         let state = build_state(&tmp, &test_db, AppRole::Admin).await;
         let app = web::create_admin_app(state, 0);
 
@@ -1524,7 +1538,7 @@ db_test! {
 db_test! {
     async fn test_public_repo_list_html(test_db: TestDatabase) {
         let tmp = TempDir::new().unwrap();
-        std::fs::create_dir(tmp.path().join("alpha")).unwrap();
+        populated_bare_repo(&tmp.path().join("alpha"));
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
         let app = web::create_public_app(state, 0);
 

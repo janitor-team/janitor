@@ -89,9 +89,13 @@ impl RepositoryManager {
         Ok(())
     }
 
-    /// List every entry under `base_path`, sorted by name. Matches
-    /// Python's `os.scandir(local_path)` in `handle_repo_list` -
-    /// no filtering, so empty auto-created placeholders show up too.
+    /// List codebases that have at least one ref.
+    ///
+    /// Filtering matters: a bare repo is auto-created the first time
+    /// anything hits `/info/refs` for a codebase, so listing every
+    /// directory entry reports placeholders that were never pushed to,
+    /// alongside any plain directory that happens to sit in the VCS
+    /// path. Both pollute the index (salsa #114).
     pub fn list_repositories(&self) -> Result<Vec<String>> {
         let mut repos = Vec::new();
         if !self.base_path.exists() {
@@ -99,8 +103,26 @@ impl RepositoryManager {
         }
         for entry in std::fs::read_dir(&self.base_path)? {
             let entry = entry?;
-            if let Some(name) = entry.file_name().to_str() {
-                repos.push(name.to_string());
+            let name = match entry.file_name().to_str() {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            let path = entry.path();
+            let repo = match Repository::open_bare(&path) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            let has_ref = match repo.references() {
+                Ok(mut refs) => refs.next().is_some(),
+                Err(e) => {
+                    tracing::warn!("failed to enumerate refs for {}: {}", name, e);
+                    continue;
+                }
+            };
+            if has_ref {
+                repos.push(name);
+            } else {
+                tracing::debug!("skipping empty repo {}: no refs", name);
             }
         }
         repos.sort();
@@ -151,26 +173,78 @@ mod tests {
         let _repo2 = manager.open_or_create(&codebase).unwrap();
     }
 
+    /// Only repositories with refs are listed: a bare repo is
+    /// auto-created on the first `/info/refs` hit, so an unfiltered
+    /// listing would include placeholders nobody ever pushed to (salsa
+    /// #114). Sorting is asserted here; the filtering itself is
+    /// covered by the two tests below.
     #[test]
-    fn test_list_repositories_lists_all_entries_sorted() {
-        // Matches Python `os.scandir(local_path)` in handle_repo_list:
-        // no filtering, every top-level entry appears, name-sorted.
+    fn test_list_repositories_sorts_populated_repos() {
         let temp_dir = TempDir::new().unwrap();
         let manager = RepositoryManager::new(temp_dir.path().to_path_buf());
 
         assert_eq!(manager.list_repositories().unwrap(), Vec::<String>::new());
 
-        manager
+        let gamma = manager
             .open_or_create(&CodebaseName::new("gamma").unwrap())
             .unwrap();
-        manager
+        let alpha = manager
             .open_or_create(&CodebaseName::new("alpha").unwrap())
             .unwrap();
+        populate_bare_repo(&gamma);
+        populate_bare_repo(&alpha);
+        // A plain directory, which is not a repository.
         std::fs::create_dir(temp_dir.path().join("beta")).unwrap();
 
         assert_eq!(
             manager.list_repositories().unwrap(),
-            vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]
+            vec!["alpha".to_string(), "gamma".to_string()]
         );
+    }
+
+    fn populate_bare_repo(repo: &git2::Repository) {
+        let sig = git2::Signature::now("test", "test@example.com").unwrap();
+        let tree_oid = {
+            let tb = repo.treebuilder(None).unwrap();
+            tb.write().unwrap()
+        };
+        let tree = repo.find_tree(tree_oid).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+    }
+
+    #[test]
+    fn test_list_repositories_only_includes_initialised_repos() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = RepositoryManager::new(temp_dir.path().to_path_buf());
+
+        assert_eq!(manager.list_repositories().unwrap(), Vec::<String>::new());
+
+        // Placeholders are auto-created on the first /info/refs hit;
+        // only the repo that has actually been pushed to should list.
+        manager
+            .open_or_create(&CodebaseName::new("placeholder-1").unwrap())
+            .unwrap();
+        manager
+            .open_or_create(&CodebaseName::new("placeholder-2").unwrap())
+            .unwrap();
+        let real = manager
+            .open_or_create(&CodebaseName::new("real-repo").unwrap())
+            .unwrap();
+        populate_bare_repo(&real);
+
+        assert_eq!(
+            manager.list_repositories().unwrap(),
+            vec!["real-repo".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_list_repositories_skips_non_git_dirs() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir(temp_dir.path().join("not-a-repo")).unwrap();
+
+        let manager = RepositoryManager::new(temp_dir.path().to_path_buf());
+        assert_eq!(manager.list_repositories().unwrap(), Vec::<String>::new());
     }
 }
