@@ -2078,7 +2078,9 @@ async fn get_queue(
                     codebase: entry.codebase,
                     campaign: entry.campaign,
                     context: entry.context,
-                    command: entry.command,
+                    // QueueItem::command is non-optional here; the API
+                    // field is nullable.
+                    command: Some(entry.command),
                 })
                 .collect();
             Json(payload).into_response()
