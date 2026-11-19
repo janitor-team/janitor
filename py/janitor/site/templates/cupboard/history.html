@@ -3,17 +3,85 @@
     {% include "cupboard/sidebar.html" %}
 {% endblock sidebar %}
 {% from "run_util.html" import display_result_code %}
+{% macro sort_header(name, label) %}
+    {% set order = sort_links[name].order %}
+    <th class="head"
+        {% if order %}aria-sort="{{ 'ascending' if order == 'asc' else 'descending' }}"{% endif %}>
+        <a href="{{ sort_links[name].url }}">{{ label }}</a>
+        {%- if order %}&nbsp;<span aria-hidden="true">{{ '▲' if order == 'asc' else '▼' }}</span>{% endif %}
+    </th>
+{% endmacro %}
 {% block page_title %}
     Cupboard - History
 {% endblock page_title %}
 {% block body %}
     <div class="section" id="history">
         <h1>History</h1>
-        <p><em>A log of runs the Janitor has processed, most recent first.</em></p>
+        <p>
+            <em>A log of runs the Janitor has processed{% if newest_first %}, most recent first{% endif %}.</em>
+        </p>
         <p>
             For what's coming up, see the <a href="queue">queue</a>.
         </p>
-        <p>Last {{ count }} runs:</p>
+        <form method="get" action="history" id="history-filters">
+            {% for name, value in kept_params.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}" />{% endfor %}
+            <p>
+                <label for="filter-campaign">Campaign</label>
+                <select id="filter-campaign" name="campaign">
+                    <option value="">All</option>
+                    {% if filters.campaign and filters.campaign not in all_campaigns %}
+                        <option value="{{ filters.campaign }}" selected>{{ filters.campaign }}</option>
+                    {% endif %}
+                    {% for name in all_campaigns %}
+                        <option value="{{ name }}"
+                                {% if name == filters.campaign %}selected{% endif %}>{{ name }}</option>
+                    {% endfor %}
+                </select>
+                <label for="filter-result-code">Result code</label>
+                <input type="text"
+                       id="filter-result-code"
+                       name="result_code"
+                       size="15"
+                       value="{{ filters.result_code or '' }}" />
+                <label for="filter-codebase">Codebase</label>
+                <input type="text"
+                       id="filter-codebase"
+                       name="codebase"
+                       size="15"
+                       value="{{ filters.codebase or '' }}" />
+            </p>
+            <p>
+                <label for="filter-worker">Worker</label>
+                <input type="text"
+                       id="filter-worker"
+                       name="worker"
+                       size="10"
+                       value="{{ filters.worker or '' }}" />
+                <label for="filter-transient">Transient failure</label>
+                <select id="filter-transient" name="transient">
+                    <option value="">Any</option>
+                    <option value="true"
+                            {% if filters.transient is sameas true %}selected{% endif %}>Yes</option>
+                    <option value="false"
+                            {% if filters.transient is sameas false %}selected{% endif %}>No</option>
+                </select>
+                <input type="checkbox"
+                       id="filter-hide-success"
+                       name="hide_success"
+                       value="true"
+                       {% if filters.hide_success %}checked{% endif %} />
+                <label for="filter-hide-success">Hide successful runs</label>
+                <input type="submit" value="Filter" />
+                <a href="{{ clear_filters_url }}">Clear filters</a>
+            </p>
+        </form>
+        <p>
+            {% if newest_first %}
+                Last {{ count }} runs:
+            {% else %}
+                Up to {{ count }} runs:
+            {% endif %}
+        </p>
         <table class="docutils" border="1">
             <colgroup>
                 <col width="10%" />
@@ -26,12 +94,12 @@
             </colgroup>
             <thead valign="bottom">
                 <tr class="row-odd">
-                    <th class="head">Finish time</th>
-                    <th class="head">Codebase</th>
-                    <th class="head">Campaign</th>
+                    {{ sort_header('finish_time', 'Finish time') }}
+                    {{ sort_header('codebase', 'Codebase') }}
+                    {{ sort_header('campaign', 'Campaign') }}
                     <th class="head">Worker</th>
-                    <th class="head">Duration</th>
-                    <th class="head">Result</th>
+                    {{ sort_header('duration', 'Duration') }}
+                    {{ sort_header('result_code', 'Result') }}
                     <th class="head">Description</th>
                 </tr>
             </thead>
