@@ -119,8 +119,9 @@ with its callback URL set to `<external_url>/oauth/callback`.
 
 Scripts use an API token instead. Once logged in, open "API tokens" on
 the cupboard page and create one there, then send it as an
-`Authorization: Bearer <token>` header to the API. Tokens have a limited
-lifetime. The same page lists and deletes them.
+`Authorization: Bearer <token>` header to the API;
+`janitor-admin --token <token>` sends the header for you. Tokens have a
+limited lifetime. The same page lists and deletes them.
 
 The API is documented at `<external_url>/api/docs`, and the cupboard API
 at `<external_url>/cupboard/api/docs`.
@@ -208,7 +209,7 @@ Workers log in to the runner with a name and password stored in the `worker`
 table. Register one with `janitor-admin`, which makes up the password for you:
 
 ```console
-$ janitor-admin --url https://your-janitor-instance/ worker add myworker
+$ janitor-admin --url https://your-janitor-instance/ --token <token> worker add myworker
 Created worker myworker
 Password: <generated password>
 (Store this password now; it is not recoverable.)
