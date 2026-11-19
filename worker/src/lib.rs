@@ -1527,6 +1527,7 @@ fn push_error_to_worker_failure(e: BrzError, stage: Vec<String>) -> WorkerFailur
 mod tests {
     use super::*;
     use crate::WorkerFailure;
+    use std::path::PathBuf;
     // Both globs above export a `Branch`; import the trait anonymously so
     // method resolution works without the name clash.
     use breezyshim::branch::Branch as _;
