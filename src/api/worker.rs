@@ -158,6 +158,26 @@ impl WorkerFailure {
         self.details = Some(details);
         self
     }
+
+    /// An `io-error` failure for an operation on a specific path.
+    pub fn io_error(
+        description: impl Into<String>,
+        path: impl std::fmt::Display,
+        err: impl std::fmt::Display,
+        stage: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        let err_str = err.to_string();
+        Self::new(
+            "io-error",
+            format!("{}: {}", description.into(), err_str),
+            stage,
+        )
+        .with_transient(true)
+        .with_details(serde_json::json!({
+            "path": path.to_string(),
+            "error": err_str,
+        }))
+    }
 }
 
 impl std::fmt::Display for WorkerFailure {

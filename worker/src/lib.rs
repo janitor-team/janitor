@@ -105,7 +105,9 @@ pub fn get_build_arch() -> Result<String, DpkgArchitectureError> {
         }
     };
 
-    Ok(String::from_utf8(output.stdout).unwrap().trim().to_owned())
+    String::from_utf8(output.stdout)
+        .map_err(|e| DpkgArchitectureError::Other(format!("Invalid UTF-8 output: {}", e)))
+        .map(|s| s.trim().to_owned())
 }
 
 pub fn convert_codemod_script_failed(i: i32, command: &str) -> WorkerFailure {
@@ -197,7 +199,17 @@ pub fn run_worker(
     let skip_setup_validation = skip_setup_validation.unwrap_or(false);
     let worker_log_path = output_directory.join("worker.log");
     log::debug!("Writing worker log to {}", worker_log_path.display());
-    let copy_output = crate::tee::CopyOutput::new(&worker_log_path, tee).unwrap();
+    let copy_output = crate::tee::CopyOutput::new(&worker_log_path, tee).map_err(|e| {
+        WorkerFailure::new(
+            "worker-log-creation-failed",
+            format!(
+                "Failed to create worker log file at {}: {}",
+                worker_log_path.display(),
+                e
+            ),
+            ["setup"],
+        )
+    })?;
     let argv = split_codemod_command(command)?;
     let command = argv.iter().map(|s| s.as_str()).collect::<Vec<_>>();
     metadata.command = Some(command.iter().map(|s| s.to_string()).collect());
@@ -232,41 +244,55 @@ pub fn run_worker(
                 description,
                 retry_after,
             }) => {
+                // Surface the underlying breezy/transport error to
+                // worker.log so the per-run page shows *why* the
+                // open failed, not just the WorkerFailure code.
+                log::error!(
+                    "Failed to open branch {}: {} ({})",
+                    main_branch_url,
+                    description,
+                    code
+                );
                 return Err(WorkerFailure::new(code.clone(), description, ["setup"])
                     .with_transient(code.contains("temporarily"))
                     .with_details(serde_json::json!({
                         "url": main_branch_url,
                         "retry_after": retry_after.map(|r| r.num_seconds()),
-                    })))
+                    })));
             }
         };
-        metadata.branch_url = Some(main_branch.as_ref().unwrap().get_user_url());
-        metadata.vcs_type = Some(
-            janitor::vcs::get_branch_vcs_type(main_branch.as_ref().unwrap()).map_err(|e| {
-                WorkerFailure::new(
-                    "vcs-type-unsupported",
-                    format!("Unable to determine VCS type: {}", e),
-                    ["setup"],
-                )
-                .with_transient(false)
-            })?,
-        );
+        let branch_ref = main_branch.as_ref().ok_or_else(|| WorkerFailure {
+            code: "main-branch-missing".to_owned(),
+            description: "Main branch reference is missing".to_string(),
+            details: None,
+            transient: None,
+            stage: vec!["setup".to_owned()],
+        })?;
+        metadata.branch_url = Some(branch_ref.get_user_url());
+        metadata.vcs_type = Some(janitor::vcs::get_branch_vcs_type(branch_ref).map_err(|e| {
+            WorkerFailure::new(
+                "vcs-type-unsupported",
+                format!("Unable to determine VCS type: {}", e),
+                ["setup"],
+            )
+            .with_transient(false)
+        })?);
         metadata.subpath = Some(subpath.to_string_lossy().to_string());
         empty_format = None;
     } else {
-        assert!(vcs_type.is_some());
+        let vcs_type = vcs_type.expect("vcs_type is required when main_branch_url is not given");
         main_branch = None;
         metadata.branch_url = None;
-        metadata.vcs_type = vcs_type;
+        metadata.vcs_type = Some(vcs_type);
         metadata.subpath = Some("".to_string());
         empty_format = if let Some(f) =
-            breezyshim::controldir::FORMAT_REGISTRY.make_controldir(&vcs_type.unwrap().to_string())
+            breezyshim::controldir::FORMAT_REGISTRY.make_controldir(&vcs_type.to_string())
         {
             Some(f)
         } else {
             return Err(WorkerFailure::new(
                 "vcs-type-unsupported",
-                format!("Unable to find format for vcs type {}", vcs_type.unwrap()),
+                format!("Unable to find format for vcs type {}", vcs_type),
                 ["setup"],
             )
             .with_transient(false)
@@ -420,7 +446,15 @@ pub fn run_worker(
         additional_colocated_branches.clone().unwrap_or_default();
 
     if let Some(main_branch) = main_branch.as_ref() {
-        roles.insert(main_branch.name().unwrap(), "main".to_string());
+        match main_branch.name() {
+            Some(name) => {
+                roles.insert(name, "main".to_string());
+            }
+            None => {
+                log::warn!("Branch name is None, using empty string");
+                roles.insert("".to_string(), "main".to_string());
+            }
+        }
     } else {
         roles.insert("".to_string(), "main".to_string());
     }
@@ -593,7 +627,15 @@ pub fn run_worker(
 
     log::info!("Workspace ready - starting.");
 
-    if ws.local_tree().has_changes().unwrap() {
+    let has_changes = ws.local_tree().has_changes().map_err(|e| {
+        WorkerFailure::new(
+            "tree-check-failed",
+            format!("Failed to check for changes in tree: {}", e),
+            ["setup"],
+        )
+        .with_transient(false)
+    })?;
+    if has_changes {
         return Err(WorkerFailure::new(
             "unexpected-changes-in-tree",
             "The working tree has unexpected changes after initial clone",
@@ -730,21 +772,17 @@ pub fn run_worker(
             .with_transient(false)
         })?;
 
-    let vcs_type = if vcs_type.is_none() {
-        actual_vcs_type
-    } else if Some(actual_vcs_type) != vcs_type {
-        return Err(WorkerFailure::new(
-            "vcs-type-mismatch",
-            format!(
-                "Expected VCS {}, got {}",
-                vcs_type.unwrap(),
-                actual_vcs_type
-            ),
-            ["result-push"],
-        )
-        .with_transient(false));
-    } else {
-        vcs_type.unwrap()
+    let vcs_type = match vcs_type {
+        None => actual_vcs_type,
+        Some(expected) if expected == actual_vcs_type => expected,
+        Some(expected) => {
+            return Err(WorkerFailure::new(
+                "vcs-type-mismatch",
+                format!("Expected VCS {}, got {}", expected, actual_vcs_type),
+                ["result-push"],
+            )
+            .with_transient(false));
+        }
     };
 
     crate::vcs::import_branches(
@@ -867,7 +905,7 @@ pub enum SingleItemError {
     AssignmentFailure(String),
     EmptyQueue,
     ResultUploadFailure(String),
-    JobPanicked(String),
+    WorkerPanicked(String),
 }
 
 impl From<client::AssignmentError> for SingleItemError {
@@ -908,18 +946,10 @@ pub async fn process_single_item(
     let force_build = assignment.force_build;
     let (resume_result, resume_branch_url, resume_branches) =
         if let Some(resume) = &assignment.resume {
-            let resume_result = resume.result.clone();
-            let resume_branch_url = resume
-                .branch_url
-                .to_string()
-                .trim_end_matches('/')
-                .parse()
-                .unwrap();
-            let resume_branches = resume.branches.clone();
             (
-                Some(resume_result),
-                Some(resume_branch_url),
-                Some(resume_branches),
+                Some(resume.result.clone()),
+                Some(resume.branch_url.clone()),
+                Some(resume.branches.clone()),
             )
         } else {
             (None, None, None)
@@ -942,17 +972,25 @@ pub async fn process_single_item(
         .to_string();
 
     let output_directory = if let Some(output_directory_base) = output_directory_base {
-        tempfile::TempDir::with_prefix_in("janitor-worker-", output_directory_base)
+        tempfile::TempDir::with_prefix_in("janitor-worker-", output_directory_base).map_err(
+            |e| {
+                SingleItemError::WorkerPanicked(format!(
+                    "Failed to create temporary directory: {}",
+                    e
+                ))
+            },
+        )?
     } else {
-        tempfile::TempDir::with_prefix("janitor-worker-")
-    }
-    .unwrap();
+        tempfile::TempDir::with_prefix("janitor-worker-").map_err(|e| {
+            SingleItemError::WorkerPanicked(format!("Failed to create temporary directory: {}", e))
+        })?
+    };
 
     let assignment_ = assignment.clone();
 
     let output_directory_ = output_directory.path().to_path_buf();
 
-    let metadata = tokio::task::spawn_blocking(move || {
+    let metadata = match tokio::task::spawn_blocking(move || {
         let mut metadata = Metadata {
             queue_id: Some(assignment.queue_id),
             start_time: Some(start_time),
@@ -1031,7 +1069,26 @@ pub async fn process_single_item(
         metadata
     })
     .await
-    .map_err(|e| SingleItemError::JobPanicked(e.to_string()))?;
+    {
+        Ok(metadata) => metadata,
+        Err(e) => {
+            // The build task panicked. Report the run as a worker failure;
+            // returning an error here instead skips the upload, and the
+            // runner then keeps the run active until the watchdog gives up.
+            let description = format!("Worker task panicked: {}", e);
+            log::error!("{}", description);
+            Metadata {
+                queue_id: Some(assignment.queue_id),
+                start_time: Some(start_time),
+                finish_time: Some(chrono::Utc::now()),
+                branch_url: assignment.branch.url.clone(),
+                vcs_type: Some(assignment.branch.vcs_type),
+                code: Some("worker-panic".to_string()),
+                description: Some(description),
+                ..Metadata::default()
+            }
+        }
+    };
 
     let result = client
         .upload_results(&assignment.id, &metadata, Some(output_directory.path()))
@@ -1042,7 +1099,7 @@ pub async fn process_single_item(
     log::debug!("Result: {:?}", result);
 
     if let Some(prometheus) = prometheus {
-        push_to_gateway(
+        if let Err(e) = push_to_gateway(
             prometheus,
             "janitor.worker",
             maplit::hashmap! {
@@ -1051,7 +1108,9 @@ pub async fn process_single_item(
             },
         )
         .await
-        .unwrap();
+        {
+            log::warn!("Failed to push metrics to Prometheus gateway: {}", e);
+        }
     }
 
     Ok(())
