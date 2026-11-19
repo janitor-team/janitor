@@ -159,6 +159,24 @@ async def test_generate_codebase_context(aiohttp_client, db, con):
             }
         )
 
+    async def handle_reviews(request):
+        run_id = request.match_info["run_id"]
+        if run_id != "run-1":
+            return web.json_response({"reviews": []})
+        return web.json_response(
+            {
+                "reviews": [
+                    {
+                        "run_id": "run-1",
+                        "verdict": "approved",
+                        "comment": "fine",
+                        "reviewer": "alice",
+                        "reviewed_at": now.isoformat(),
+                    }
+                ]
+            }
+        )
+
     async def handle_runs(request):
         seen_runs_queries.append(dict(request.query))
         # Hand back the two seeded runs in finish_time-desc order, as
@@ -202,6 +220,7 @@ async def test_generate_codebase_context(aiohttp_client, db, con):
 
     runner_app = web.Application()
     runner_app.router.add_get("/queue/position", handle_queue_position)
+    runner_app.router.add_get("/runs/{run_id}/reviews", handle_reviews)
     runner_app.router.add_get("/runs/{run_id}", handle_run)
     runner_app.router.add_get("/runs", handle_runs)
     runner_client = await aiohttp_client(runner_app)

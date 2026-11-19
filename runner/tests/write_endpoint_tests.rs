@@ -3584,20 +3584,26 @@ async fn get_run_reviews_returns_rows_in_order() {
 
     let pool = state.database.pool().clone();
     insert_codebase(&pool, "alpha").await;
+    sqlx::query("INSERT INTO change_set (id, campaign) VALUES ($1, $2)")
+        .bind("cs-review")
+        .bind("test-campaign")
+        .execute(&pool)
+        .await
+        .expect("insert change_set");
     sqlx::query(
         "INSERT INTO run (id, command, campaign, codebase, result_code, \
-                          start_time, finish_time, logfilenames) \
+                          start_time, finish_time, logfilenames, change_set) \
          VALUES ('run-review', '', 'test-campaign', 'alpha', 'success', \
-                 NOW() - INTERVAL '2 minute', NOW() - INTERVAL '1 minute', '{}')",
+                 NOW() - INTERVAL '2 minute', NOW() - INTERVAL '1 minute', '{}', 'cs-review')",
     )
     .execute(&pool)
     .await
     .expect("insert run");
     sqlx::query(
         "INSERT INTO run (id, command, campaign, codebase, result_code, \
-                          start_time, finish_time, logfilenames) \
+                          start_time, finish_time, logfilenames, change_set) \
          VALUES ('run-empty', '', 'test-campaign', 'alpha', 'success', \
-                 NOW() - INTERVAL '2 minute', NOW() - INTERVAL '1 minute', '{}')",
+                 NOW() - INTERVAL '2 minute', NOW() - INTERVAL '1 minute', '{}', 'cs-review')",
     )
     .execute(&pool)
     .await
