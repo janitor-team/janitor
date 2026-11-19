@@ -87,3 +87,12 @@ async def test_iter_queue_limit_zero(con):
     ]
     assert [item.codebase async for item in queue.iter_queue(limit=1)] == ["foo"]
     assert [item.codebase async for item in queue.iter_queue(limit=0)] == []
+
+
+async def test_iter_queue_offset(con):
+    queue = Queue(con)
+    await con.execute("INSERT INTO codebase (name) VALUES ('foo'), ('bar')")
+    await queue.add(codebase="foo", campaign="mycampaign", command="true")
+    await queue.add(codebase="bar", campaign="mycampaign", command="true")
+    assert [item.codebase async for item in queue.iter_queue(offset=1)] == ["bar"]
+    assert [item.codebase async for item in queue.iter_queue(offset=2)] == []
