@@ -31,3 +31,13 @@ Cargo.lock
 target
 .testrepository
 py/janitor/_*.cpython-*.so
+.claude/settings.local.json
+MISSING.md
+/breezyshim/
+# Stale service binaries left by local builds
+/janitor-publish-bin
+/janitor-site-bin
+# Unversioned working notes
+/merge-audit.md
+/gaps.md
+/local-commits.md
