@@ -107,31 +107,30 @@ pub async fn has_cotenants(
     url: &url::Url,
 ) -> Result<Option<bool>, sqlx::Error> {
     #[derive(Debug, Clone, sqlx::FromRow)]
-    struct CodebaseRow {
+    struct Row {
         pub name: String,
     }
-    let url = breezyshim::urlutils::split_segment_parameters(url)
-        .0
-        .to_string();
+    // Join through the codebase table so we always compare canonical URLs
+    // from the DB, never the run's raw transport URL (which may differ in
+    // scheme, e.g. git+ssh vs https, due to gitconfig insteadOf rewriting).
+    let rows: Vec<Row> = sqlx::query_as(
+        "WITH target AS (SELECT url, branch_url FROM codebase WHERE name = $1)
+         SELECT c.name FROM codebase c, target t
+         WHERE c.branch_url = t.branch_url
+            OR c.url        = t.url
+            OR c.branch_url = t.url
+            OR c.url        = t.branch_url",
+    )
+    .bind(codebase)
+    .fetch_all(conn)
+    .await?;
 
-    let rows: Vec<CodebaseRow> =
-        sqlx::query_as("SELECT name FROM codebase where branch_url = $1 or url = $1")
-            .bind(url.trim_end_matches('/'))
-            .fetch_all(conn)
-            .await?;
-
-    Ok(match rows.len() {
-        0 => {
-            // Uhm, we actually don't really know
-            warn!(
-                "Unable to figure out if {} has cotenants on {}",
-                codebase, url
-            );
-            None
-        }
-        1 => Some(rows[0].name != codebase.as_str()),
-        _ => Some(true),
-    })
+    let names: Vec<String> = rows.into_iter().map(|r| r.name).collect();
+    let result = classify_cotenants(codebase.as_str(), &names);
+    if result.is_none() {
+        warn!("Unable to figure out if {} has cotenants", codebase);
+    }
+    Ok(result)
 }
 
 /// All distinct campaigns that currently have publishable runs for
@@ -266,4 +265,41 @@ mod tests {
         run.finish_time = run.start_time;
         assert_eq!(run.duration(), chrono::Duration::zero());
     }
+
+    /// Unit tests for the decision matrix in `has_cotenants`. We
+    /// call the real `classify_cotenants` helper the function uses
+    /// under the hood so tests and production stay locked in step.
+    /// Python semantics:
+    ///
+    ///   - len > 1           → Some(true)
+    ///   - len == 1, matches → Some(false)
+    ///   - else              → None
+    fn names(ss: &[&str]) -> Vec<String> {
+        ss.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn test_cotenants_multiple_rows() {
+        assert_eq!(classify_cotenants("a", &names(&["a", "b"])), Some(true));
+        assert_eq!(classify_cotenants("a", &names(&["b", "c"])), Some(true));
+    }
+
+    #[test]
+    fn test_cotenants_single_matching() {
+        assert_eq!(classify_cotenants("a", &names(&["a"])), Some(false));
+    }
+
+    #[test]
+    fn test_cotenants_single_non_matching_is_none() {
+        // Regression guard for the bug fixed on this branch: the
+        // previous Rust port returned Some(true) here; Python
+        // returns None ("unknown").
+        assert_eq!(classify_cotenants("a", &names(&["other"])), None);
+    }
+
+    #[test]
+    fn test_cotenants_empty() {
+        assert_eq!(classify_cotenants("a", &names(&[])), None);
+    }
+
 }
