@@ -147,6 +147,12 @@ impl From<redis::RedisError> for JanitorError {
     }
 }
 
+impl From<crate::shared_config::validation::ConfigError> for JanitorError {
+    fn from(e: crate::shared_config::validation::ConfigError) -> Self {
+        Self::Config(e.to_string())
+    }
+}
+
 impl JanitorError {
     /// Create a configuration error
     pub fn config(msg: impl Into<String>) -> Self {
