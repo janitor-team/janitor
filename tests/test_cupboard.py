@@ -331,7 +331,11 @@ async def test_run_page_log_links(aiohttp_client, aiohttp_server, db, tmp_path):
     async def _handle_unchanged(request):
         return web.json_response({"reason": "no unchanged run"}, status=404)
 
+    async def _handle_reviews(request):
+        return web.json_response({"reviews": []})
+
     runner_app.router.add_get("/runs/unchanged", _handle_unchanged)
+    runner_app.router.add_get("/runs/{run_id}/reviews", _handle_reviews)
     runner_server = await aiohttp_server(runner_app)
     client = await create_client(
         aiohttp_client,

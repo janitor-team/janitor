@@ -7,8 +7,8 @@ use crate::api_types::{
     PublishStatusUpdate, QueueEntry, QueuePositionResponse, QueueStatsResponse,
     RateLimitedResponse, ReasonResponse, ResultBranchEntry, ResumeAssignment, ResumeChainResponse,
     ResumeCheckResponse, ResumeDescendantsResponse, ResumeValidationResponse, RunDetailResponse,
-    RunFollowup, RunFollowupsResponse, RunHealthSummary, RunListResponse, RunSummary,
-    ScheduleControlResponse, ScheduleResponse, ScheduledCandidate, StatusResponse,
+    RunFollowup, RunFollowupsResponse, RunHealthSummary, RunListResponse, RunReviewsResponse,
+    RunSummary, ScheduleControlResponse, ScheduleResponse, ScheduledCandidate, StatusResponse,
     UploadCandidatesResponse, WatchdogHealthResponse, WorkerInfo, WorkerListResponse,
     WorkerSummary,
 };
@@ -1774,6 +1774,27 @@ async fn get_run_followups(State(state): State<Arc<AppState>>, Path(id): Path<Ru
         Ok(followups) => Json(RunFollowupsResponse { followups }).into_response(),
         Err(e) => {
             log::error!("Failed to list followups for {}: {}", id, e);
+            db_error()
+        }
+    }
+}
+
+/// `GET /runs/{id}/reviews` -- list the reviews recorded for a run,
+/// oldest first. Returns an empty list when the run has no reviews.
+#[utoipa::path(
+    get,
+    path = "/runs/{id}/reviews",
+    params(("id" = RunId, Path, description = "Run id")),
+    responses(
+        (status = 200, description = "Reviews for the run", body = RunReviewsResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
+async fn get_run_reviews(State(state): State<Arc<AppState>>, Path(id): Path<RunId>) -> Response {
+    match state.database.get_run_reviews(&id).await {
+        Ok(reviews) => Json(RunReviewsResponse { reviews }).into_response(),
+        Err(e) => {
+            log::error!("Failed to list reviews for {}: {}", id, e);
             db_error()
         }
     }
@@ -4506,6 +4527,7 @@ fn private_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(list_runs))
         .routes(routes!(get_run, update_run))
         .routes(routes!(get_run_followups))
+        .routes(routes!(get_run_reviews))
         .routes(routes!(get_last_unabsorbed_run))
         .routes(routes!(get_unchanged_run))
         // The unauthenticated POST is for intra-cluster admin tools
