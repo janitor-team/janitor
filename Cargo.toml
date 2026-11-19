@@ -65,6 +65,7 @@ utoipa = { workspace = true, optional = true }
 [dev-dependencies]
 # Self-reference so `cargo test -p janitor` runs the `testing`-gated tests, as in runner/Cargo.toml.
 janitor = { path = ".", features = ["testing"] }
+janitor-service = { workspace = true, features = ["testing"] }
 
 [workspace.dependencies]
 rslock = { default-features = false, version = "0.7" }

@@ -119,6 +119,7 @@ pub fn install() {
 fn register() {
     describe();
     janitor::logs::describe_metrics();
+    janitor::schedule::describe_metrics();
     // Export these (as zero) before their first use, like the Python
     // runner did.
     counter!(RUN_COUNT).increment(0);
