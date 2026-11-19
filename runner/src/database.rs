@@ -261,14 +261,17 @@ impl RunnerDatabase {
             details: br.to_json(),
         });
 
-        let branch_url = run.branch_url.ok_or_else(|| sqlx::Error::ColumnDecode {
-            index: "branch_url".to_string(),
-            source: "unexpected null".into(),
-        })?;
-
         Ok(JanitorResult {
             log_id: run.id,
-            branch_url,
+            branch_url: run
+                .branch_url
+                .as_deref()
+                .map(url::Url::parse)
+                .transpose()
+                .map_err(|e| sqlx::Error::ColumnDecode {
+                    index: "branch_url".to_string(),
+                    source: e.into(),
+                })?,
             subpath: None, // Not stored in run table currently
             code: run.result_code,
             transient: run.failure_transient,
@@ -669,7 +672,7 @@ INSERT INTO run (
         .bind(result.codemod.as_ref())
         .bind(&result.campaign)
         .bind(result.vcs_type.as_deref())
-        .bind(result.branch_url.as_str())
+        .bind(result.branch_url.as_ref().map(url::Url::as_str))
         .bind(result.subpath.as_deref())
         .bind(&logfilenames)
         .bind(result.value.map(|v| v as i32))

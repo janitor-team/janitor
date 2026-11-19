@@ -552,21 +552,28 @@ impl Watchdog {
         // had it reported success.
         let result_code = reason.result_code();
         let description = reason.description();
-        let mut janitor_result =
-            run.create_result(result_code.to_string(), Some(description.to_string()));
-        janitor_result.transient = Some(reason.is_transient());
-        janitor_result.failure_details = Some(reason.create_failure_details(run));
-
-        if let Err(e) = self
-            .database
-            .finish_run(
-                &mut janitor_result,
-                &run.command,
-                run.instigated_context.as_ref(),
-                run.queue_id,
-            )
-            .await
-        {
+        let recorded: Result<_, Box<dyn std::error::Error + Send + Sync>> = match run.branch_url() {
+            Ok(branch_url) => {
+                let mut janitor_result = run.create_result(
+                    result_code.to_string(),
+                    Some(description.to_string()),
+                    branch_url,
+                );
+                janitor_result.transient = Some(reason.is_transient());
+                janitor_result.failure_details = Some(reason.create_failure_details(run));
+                self.database
+                    .finish_run(
+                        &mut janitor_result,
+                        &run.command,
+                        run.instigated_context.as_ref(),
+                        run.queue_id,
+                    )
+                    .await
+                    .map_err(Into::into)
+            }
+            Err(e) => Err(e.into()),
+        };
+        if let Err(e) = recorded {
             // Persisting a worker-timeout row failed (likely because
             // the original `run` row was already inserted by another
             // path, e.g. a concurrent finish_run call from the
