@@ -1,5 +1,6 @@
 //! Environment variable parsing utilities
 
+use std::collections::HashMap;
 use std::env;
 use std::str::FromStr;
 
@@ -14,30 +15,52 @@ pub trait FromEnv: Sized {
     fn from_env_with_prefix(prefix: &str) -> Result<Self, ConfigError>;
 }
 
+/// The source an `EnvParser` reads values from.
+///
+/// Most callers use `Process` (the real `std::env`). Tests use `Map`
+/// to pass in a self-contained snapshot of environment variables
+/// without mutating process-global state — which in turn means tests
+/// don't need `#[serial]` guards to avoid racing on env mutations.
+enum EnvSource {
+    Process,
+    Map(HashMap<String, String>),
+}
+
 /// Utility for parsing environment variables with optional prefix
 pub struct EnvParser {
     prefix: Option<String>,
+    source: EnvSource,
 }
 
 impl EnvParser {
-    /// Create a new environment parser without prefix
+    /// Create a new environment parser without prefix, reading from
+    /// the real process environment.
     pub fn new() -> Self {
-        Self { prefix: None }
+        Self {
+            prefix: None,
+            source: EnvSource::Process,
+        }
     }
 
-    /// Create a new environment parser with prefix
+    /// Create a new environment parser with prefix, reading from the
+    /// real process environment.
     pub fn with_prefix(prefix: &str) -> Self {
-        let prefix = if prefix.is_empty() {
-            None
-        } else {
-            let mut p = prefix.to_uppercase();
-            if !p.ends_with('_') {
-                p.push('_');
-            }
-            Some(p)
-        };
+        Self {
+            prefix: normalise_prefix(prefix),
+            source: EnvSource::Process,
+        }
+    }
 
-        Self { prefix }
+    /// Create a parser that reads from an in-memory map instead of
+    /// the process environment. The prefix is applied to lookups the
+    /// same way as in [`with_prefix`]. This is the test-friendly
+    /// entry point: construct the exact environment you want and hand
+    /// it to the loader.
+    pub fn with_map(prefix: &str, source: HashMap<String, String>) -> Self {
+        Self {
+            prefix: normalise_prefix(prefix),
+            source: EnvSource::Map(source),
+        }
     }
 
     /// Get the environment variable key with prefix applied
@@ -50,7 +73,11 @@ impl EnvParser {
 
     /// Get a string value from environment
     pub fn get_string(&self, key: &str) -> Option<String> {
-        env::var(self.get_key(key)).ok()
+        let key = self.get_key(key);
+        match &self.source {
+            EnvSource::Process => env::var(&key).ok(),
+            EnvSource::Map(map) => map.get(&key).cloned(),
+        }
     }
 
     /// Get a required string value from environment
@@ -174,6 +201,21 @@ impl EnvParser {
 impl Default for EnvParser {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Uppercase the prefix and ensure it ends with an underscore, which
+/// is the convention every parser call-site uses. Returns `None` for
+/// the empty prefix.
+fn normalise_prefix(prefix: &str) -> Option<String> {
+    if prefix.is_empty() {
+        None
+    } else {
+        let mut p = prefix.to_uppercase();
+        if !p.ends_with('_') {
+            p.push('_');
+        }
+        Some(p)
     }
 }
 
@@ -346,5 +388,60 @@ mod tests {
         env::remove_var("LIST_VAR");
         env::remove_var("LIST_SPACES");
         env::remove_var("LIST_EMPTY");
+    }
+
+    /// `with_map` reads from the provided map instead of the process
+    /// env, so the parser never touches std::env. This is the shape
+    /// tests should use to avoid racing on real env mutations.
+    #[test]
+    fn test_env_parser_with_map_reads_from_map() {
+        let mut map = HashMap::new();
+        map.insert("SOMETHING".to_string(), "value".to_string());
+        map.insert("FLAG".to_string(), "true".to_string());
+        map.insert("PORT".to_string(), "8080".to_string());
+
+        let parser = EnvParser::with_map("", map);
+        assert_eq!(parser.get_string("SOMETHING"), Some("value".to_string()));
+        assert_eq!(parser.get_bool("FLAG").unwrap(), Some(true));
+        assert_eq!(parser.get_u16("PORT").unwrap(), Some(8080));
+        assert_eq!(parser.get_string("MISSING"), None);
+    }
+
+    /// with_map applies the same prefix normalisation as with_prefix:
+    /// "app" is uppercased to "APP_" and prepended to every lookup.
+    #[test]
+    fn test_env_parser_with_map_applies_prefix() {
+        let mut map = HashMap::new();
+        map.insert("APP_HOST".to_string(), "localhost".to_string());
+        map.insert("HOST".to_string(), "wrong-scope".to_string());
+
+        let parser = EnvParser::with_map("app", map);
+        // The parser asks for "APP_HOST" — the unprefixed "HOST" must
+        // not leak through.
+        assert_eq!(parser.get_string("HOST"), Some("localhost".to_string()));
+    }
+
+    /// Sanity check that a map-backed parser does NOT fall through to
+    /// the real process environment — setting a var doesn't make it
+    /// visible to the map parser. This pins the isolation property
+    /// tests depend on.
+    #[test]
+    fn test_env_parser_with_map_is_isolated_from_process_env() {
+        env::set_var("MAP_ISOLATION_KEY", "from-process");
+        let mut map = HashMap::new();
+        map.insert("MAP_ISOLATION_KEY".to_string(), "from-map".to_string());
+
+        let parser = EnvParser::with_map("", map);
+        assert_eq!(
+            parser.get_string("MAP_ISOLATION_KEY"),
+            Some("from-map".to_string())
+        );
+
+        // And conversely, a key only in the real env is invisible to
+        // the map parser.
+        let parser_empty = EnvParser::with_map("", HashMap::new());
+        assert_eq!(parser_empty.get_string("MAP_ISOLATION_KEY"), None);
+
+        env::remove_var("MAP_ISOLATION_KEY");
     }
 }
