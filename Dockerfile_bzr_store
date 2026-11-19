@@ -1,5 +1,5 @@
 # https://hub.docker.com/_/debian
-FROM docker.io/debian:testing-slim AS build
+FROM docker.io/debian:sid-slim AS build
 MAINTAINER Jelmer Vernooij <jelmer@jelmer.uk>
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -31,7 +31,7 @@ COPY . /code
 RUN cargo build --release --manifest-path /code/bzr-store/Cargo.toml --bin janitor-bzr-store \
  && cp -r /root/.cargo/registry/src/*/loggerhead-*/static /code/loggerhead-static
 
-FROM docker.io/debian:testing-slim
+FROM docker.io/debian:sid-slim
 MAINTAINER Jelmer Vernooij <jelmer@jelmer.uk>
 
 ARG DEBIAN_FRONTEND=noninteractive
