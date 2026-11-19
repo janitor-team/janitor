@@ -331,7 +331,226 @@ impl<'a> Queue<'a> {
 
 #[cfg(all(test, feature = "testing"))]
 mod tests {
+    //! Database-backed integration tests for `Queue`. These mirror the
+    //! Python `tests/test_queue.py` cases (`test_get_buckets`,
+    //! `test_add`, `test_double_add`, `test_vcs_only`) so that
+    //! retiring the Python test file doesn't drop coverage of the
+    //! queue's add/next_item/get_buckets path.
+    //!
+    //! Each test uses its own unique scratch database (the
+    //! TestDatabase default creates one per call), so they're
+    //! parallel-safe without `#[serial]`. If no Postgres is reachable
+    //! the per-test setup errors and the test logs + skips.
+
     use super::*;
+    use crate::schema::setup_test_database;
+    use crate::test_utils::TestDatabase;
+
+    /// Set up a fresh TestDatabase + janitor schema. Returns None
+    /// (after logging) when no Postgres is available, so these tests
+    /// degrade to skipped rather than failing in CI without a DB.
+    async fn make_db() -> Option<TestDatabase> {
+        match TestDatabase::new_optional().await {
+            Ok(Some(db)) => match setup_test_database(&db.pool).await {
+                Ok(()) => Some(db),
+                Err(e) => {
+                    eprintln!("Skipping queue test: schema setup failed: {}", e);
+                    None
+                }
+            },
+            _ => {
+                eprintln!("Skipping queue test: no Postgres available");
+                None
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_buckets_empty() {
+        let Some(db) = make_db().await else { return };
+        let queue = Queue::new(&db.pool);
+        // Fresh schema → no queue rows → no buckets.
+        let buckets = queue.get_buckets().await.unwrap();
+        assert_eq!(buckets, Vec::<(String, i64)>::new());
+    }
+
+    #[tokio::test]
+    async fn test_add_returns_default_bucket() {
+        let Some(db) = make_db().await else { return };
+        sqlx::query("INSERT INTO codebase (name) VALUES ('foo')")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        let queue = Queue::new(&db.pool);
+        // First add: id 1, default bucket. Mirrors Python's
+        // assert == (1, "default").
+        let (id, bucket) = queue
+            .add(
+                &CodebaseName::new("foo").unwrap(),
+                "true",
+                &Campaign::new("bar").unwrap(), None, 0.0, "default", None, None, false, None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(id, 1);
+        assert_eq!(bucket, "default");
+
+        // next_item should hand back exactly the row we just
+        // added, with the codebase/campaign we set.
+        let (item, _vcs) = queue.next_item(None, None, None, None).await.unwrap();
+        let item = item.expect("queue should have an item");
+        assert_eq!(item.codebase, "foo");
+        assert_eq!(item.campaign, "bar");
+    }
+
+    #[tokio::test]
+    async fn test_double_add_is_idempotent() {
+        let Some(db) = make_db().await else { return };
+        sqlx::query("INSERT INTO codebase (name) VALUES ('foo')")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        let queue = Queue::new(&db.pool);
+        let first = queue
+            .add(
+                &CodebaseName::new("foo").unwrap(),
+                "true",
+                &Campaign::new("bar").unwrap(), None, 0.0, "default", None, None, false, None,
+            )
+            .await
+            .unwrap();
+        let second = queue
+            .add(
+                &CodebaseName::new("foo").unwrap(),
+                "true",
+                &Campaign::new("bar").unwrap(), None, 0.0, "default", None, None, false, None,
+            )
+            .await
+            .unwrap();
+        // Same (codebase, campaign, change_set) → ON CONFLICT path
+        // returns the same id and bucket, not a new row.
+        assert_eq!(first, second);
+        assert_eq!(first, (1, "default".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_vcs_only_codebase_yields_vcs_info() {
+        let Some(db) = make_db().await else { return };
+        // Codebase with vcs_type but NULL branch_url — mirrors
+        // Python's "vcs only" case.
+        sqlx::query(
+            "INSERT INTO codebase (name, vcs_type, branch_url) VALUES ('foo', 'git', NULL)",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let queue = Queue::new(&db.pool);
+        let (id, bucket) = queue
+            .add(
+                &CodebaseName::new("foo").unwrap(),
+                "true",
+                &Campaign::new("bar").unwrap(), None, 0.0, "default", None, None, false, None,
+            )
+            .await
+            .unwrap();
+        assert_eq!((id, bucket), (1, "default".to_string()));
+
+        let (item, vcs_dict) = queue.next_item_tuple(None, None, None, None).await.unwrap();
+        let item = item.expect("queue should have an item");
+        assert_eq!(item.codebase, "foo");
+        assert_eq!(item.campaign, "bar");
+        // VCS dict reports the vcs_type from the codebase row but
+        // omits branch_url because it was NULL — mirrors the
+        // Python assertion `vcs_info == {"vcs_type": "git"}`.
+        assert_eq!(vcs_dict.get("vcs_type").map(String::as_str), Some("git"));
+        assert!(!vcs_dict.contains_key("branch_url"));
+    }
+
+    #[tokio::test]
+    async fn test_get_buckets_groups_by_bucket() {
+        let Some(db) = make_db().await else { return };
+        sqlx::query("INSERT INTO codebase (name) VALUES ('a'), ('b'), ('c')")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        let queue = Queue::new(&db.pool);
+        // Two items in 'default', one in 'manual'.
+        queue
+            .add(
+                &CodebaseName::new("a").unwrap(),
+                "true",
+                &Campaign::new("lf").unwrap(), None, 0.0, "default", None, None, false, None,
+            )
+            .await
+            .unwrap();
+        queue
+            .add(
+                &CodebaseName::new("b").unwrap(),
+                "true",
+                &Campaign::new("lf").unwrap(), None, 0.0, "default", None, None, false, None,
+            )
+            .await
+            .unwrap();
+        queue
+            .add(
+                &CodebaseName::new("c").unwrap(),
+                "true",
+                &Campaign::new("lf").unwrap(), None, 0.0, "manual", None, None, false, None,
+            )
+            .await
+            .unwrap();
+
+        let mut buckets = queue.get_buckets().await.unwrap();
+        buckets.sort();
+        assert_eq!(
+            buckets,
+            vec![
+                ("default".to_string(), 2_i64),
+                ("manual".to_string(), 1_i64),
+            ]
+        );
+    }
+
+    /// Regression: `iter_queue` 500ed any time a row had a NULL
+    /// `estimated_duration` because `QueueItem.estimated_duration`
+    /// was decoded as the non-nullable `PgInterval`. Manual queue
+    /// inserts (admin reschedule, cleanup-runs) never populate that
+    /// column, so /api/queue went down the moment one such row
+    /// landed in the table. Insert a row with NULL
+    /// `estimated_duration` directly and confirm `iter_queue`
+    /// decodes it cleanly into `Option<PgInterval>`.
+    #[tokio::test]
+    async fn test_iter_queue_handles_null_estimated_duration() {
+        let Some(db) = make_db().await else { return };
+        sqlx::query("INSERT INTO codebase (name) VALUES ('foo')")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO queue (codebase, campaign, command, priority, bucket, requester) \
+             VALUES ('foo', 'lintian-fixes'::campaign_name, 'true', 0, 'manual', 'test')",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let queue = Queue::new(&db.pool);
+        let items = queue
+            .iter_queue(Some(10), None)
+            .await
+            .expect("iter_queue must accept NULL estimated_duration");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].codebase, "foo");
+        assert_eq!(items[0].campaign, "lintian-fixes");
+        assert!(items[0].estimated_duration.is_none());
+    }
+
+    // Covers the ON CONFLICT bucket-priority path: re-adding under a
+    // lower-priority bucket must leave the existing entry alone.
 
     #[tokio::test]
     async fn test_add_and_get_buckets() {
