@@ -250,9 +250,8 @@ impl<'a> Queue<'a> {
     /// * `limit` - Optional limit on number of items to return
     /// * `campaign` - Optional campaign filter
     ///
-    /// Rows are ordered the same way `next_item` would pick them
-    /// (bucket, priority, id ascending); `limit` caps the number of
-    /// rows, `campaign` optionally restricts to a single campaign.
+    /// # Returns
+    /// Vector of QueueItem objects in priority order (bucket ASC, priority ASC, id ASC)
     pub async fn iter_queue(
         &self,
         limit: Option<u32>,
@@ -280,7 +279,7 @@ impl<'a> Queue<'a> {
         };
 
         let sqlx_query = if let Some(campaign) = campaign {
-            sqlx::query_as::<_, QueueItem>(sqlx::AssertSqlSafe(query))
+            sqlx::query_as::<_, QueueItem>(sqlx::AssertSqlSafe(&*query))
                 .bind(campaign)
                 .bind(limit.map_or(i64::MAX, i64::from))
         } else {
@@ -291,12 +290,42 @@ impl<'a> Queue<'a> {
         sqlx_query.fetch_all(self.pool).await
     }
 
-    pub async fn get_buckets(&self) -> Result<Vec<(String, i64)>, Error> {
-        sqlx::query_as(
-            "SELECT bucket::text, count(*) FROM queue GROUP BY bucket ORDER BY bucket ASC",
-        )
-        .fetch_all(self.pool)
-        .await
+    /// Get next queue item with fixed return type matching Python API
+    ///
+    /// # Returns
+    /// (QueueItem, VCS info dict) where VCS dict is never None, just empty
+    pub async fn next_item_tuple(
+        &self,
+        codebase: Option<&CodebaseName>,
+        campaign: Option<&Campaign>,
+        exclude_hosts: Option<HashSet<String>>,
+        assigned_queue_items: Option<HashSet<i32>>,
+    ) -> Result<(Option<QueueItem>, HashMap<String, String>), Error> {
+        let (item, vcs_info) = self
+            .next_item(codebase, campaign, exclude_hosts, assigned_queue_items)
+            .await?;
+
+        // Convert VcsInfo to HashMap, filtering out None values
+        let mut vcs_dict = HashMap::new();
+        if let Some(vcs) = vcs_info {
+            if let Some(branch_url) = vcs.branch_url {
+                if !branch_url.is_empty() {
+                    vcs_dict.insert("branch_url".to_string(), branch_url);
+                }
+            }
+            if let Some(subpath) = vcs.subpath {
+                if !subpath.is_empty() {
+                    vcs_dict.insert("subpath".to_string(), subpath);
+                }
+            }
+            if let Some(vcs_type) = vcs.vcs_type {
+                if !vcs_type.is_empty() {
+                    vcs_dict.insert("vcs_type".to_string(), vcs_type);
+                }
+            }
+        }
+
+        Ok((item, vcs_dict))
     }
 }
 
