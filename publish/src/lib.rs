@@ -982,10 +982,12 @@ pub async fn derived_branch_name(
         format!("{}/{}", campaign_branch, role)
     };
 
-    let cotenants = match run.branch_url.as_deref() {
-        Some(branch_url) => has_cotenants(conn, &run.codebase, branch_url).await?,
-        None => Some(false),
-    };
+    // Use the shared helper rather than matching on the run's raw
+    // branch_url: it joins through the codebase table so the comparison
+    // is between canonical URLs from the DB. A run's transport URL can
+    // differ in scheme (git+ssh vs https) because of gitconfig
+    // insteadOf rewriting, which made the raw match miss cotenants.
+    let cotenants = janitor::state::has_cotenants(conn, &run.codebase).await?;
 
     if cotenants == Some(true) {
         Ok(format!("{}/{}", base, run.codebase))
@@ -1000,38 +1002,6 @@ pub async fn derived_branch_name(
 ///   several rows match, or the single matching row is a different name).
 /// * `Some(false)`: the URL is uniquely owned by `codebase`.
 /// * `None`: no rows matched, so we can't tell.
-async fn has_cotenants(
-    conn: &sqlx::PgPool,
-    codebase: &CodebaseName,
-    branch_url: &str,
-) -> Result<Option<bool>, sqlx::Error> {
-    let url = match url::Url::parse(branch_url) {
-        Ok(u) => breezyshim::urlutils::split_segment_parameters(&u)
-            .0
-            .to_string(),
-        Err(_) => branch_url.to_string(),
-    };
-
-    let rows: Vec<(CodebaseName,)> =
-        sqlx::query_as("SELECT name FROM codebase WHERE branch_url = $1 OR url = $1")
-            .bind(url.trim_end_matches('/'))
-            .fetch_all(conn)
-            .await?;
-
-    Ok(match rows.len() {
-        0 => {
-            log::warn!(
-                "Unable to figure out if {} has cotenants on {}",
-                codebase,
-                url
-            );
-            None
-        }
-        1 => Some(&rows[0].0 != codebase),
-        _ => Some(true),
-    })
-}
-
 /// Get the URL for a role branch.
 ///
 /// # Arguments
