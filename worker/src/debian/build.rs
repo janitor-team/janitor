@@ -145,7 +145,12 @@ pub(crate) fn build(
             // This allows us to upload incremented versions for subsequent
             // runs.
             crate::debian::tree_set_changelog_version(local_tree, last_build_version, subpath)
-                .unwrap();
+                .map_err(|description| BuildFailure {
+                    code: "set-changelog-version-failed".to_string(),
+                    description,
+                    details: None,
+                    stage: vec![],
+                })?;
         }
 
         let result: Result<BuildOnceResult, IterateBuildError> =
