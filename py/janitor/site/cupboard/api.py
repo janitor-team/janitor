@@ -59,6 +59,9 @@ class MassRescheduleSchema(Schema):
     rejected = fields.Raw(metadata={"description": "if present, only rejected runs"})
     offset = fields.Int(metadata={"description": "offset from top of queue"})
     refresh = fields.Raw(metadata={"description": "if present, start from scratch"})
+    dry_run = fields.Raw(
+        metadata={"description": "if present, only list the matching runs"}
+    )
 
 
 class CodebaseCampaignSchema(Schema):
@@ -144,6 +147,12 @@ AND """
         except asyncpg.InvalidRegularExpressionError as e:
             raise web.HTTPBadRequest(text=f"Invalid regex: {e.message}") from e
 
+    matches = [
+        {"codebase": run["codebase"], "campaign": run["campaign"]} for run in runs
+    ]
+    if "dry_run" in post:
+        return web.json_response(matches)
+
     session = request.app["http_client_session"]
 
     async def do_reschedule():
@@ -186,9 +195,7 @@ AND """
                     )
 
     await spawn(request, do_reschedule())
-    return web.json_response(
-        [{"codebase": run["codebase"], "campaign": run["campaign"]} for run in runs]
-    )
+    return web.json_response(matches)
 
 
 class NeedsReviewQuerySchema(Schema):
