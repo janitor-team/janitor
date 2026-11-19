@@ -202,6 +202,17 @@ div.documentwrapper {
     width: 80%;
 }
 
+/* Keep the content clear of the fixed sidebar: its 25px margin and 300px search box */
+@media screen and (min-width: 876px) {
+    div.sphinxsidebar + div.documentwrapper {
+        max-width: calc(100% - 325px);
+    }
+
+    div.document:has(> div.sphinxsidebar) + div.footer {
+        margin-left: calc(max(20%, 325px) + 30px);
+    }
+}
+
 div.bodywrapper {
     margin: 0 0 0 0px;
     position: relative;
