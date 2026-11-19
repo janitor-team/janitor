@@ -4,7 +4,7 @@
 //! record into a thread-local recorder instead and inspect a snapshot of
 //! just what they recorded.
 
-use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
 use std::collections::BTreeMap;
 use std::future::Future;
 
@@ -24,6 +24,10 @@ pub fn capture(f: impl FnOnce()) -> Snapshot {
     let recorder = DebuggingRecorder::new();
     let snapshotter = recorder.snapshotter();
     metrics::with_local_recorder(&recorder, f);
+    to_snapshot(&snapshotter)
+}
+
+fn to_snapshot(snapshotter: &Snapshotter) -> Snapshot {
     snapshotter
         .snapshot()
         .into_vec()
@@ -64,6 +68,15 @@ pub fn capture_async<T>(fut: impl Future<Output = T>) -> (T, Snapshot) {
         output = Some(runtime.block_on(fut));
     });
     (output.expect("future completed"), snapshot)
+}
+
+/// Like [`capture_async`], on the running current-thread runtime of a `#[tokio::test]`.
+pub async fn capture_local<T>(fut: impl Future<Output = T>) -> (T, Snapshot) {
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    let _guard = metrics::set_default_local_recorder(&recorder);
+    let output = fut.await;
+    (output, to_snapshot(&snapshotter))
 }
 
 #[cfg(test)]
