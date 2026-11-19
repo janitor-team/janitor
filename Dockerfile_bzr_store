@@ -62,4 +62,4 @@ EXPOSE 9929
 
 EXPOSE 9930
 
-ENTRYPOINT ["janitor-bzr-store", "--port=9929", "--public-port=9930", "--listen-address=::"]
+ENTRYPOINT ["janitor-bzr-store", "--port=9929", "--public-port=9930", "--listen-address=::", "--vcs-path=/bzr"]
