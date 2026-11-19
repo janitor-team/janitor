@@ -34,31 +34,117 @@ pub fn push_branch(
         },
     );
     let transport = breezyshim::transport::get_transport(&url, possible_transports.as_mut())?;
-    let target = match breezyshim::controldir::open_from_transport(&transport, None) {
-        Ok(cd) => cd,
-        Err(BrzError::NotBranchError(..)) => {
-            match breezyshim::controldir::create_on_transport(&transport, &vcs_type) {
-                Err(BrzError::NoSuchFile(..)) => {
-                    transport.create_prefix()?;
-                    breezyshim::controldir::create_on_transport(&transport, &vcs_type)?
+    let tag_selector = tag_selector.map(std::rc::Rc::from);
+    retry_vcs(push_retryable, || {
+        let target = match breezyshim::controldir::open_from_transport(&transport, None) {
+            Ok(cd) => cd,
+            Err(BrzError::NotBranchError(..)) => {
+                match breezyshim::controldir::create_on_transport(&transport, &vcs_type) {
+                    Err(BrzError::NoSuchFile(..)) => {
+                        transport.create_prefix()?;
+                        breezyshim::controldir::create_on_transport(&transport, &vcs_type)?
+                    }
+                    r => r?,
                 }
-                r => r?,
             }
-        }
-        Err(e) => {
-            return Err(e);
-        }
-    };
+            Err(e) => {
+                return Err(e);
+            }
+        };
 
-    target.push_branch(
-        source_branch,
-        branch_name.as_deref(),
-        stop_revision.as_ref(),
-        Some(overwrite),
-        tag_selector,
-    )?;
+        let tag_selector = tag_selector
+            .clone()
+            .map(|f: std::rc::Rc<dyn Fn(String) -> bool>| {
+                Box::new(move |tag| f(tag)) as Box<dyn Fn(String) -> bool>
+            });
+        target.push_branch(
+            source_branch,
+            branch_name.as_deref(),
+            stop_revision.as_ref(),
+            Some(overwrite),
+            tag_selector,
+        )?;
 
-    Ok(())
+        Ok(())
+    })
+}
+
+/// Tries for one push or import, as in the Python worker (`max_tries=10`).
+const VCS_MAX_TRIES: u32 = 10;
+
+/// Errors after which `import_branches_*` is tried again, as in the Python worker.
+fn import_retryable(e: &BrzError) -> bool {
+    matches!(
+        e,
+        BrzError::InvalidHttpResponse(..)
+            | BrzError::IncompleteRead(..)
+            | BrzError::ConnectionError(..)
+    )
+}
+
+/// Errors after which `push_branch` is tried again: also any unexpected HTTP status.
+fn push_retryable(e: &BrzError) -> bool {
+    matches!(e, BrzError::UnexpectedHttpStatus { .. }) || import_retryable(e)
+}
+
+/// Also counts `import_branches` retries, as the Python worker's metric did.
+static PUSH_BRANCH_RETRIES: std::sync::LazyLock<prometheus::IntCounter> =
+    std::sync::LazyLock::new(|| {
+        prometheus::register_int_counter!("push_branch_retries", "Number of branch push retries.")
+            .unwrap()
+    });
+
+/// Run a push or import again with a growing wait while it fails with a `retryable` error.
+fn retry_vcs<T>(
+    retryable: fn(&BrzError) -> bool,
+    op: impl FnMut() -> Result<T, BrzError>,
+) -> Result<T, BrzError> {
+    retry_vcs_with(retryable, op, vcs_waits(), &PUSH_BRANCH_RETRIES)
+}
+
+/// Waits of 0.5 s, 1 s, 2 s, ... each with jitter.
+fn vcs_waits() -> backoff::ExponentialBackoff {
+    backoff::ExponentialBackoff {
+        multiplier: 2.0,
+        max_interval: std::time::Duration::from_secs(128),
+        max_elapsed_time: None,
+        ..Default::default()
+    }
+}
+
+fn retry_vcs_with<T>(
+    retryable: fn(&BrzError) -> bool,
+    mut op: impl FnMut() -> Result<T, BrzError>,
+    waits: backoff::ExponentialBackoff,
+    retries: &prometheus::IntCounter,
+) -> Result<T, BrzError> {
+    let tries = std::cell::Cell::new(0);
+    backoff::retry_notify(
+        waits,
+        || {
+            tries.set(tries.get() + 1);
+            op().map_err(|e| {
+                if retryable(&e) && tries.get() < VCS_MAX_TRIES {
+                    backoff::Error::transient(e)
+                } else {
+                    backoff::Error::permanent(e)
+                }
+            })
+        },
+        |e: BrzError, wait: std::time::Duration| {
+            retries.inc();
+            log::warn!(
+                "Push failed: {}; try {} of {} in {:?}",
+                e,
+                tries.get() + 1,
+                VCS_MAX_TRIES,
+                wait
+            );
+        },
+    )
+    .map_err(|e| match e {
+        backoff::Error::Permanent(e) | backoff::Error::Transient { err: e, .. } => e,
+    })
 }
 
 /// Import branches into a new location.
@@ -316,16 +402,18 @@ pub fn import_branches(
             return Err(BrzError::UnsupportedVcs(other.to_string()));
         }
     };
-    import(
-        repo_url,
-        local_branch,
-        campaign,
-        log_id,
-        branches,
-        tags,
-        update_current,
-        possible_transports,
-    )
+    retry_vcs(import_retryable, || {
+        import(
+            repo_url,
+            local_branch,
+            campaign,
+            log_id,
+            branches,
+            tags.clone(),
+            update_current,
+            possible_transports,
+        )
+    })
 }
 
 #[cfg(test)]
@@ -504,5 +592,90 @@ mod tests {
             }
         );
         std::mem::drop(env);
+    }
+
+    fn retry(
+        retryable: fn(&BrzError) -> bool,
+        errors: Vec<BrzError>,
+    ) -> (Result<(), BrzError>, u64) {
+        let mut errors = errors.into_iter();
+        let retries = prometheus::IntCounter::new("retries", "retries").unwrap();
+        let no_waits = backoff::ExponentialBackoff {
+            initial_interval: std::time::Duration::ZERO,
+            ..vcs_waits()
+        };
+        let ret = retry_vcs_with(
+            retryable,
+            || errors.next().map_or(Ok(()), Err),
+            no_waits,
+            &retries,
+        );
+        (ret, retries.get())
+    }
+
+    fn connection_error() -> BrzError {
+        BrzError::ConnectionError("while sending POST /codebase/git-receive-pack:".to_string())
+    }
+
+    #[test]
+    fn test_retry_vcs_repeats_a_retryable_error() {
+        let (ret, retries) = retry(
+            import_retryable,
+            (0..3).map(|_| connection_error()).collect(),
+        );
+        assert!(ret.is_ok());
+        assert_eq!(retries, 3);
+    }
+
+    #[test]
+    fn test_retry_vcs_gives_up() {
+        let (ret, retries) = retry(
+            push_retryable,
+            (0..20).map(|_| connection_error()).collect(),
+        );
+        assert!(matches!(ret, Err(BrzError::ConnectionError(_))));
+        assert_eq!(retries, 9);
+
+        let (ret, retries) = retry(push_retryable, vec![BrzError::DivergedBranches]);
+        assert!(matches!(ret, Err(BrzError::DivergedBranches)));
+        assert_eq!(retries, 0);
+    }
+
+    #[test]
+    fn test_retryable_errors() {
+        let status = BrzError::UnexpectedHttpStatus {
+            url: Url::parse("http://example.com/codebase").unwrap(),
+            code: 403,
+            extra: None,
+            headers: HashMap::new(),
+        };
+        let errors = [
+            connection_error(),
+            BrzError::IncompleteRead(vec![], Some(10)),
+            BrzError::InvalidHttpResponse(
+                "http://example.com/codebase".to_string(),
+                "Bad status line received".to_string(),
+                None,
+                HashMap::new(),
+            ),
+            status,
+            BrzError::TransportError("No space left on device".to_string()),
+            BrzError::DivergedBranches,
+        ];
+        let kinds: Vec<_> = errors
+            .iter()
+            .map(|e| (push_retryable(e), import_retryable(e)))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (true, true),
+                (true, true),
+                (true, true),
+                (true, false),
+                (false, false),
+                (false, false),
+            ]
+        );
     }
 }
