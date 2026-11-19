@@ -18,6 +18,7 @@ use janitor_types::{CodebaseName, PublishId, RunId};
 use serde::ser::SerializeStruct;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 /// Request and response types for the HTTP API.
@@ -4233,56 +4234,66 @@ pub fn iter_all_mps(
     })
 }
 
-async fn check_existing(
-    conn: sqlx::PgPool,
-    redis: Option<RedisConnectionManager>,
-    config: &janitor::config::Config,
-    publish_worker: &crate::PublishWorker,
-    bucket_rate_limiter: &Mutex<Box<dyn crate::rate_limiter::RateLimiter>>,
-    forge_rate_limiter: Arc<RwLock<HashMap<String, chrono::DateTime<Utc>>>>,
-    vcs_managers: &HashMap<VcsType, Box<dyn VcsManager>>,
-    modify_limit: Option<i32>,
-    unexpected_limit: Option<i32>,
-) -> bool {
-    let mut mps_per_bucket = maplit::hashmap! {
-        MergeProposalStatus::Open => maplit::hashmap! {},
-        MergeProposalStatus::Closed => maplit::hashmap! {},
-        MergeProposalStatus::Merged => maplit::hashmap! {},
-        MergeProposalStatus::Applied => maplit::hashmap! {},
-        MergeProposalStatus::Abandoned => maplit::hashmap! {},
-        MergeProposalStatus::Rejected => maplit::hashmap! {},
-    };
-    let mut possible_transports = Vec::new();
-    let mut status_count = maplit::hashmap! {
-        MergeProposalStatus::Open => 0,
-        MergeProposalStatus::Closed => 0,
-        MergeProposalStatus::Merged => 0,
-        MergeProposalStatus::Applied => 0,
-        MergeProposalStatus::Abandoned => 0,
-        MergeProposalStatus::Rejected => 0,
-    };
-
-    let mut modified_mps = 0;
-    let mut unexpected = 0;
-    let mut check_only = false;
-    let mut was_forge_ratelimited = false;
+/// What one forge's scan thread found during a `check_existing` pass.
+#[derive(Default)]
+struct ForgeScan {
+    mps_per_bucket: HashMap<MergeProposalStatus, HashMap<String, usize>>,
+    status_count: HashMap<MergeProposalStatus, i32>,
     // Count MPs whose `revision` doesn't join to any `run` row and log
     // one summary warning at the end of the scan instead of ~1 warn per
     // MP. Production scans emitted >1300 such lines per 6h, drowning
     // every other publish signal in the logs (BUGS.md #6). Keeps the
     // first-offender url so a quick `grep -F` still hits a sample.
-    let mut no_run_for_mp: usize = 0;
-    let mut no_run_first: Option<url::Url> = None;
-    // iter_my_proposals_lazy yields Result items. The pre-fix loop did
-    // `filter_map(Result::ok)` which discarded Errs silently - and the
-    // GitLab/GitHub plugins return None on the next __next__ after a
-    // Python exception, so a single transient forge error terminated
-    // the whole scan with 0 log lines and Open|Closed|Merged left
-    // un-rescanned for the rest of the cycle (production: 678/18904
-    // MPs covered before silent stop). Walk explicitly so each Err
-    // gets logged and the loop continues.
-    let mut iter_errors: usize = 0;
-    for item in iter_all_mps(None) {
+    no_run_for_mp: usize,
+    no_run_first: Option<url::Url>,
+    was_forge_ratelimited: bool,
+    /// The scan stopped before walking every proposal on the forge.
+    gave_up: bool,
+}
+
+/// Counters the forge scan threads share, because the modify and
+/// failure limits apply to the whole pass.
+#[derive(Default)]
+struct ScanLimits {
+    modified: AtomicI32,
+    /// Merge proposals that could not be checked.
+    failed: AtomicI32,
+    /// Set once the pass has failed (a listing failed or too many
+    /// proposals could not be checked): every forge thread stops at its
+    /// next proposal.
+    give_up: AtomicBool,
+}
+
+/// Walk the merge proposals we own on one forge, one at a time.
+///
+/// Runs on that forge's own thread: proposals on the same forge are
+/// checked sequentially (they share the forge's connection), while
+/// different forges are scanned at the same time.
+#[allow(clippy::too_many_arguments)]
+fn scan_forge(
+    handle: &tokio::runtime::Handle,
+    forge: Forge,
+    conn: &sqlx::PgPool,
+    redis: Option<RedisConnectionManager>,
+    config: &janitor::config::Config,
+    publish_worker: &crate::PublishWorker,
+    bucket_rate_limiter: &Mutex<Box<dyn crate::rate_limiter::RateLimiter>>,
+    forge_rate_limiter: &RwLock<HashMap<String, chrono::DateTime<Utc>>>,
+    vcs_managers: &HashMap<VcsType, Box<dyn VcsManager>>,
+    modify_limit: Option<i32>,
+    failure_limit: Option<i32>,
+    limits: &ScanLimits,
+) -> ForgeScan {
+    let mut scan = ForgeScan::default();
+    // Transports opened while checking this forge's proposals; kept to
+    // this thread so no connection is ever used from two threads.
+    let mut possible_transports = Vec::new();
+    let forge_name = forge.forge_name();
+    for item in iter_forge_mps(forge, None) {
+        if limits.give_up.load(Ordering::SeqCst) {
+            scan.gave_up = true;
+            break;
+        }
         let (forge, mp, status) = match item {
             Ok(t) => t,
             Err(e) => {
@@ -4295,7 +4306,7 @@ async fn check_existing(
                 continue;
             }
         };
-        *status_count.entry(status.into()).or_insert(0) += 1;
+        *scan.status_count.entry(status.into()).or_insert(0) += 1;
         // Key the per-forge rate-limit map on `base_url` rather than
         // the human-readable `forge_name` string. Two forges can share
         // a `forge_name` (e.g. two GitHub Enterprise deployments), so
@@ -4317,7 +4328,7 @@ async fn check_existing(
                     "forge" => forge.forge_name()
                 )
                 .increment(1);
-                was_forge_ratelimited = true;
+                scan.was_forge_ratelimited = true;
                 continue;
             }
             ForgeRateLimitDecision::Expired => match forge_rate_limiter.write() {
@@ -4331,8 +4342,11 @@ async fn check_existing(
             },
             ForgeRateLimitDecision::NotLimited => {}
         }
-        let modified = match check_existing_mp(
-            &conn,
+        let check_only = modify_limit
+            .map(|ml| limits.modified.load(Ordering::SeqCst) > ml)
+            .unwrap_or(false);
+        let modified = match handle.block_on(check_existing_mp(
+            conn,
             redis.clone(),
             config,
             publish_worker,
@@ -4341,11 +4355,9 @@ async fn check_existing(
             vcs_managers,
             bucket_rate_limiter,
             check_only,
-            Some(&mut mps_per_bucket),
+            Some(&mut scan.mps_per_bucket),
             Some(&mut possible_transports),
-        )
-        .await
-        {
+        )) {
             Ok(modified) => modified,
             Err(CheckMpError::NoRunForMergeProposal(url)) => {
                 no_run_for_mp += 1;
@@ -4406,55 +4418,156 @@ async fn check_existing(
                     forge.forge_name()
                 );
                 ::metrics::counter!(crate::metrics::UNEXPECTED_HTTP_RESPONSE_COUNT).increment(1);
-                unexpected += 1;
+                limits.failed.fetch_add(1, Ordering::SeqCst);
                 true
             }
             Err(CheckMpError::Database(e)) => {
                 log::error!("Database error checking merge proposal: {}", e);
-                unexpected += 1;
+                limits.failed.fetch_add(1, Ordering::SeqCst);
                 false
             }
             Err(CheckMpError::Brz(msg)) => {
                 log::warn!("Forge call failed checking merge proposal: {}", msg);
+                limits.failed.fetch_add(1, Ordering::SeqCst);
                 false
             }
             Err(CheckMpError::InvalidIdentifier(e)) => {
                 log::error!("Invalid identifier checking merge proposal: {}", e);
-                unexpected += 1;
+                limits.failed.fetch_add(1, Ordering::SeqCst);
                 false
             }
         };
 
-        if let Some(limit) = unexpected_limit {
-            if unexpected > limit {
+        if let Some(limit) = failure_limit {
+            let failed = limits.failed.load(Ordering::SeqCst);
+            if failed > limit {
                 log::warn!(
-                    "Saw {} unexpected HTTP responses, over threshold of {}. Giving up for now.",
-                    unexpected,
+                    "Failed to check {} merge proposals, over threshold of {}. Giving up for now.",
+                    failed,
                     limit,
                 );
                 // Bailed mid-pass: bucket counts are incomplete, so this
                 // is not a full scan and must not open the publish gate.
-                return false;
+                limits.give_up.store(true, Ordering::SeqCst);
+                scan.gave_up = true;
+                break;
             }
         }
 
         if modified {
-            modified_mps += 1;
-            if modify_limit.map(|ml| modified_mps > ml).unwrap_or(false) {
+            let modified_mps = limits.modified.fetch_add(1, Ordering::SeqCst) + 1;
+            if modify_limit.map(|ml| modified_mps == ml + 1).unwrap_or(false) {
                 log::warn!(
                     "Already modified {} merge proposals, waiting with the rest.",
                     modified_mps,
                 );
-                check_only = true;
             }
         }
+    }
+    scan
+}
+
+async fn check_existing(
+    conn: sqlx::PgPool,
+    redis: Option<RedisConnectionManager>,
+    config: &janitor::config::Config,
+    publish_worker: &crate::PublishWorker,
+    bucket_rate_limiter: &Mutex<Box<dyn crate::rate_limiter::RateLimiter>>,
+    forge_rate_limiter: Arc<RwLock<HashMap<String, chrono::DateTime<Utc>>>>,
+    vcs_managers: &HashMap<VcsType, Box<dyn VcsManager>>,
+    modify_limit: Option<i32>,
+    unexpected_limit: Option<i32>,
+) -> bool {
+    let handle = tokio::runtime::Handle::current();
+    let limits = ScanLimits::default();
+    let forges: Vec<Forge> = breezyshim::forge::iter_forge_instances().collect();
+
+    // One thread per forge. Scanning blocks on forge calls, so take this
+    // task off the async runtime while the threads run.
+    let scans: Vec<ForgeScan> = tokio::task::block_in_place(|| {
+        std::thread::scope(|scope| {
+            let threads: Vec<_> = forges
+                .into_iter()
+                .map(|forge| {
+                    let name = forge.forge_name();
+                    let (handle, conn, redis, limits) = (&handle, &conn, redis.clone(), &limits);
+                    let forge_rate_limiter = &*forge_rate_limiter;
+                    let thread = std::thread::Builder::new()
+                        .name(format!("scan {}", name))
+                        .spawn_scoped(scope, move || {
+                            scan_forge(
+                                handle,
+                                forge,
+                                conn,
+                                redis,
+                                config,
+                                publish_worker,
+                                bucket_rate_limiter,
+                                forge_rate_limiter,
+                                vcs_managers,
+                                modify_limit,
+                                unexpected_limit,
+                                limits,
+                            )
+                        })
+                        .expect("spawn forge scan thread");
+                    (name, thread)
+                })
+                .collect();
+            threads
+                .into_iter()
+                .map(|(name, thread)| {
+                    thread.join().unwrap_or_else(|_| {
+                        log::error!("Scan thread for forge {} panicked", name);
+                        ForgeScan {
+                            gave_up: true,
+                            ..ForgeScan::default()
+                        }
+                    })
+                })
+                .collect()
+        })
+    });
+
+    let mut mps_per_bucket = maplit::hashmap! {
+        MergeProposalStatus::Open => maplit::hashmap! {},
+        MergeProposalStatus::Closed => maplit::hashmap! {},
+        MergeProposalStatus::Merged => maplit::hashmap! {},
+        MergeProposalStatus::Applied => maplit::hashmap! {},
+        MergeProposalStatus::Abandoned => maplit::hashmap! {},
+        MergeProposalStatus::Rejected => maplit::hashmap! {},
+    };
+    let mut status_count: HashMap<MergeProposalStatus, i32> = HashMap::new();
+    let mut no_run_for_mp = 0;
+    let mut no_run_first: Option<url::Url> = None;
+    let mut was_forge_ratelimited = false;
+    let mut gave_up = false;
+    for scan in scans {
+        for (status, buckets) in scan.mps_per_bucket {
+            let merged = mps_per_bucket.entry(status).or_default();
+            for (bucket, count) in buckets {
+                *merged.entry(bucket).or_insert(0) += count;
+            }
+        }
+        for (status, count) in scan.status_count {
+            *status_count.entry(status).or_insert(0) += count;
+        }
+        no_run_for_mp += scan.no_run_for_mp;
+        if no_run_first.is_none() {
+            no_run_first = scan.no_run_first;
+        }
+        was_forge_ratelimited |= scan.was_forge_ratelimited;
+        gave_up |= scan.gave_up;
+    }
+    if gave_up {
+        return false;
     }
 
     let scanned_total: i32 = status_count.values().sum();
     log::info!(
-        "Successfully scanned {} existing merge proposals ({} iter errors)",
+        "Successfully scanned {} existing merge proposals ({} could not be checked)",
         scanned_total,
-        iter_errors,
+        limits.failed.load(Ordering::SeqCst),
     );
     if no_run_for_mp > 0 {
         log::warn!(
