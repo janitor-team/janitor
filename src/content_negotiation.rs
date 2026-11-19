@@ -41,7 +41,7 @@ impl<'a> MediaRange<'a> {
         if !(type_exact || self.type_ == "*") || !(subtype_exact || self.subtype == "*") {
             return None;
         }
-        Some(2 * type_exact as u8 + subtype_exact as u8)
+        Some(type_exact as u8 + subtype_exact as u8)
     }
 }
 
