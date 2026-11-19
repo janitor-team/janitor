@@ -1,3 +1,10 @@
+/// DEPRECATED: Use janitor::shared_config::LoggingConfig instead
+/// This struct is maintained for backward compatibility only.
+/// New services should use the comprehensive logging configuration in shared_config.
+#[deprecated(
+    since = "0.1.0",
+    note = "Use janitor::shared_config::LoggingConfig and init_logging instead"
+)]
 #[derive(clap::Args, Debug, Clone)]
 #[group()]
 pub struct LoggingArgs {
@@ -12,6 +19,11 @@ pub struct LoggingArgs {
 }
 
 impl LoggingArgs {
+    /// DEPRECATED: Use janitor::shared_config::init_logging_from_simple_args instead
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use janitor::shared_config::init_logging_from_simple_args or init_logging instead"
+    )]
     pub fn init(&self) {
         #[cfg(feature = "gcp")]
         let gcp_logging = self.gcp_logging;
@@ -23,6 +35,11 @@ impl LoggingArgs {
     }
 }
 
+/// DEPRECATED: Use janitor::shared_config::init_logging_from_simple_args instead
+#[deprecated(
+    since = "0.1.0",
+    note = "Use janitor::shared_config::init_logging_from_simple_args or init_logging instead"
+)]
 pub fn init_logging(gcp_logging: bool, debug_mode: bool) {
     #[cfg(feature = "gcp")]
     if gcp_logging {
