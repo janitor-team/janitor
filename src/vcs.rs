@@ -173,6 +173,18 @@ pub fn get_branch_vcs_type(branch: &dyn Branch) -> Result<VcsType, BrzError> {
     }
 }
 
+/// Ensure a URL ends in `/` so that `.join(segment)` on it appends
+/// rather than replacing the last path segment. Used by the Remote
+/// VCS managers at construction so callers don't have to remember
+/// to include the trailing slash themselves.
+fn ensure_trailing_slash(mut url: Url) -> Url {
+    if !url.path().ends_with('/') {
+        let new_path = format!("{}/", url.path());
+        url.set_path(&new_path);
+    }
+    url
+}
+
 pub fn is_alioth_url(url: &Url) -> bool {
     matches!(
         url.host_str(),
@@ -1187,7 +1199,13 @@ pub struct RemoteGitVcsManager {
 
 impl RemoteGitVcsManager {
     pub fn new(base_url: Url) -> Self {
-        Self { base_url }
+        // Normalize to a trailing slash so `base.join(codebase)`
+        // appends instead of replacing the last path segment. Without
+        // this, a caller that passes `https://host/git` (no trailing
+        // slash) gets `https://host/codebase` — silently wrong.
+        Self {
+            base_url: ensure_trailing_slash(base_url),
+        }
     }
 
     pub fn base_url(&self) -> &Url {
@@ -1337,7 +1355,10 @@ pub struct RemoteBzrVcsManager {
 
 impl RemoteBzrVcsManager {
     pub fn new(base_url: Url) -> Self {
-        Self { base_url }
+        // Normalize to a trailing slash — see RemoteGitVcsManager::new.
+        Self {
+            base_url: ensure_trailing_slash(base_url),
+        }
     }
 
     pub fn base_url(&self) -> &Url {
@@ -1508,11 +1529,11 @@ pub fn get_vcs_managers(
     location: &str,
 ) -> Result<HashMap<VcsType, Box<dyn VcsManager>>, url::ParseError> {
     if !location.contains("=") {
-        let base_url = Url::parse(location)?;
-        // Trailing slash matters - Url::join() replaces the last segment
-        // instead of appending, silently dropping "git"/"bzr" otherwise.
-        let git_url = base_url.join("git/")?;
-        let bzr_url = base_url.join("bzr/")?;
+        // Normalize so `.join("git")` appends instead of replacing
+        // the final path segment (url::Url quirk).
+        let base_url = ensure_trailing_slash(Url::parse(location)?);
+        let git_url = base_url.join("git")?;
+        let bzr_url = base_url.join("bzr")?;
 
         Ok(vec![
             (
