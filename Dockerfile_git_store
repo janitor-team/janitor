@@ -8,20 +8,15 @@ RUN apt-get update --yes \
  && apt-get install --yes --no-install-recommends \
         auto-apt-proxy \
         iproute2 \
- && apt-get upgrade --yes \
  && apt-get satisfy --yes --no-install-recommends \
-       ## Standard packages: ./CONTRIBUTING.md
         ca-certificates \
         cargo \
-        g++ \
-        gcc \
         libclang-dev \
         libpython3-dev \
         libssl-dev \
         nettle-dev \
         pkg-config \
         protobuf-compiler \
-       ## Extra packages
         python3-minimal \
  && apt-get clean
 
@@ -37,9 +32,14 @@ MAINTAINER Jelmer Vernooij <jelmer@jelmer.uk>
 
 ARG DEBIAN_FRONTEND=noninteractive
 
+# klaus is the HTML browser the public app serves via PyO3; it's a
+# GitHub-only Python package, pip-installed over Debian-packaged
+# flask/dulwich/python3-git to avoid pulling the whole setuptools
+# toolchain into the image.
 RUN apt-get update --yes \
  && apt-get install --yes --no-install-recommends \
         auto-apt-proxy \
+        iproute2 \
  && apt-get upgrade --yes \
  && apt-get satisfy --yes --no-install-recommends \
         ca-certificates \

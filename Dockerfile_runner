@@ -8,20 +8,16 @@ RUN apt-get update --yes \
  && apt-get install --yes --no-install-recommends \
         auto-apt-proxy \
         iproute2 \
- && apt-get upgrade --yes \
  && apt-get satisfy --yes --no-install-recommends \
-       ## Standard packages: ./CONTRIBUTING.md
         ca-certificates \
         cargo \
-        g++ \
-        gcc \
+        libapt-pkg-dev \
         libclang-dev \
         libpython3-dev \
         libssl-dev \
         nettle-dev \
         pkg-config \
         protobuf-compiler \
-       ## Extra packages
         python3-minimal \
  && apt-get clean
 
@@ -37,17 +33,25 @@ MAINTAINER Jelmer Vernooij <jelmer@jelmer.uk>
 
 ARG DEBIAN_FRONTEND=noninteractive
 
+# janitor-runner embeds CPython via breezyshim to drive breezy/
+# silver-platter for VCS operations, and shells out to dpkg-dev for
+# Debian-specific build/changes parsing.
 RUN apt-get update --yes \
  && apt-get install --yes --no-install-recommends \
         auto-apt-proxy \
+        iproute2 \
  && apt-get upgrade --yes \
- && apt-get satisfy --yes --no-install-recommends \
+ && apt-get install --yes --no-install-recommends \
+        brz-debian \
         ca-certificates \
         dpkg-dev \
         git \
+        libapt-pkg-dev \
         libssl3 \
         openssh-client \
         python3-breezy \
+        python3-debian \
+        python3-launchpadlib \
  && apt-get satisfy --yes --no-install-recommends \
         "libpython$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')" \
  && apt-get clean \

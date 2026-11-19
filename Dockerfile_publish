@@ -8,20 +8,15 @@ RUN apt-get update --yes \
  && apt-get install --yes --no-install-recommends \
         auto-apt-proxy \
         iproute2 \
- && apt-get upgrade --yes \
  && apt-get satisfy --yes --no-install-recommends \
-       ## Standard packages: ./CONTRIBUTING.md
         ca-certificates \
         cargo \
-        g++ \
-        gcc \
         libclang-dev \
         libpython3-dev \
         libssl-dev \
         nettle-dev \
         pkg-config \
         protobuf-compiler \
-       ## Extra packages
         python3-minimal \
  && apt-get clean
 
@@ -37,15 +32,25 @@ MAINTAINER Jelmer Vernooij <jelmer@jelmer.uk>
 
 ARG DEBIAN_FRONTEND=noninteractive
 
+# janitor-publish embeds CPython via breezyshim and drives breezy
+# (github/gitlab/launchpad forges) and silver-platter for publishing.
+# gnupg is needed so gpgme's agent socket can be created at startup
+# (GPGContext::new() calls gpg.Context() which spawns gpg-agent).
 RUN apt-get update --yes \
  && apt-get install --yes --no-install-recommends \
         auto-apt-proxy \
+        iproute2 \
  && apt-get upgrade --yes \
  && apt-get satisfy --yes --no-install-recommends \
+        brz-debian \
         ca-certificates \
+        git \
+        gnupg \
+        libpython3-dev \
         libssl3 \
         openssh-client \
         python3-breezy \
+        python3-debian \
         python3-gpg \
         python3-launchpadlib \
  && apt-get satisfy --yes --no-install-recommends \

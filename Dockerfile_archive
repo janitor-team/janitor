@@ -8,20 +8,15 @@ RUN apt-get update --yes \
  && apt-get install --yes --no-install-recommends \
         auto-apt-proxy \
         iproute2 \
- && apt-get upgrade --yes \
  && apt-get satisfy --yes --no-install-recommends \
-       ## Standard packages: ./CONTRIBUTING.md
         ca-certificates \
         cargo \
-        g++ \
-        gcc \
         libclang-dev \
         libpython3-dev \
         libssl-dev \
         nettle-dev \
         pkg-config \
         protobuf-compiler \
-       ## Extra packages
         python3-minimal \
  && apt-get clean
 
@@ -40,6 +35,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update --yes \
  && apt-get install --yes --no-install-recommends \
         auto-apt-proxy \
+        iproute2 \
  && apt-get upgrade --yes \
  && apt-get satisfy --yes --no-install-recommends \
         ca-certificates \
