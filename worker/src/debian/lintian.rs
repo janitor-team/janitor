@@ -19,6 +19,9 @@ impl std::fmt::Display for Error {
     }
 }
 
+/// What an item the hint points at — a binary deb's content, the
+/// source tarball, or a debian/* file. Lintian 2.135 emits this as
+/// `{"index": "<package> (installed)", "name": "<path-in-pkg>"}`.
 #[derive(serde::Deserialize, PartialEq, Eq, serde::Serialize, Debug, Default, Clone)]
 pub struct LintianPointerItem {
     #[serde(default)]
@@ -27,6 +30,23 @@ pub struct LintianPointerItem {
     pub name: String,
 }
 
+/// Where in a file (or which artefact) a hint refers to.
+///
+/// Older lintian (≤2.116) emitted `pointer` as a plain string —
+/// usually a `path:line` rendering. Lintian 2.135 switched to a
+/// structured `{"item": …, "line_position": N}` object so the
+/// renderer can hyperlink back into the package contents. Both
+/// shapes appear in our deployment; the untagged enum lets serde
+/// pick the matching variant per record without re-encoding.
+///
+/// Variants are tried top-to-bottom: the structured form first
+/// (it's the only valid match for an object input), `Inline`
+/// second (plain string form). `Other` swallows anything else
+/// (e.g. a future `[…]` array shape) without aborting the parse —
+/// the data is preserved verbatim for the rare consumer that
+/// wants it. (`Eq` is intentionally not derived: the `Other`
+/// fallback holds a `serde_json::Value`, which only implements
+/// `PartialEq`. None of the call sites need stricter equality.)
 #[derive(serde::Deserialize, PartialEq, serde::Serialize, Debug, Clone)]
 #[serde(untagged)]
 pub enum LintianPointer {
@@ -40,6 +60,16 @@ pub enum LintianPointer {
     Other(serde_json::Value),
 }
 
+/// The structured form of one lintian hint — the per-issue record
+/// inside an input file's `hints` array. Real
+/// `lintian --exp-output=format=json` emits objects like
+///   `{"experimental": false, "note": "sid unstable",
+///     "tag": "distribution-and-changes-mismatch",
+///     "visibility": "warning"}`.
+///
+/// All fields are `#[serde(default)]` so a future lintian emitting
+/// fewer keys doesn't break parsing; extra keys are silently
+/// dropped (no `deny_unknown_fields`).
 #[derive(serde::Deserialize, PartialEq, serde::Serialize, Debug, Default, Clone)]
 pub struct LintianHintObject {
     #[serde(default)]
@@ -56,8 +86,14 @@ pub struct LintianHintObject {
     pub screen: Option<String>,
 }
 
-/// A lintian hint. Older lintian emitted each hint as a plain string;
-/// lintian 2.135 switched to a structured object.
+/// A lintian hint. Older lintian (and some plugins) emitted each hint
+/// as a plain string; lintian 2.135 switched to a structured object.
+/// The untagged enum accepts both shapes so a single worker build can
+/// parse output from either.
+///
+/// `Eq` is intentionally not derived: `LintianHintObject::pointer`
+/// can hold a `serde_json::Value`, which only implements `PartialEq`.
+/// No call site needs stricter equality.
 #[derive(serde::Deserialize, PartialEq, serde::Serialize, Debug, Clone)]
 #[serde(untagged)]
 pub enum LintianHint {
@@ -209,6 +245,11 @@ OTHER BOGUS DATA
         );
     }
 
+    /// Regression for the worker-side
+    /// `Lintian output invalid: invalid type: map, expected a string`
+    /// failure: real lintian-output objects in the `hints` array were
+    /// being deserialised into `Vec<String>`. Verbatim sample taken
+    /// from `lintian --exp-output=format=json hello_*_amd64.changes`.
     #[test]
     fn test_parse_lintian_output_with_real_hint_objects() {
         let output_str = r#"{
@@ -311,6 +352,10 @@ OTHER BOGUS DATA
         }
     }
 
+    /// Older lintian (and some plugins) still emit `pointer` as a
+    /// plain string. Make sure the untagged enum picks up that
+    /// shape too — otherwise a partial regression here would
+    /// break parsing on the non-2.135 path.
     #[test]
     fn test_parse_lintian_output_with_string_pointer() {
         let output_str = r#"{
@@ -351,6 +396,9 @@ OTHER BOGUS DATA
         }
     }
 
+    /// Future lintian releases may add new fields to a hint; we accept
+    /// and silently drop those rather than refusing to parse the whole
+    /// run.
     /// Older lintian emitted each hint as a plain string rather than an object.
     #[test]
     fn test_parse_lintian_output_with_string_hints() {
