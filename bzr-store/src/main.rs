@@ -131,11 +131,6 @@ async fn main() -> Result<()> {
         }
     );
 
-    // Initialize breezyshim once on the main thread. Loggerhead and
-    // our own smart-protocol / repository handlers all go through
-    // breezyshim; a single init() is enough.
-    breezyshim::init();
-
     let (admin_app, public_app) = create_applications(config.clone(), janitor_config).await?;
 
     let mut servers = tokio::task::JoinSet::new();

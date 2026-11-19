@@ -13,8 +13,6 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    breezyshim::init();
-
     let (wt, subpath) =
         breezyshim::workingtree::open_containing(std::path::Path::new(".")).unwrap();
 
