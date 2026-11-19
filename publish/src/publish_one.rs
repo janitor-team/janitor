@@ -482,6 +482,20 @@ pub fn publish(
     derived_owner: Option<String>,
     auto_merge: Option<bool>,
 ) -> Result<(PublishOneResult, String), PublishError> {
+    let mut context = serde_json::Map::new();
+    if let Some(extra_context) = extra_context.as_ref() {
+        if let Some(extra_obj) = extra_context.as_object() {
+            context.extend(extra_obj.clone());
+        } else {
+            log::warn!("Failed to merge extra_context: not an object");
+        }
+    }
+    if let Some(codemod_obj) = codemod_result.as_object() {
+        context.extend(codemod_obj.clone());
+    } else {
+        log::warn!("Failed to merge codemod_result: not an object");
+    }
+
     let get_proposal_description = |description_format: DescriptionFormat,
                                     _existing_proposal: Option<&MergeProposal>|
      -> String {
@@ -490,19 +504,8 @@ pub fn publish(
             "campaign": campaign,
             "role": role,
         });
-        if let Some(extra_context) = extra_context.as_ref() {
-            if let (Some(vs_obj), Some(extra_obj)) = (vs.as_object_mut(), extra_context.as_object())
-            {
-                vs_obj.extend(extra_obj.clone());
-            } else {
-                log::warn!("Failed to merge extra_context: not an object");
-            }
-        }
-        if let (Some(vs_obj), Some(codemod_obj)) = (vs.as_object_mut(), codemod_result.as_object())
-        {
-            vs_obj.extend(codemod_obj.clone());
-        } else {
-            log::warn!("Failed to merge codemod_result: not an object");
+        for (key, value) in &context {
+            vs[key] = value.clone();
         }
         vs["codemod"] = codemod_result.clone();
         if let Some(debdiff) = debdiff.as_ref() {
@@ -544,7 +547,7 @@ pub fn publish(
                 match template_env.render_named_str(
                     "commit_message",
                     commit_message_template,
-                    codemod_result,
+                    &context,
                 ) {
                     Ok(rendered) => Some(rendered),
                     Err(e) => {
@@ -557,7 +560,7 @@ pub fn publish(
 
     let get_proposal_title = |existing_proposal: Option<&MergeProposal>| -> Option<String> {
         if let Some(title_template) = title_template.as_ref() {
-            match template_env.render_named_str("title", title_template, codemod_result) {
+            match template_env.render_named_str("title", title_template, &context) {
                 Ok(rendered) => Some(rendered),
                 Err(e) => {
                     log::warn!("Title template rendering failed: {}", e);
