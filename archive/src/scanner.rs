@@ -880,9 +880,15 @@ mod tests {
             .await
             .collect()
             .await;
-        for package in packages {
-            package.unwrap();
-        }
+        assert_eq!(
+            packages
+                .into_iter()
+                .map(|p| p.unwrap().filename)
+                .collect::<Vec<_>>(),
+            vec![Some(
+                "lintian-fixes/pkg/hello/run-1/hello_1.0_amd64.deb".to_string()
+            )]
+        );
 
         // Without the cache this would fail with ArtifactsMissing.
         std::fs::remove_dir_all(&run_dir).unwrap();
