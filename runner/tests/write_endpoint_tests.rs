@@ -3451,6 +3451,89 @@ async fn get_candidate_returns_row_or_404() {
     );
 }
 
+/// `GET /codebases/{name}` returns the row plus (optionally) the
+/// per-branch publish policy resolved via the candidate on
+/// `?campaign=`.
+#[tokio::test]
+async fn get_codebase_detail_returns_row_and_policy() {
+    let Some((app, state)) = setup().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    let pool = state.database.pool().clone();
+    insert_codebase(&pool, "cb-detail").await;
+    sqlx::query(
+        "INSERT INTO named_publish_policy (name, per_branch_policy) \
+         VALUES ('policy-a', ARRAY[\
+             ROW('main', 'propose', 7)::branch_publish_policy, \
+             ROW('upstream', 'push', NULL)::branch_publish_policy\
+         ])",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert policy");
+    sqlx::query(
+        "INSERT INTO candidate (codebase, suite, command, publish_policy) \
+         VALUES ($1, $2, 'true', 'policy-a')",
+    )
+    .bind("cb-detail")
+    .bind("test-campaign")
+    .execute(&pool)
+    .await
+    .expect("insert candidate");
+
+    // Without campaign: no policy.
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/codebases/cb-detail")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    assert_eq!(body["name"], "cb-detail");
+    assert_eq!(body.get("publish_policy"), None);
+
+    // With campaign: policy resolved.
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/codebases/cb-detail?campaign=test-campaign")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = get_body(response).await;
+    assert_eq!(body["name"], "cb-detail");
+    let policy = body["publish_policy"].as_array().expect("publish_policy");
+    assert_eq!(policy.len(), 2);
+    let roles: Vec<&str> = policy.iter().map(|p| p["role"].as_str().unwrap()).collect();
+    assert_eq!(roles, vec!["main", "upstream"]);
+    assert_eq!(policy[0]["mode"], "propose");
+    assert_eq!(policy[0]["frequency_days"], 7);
+    assert_eq!(policy[1]["mode"], "push");
+    assert!(policy[1]["frequency_days"].is_null());
+
+    // Campaign with no matching candidate: no policy.
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/codebases/cb-detail?campaign=other-campaign")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    let body = get_body(response).await;
+    assert_eq!(body.get("publish_policy"), None);
+
+    // Unknown codebase: 404.
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/codebases/no-such-cb")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
 /// `GET /runs/{id}/followups` returns the candidate pairs scheduled
 /// off the run, in codebase/campaign order. An empty list is returned
 /// for runs with no followups.
