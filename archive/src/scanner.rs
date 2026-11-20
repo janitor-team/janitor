@@ -339,6 +339,9 @@ impl PackageScanner {
                 janitor::artifacts::Error::InvalidPath => {
                     ArchiveError::ArtifactRetrieval("Invalid artifact path".to_string())
                 }
+                e @ janitor::artifacts::Error::Timeout(_) => {
+                    ArchiveError::ArtifactRetrieval(e.to_string())
+                }
                 janitor::artifacts::Error::Other(msg) => ArchiveError::ArtifactRetrieval(msg),
             })?;
 

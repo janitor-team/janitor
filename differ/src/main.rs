@@ -26,10 +26,6 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 const TMP_PREFIX: &str = "janitor-differ";
-/// Matches Python's PRECACHE_RETRIEVE_TIMEOUT. Also used by request-path
-/// artifact retrieval so a hung backend surfaces as 504 rather than
-/// hanging the handler indefinitely.
-const ARTIFACT_RETRIEVE_TIMEOUT_SECS: u64 = 300;
 
 /// Parse a run id from a request path. Run ids end up in cache
 /// filenames, so this also keeps them from escaping the cache dir.
@@ -328,7 +324,7 @@ async fn fetch_binaries(
     let old_dir = tempfile::TempDir::with_prefix(TMP_PREFIX)?;
     let new_dir = tempfile::TempDir::with_prefix(TMP_PREFIX)?;
 
-    let timeout = std::time::Duration::from_secs(ARTIFACT_RETRIEVE_TIMEOUT_SECS);
+    let timeout = std::time::Duration::from_secs(janitor::artifacts::RETRIEVE_TIMEOUT_SECS);
     let span = info_span!(
         "fetch-artifacts",
         old_run_id = old_id.as_str(),
@@ -368,7 +364,9 @@ fn classify_retrieval_result(
     res: std::result::Result<std::result::Result<(), ArtifactError>, tokio::time::error::Elapsed>,
 ) -> Result<()> {
     match res {
-        Err(_) => Err(Error::ArtifactRetrievalTimeout(run_id.clone())),
+        Err(_) | Ok(Err(ArtifactError::Timeout(_))) => {
+            Err(Error::ArtifactRetrievalTimeout(run_id.clone()))
+        }
         Ok(Ok(())) => Ok(()),
         Ok(Err(ArtifactError::ArtifactsMissing)) => Err(Error::ArtifactsMissing(run_id.clone())),
         Ok(Err(e)) => Err(Error::ArtifactRetrievalFailed {
@@ -1784,6 +1782,16 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(failed, Error::RunNotSuccessful(id) if id == "r2"));
+    }
+
+    #[test]
+    fn classify_retrieval_result_maps_store_timeout_to_timeout() {
+        let err = classify_retrieval_result(
+            &run_id("r1"),
+            Ok(Err(ArtifactError::Timeout("stalled".into()))),
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::ArtifactRetrievalTimeout(id) if id == "r1"));
     }
 
     fn run_id(id: &str) -> RunId {

@@ -30,6 +30,25 @@ pub enum UploadError {
     #[error("Artifacts missing for run {0}")]
     ArtifactsMissing(String),
 
+    /// The artifact download did not complete in time. Distinct from
+    /// `ArtifactsMissing`: a stalled store is transient and worth
+    /// retrying, whereas missing artifacts are permanent.
+    #[error("Timed out retrieving artifacts for run {0}")]
+    ArtifactRetrievalTimeout(String),
+
+    /// Artifact retrieval failed for a reason that isn't a missing
+    /// run or a timeout (e.g. an IO error or the store being
+    /// unavailable). Kept separate from `ArtifactsMissing` so a
+    /// transient backend fault doesn't look like a permanently
+    /// missing run in the logs.
+    #[error("Failed to retrieve artifacts for run {run_id}: {reason}")]
+    ArtifactRetrievalFailed {
+        /// The run whose artifacts we tried to fetch.
+        run_id: String,
+        /// Human-readable description of the underlying failure.
+        reason: String,
+    },
+
     /// No `.changes` files were found under the retrieved artifacts.
     #[error("No changes files found in artifacts")]
     NoChangesFiles,
