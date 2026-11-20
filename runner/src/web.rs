@@ -4505,7 +4505,11 @@ pub fn public_app(state: Arc<AppState>) -> Router<Arc<AppState>> {
         authenticate_worker,
     ));
     let (router, _) = public_routes().merge(worker_routes).split_for_parts();
-    with_openapi_json(router, &public_openapi()).with_state(state)
+    with_openapi_json(router, &public_openapi())
+        .layer(axum::middleware::from_fn(
+            crate::metrics::metrics_middleware,
+        ))
+        .with_state(state)
 }
 
 /// Routes of the private app.
@@ -5757,6 +5761,36 @@ distribution {
             offline_request(Method::POST, "/kill/a;b", None).await,
             StatusCode::BAD_REQUEST
         );
+    }
+
+    #[test]
+    fn test_public_requests_in_metrics() {
+        use axum::http::{Request, StatusCode};
+        use janitor_service::testing::{capture_async, Value};
+        use tower::ServiceExt;
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let state = runtime.block_on(async { crate::test_utils::create_offline_test_app_state() });
+        let app = super::public_app(state.clone()).with_state(state);
+        let (statuses, snapshot) = capture_async(async {
+            let mut statuses = Vec::new();
+            for uri in ["/active-runs/run-1", "/active-runs/run-2"] {
+                let req = Request::get(uri).body(axum::body::Body::empty()).unwrap();
+                statuses.push(app.clone().oneshot(req).await.unwrap().status());
+            }
+            statuses
+        });
+        assert_eq!(statuses, vec![StatusCode::UNAUTHORIZED; 2]);
+        let duration_key = r#"janitor_runner_http_request_duration_seconds{method="GET",endpoint="/active-runs/{id}"}"#;
+        let count_key = r#"janitor_runner_http_requests_total{method="GET",endpoint="/active-runs/{id}",status="401"}"#;
+        assert_eq!(
+            snapshot.keys().collect::<Vec<_>>(),
+            vec![duration_key, count_key]
+        );
+        assert_eq!(snapshot[count_key], Value::Counter(2));
+        let Value::Histogram(durations) = &snapshot[duration_key] else {
+            panic!("expected histogram, got {:?}", snapshot[duration_key]);
+        };
+        assert_eq!(durations.len(), 2);
     }
 
     #[tokio::test]
