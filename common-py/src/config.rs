@@ -306,6 +306,11 @@ impl DebianBuild {
     }
 
     #[getter]
+    pub fn session(&self) -> Option<&str> {
+        self.0.session.as_deref()
+    }
+
+    #[getter]
     pub fn build_distribution(&self) -> Option<&str> {
         self.0.build_distribution.as_deref()
     }

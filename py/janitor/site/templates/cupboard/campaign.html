@@ -25,6 +25,7 @@
                     <li>Extra build distributions: {{ build.extra_build_distribution|join(", ") }}</li>
                 {% endif %}
                 {% if build.chroot %}<li>Chroot: {{ build.chroot }}</li>{% endif %}
+                {% if build.session %}<li>Session: {{ build.session }}</li>{% endif %}
                 {% if build.build_suffix %}<li>Build suffix: {{ build.build_suffix }}</li>{% endif %}
                 {% if build.build_command %}<li>Build command: <code>{{ build.build_command }}</code></li>{% endif %}
             </ul>
