@@ -3240,7 +3240,7 @@ dependencies = [
  "protobuf-codegen 3.7.2",
  "protoc-rust",
  "pyo3",
- "redis 1.7.0",
+ "redis 1.8.2",
  "regex",
  "reqwest",
  "serde",
@@ -3287,7 +3287,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
- "redis 1.7.0",
+ "redis 1.8.2",
  "serde",
  "serde_json",
  "serial_test 3.5.0",
@@ -3320,7 +3320,7 @@ dependencies = [
  "janitor-types",
  "metrics",
  "nix",
- "redis 1.7.0",
+ "redis 1.8.2",
  "serde",
  "serde_json",
  "silver-platter",
@@ -3475,7 +3475,7 @@ dependencies = [
  "minijinja",
  "protobuf 3.7.2",
  "pyo3",
- "redis 1.7.0",
+ "redis 1.8.2",
  "reqwest",
  "rslock",
  "sequoia-openpgp",
@@ -3518,7 +3518,7 @@ dependencies = [
  "num_cpus",
  "object_store",
  "percent-encoding",
- "redis 1.7.0",
+ "redis 1.8.2",
  "reqwest",
  "serde",
  "serde_json",
@@ -5883,9 +5883,9 @@ dependencies = [
 
 [[package]]
 name = "redis"
-version = "1.7.0"
+version = "1.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2acbc41a996f7652b2ddd9dfd98cc4ff602cfd742ae35382f07f608405ab50ed"
+checksum = "4bef8fa589dd53a8a379a7856de1365d0a1be50c6b8aebb5c01c1ec441a2c509"
 dependencies = [
  "arc-swap",
  "arcstr",
