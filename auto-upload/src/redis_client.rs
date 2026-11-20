@@ -19,43 +19,46 @@ pub struct RedisClient {
 ///
 /// Matches the shape of `ActiveRun.result.json()` on the runner side. Only the
 /// fields consulted by auto-upload are modelled; the rest of the payload is
-/// ignored. `target` may be an empty object when the run has no builder
-/// result, so it is deserialized permissively.
+/// ignored. `target` is `null` when the run had no builder result.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BuildResultMessage {
     /// Unique identifier for the build run.
     pub log_id: RunId,
     /// Runner result code (e.g. `"success"`, `"nothing-to-do"`,
-    /// `"codemod-error"`). Non-success runs also publish to this channel
-    /// but emit `target: {}`, so we filter them out before touching
-    /// `target.name`.
+    /// `"codemod-error"`). Non-success runs publish `target: null`, so
+    /// we filter them out before dispatching on `target`.
     #[serde(default)]
     pub code: Option<String>,
-    /// Empty object when the run had no builder result.
+    /// `None` when the run had no builder result.
     #[serde(default)]
-    pub target: BuildTarget,
+    pub target: Option<BuildTarget>,
 }
 
-/// Target field of a build result.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct BuildTarget {
-    /// e.g. `"debian"`; absent when the target is `{}`.
-    #[serde(default)]
-    pub name: Option<String>,
-    /// Absent when the target is `{}`.
-    #[serde(default)]
-    pub details: Option<BuildTargetDetails>,
-}
-
-/// Target-specific details; auto-upload only reads `build_distribution`.
+/// Target field of a build result. Known targets are the only accepted
+/// shapes; an unknown or malformed `target` fails deserialisation.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct BuildTargetDetails {
+#[serde(tag = "name", content = "details", rename_all = "lowercase")]
+pub enum BuildTarget {
+    /// Debian build target.
+    Debian(DebianTargetDetails),
+    /// Generic build target.
+    Generic(GenericTargetDetails),
+}
+
+/// Debian target details; auto-upload only reads `build_distribution`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DebianTargetDetails {
     /// Debian suite/distribution the build targets.
     pub build_distribution: String,
     /// Everything else the runner sends; kept for round-trip fidelity.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
+
+/// Generic target details. The runner emits `{}` here; auto-upload has
+/// nothing to do with generic builds beyond rejecting them.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct GenericTargetDetails {}
 
 impl PubSubMessage for BuildResultMessage {
     fn channel() -> &'static str {
@@ -126,31 +129,48 @@ mod tests {
     }
 
     #[test]
-    fn tolerates_empty_target_object() {
-        let payload = r#"{"log_id": "abc", "target": {}}"#;
+    fn tolerates_null_target() {
+        let payload = r#"{"log_id": "abc", "target": null}"#;
         let msg: BuildResultMessage = serde_json::from_str(payload).unwrap();
         assert_eq!(msg.log_id, "abc");
-        assert!(msg.target.name.is_none());
-        assert!(msg.target.details.is_none());
+        assert!(msg.target.is_none());
+    }
+
+    #[test]
+    fn rejects_empty_target_object() {
+        let payload = r#"{"log_id": "abc", "target": {}}"#;
+        assert!(serde_json::from_str::<BuildResultMessage>(payload).is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_target_name() {
+        let payload = r#"{"log_id": "abc", "target": {"name": "ocaml", "details": {}}}"#;
+        assert!(serde_json::from_str::<BuildResultMessage>(payload).is_err());
     }
 
     #[test]
     fn rejects_invalid_log_id() {
-        let payload = r#"{"log_id": "../etc", "target": {}}"#;
+        let payload = r#"{"log_id": "../etc", "target": null}"#;
         assert!(serde_json::from_str::<BuildResultMessage>(payload).is_err());
     }
 
     #[test]
     fn parses_non_success_run_shape() {
-        // Regression: this is what the runner publishes for a non-success
-        // run. The Python service crashed on `result["target"]["name"]`
-        // when target was `{}` (see py commit 38fbc2025). We must at least
-        // be able to deserialise it.
+        // Non-success runs publish `target: null`; auto-upload filters
+        // them out on `code` before dispatching on `target`.
         let payload =
-            r#"{"log_id": "abc", "code": "codemod-error", "description": "boom", "target": {}}"#;
+            r#"{"log_id": "abc", "code": "codemod-error", "description": "boom", "target": null}"#;
         let msg: BuildResultMessage = serde_json::from_str(payload).unwrap();
         assert_eq!(msg.code.as_deref(), Some("codemod-error"));
-        assert!(msg.target.name.is_none());
+        assert!(msg.target.is_none());
+    }
+
+    #[test]
+    fn parses_generic_target() {
+        let payload =
+            r#"{"log_id": "abc", "target": {"name": "generic", "details": {}}}"#;
+        let msg: BuildResultMessage = serde_json::from_str(payload).unwrap();
+        assert!(matches!(msg.target, Some(BuildTarget::Generic(_))));
     }
 
     #[test]
@@ -162,7 +182,11 @@ mod tests {
             "target": {"name": "debian", "details": {"build_distribution": "unstable"}}
         }"#;
         let msg: BuildResultMessage = serde_json::from_str(payload).unwrap();
-        assert_eq!(msg.target.name.as_deref(), Some("debian"));
-        assert_eq!(msg.target.details.unwrap().build_distribution, "unstable");
+        match msg.target.unwrap() {
+            BuildTarget::Debian(details) => {
+                assert_eq!(details.build_distribution, "unstable");
+            }
+            BuildTarget::Generic(_) => panic!("expected Debian target"),
+        }
     }
 }

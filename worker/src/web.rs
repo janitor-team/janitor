@@ -508,7 +508,7 @@ mod tests {
                 env: std::collections::HashMap::new(),
                 build: janitor::api::worker::Build {
                     config: serde_json::Value::Null,
-                    environment: None,
+                    environment: std::collections::HashMap::new(),
                     target: "test".to_string(),
                 },
             });
@@ -573,7 +573,7 @@ mod tests {
                 env: std::collections::HashMap::new(),
                 build: janitor::api::worker::Build {
                     config: serde_json::Value::Null,
-                    environment: None,
+                    environment: std::collections::HashMap::new(),
                     target: "test".to_string(),
                 },
             });
@@ -1016,7 +1016,7 @@ mod tests {
                 env: std::collections::HashMap::new(),
                 build: janitor::api::worker::Build {
                     config: serde_json::Value::Null,
-                    environment: None,
+                    environment: std::collections::HashMap::new(),
                     target: "test".to_string(),
                 },
             });
