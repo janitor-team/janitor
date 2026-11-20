@@ -462,6 +462,7 @@ campaign {
     base_distribution: "unstable"
     build_distribution: "lintian-fixes"
     extra_build_distribution: "experimental"
+    session: "unshare:sid"
     build_suffix: "jan+lint"
   }
   merge_proposal {
@@ -491,9 +492,23 @@ async def test_campaign_list(aiohttp_client, db):
 
 async def test_campaign(aiohttp_client, db):
     client = await create_client(aiohttp_client, db, config=_CAMPAIGN_CONFIG)
+    builds = {}
     for name in ["lintian-fixes", "generic"]:
         resp = await client.get(f"/cupboard/campaign/{name}/", allow_redirects=False)
         assert resp.status == 200
+        soup = BeautifulSoup(await resp.text(), "html.parser")
+        heading = soup.find("h2", string=["Debian build", "Generic build"])
+        builds[name] = [li.get_text() for li in heading.find_next("ul").find_all("li")]
+    assert builds == {
+        "lintian-fixes": [
+            "Base distribution: unstable",
+            "Build distribution: lintian-fixes",
+            "Extra build distributions: experimental",
+            "Session: unshare:sid",
+            "Build suffix: jan+lint",
+        ],
+        "generic": ["Chroot: bookworm"],
+    }
 
 
 async def test_campaign_unknown_returns_404(aiohttp_client, db):
