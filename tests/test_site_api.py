@@ -21,10 +21,11 @@ import aiozipkin
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from marshmallow import ValidationError
 
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
-from janitor.site.api import create_app, request_backend
+from janitor.site.api import ScheduleRequestSchema, create_app, request_backend
 
 from .conftest import _insert_codebase, _insert_run
 
@@ -678,3 +679,145 @@ async def test_runner_log_index(aiohttp_client, db):
     resp = await client.get("/active-runs/r2/log/")
     assert resp.status == 404
     assert await resp.json() == {"reason": "No such run: r2"}
+
+
+async def _runner_client(aiohttp_client, path, received, body, status=200):
+    runner_app = web.Application()
+
+    async def _handle(request):
+        received.append(await request.json())
+        return web.json_response(body, status=status)
+
+    runner_app.router.add_post(path, _handle)
+    return await aiohttp_client(runner_app)
+
+
+async def test_codebase_schedule_forwards_to_runner(aiohttp_client, db):
+    received: list[dict] = []
+    runner_client = await _runner_client(
+        aiohttp_client,
+        "/schedule",
+        received,
+        {"campaign": "mycampaign", "codebase": "foo", "queue_position": 1},
+    )
+
+    client = await create_client(
+        aiohttp_client,
+        db,
+        runner_url=str(runner_client.make_url("/")),
+        user={"email": "alice@example.com", "groups": []},
+    )
+
+    resp = await client.post(
+        "/mycampaign/c/foo/schedule", data={"refresh": "1", "offset": "5"}
+    )
+    assert resp.status == 200
+    assert await resp.json() == {
+        "campaign": "mycampaign",
+        "codebase": "foo",
+        "queue_position": 1,
+    }
+    assert received == [
+        {
+            "campaign": "mycampaign",
+            "codebase": "foo",
+            "refresh": True,
+            "requester": "alice@example.com",
+            "bucket": "manual",
+            "offset": 5.0,
+        }
+    ]
+
+
+async def test_codebase_schedule_needs_login(aiohttp_client, db):
+    received: list[dict] = []
+    runner_client = await _runner_client(aiohttp_client, "/schedule", received, {})
+
+    client = await create_client(
+        aiohttp_client, db, runner_url=str(runner_client.make_url("/"))
+    )
+
+    resp = await client.post("/mycampaign/c/foo/schedule")
+    assert resp.status == 401
+    assert received == []
+
+
+@pytest.mark.parametrize(
+    "path, runner_path",
+    [
+        ("/mycampaign/c/foo/schedule", "/schedule"),
+        ("/run/1/reschedule", "/schedule"),
+        ("/run/1/schedule-control", "/schedule-control"),
+    ],
+)
+async def test_schedule_bad_input(aiohttp_client, db, path, runner_path):
+    received: list[dict] = []
+    runner_client = await _runner_client(aiohttp_client, runner_path, received, {})
+
+    client = await create_client(
+        aiohttp_client,
+        db,
+        runner_url=str(runner_client.make_url("/")),
+        user={"email": "alice@example.com", "groups": []},
+    )
+
+    resp = await client.post(path, data={"offset": "x", "refresh": "x"})
+    assert resp.status == 400
+    assert await resp.json() == {
+        "offset": ["Not a valid number."],
+        "refresh": ["Not a valid boolean."],
+    }
+    assert received == []
+
+
+def test_schedule_request_rejects_nan_and_inf():
+    for value in ["nan", "inf"]:
+        with pytest.raises(ValidationError) as e:
+            ScheduleRequestSchema().load({"offset": value})
+        assert e.value.messages == {
+            "offset": ["Special numeric values (nan or infinity) are not permitted."]
+        }
+
+
+async def test_codebase_schedule_passes_through_runner_error(aiohttp_client, db):
+    received: list[dict] = []
+    runner_client = await _runner_client(
+        aiohttp_client,
+        "/schedule",
+        received,
+        {"reason": "no command specified"},
+        status=400,
+    )
+
+    client = await create_client(
+        aiohttp_client,
+        db,
+        runner_url=str(runner_client.make_url("/")),
+        user={"email": "alice@example.com", "groups": []},
+    )
+
+    resp = await client.post("/mycampaign/c/foo/schedule")
+    assert resp.status == 400
+    assert await resp.json() == {"reason": "no command specified"}
+
+
+async def test_schedule_control_passes_through_runner_error(aiohttp_client, db):
+    received: list[dict] = []
+    runner_client = await _runner_client(
+        aiohttp_client,
+        "/schedule-control",
+        received,
+        {"reason": "Run not found"},
+        status=404,
+    )
+
+    client = await create_client(
+        aiohttp_client,
+        db,
+        runner_url=str(runner_client.make_url("/")),
+        user={"email": "alice@example.com", "groups": []},
+    )
+
+    resp = await client.post("/run/nonexistent/schedule-control")
+    assert resp.status == 404
+    assert await resp.json() == {"reason": "Run not found"}
