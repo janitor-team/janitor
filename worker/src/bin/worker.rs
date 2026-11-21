@@ -80,6 +80,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     args.logging.init();
     janitor_service::metrics::install(&[]);
+    metrics::describe_counter!(
+        janitor_worker::vcs::PUSH_BRANCH_RETRIES,
+        "Number of branch push retries."
+    );
 
     // Load breezy plugins so VCS URL handlers (notably
     // breezy.plugins.debian.directory, which normalises

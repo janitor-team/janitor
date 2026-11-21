@@ -3602,6 +3602,7 @@ dependencies = [
  "janitor-types",
  "log",
  "maplit",
+ "metrics",
  "nix",
  "ognibuild",
  "percent-encoding",
