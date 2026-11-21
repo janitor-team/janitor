@@ -178,7 +178,7 @@ pub fn run_worker(
     command: &str,
     output_directory: &std::path::Path,
     metadata: &mut Metadata,
-    target_repo_url: &Url,
+    target_repo_url: Option<&Url>,
     vendor: &str,
     target: &str,
     vcs_type: Option<VcsType>,
@@ -226,6 +226,15 @@ pub fn run_worker(
             )
             .with_transient(false));
         }
+    };
+
+    let Some(target_repo_url) = target_repo_url else {
+        return Err(WorkerFailure::new(
+            "no-target-repository",
+            "No target repository to upload the result to",
+            ["setup"],
+        )
+        .with_transient(false));
     };
 
     let main_branch: Option<breezyshim::branch::GenericBranch>;
@@ -280,7 +289,14 @@ pub fn run_worker(
         metadata.subpath = Some(subpath.to_string_lossy().to_string());
         empty_format = None;
     } else {
-        let vcs_type = vcs_type.expect("vcs_type is required when main_branch_url is not given");
+        let Some(vcs_type) = vcs_type else {
+            return Err(WorkerFailure::new(
+                "branch-missing",
+                "No branch URL and no VCS type to create a branch with",
+                ["setup"],
+            )
+            .with_transient(false));
+        };
         main_branch = None;
         metadata.branch_url = None;
         metadata.vcs_type = Some(vcs_type);
@@ -995,7 +1011,7 @@ pub async fn process_single_item(
             queue_id: Some(assignment.queue_id),
             start_time: Some(start_time),
             branch_url: assignment_.branch.url.clone(),
-            vcs_type: Some(assignment.branch.vcs_type),
+            vcs_type: assignment.branch.vcs_type,
             ..Metadata::default()
         };
 
@@ -1011,10 +1027,10 @@ pub async fn process_single_item(
             &assignment_.codemod.command,
             output_directory_.as_path(),
             &mut metadata,
-            &assignment_.target_repository.url,
+            assignment_.target_repository.url.as_ref(),
             &vendor,
             &assignment_.build.target,
-            Some(assignment_.branch.vcs_type),
+            assignment_.branch.vcs_type,
             assignment_.branch.subpath.as_ref(),
             resume_branch_url.as_ref(),
             assignment_.branch.cached_url.as_ref(),
@@ -1082,7 +1098,7 @@ pub async fn process_single_item(
                 start_time: Some(start_time),
                 finish_time: Some(chrono::Utc::now()),
                 branch_url: assignment.branch.url.clone(),
-                vcs_type: Some(assignment.branch.vcs_type),
+                vcs_type: assignment.branch.vcs_type,
                 code: Some("worker-panic".to_string()),
                 description: Some(description),
                 ..Metadata::default()
@@ -1268,6 +1284,64 @@ mod tests {
         test_run_worker_existing(VcsType::Bzr);
     }
 
+    fn run_worker_without_vcs_type(
+        main_branch_url: Option<&Url>,
+        target_repo_url: Option<&Url>,
+    ) -> WorkerFailure {
+        let td = tempfile::tempdir().unwrap();
+        run_worker(
+            &CodebaseName::new("mycodebase").unwrap(),
+            &Campaign::new("mycampaign").unwrap(),
+            main_branch_url,
+            &RunId::new("run-id").unwrap(),
+            &serde_json::json!({}),
+            HashMap::new(),
+            "sh -c 'echo foo > bar'",
+            td.path(),
+            &mut Metadata::default(),
+            target_repo_url,
+            "foo",
+            "generic",
+            None,
+            Path::new(""),
+            None,
+            None,
+            None,
+            None,
+            &mut None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err()
+    }
+
+    #[serial]
+    #[test]
+    fn test_run_worker_without_vcs_type() {
+        let url = Url::parse("https://example.com/vcs").unwrap();
+        assert_eq!(
+            run_worker_without_vcs_type(Some(&url), None),
+            WorkerFailure::new(
+                "no-target-repository",
+                "No target repository to upload the result to",
+                ["setup"],
+            )
+            .with_transient(false)
+        );
+        assert_eq!(
+            run_worker_without_vcs_type(None, Some(&url)),
+            WorkerFailure::new(
+                "branch-missing",
+                "No branch URL and no VCS type to create a branch with",
+                ["setup"],
+            )
+            .with_transient(false)
+        );
+    }
+
     fn test_run_worker_existing(vcs_type: VcsType) {
         let env = breezyshim::testing::TestEnv::new();
         let tmp_path = env.working_dir.as_path();
@@ -1309,7 +1383,7 @@ check:
             "sh -c 'echo foo > bar'",
             &output_dir,
             &mut metadata,
-            &Url::from_directory_path(tmp_path.join("target")).unwrap(),
+            Some(&Url::from_directory_path(tmp_path.join("target")).unwrap()),
             "foo",
             "generic",
             Some(vcs_type),
@@ -1452,7 +1526,7 @@ check:
             "sh -c 'echo foo > bar'",
             &output_dir,
             &mut metadata,
-            &Url::from_directory_path(tmp_path.join("target")).unwrap(),
+            Some(&Url::from_directory_path(tmp_path.join("target")).unwrap()),
             "foo",
             "generic",
             Some(vcs_type),
