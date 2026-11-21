@@ -18,6 +18,7 @@ __all__ = [
     "is_alioth_url",
     "is_authenticated_url",
     "BranchOpenFailure",
+    "DiffUnavailable",
     "open_branch_ext",
     "UnsupportedVcs",
     "VcsManager",
@@ -63,6 +64,7 @@ get_remote_vcs_manager = _vcs_rs.get_remote_vcs_manager
 get_vcs_manager = _vcs_rs.get_vcs_manager
 get_vcs_managers = _vcs_rs.get_vcs_managers
 BranchOpenFailure = _vcs_rs.BranchOpenFailure
+DiffUnavailable = _vcs_rs.DiffUnavailable
 open_branch_ext = _vcs_rs.open_branch_ext
 UnsupportedVcs = _vcs_rs.UnsupportedVcs
 
