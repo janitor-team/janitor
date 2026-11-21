@@ -9,6 +9,7 @@ import aiohttp_jinja2
 import asyncpg
 from aiohttp import ClientConnectorError, ClientResponseError, web
 from breezy.revision import NULL_REVISION
+from marshmallow import Schema, fields, validate
 from yarl import URL
 
 from janitor import splitout_env, state
@@ -20,6 +21,17 @@ from janitor.site import (
     get_archive_diff,
     update_vars_from_request,
 )
+
+MAX_PSQL_BIGINT = 2**63 - 1
+
+
+class PageQuerySchema(Schema):
+    limit = fields.Int(
+        load_default=100, validate=validate.Range(min=0, max=MAX_PSQL_BIGINT)
+    )
+    offset = fields.Int(
+        load_default=0, validate=validate.Range(min=0, max=MAX_PSQL_BIGINT)
+    )
 
 
 async def get_previous_runs(client, runner_url: str, codebase: str, campaign: str):
