@@ -30,6 +30,7 @@ use testcontainers_modules::{
     postgres::Postgres as PostgresImage,
     testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt},
 };
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::sync::OnceCell;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -690,6 +691,50 @@ db_test! {
             janitor_service::metrics::CONTENT_TYPE
         );
     }
+}
+
+// Not a db_test!, so the server runs on the thread whose counters are captured.
+#[test]
+#[serial_test::serial]
+fn test_admin_counts_truncated_request_bodies() {
+    use janitor_service::testing::{capture_async, Value};
+    let (ran, snapshot) = capture_async(async {
+        let Some(test_db) = TestDatabase::new().await else {
+            eprintln!(
+                "skipping test_admin_counts_truncated_request_bodies: no test database available"
+            );
+            return false;
+        };
+        seed_codebase(test_db.pool(), "trunc").await;
+        let tmp = TempDir::new().unwrap();
+        let state = build_state(&tmp, &test_db, AppRole::Admin).await;
+        let (addr, handle) = spawn(web::create_admin_app(state, 0)).await;
+
+        // A pkt-line header promising 0x78 bytes, then the client goes away.
+        let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let request = format!(
+            "POST /trunc/git-receive-pack HTTP/1.1\r\nHost: {}\r\n\
+             Content-Type: application/x-git-receive-pack-request\r\n\
+             Content-Length: 4096\r\n\r\n0078",
+            addr
+        );
+        sock.write_all(request.as_bytes()).await.unwrap();
+        sock.shutdown().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(60), sock.read_to_end(&mut Vec::new()))
+            .await
+            .unwrap()
+            .unwrap();
+
+        handle.abort();
+        true
+    });
+    if !ran {
+        return;
+    }
+    assert_eq!(
+        snapshot.get(r#"git_incomplete_request_bodies_total{service="git-receive-pack"}"#),
+        Some(&Value::Counter(1))
+    );
 }
 
 db_test! {
