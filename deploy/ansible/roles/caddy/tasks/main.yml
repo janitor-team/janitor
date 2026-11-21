@@ -1,0 +1,77 @@
+---
+- name: Install Caddy
+  ansible.builtin.apt:
+    name: caddy
+    state: present
+
+- name: Check for the names the self-signed certificate was made with
+  ansible.builtin.stat:
+    path: /etc/caddy/janitor.san
+  register: caddy_san_file
+  when: caddy_self_signed
+
+- name: Read the names the self-signed certificate was made with
+  ansible.builtin.slurp:
+    src: /etc/caddy/janitor.san
+  register: caddy_san
+  when: caddy_self_signed and caddy_san_file.stat.exists
+
+- name: Generate a self-signed certificate for a host without a real domain
+  # Only for test hosts (caddy_self_signed). The worker trusts it.
+  # TLS clients match the name against subjectAltName, not the CN.
+  ansible.builtin.shell: >
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650
+    -keyout /etc/caddy/janitor.key
+    -out /etc/caddy/janitor.crt
+    -subj "/CN={{ janitor_domain }}"
+    -addext "subjectAltName={{ caddy_cert_sans | join(',') }}"
+    -addext "basicConstraints=critical,CA:FALSE"
+    && echo "{{ caddy_cert_sans | join(',') }}" > /etc/caddy/janitor.san
+  when:
+    - caddy_self_signed
+    - not caddy_san_file.stat.exists or caddy_san.content | b64decode | trim != caddy_cert_sans | join(',')
+  vars:
+    caddy_cert_sans: "{{ [('IP:' if janitor_domain is match('^[0-9.]+$') else 'DNS:') + janitor_domain] }}"
+  changed_when: true
+  notify: Restart caddy
+
+- name: Let caddy read the self-signed key
+  ansible.builtin.file:
+    path: /etc/caddy/janitor.key
+    owner: root
+    group: caddy
+    mode: "0640"
+  when: caddy_self_signed
+  notify: Restart caddy
+
+- name: Trust the self-signed certificate on this host
+  # The worker reaches the runner through Caddy and mounts the host's CA bundle.
+  ansible.builtin.copy:
+    src: /etc/caddy/janitor.crt
+    dest: /usr/local/share/ca-certificates/janitor.crt
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+  register: caddy_cert_trust
+  notify: Update the host's CA bundle
+  when: caddy_self_signed
+
+- name: Deploy the Caddyfile
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: /etc/caddy/Caddyfile
+    owner: root
+    group: root
+    mode: "0644"
+    validate: caddy validate --adapter caddyfile --config %s
+  notify: Restart caddy
+
+- name: Start caddy
+  ansible.builtin.service:
+    name: caddy
+    state: started
+    enabled: true
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers

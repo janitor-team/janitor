@@ -1,0 +1,61 @@
+# Managed by Ansible (roles/caddy).
+{# Headers on every site, with Strict-Transport-Security only on HTTPS. #}
+{# Each site also has an access log: JSON lines on stderr, in caddy's journal. #}
+{% macro security_headers(https) %}
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		# Only when the service sends no policy of its own.
+		?Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
+		Referrer-Policy strict-origin-when-cross-origin
+{% if https %}
+		Strict-Transport-Security "max-age={{ caddy_hsts_max_age }}"
+{% endif %}
+		-Server
+		# Also replace the headers the services send.
+		defer
+	}
+	log
+{%- endmacro %}
+{{ ':443' if caddy_self_signed else janitor_domain }} {
+{% if caddy_self_signed %}
+	tls /etc/caddy/janitor.crt /etc/caddy/janitor.key
+{% endif %}
+{{ security_headers(true) }}
+	# The worker reaches the runner's public API under /runner/, without the prefix.
+	handle_path /runner/* {
+		reverse_proxy {{ janitor_listen_address }}:9919
+	}
+	handle /git/* {
+		reverse_proxy {{ janitor_listen_address }}:9924
+	}
+	handle /bzr/* {
+		reverse_proxy {{ janitor_listen_address }}:9930
+	}
+	# The apt repository metadata. The site serves the pool files itself.
+	handle /dists/* {
+		reverse_proxy {{ janitor_listen_address }}:9915
+	}
+	handle {
+		reverse_proxy {{ janitor_listen_address }}:8090
+	}
+}
+
+# Plain HTTP serves only the apt repository (janitor_apt_archive_url) and
+# sends everything else, the worker's login included, to HTTPS.
+{{ ':80' if caddy_self_signed else 'http://' + janitor_domain }} {
+{{ security_headers(false) }}
+	handle /dists/* {
+		reverse_proxy {{ janitor_listen_address }}:9915
+	}
+	# Pool files: <campaign>/pkg/<codebase>/<run id>/<file>. The site serves
+	# the run's logs on the same path, so only package files match.
+	@apt_pool path_regexp ^/[^/]+/pkg/[^/]+/[^/]+/[^/]+\.(u?deb|ddeb|dsc|diff\.gz|tar\.(gz|xz|bz2|lzma|zst)(\.asc)?)$
+	handle @apt_pool {
+		reverse_proxy {{ janitor_listen_address }}:8090
+	}
+	# The configured name, never the client's Host header.
+	handle {
+		redir https://{{ janitor_domain }}{uri} permanent
+	}
+}
