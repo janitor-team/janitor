@@ -116,11 +116,11 @@ impl RunnerVcsManager {
         MetricsCollector::record_vcs_operation_duration(
             &vcs_type.to_string(),
             "get_diff",
-            "success", // get_diff doesn't return Result in the trait
+            if result.is_ok() { "success" } else { "error" },
             duration,
         );
 
-        Ok(result)
+        result.map_err(|e| VcsError::NetworkError(e.to_string()))
     }
 
     /// Get revision info with metrics
@@ -145,11 +145,11 @@ impl RunnerVcsManager {
         MetricsCollector::record_vcs_operation_duration(
             &vcs_type.to_string(),
             "get_revision_info",
-            "success",
+            if result.is_ok() { "success" } else { "error" },
             duration,
         );
 
-        Ok(result)
+        result.map_err(|e| VcsError::NetworkError(e.to_string()))
     }
 
     /// List repositories for a VCS type

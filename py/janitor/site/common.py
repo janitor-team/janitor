@@ -20,6 +20,7 @@ from janitor.site import (
     get_archive_diff,
     update_vars_from_request,
 )
+from janitor.vcs import DiffUnavailable
 
 
 async def get_previous_runs(client, runner_url: str, codebase: str, campaign: str):
@@ -377,10 +378,9 @@ WHERE codebase.name = $1""",
                     revid.encode("utf-8"),
                 )
                 return diff.decode("utf-8", "replace")
-        except ClientResponseError as e:
-            return f"Unable to retrieve diff; error {e.status}"
-        except ClientConnectorError as e:
-            return f"Unable to retrieve diff; error {e}"
+        except DiffUnavailable as e:
+            logging.warning("Unable to retrieve diff: %s", e)
+            return "Unable to retrieve diff"
 
     async def show_debdiff():
         if not run["build_version"]:
