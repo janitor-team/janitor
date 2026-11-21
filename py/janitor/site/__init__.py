@@ -143,7 +143,13 @@ def highlight_diff(diff):
     from pygments.formatters import HtmlFormatter
     from pygments.lexers.diff import DiffLexer
 
-    return highlight(diff, DiffLexer(stripnl=False), HtmlFormatter())
+    from .pygments_whitespace import CARRIAGE_RETURN, TrailingWhitespaceFilter
+
+    lexer = DiffLexer(stripnl=False)
+    lexer.add_filter(TrailingWhitespaceFilter())
+    # pygments turns every carriage return into a newline, so show it instead
+    diff = diff.replace("\r", CARRIAGE_RETURN)
+    return highlight(diff, lexer, HtmlFormatter())
 
 
 def classify_result_code(result_code, transient: Optional[bool]):
