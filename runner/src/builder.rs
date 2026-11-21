@@ -91,9 +91,11 @@ pub struct DebianBuildConfig {
     /// sbuild-style invocation; `None` means defer to the
     /// distribution's `build_command`.
     pub build_command: Option<String>,
-    /// Chroot to use; `None` means defer to the distribution's
-    /// `chroot`.
+    /// Chroot to use; with neither this nor `session` set, defer to the
+    /// distribution's `session` or else its `chroot`.
     pub chroot: Option<String>,
+    /// Worker session in ognibuild's syntax, used instead of `chroot`.
+    pub session: Option<String>,
     /// Extra build distributions.
     pub extra_build_distribution: Vec<String>,
 }
@@ -543,6 +545,7 @@ mod tests {
             build_suffix: None,
             build_command: None,
             chroot: None,
+            session: None,
             extra_build_distribution: vec![],
         });
 
