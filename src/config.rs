@@ -25,7 +25,17 @@ pub fn read_readable<R: Read>(mut readable: R) -> Result<Config, Box<dyn std::er
 }
 
 pub fn read_string(contents: &str) -> Result<Config, Box<dyn std::error::Error>> {
-    Ok(text_format::parse_from_str(contents)?)
+    let config: Config = text_format::parse_from_str(contents)?;
+    for (field, location) in [
+        ("database_location", &config.database_location),
+        ("redis_location", &config.redis_location),
+    ] {
+        if let Some(location) = location {
+            crate::utils::check_url_without_password(location)
+                .map_err(|e| format!("{} {}", field, e))?;
+        }
+    }
+    Ok(config)
 }
 
 impl Config {
@@ -52,6 +62,13 @@ impl Config {
             }
         }
         None
+    }
+
+    /// Redis settings from `redis_location` and `redis_password`.
+    pub fn redis_config(&self) -> Option<crate::redis::RedisConfig> {
+        self.redis_location.as_ref().map(|url| {
+            crate::redis::RedisConfig::new(url.clone()).with_password(self.redis_password.clone())
+        })
     }
 
     pub async fn pg_pool(&self) -> std::result::Result<sqlx::PgPool, sqlx::Error> {
@@ -82,6 +99,44 @@ mod tests {
         let config = read_string(contents).unwrap();
         assert_eq!(config.distribution.len(), 1);
         assert_eq!(config.distribution[0].name, Some("test".to_string()));
+    }
+
+    #[test]
+    fn test_read_string_rejects_password() {
+        for (location, error) in [
+            (
+                r#"database_location: "postgresql://janitor:secret@db/janitor""#,
+                "database_location must not contain a password",
+            ),
+            (
+                r#"database_location: "postgresql://janitor@db/janitor?password=secret""#,
+                "database_location must not contain a password",
+            ),
+            (
+                r#"redis_location: "redis://:secret@redis:6379/0""#,
+                "redis_location must not contain a password",
+            ),
+            (
+                r#"redis_location: "redis+unix:///run/redis.sock?pass=secret""#,
+                "redis_location must not contain a password",
+            ),
+            (
+                r#"database_location: "janitor""#,
+                "database_location is not a valid URL: relative URL without a base",
+            ),
+        ] {
+            assert_eq!(read_string(location).unwrap_err().to_string(), error);
+        }
+
+        let config = read_string(
+            r#"database_location: "postgresql:///janitor?host=/run/postgresql"
+redis_location: "redis+unix:///run/redis.sock"
+redis_password: "secret""#,
+        )
+        .unwrap();
+        let redis = config.redis_config().unwrap();
+        assert_eq!(redis.url, "redis+unix:///run/redis.sock");
+        assert_eq!(redis.password.as_deref(), Some("secret"));
     }
 
     #[test]

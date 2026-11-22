@@ -201,14 +201,11 @@ impl ApplicationBuilder {
             })?;
 
         let database = Arc::new(
-            RunnerDatabase::new_with_redis_url(
-                database_pool,
-                janitor_config.redis_location.clone(),
-            )
-            .await
-            .map_err(|e| {
-                ApplicationError::Database(format!("Failed to initialize database: {}", e))
-            })?,
+            RunnerDatabase::new_with_redis_config(database_pool, janitor_config.redis_config())
+                .await
+                .map_err(|e| {
+                    ApplicationError::Database(format!("Failed to initialize database: {}", e))
+                })?,
         );
 
         // Initialize VCS management

@@ -110,6 +110,11 @@ impl Config {
     }
 
     #[getter]
+    pub fn redis_password(&self) -> Option<&str> {
+        self.0.redis_password.as_deref()
+    }
+
+    #[getter]
     pub fn user_agent(&self) -> Option<&str> {
         self.0.user_agent.as_deref()
     }

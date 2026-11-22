@@ -102,6 +102,13 @@ impl BzrStoreConfig {
 
     /// Validate the configuration
     pub fn validate(&self) -> Result<(), ValidationError> {
+        if let Some(database) = &self.base.database {
+            database.validate()?;
+        }
+        if let Some(redis) = &self.base.redis {
+            redis.validate()?;
+        }
+
         // Validate BZR-specific configuration
         // Ensure repository path is absolute
         if !self.bzr.repository_path.is_absolute() {
@@ -186,3 +193,35 @@ fn default_request_timeout() -> u64 {
 
 // Re-export the main config type for compatibility
 pub use BzrStoreConfig as Config;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_from_file_rejects_password() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bzr-store.toml");
+        std::fs::write(
+            &path,
+            r#"[database]
+url = "postgresql://janitor:secret@localhost/janitor"
+
+[bzr]
+repository_path = "/srv/bzr"
+admin_bind = "127.0.0.1:9929"
+public_bind = "127.0.0.1:9930"
+request_timeout = 30
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            BzrStoreConfig::from_file(&path)
+                .unwrap()
+                .validate()
+                .unwrap_err()
+                .to_string(),
+            "Invalid value for field 'url': Database URL must not contain a password"
+        );
+    }
+}

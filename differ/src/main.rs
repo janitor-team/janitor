@@ -1460,8 +1460,7 @@ async fn run() -> std::result::Result<(), StartupError> {
 
     let shutdown = CancellationToken::new();
 
-    if let Some(redis_location) = config.redis_location.as_ref() {
-        let redis_config = janitor::redis::RedisConfig::new(redis_location.to_string());
+    if let Some(redis_config) = config.redis_config() {
         let listener_state = state.clone();
         let listener_shutdown = shutdown.clone();
         background_tasks.spawn(async move {

@@ -65,12 +65,8 @@ impl PubSubMessage for BuildResultMessage {
 
 impl RedisClient {
     /// Set up the Redis client. The connection is made when subscribing.
-    pub fn new(redis_url: &str) -> Result<Self> {
-        info!("using Redis at {}", redis_url);
-        let config = RedisConfig {
-            url: redis_url.to_string(),
-            ..Default::default()
-        };
+    pub fn new(config: RedisConfig) -> Result<Self> {
+        info!("using Redis at {}", config.url);
         let redis_manager = Arc::new(RedisManager::new(config)?);
         Ok(Self { redis_manager })
     }

@@ -209,14 +209,13 @@ impl RunnerDatabase {
         }
     }
 
-    /// Create a new database instance with optional Redis connection from URL.
-    pub async fn new_with_redis_url(
+    /// Create a new database instance with an optional Redis connection.
+    pub async fn new_with_redis_config(
         pool: PgPool,
-        redis_url: Option<String>,
+        redis_config: Option<janitor::redis::RedisConfig>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let shared_db = if let Some(url) = redis_url {
+        let shared_db = if let Some(redis_config) = redis_config {
             // Use shared RedisManager instead of direct Redis client
-            let redis_config = janitor::redis::RedisConfig::new(url);
             let redis_manager = janitor::redis::RedisManager::new(redis_config)?;
             let redis_client = redis_manager.client().as_ref().clone();
             janitor::database::Database::from_pool_with_redis(pool, redis_client)

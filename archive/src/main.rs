@@ -158,7 +158,7 @@ async fn main() -> ArchiveResult<()> {
 /// Service locations taken from `janitor.conf`.
 struct Locations {
     database: String,
-    redis: Option<String>,
+    redis: Option<RedisConfig>,
     artifacts: String,
 }
 
@@ -174,7 +174,7 @@ impl Locations {
         };
         Ok(Self {
             database: required(&config.database_location, "database_location")?,
-            redis: config.redis_location.clone(),
+            redis: config.redis_config(),
             artifacts: required(&config.artifact_location, "artifact_location")?,
         })
     }
@@ -284,8 +284,7 @@ async fn start_web_server(
 
     // Wire the runner 'result' pub/sub listener to the generator
     // manager.
-    if let Some(redis_url) = locations.redis.as_ref() {
-        let redis_config = RedisConfig::new(redis_url.clone());
+    if let Some(redis_config) = locations.redis.clone() {
         match RedisSubscriber::new(redis_config, generator_manager.clone()).await {
             Ok(mut subscriber) => match subscriber.listen_to_runner().await {
                 Ok(_handle) => info!("Runner pub/sub listener started"),

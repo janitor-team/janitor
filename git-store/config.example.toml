@@ -7,7 +7,7 @@ local_path = "/srv/git"
 public_url = "http://localhost:9422"
 
 # Database connection URL
-database_url = "postgresql://janitor:password@localhost/janitor"
+database_url = "postgresql://janitor@localhost/janitor"
 
 # Port to listen on for admin interface
 admin_port = 9421

@@ -19,7 +19,9 @@ def setup_redis(app):
     from redis.asyncio import Redis
 
     async def connect_redis(app):
-        app["redis"] = Redis.from_url(app["config"].redis_location)
+        app["redis"] = Redis.from_url(
+            app["config"].redis_location, password=app["config"].redis_password
+        )
 
     async def disconnect_redis(app):
         await app["redis"].close()

@@ -30,10 +30,9 @@ pub async fn run(
     upload_config: UploadConfig,
     run_backfill: bool,
 ) -> Result<()> {
-    let redis_url = config
-        .redis_location()
-        .ok_or(UploadError::MissingConfig("redis_location"))?
-        .to_string();
+    let redis_config = config
+        .redis_config()
+        .ok_or(UploadError::MissingConfig("redis_location"))?;
     let artifact_location = config
         .artifact_location()
         .ok_or(UploadError::MissingConfig("artifact_location"))?
@@ -56,7 +55,7 @@ pub async fn run(
     let redis_task = tokio::spawn({
         let artifact_location = artifact_location.clone();
         let upload_config = upload_config.clone();
-        async move { listen_to_runner(&redis_url, &artifact_location, upload_config).await }
+        async move { listen_to_runner(redis_config, &artifact_location, upload_config).await }
     });
 
     if let Some(database_url) = database_url {
@@ -106,11 +105,11 @@ fn join_result(
 /// Subscribe to the runner's `result` channel and hand each message to the
 /// [`MessageHandler`]. On transient errors, wait five seconds and retry.
 async fn listen_to_runner(
-    redis_url: &str,
+    redis_config: janitor::redis::RedisConfig,
     artifact_location: &str,
     upload_config: UploadConfig,
 ) -> Result<()> {
-    let redis_client = RedisClient::new(redis_url)?;
+    let redis_client = RedisClient::new(redis_config)?;
     let message_handler = Arc::new(MessageHandler::new(artifact_location, upload_config).await?);
 
     loop {
