@@ -34,7 +34,7 @@ fn main() {
     ) {
         Ok(result) => serde_json::to_writer(std::io::stdout(), &result).unwrap(),
         Err(e) => {
-            serde_json::to_writer(std::io::stdout(), &serde_json::to_value(e).unwrap()).unwrap();
+            serde_json::to_writer(std::io::stdout(), &e).unwrap();
             std::process::exit(1);
         }
     }

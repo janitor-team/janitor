@@ -5,6 +5,7 @@ use janitor_types::api::runner::FinishResponse;
 use janitor_types::{Campaign, CodebaseName, RunId};
 use reqwest::multipart::{Form, Part};
 use reqwest::{Error as ReqwestError, Response, StatusCode, Url};
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::path::Path;
 
@@ -24,6 +25,31 @@ impl std::fmt::Display for AssignmentError {
 }
 
 impl std::error::Error for AssignmentError {}
+
+/// How the runner can reach the worker while the run is in progress.
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum Backchannel<'a> {
+    Http { url: &'a Url },
+    Jenkins { url: &'a Url },
+}
+
+/// Body of a request to the runner for a new assignment.
+#[derive(Debug, Serialize)]
+struct AssignmentRequest<'a> {
+    node: &'a str,
+    archs: Vec<String>,
+    worker_link: Option<&'a Url>,
+    backchannel: Option<Backchannel<'a>>,
+    codebase: Option<&'a CodebaseName>,
+    campaign: Option<&'a Campaign>,
+}
+
+/// Error body returned by the runner.
+#[derive(Debug, Deserialize)]
+struct ErrorResponse {
+    reason: Option<String>,
+}
 
 /// Get an assignment from the queue.
 pub async fn get_assignment_raw(
@@ -48,46 +74,34 @@ pub async fn get_assignment_raw(
             )))
         }
     };
-    let mut json = serde_json::json!({
-        "node": node_name,
-        "archs": [build_arch],
-        "worker_link": null,
-        "codebase": codebase,
-        "campaign": campaign,
-    });
-    json["backchannel"] = if let Some(ref url) = my_url {
-        serde_json::json!({
-            "kind": "http",
-            "url": url.to_string(),
-        })
-    } else if let Some(url) = jenkins_build_url {
-        serde_json::json!({
-            "kind": "jenkins",
-            "url": url,
-        })
-    } else {
-        serde_json::json![null]
+    let backchannel = my_url
+        .map(|url| Backchannel::Http { url })
+        .or_else(|| jenkins_build_url.map(|url| Backchannel::Jenkins { url }));
+    let request = AssignmentRequest {
+        node: node_name,
+        archs: vec![build_arch],
+        worker_link: jenkins_build_url.or(my_url),
+        backchannel,
+        codebase,
+        campaign,
     };
-    if let Some(url) = jenkins_build_url.or(my_url) {
-        json["worker_link"] = serde_json::Value::String(url.to_string());
-    }
     async fn send_assignment_request(
         session: reqwest::Client,
         assign_url: Url,
         credentials: &Credentials,
-        json: &serde_json::Value,
+        request: &AssignmentRequest<'_>,
     ) -> Result<Response, ReqwestError> {
         let mut builder = session.post(assign_url);
         builder = credentials.set_credentials(builder);
         builder = builder.header("Content-Type", "application/json");
-        log::debug!("Sending assignment request: {:?}", json);
-        builder = builder.json(json);
+        log::debug!("Sending assignment request: {:?}", request);
+        builder = builder.json(request);
         builder.send().await
     }
     let assignment = backoff::future::retry(ExponentialBackoff::default(), || async {
         let session = session.clone();
         let assign_url = assign_url.clone();
-        match send_assignment_request(session, assign_url, credentials, &json).await {
+        match send_assignment_request(session, assign_url, credentials, &request).await {
             Ok(resp) => {
                 if resp.status().as_u16() == StatusCode::CREATED {
                     let data = resp.json::<serde_json::Value>().await.map_err(|e| {
@@ -98,17 +112,17 @@ pub async fn get_assignment_raw(
                     })?;
                     Ok(data)
                 } else if resp.status().as_u16() == 503 {
-                    let json = resp.json::<serde_json::Value>().await.map_err(|e| {
+                    let body = resp.json::<ErrorResponse>().await.map_err(|e| {
                         backoff::Error::Permanent(AssignmentError::Failure(format!(
                             "Failed to parse assignment response: {}",
                             e
                         )))
                     })?;
-                    if json["reason"] == "queue empty" {
+                    if body.reason.as_deref() == Some("queue empty") {
                         Err(backoff::Error::Permanent(AssignmentError::EmptyQueue))
                     } else {
                         Err(backoff::Error::transient(AssignmentError::Failure(
-                            format!("Failed to get assignment: {:?}", json),
+                            format!("Failed to get assignment: {:?}", body),
                         )))
                     }
                 } else if resp.status().is_server_error() {
@@ -487,19 +501,16 @@ where
 
         match response.status() {
             StatusCode::NOT_FOUND => {
-                let resp_json = response.json::<serde_json::Value>().await.map_err(|e| {
+                let body = response.json::<ErrorResponse>().await.map_err(|e| {
                     backoff::Error::permanent(UploadFailure(format!(
                         "Error parsing 404 response: {}",
                         e
                     )))
                 })?;
-                let reason = resp_json
-                    .get("reason")
-                    .and_then(|r| r.as_str())
-                    .unwrap_or("Runner returned 404");
-                Err(backoff::Error::permanent(
-                    UploadFailure(reason.to_string()),
-                ))
+                let reason = body
+                    .reason
+                    .unwrap_or_else(|| "Runner returned 404".to_string());
+                Err(backoff::Error::permanent(UploadFailure(reason)))
             }
             StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE => {
                 let status = response.status();
@@ -632,6 +643,63 @@ mod tests {
                 .unwrap();
             assert_eq!(creds.username.as_deref(), Some("worker1"));
         }
+    }
+
+    #[test]
+    fn assignment_request_wire_format() {
+        let url: Url = "http://worker.example.com:8080/".parse().unwrap();
+        let codebase = CodebaseName::new("foo").unwrap();
+        let request = AssignmentRequest {
+            node: "node1",
+            archs: vec!["amd64".to_string()],
+            worker_link: Some(&url),
+            backchannel: Some(Backchannel::Http { url: &url }),
+            codebase: Some(&codebase),
+            campaign: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            serde_json::json!({
+                "node": "node1",
+                "archs": ["amd64"],
+                "worker_link": "http://worker.example.com:8080/",
+                "backchannel": {"kind": "http", "url": "http://worker.example.com:8080/"},
+                "codebase": "foo",
+                "campaign": null,
+            })
+        );
+    }
+
+    #[test]
+    fn assignment_request_without_backchannel() {
+        let request = AssignmentRequest {
+            node: "node1",
+            archs: vec!["amd64".to_string()],
+            worker_link: None,
+            backchannel: None,
+            codebase: None,
+            campaign: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            serde_json::json!({
+                "node": "node1",
+                "archs": ["amd64"],
+                "worker_link": null,
+                "backchannel": null,
+                "codebase": null,
+                "campaign": null,
+            })
+        );
+    }
+
+    #[test]
+    fn jenkins_backchannel_wire_format() {
+        let url: Url = "https://jenkins.example.com/job/1/".parse().unwrap();
+        assert_eq!(
+            serde_json::to_value(Backchannel::Jenkins { url: &url }).unwrap(),
+            serde_json::json!({"kind": "jenkins", "url": "https://jenkins.example.com/job/1/"})
+        );
     }
 
     #[tokio::test]

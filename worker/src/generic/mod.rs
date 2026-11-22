@@ -103,13 +103,17 @@ pub fn generic_make_changes(
     }
 }
 
+/// Details of a successful generic build.
+#[derive(Debug, serde::Serialize, PartialEq, Eq)]
+pub struct GenericBuildResult {}
+
 pub fn build_from_config(
     local_tree: &breezyshim::workingtree::GenericWorkingTree,
     subpath: &std::path::Path,
     output_directory: &std::path::Path,
     config: &GenericBuildConfig,
     _env: &HashMap<String, String>,
-) -> Result<serde_json::Value, WorkerFailure> {
+) -> Result<GenericBuildResult, WorkerFailure> {
     build(
         local_tree,
         subpath,
@@ -125,7 +129,7 @@ fn build(
     output_directory: &Path,
     schroot: Option<&str>,
     dep_server_url: Option<&url::Url>,
-) -> Result<serde_json::Value, WorkerFailure> {
+) -> Result<GenericBuildResult, WorkerFailure> {
     use ognibuild::session::Session;
     #[cfg(target_os = "linux")]
     let mut session: Box<dyn Session> = if let Some(schroot) = schroot {
@@ -380,7 +384,7 @@ fn build(
         }
     }
 
-    Ok(serde_json::json!({}))
+    Ok(GenericBuildResult {})
 }
 
 pub struct GenericTarget {
@@ -407,6 +411,7 @@ impl crate::Target for GenericTarget {
     ) -> Result<serde_json::Value, WorkerFailure> {
         let config: GenericBuildConfig = crate::parse_build_config(config, "build")?;
         build_from_config(local_tree, subpath, output_directory, &config, &self.env)
+            .map(|r| serde_json::to_value(r).unwrap())
     }
 
     fn validate(

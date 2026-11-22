@@ -229,7 +229,7 @@ pub(crate) fn build(
     }
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 pub struct DebianBuildResult {
     lintian: crate::debian::lintian::LintianResult,
 }
