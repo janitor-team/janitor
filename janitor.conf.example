@@ -59,6 +59,9 @@ distribution {
   chroot: "unstable-amd64-sbuild"
   # Extra schroot aliases, beyond the default "<name>-<arch>-sbuild". Optional.
   # chroot_alias: "unstable-sbuild"
+  # Worker session in ognibuild's syntax, used by the worker instead of chroot.
+  # "unshare:<suite>" uses the image made by "ogni cache-env <suite>". Optional.
+  # session: "unshare:sid"
   lintian_profile: "debian"
   lintian_suppress_tag: "bad-distribution-in-changes-file"
   lintian_suppress_tag: "no-nmu-in-changelog"
@@ -93,6 +96,8 @@ campaign {
     # Chroot for this campaign, overriding the distribution's chroot.
     # Optional.
     # chroot: "lintian-fixes-amd64-sbuild"
+    # Worker session for this campaign, in place of chroot. Optional.
+    # session: "unshare:sid"
   }
   # Where to file bugs about this campaign, with its own button after the
   # default one. Optional, can be specified more than once.
