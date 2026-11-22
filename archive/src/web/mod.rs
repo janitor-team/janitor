@@ -324,9 +324,7 @@ async fn serve_from_suite(
         Some("Release" | "Release.gpg" | "InRelease")
     );
     match serve_from_dir(repo_config.suite_path(), 2, request).await {
-        Err(StatusCode::NOT_FOUND) if wants_release => {
-            Ok(suite_not_yet_published_response(suite))
-        }
+        Err(StatusCode::NOT_FOUND) if wants_release => Ok(suite_not_yet_published_response(suite)),
         other => other,
     }
 }
@@ -1028,6 +1026,9 @@ mod tests {
             &HeaderValue::from_static("text/plain"),
         );
         let body = to_bytes(response.into_body(), 1024).await.unwrap();
-        assert_eq!(&body[..], b"Suite lintian-fixes has not been published yet\n");
+        assert_eq!(
+            &body[..],
+            b"Suite lintian-fixes has not been published yet\n"
+        );
     }
 }
