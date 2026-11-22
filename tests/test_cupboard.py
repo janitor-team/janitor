@@ -39,6 +39,7 @@ from janitor.site import (
     template_loader,
     worker_link_is_global,
 )
+from janitor.site.common import MAX_PSQL_BIGINT
 from janitor.site.cupboard import (
     create_app,
     generate_codebase,
@@ -191,6 +192,18 @@ async def test_history(aiohttp_client, db):
     client = await create_client(aiohttp_client, db)
     resp = await client.get("/cupboard/history")
     assert resp.status == 200
+    resp = await client.get(
+        "/cupboard/history",
+        params={"limit": "", "offset": str(MAX_PSQL_BIGINT + 1)},
+    )
+    assert resp.status == 422
+    assert await resp.json() == {
+        "limit": ["Not a valid integer."],
+        "offset": [
+            "Must be greater than or equal to 0 and less than or equal to "
+            f"{MAX_PSQL_BIGINT}."
+        ],
+    }
 
 
 async def test_queue(aiohttp_client, db):
