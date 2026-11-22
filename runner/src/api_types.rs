@@ -552,6 +552,64 @@ pub struct CleanupRunsResponse {
     pub run_ids: Option<Vec<RunId>>,
 }
 
+/// Request body for `POST /runs/{id}/reprocess-logs`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct ReprocessRunLogsRequest {
+    /// Analyze the logs without storing the result.
+    #[serde(default)]
+    pub dry_run: bool,
+    /// Reschedule the run if its result code changed.
+    #[serde(default)]
+    pub reschedule: bool,
+}
+
+/// Response for `POST /runs/{id}/reprocess-logs`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ReprocessRunLogsResponse {
+    /// Whether the analysis differs from what was stored.
+    pub changed: bool,
+    /// The (new) result code.
+    pub result_code: String,
+    /// The (new) description.
+    pub description: Option<String>,
+    /// The (new) failure details.
+    pub failure_details: Option<serde_json::Value>,
+}
+
+/// Request body for `POST /admin/runs/reprocess-logs`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct ReprocessLogsRequest {
+    /// Runs to reprocess; when set, the other filters are ignored.
+    #[serde(default)]
+    pub run_ids: Option<Vec<RunId>>,
+    /// Only reprocess runs for this campaign.
+    #[serde(default)]
+    pub campaign: Option<Campaign>,
+    /// Only reprocess runs whose description matches this regex.
+    #[serde(default)]
+    pub description_re: Option<String>,
+    /// Only reprocess runs that finished at least this many days ago.
+    #[serde(default)]
+    pub min_age: Option<i32>,
+    /// Analyze the logs without storing the result.
+    #[serde(default)]
+    pub dry_run: bool,
+    /// Reschedule runs whose result code changed.
+    #[serde(default)]
+    pub reschedule: bool,
+}
+
+/// A run that is being reprocessed.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ReprocessingRun {
+    /// Codebase of the run.
+    pub codebase: CodebaseName,
+    /// Campaign of the run.
+    pub campaign: Campaign,
+    /// Id of the run.
+    pub log_id: RunId,
+}
+
 /// Response for `POST /resume/check`.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ResumeCheckResponse {

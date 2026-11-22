@@ -52,6 +52,9 @@ pub mod database;
 pub mod logs;
 /// Module for Prometheus metrics collection.
 pub mod metrics;
+/// Reanalysis of the logs of finished runs.
+pub mod reprocess_logs;
+
 /// Resume logic for interrupted runs.
 pub mod resume;
 /// Logging and tracing integration.

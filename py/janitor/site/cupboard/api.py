@@ -17,6 +17,7 @@
 import logging
 import secrets
 from datetime import timedelta
+from typing import Any
 
 import aiozipkin
 import asyncpg
@@ -37,12 +38,9 @@ from yarl import URL
 from janitor import CAMPAIGN_REGEX, utcnow, version_string
 
 from .. import check_admin, worker_link_is_global
+from ..api import request_backend
 from ..api_tokens import api_token_middleware
-from ..setup import setup_logfile_manager, setup_postgres
-
-BUILD_LOG_FILENAME = "build.log"
-DIST_LOG_FILENAME = "dist.log"
-
+from ..setup import setup_postgres
 
 routes = web.RouteTableDef()
 
@@ -271,123 +269,16 @@ class ReprocessResultSchema(Schema):
 @response_schema(ReprocessResultSchema())
 @routes.post("/run/{run_id}/reprocess-logs", name="admin-reprocess-logs-run")
 async def handle_run_reprocess_logs(request):
-    from ...reprocess_logs import (  # type: ignore
-        process_dist_log,
-        process_sbuild_log,
-        reprocess_run_logs,
-    )
-
     post = await request.post()
     run_id = request.match_info["run_id"]
-    dry_run = "dry_run" in post
-    reschedule = "reschedule" in post
-    async with request.app["pool"].acquire() as conn:
-        run = await conn.fetchrow(
-            "SELECT codebase, campaign, command, "
-            "finish_time - start_time as duration, codebase, "
-            "result_code, description, failure_details, change_set FROM run WHERE id = $1",
-            run_id,
-        )
-
-    result = await reprocess_run_logs(
-        db=request.app["pool"],
-        logfile_manager=request.app["logfile_manager"],
-        codebase=run["codebase"],
-        campaign=run["campaign"],
-        log_id=run_id,
-        command=run["command"],
-        change_set=run["change_set"],
-        duration=run["duration"],
-        result_code=run["result_code"],
-        description=run["description"],
-        failure_details=run["failure_details"],
-        process_fns=[
-            ("dist-", DIST_LOG_FILENAME, process_dist_log),
-            ("build-", BUILD_LOG_FILENAME, process_sbuild_log),
-        ],
-        dry_run=dry_run,
-        reschedule=reschedule,
+    url = URL(request.app["runner_url"]) / "runs" / run_id / "reprocess-logs"
+    return await request_backend(
+        request,
+        "POST",
+        url,
+        "runner",
+        json={"dry_run": "dry_run" in post, "reschedule": "reschedule" in post},
     )
-
-    if result:
-        (new_code, new_description, new_failure_details) = result
-        return web.json_response(
-            {
-                "changed": True,
-                "result_code": new_code,
-                "description": new_description,
-                "failure_details": new_failure_details,
-            }
-        )
-    else:
-        return web.json_response(
-            {
-                "changed": False,
-                "result_code": run["result_code"],
-                "description": run["description"],
-                "failure_details": run["failure_details"],
-            }
-        )
-
-
-async def select_runs_to_reprocess(
-    conn, run_ids=None, campaign=None, description_re=None, min_age=0
-):
-    if not run_ids:
-        args = []
-        where = [
-            "(result_code = 'build-failed' OR "
-            "result_code LIKE 'build-failed-stage-%' OR "
-            "result_code LIKE 'autopkgtest-%' OR "
-            "result_code LIKE 'build-%' OR "
-            "result_code LIKE 'dist-%' OR "
-            "result_code LIKE 'unpack-%' OR "
-            "result_code LIKE 'create-session-%' OR "
-            "result_code LIKE 'missing-%')"
-        ]
-        if campaign:
-            args.append(campaign)
-            where.append(f"campaign = ${len(args)}")
-        if description_re:
-            args.append(description_re)
-            where.append(f"description ~ ${len(args)}")
-        if min_age:
-            args.append(utcnow() - timedelta(days=min_age))
-            where.append(f"finish_time < ${len(args)}")
-
-        query = """
-SELECT
-  codebase,
-  campaign,
-  id,
-  command,
-  finish_time - start_time as duration,
-  result_code,
-  description,
-  failure_details,
-  change_set
-FROM run
-WHERE
-""" + " AND ".join(where)
-    else:
-        args = [run_ids]
-        query = """
-SELECT
-  codebase,
-  campaign,
-  id,
-  command,
-  finish_time - start_time as duration,
-  result_code,
-  description,
-  failure_details,
-  change_set,
-  codebase
-FROM run
-WHERE
-  id = ANY($1::text[])
-"""
-    return await conn.fetch(query, *args)
 
 
 class ReprocessLogsSchema(ReprocessOptionsSchema):
@@ -408,67 +299,27 @@ class ReprocessingSchema(Schema):
 @response_schema(ReprocessingSchema(many=True))
 @routes.post("/reprocess-logs", name="admin-reprocess-logs")
 async def handle_reprocess_logs(request):
-    from ...reprocess_logs import (
-        process_dist_log,
-        process_sbuild_log,
-        reprocess_run_logs,
-    )
-
     check_admin(request)
     post = await request.post()
-    dry_run = "dry_run" in post
-    reschedule = "reschedule" in post
-    try:
-        run_ids = post.getall("run_id")
-    except KeyError:
-        run_ids = None
-
-    async with request.app["pool"].acquire() as conn:
-        try:
-            rows = await select_runs_to_reprocess(
-                conn,
-                run_ids,
-                campaign=post.get("campaign"),
-                description_re=post.get("description_re"),
-                min_age=0 if run_ids else int(post.get("min_age", "0")),
-            )
-        except asyncpg.InvalidRegularExpressionError as e:
-            raise web.HTTPBadRequest(text=f"Invalid regex: {e.message}") from e
-
-    for row in rows:
-        await spawn(
-            request,
-            reprocess_run_logs(
-                db=request.app["pool"],
-                logfile_manager=request.app["logfile_manager"],
-                codebase=row["codebase"],
-                campaign=row["campaign"],
-                log_id=row["id"],
-                command=row["command"],
-                change_set=row["change_set"],
-                duration=row["duration"],
-                result_code=row["result_code"],
-                description=row["description"],
-                failure_details=row["failure_details"],
-                process_fns=[
-                    ("dist-", DIST_LOG_FILENAME, process_dist_log),
-                    ("build-", BUILD_LOG_FILENAME, process_sbuild_log),
-                ],
-                dry_run=dry_run,
-                reschedule=reschedule,
-            ),
-        )
-
-    return web.json_response(
-        [
-            {
-                "codebase": row["codebase"],
-                "campaign": row["campaign"],
-                "log_id": row["id"],
-            }
-            for row in rows
-        ]
-    )
+    body: dict[str, Any] = {
+        "dry_run": "dry_run" in post,
+        "reschedule": "reschedule" in post,
+    }
+    run_ids = post.getall("run_id", [])
+    if run_ids:
+        body["run_ids"] = run_ids
+    else:
+        if "campaign" in post:
+            body["campaign"] = post["campaign"]
+        if "description_re" in post:
+            body["description_re"] = post["description_re"]
+        if "min_age" in post:
+            try:
+                body["min_age"] = int(post["min_age"])
+            except ValueError as e:
+                raise web.HTTPBadRequest(text="min_age must be an integer") from e
+    url = URL(request.app["runner_url"]) / "admin" / "runs" / "reprocess-logs"
+    return await request_backend(request, "POST", url, "runner", json=body)
 
 
 @docs(
@@ -612,7 +463,6 @@ def create_app(*, config, publisher_url, runner_url, trace_configs=None, db=None
         setup_postgres(app)
     else:
         app["pool"] = db
-    setup_logfile_manager(app)
     setup_aiojobs(app)
     setup_aiohttp_apispec(
         app=app,
