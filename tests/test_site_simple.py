@@ -19,7 +19,7 @@ import base64
 import hashlib
 import json
 import tempfile
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import aiohttp
 import asyncpg
@@ -32,6 +32,7 @@ from yarl import URL
 
 from janitor import utcnow
 from janitor.config import read_string as read_config_string
+from janitor.site.pkg import generate_done_list
 from janitor.site.simple import create_app, main_async
 
 from .conftest import _insert_run
@@ -1044,4 +1045,45 @@ async def test_oauth_callback_goes_back_only_to_a_url_the_site_serves(
         "/cupboard/queue": (302, "/cupboard/queue"),
         "//evil.example": (302, "/"),
         "https://evil.example/": (302, "/"),
+    }
+
+
+async def test_generate_done_list(aiohttp_client, aiohttp_server):
+    run = {
+        "mode": "push",
+        "change_set": "run-1",
+        "codebase": "foo",
+        "delay": 60,
+        "campaign": "lintian-fixes",
+        "result": {},
+        "id": "run-1",
+        "absorbed_at": "2026-11-12T10:00:00",
+        "merged_by": None,
+        "merge_proposal_url": None,
+    }
+
+    async def handle_absorbed(request):
+        # Like the publisher, which wants an RFC 3339 time with an offset.
+        since = datetime.fromisoformat(request.query["since"])
+        if since.tzinfo is None:
+            raise web.HTTPBadRequest(text="Invalid date format for 'since' parameter")
+        assert request.query["campaign"] == "lintian-fixes"
+        return web.json_response({"runs": [run], "oldest": "2026-11-01T00:00:00"})
+
+    publisher_app = web.Application()
+    publisher_app.router.add_get("/absorbed", handle_absorbed)
+    publisher = await aiohttp_server(publisher_app)
+
+    async with aiohttp.ClientSession() as session:
+        result = await generate_done_list(
+            session,
+            str(publisher.make_url("/")),
+            "lintian-fixes",
+            datetime(2026, 11, 12),
+        )
+    assert result == {
+        "oldest": datetime(2026, 11, 1),
+        "runs": [{**run, "absorbed_at": datetime(2026, 11, 12, 10, 0)}],
+        "campaign": "lintian-fixes",
+        "since": datetime(2026, 11, 12),
     }
