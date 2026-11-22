@@ -16,7 +16,7 @@
 
 import shlex
 from collections.abc import AsyncIterator, Iterator
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import asyncpg
@@ -25,13 +25,17 @@ from ... import utcnow
 from ...queue import Queue, QueueItem
 
 
+def _naive_utc(ts: str) -> datetime:
+    return datetime.fromisoformat(ts).astimezone(timezone.utc).replace(tzinfo=None)
+
+
 def get_processing(answer: dict[str, Any]) -> Iterator[dict[str, Any]]:
     for entry in answer["processing"]:
         entry = dict(entry.items())
         if entry.get("estimated_duration"):
             entry["estimated_duration"] = timedelta(seconds=entry["estimated_duration"])
         if entry.get("start_time"):
-            entry["start_time"] = datetime.fromisoformat(entry["start_time"])
+            entry["start_time"] = _naive_utc(entry["start_time"])
             entry["current_duration"] = utcnow() - entry["start_time"]
         if entry.get("last-keepalive"):
             entry["keepalive_age"] = timedelta(seconds=entry["keepalive_age"])
@@ -93,7 +97,7 @@ async def write_queue(
         active_queue_ids = set([p["queue_id"] for p in queue_status["processing"]])
         avoid_hosts = queue_status["avoid_hosts"]
         rate_limit_hosts = {
-            host: datetime.fromisoformat(ts)
+            host: _naive_utc(ts)
             for (host, ts) in queue_status["rate_limit_hosts"].items()
         }
     else:
