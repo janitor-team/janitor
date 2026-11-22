@@ -8,23 +8,11 @@
 //! pgcrypto path as `py/janitor/worker_creds.py::is_worker`, which was
 //! the divergence that motivated rewriting this module.
 
+mod common;
+
+use common::*;
 use janitor::test_with_database;
 use janitor_bzr_store::database::DatabaseManager;
-use sqlx::PgPool;
-
-/// Insert a worker row with a pgcrypto-hashed password, matching the way
-/// Python/pgcrypto-based deployments store credentials.
-async fn seed_worker(pool: &PgPool, name: &str, password: &str) {
-    sqlx::query(
-        "INSERT INTO worker (name, password, link)
-         VALUES ($1, crypt($2, gen_salt('bf')), NULL)",
-    )
-    .bind(name)
-    .bind(password)
-    .execute(pool)
-    .await
-    .unwrap();
-}
 
 test_with_database! {
     schema = Core;
