@@ -860,6 +860,50 @@ async fn get_codebases(State(state): State<Arc<AppState>>) -> Response {
     }
 }
 
+/// Query parameters for `GET /codebases/{name}`.
+#[derive(serde::Deserialize, Default, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct GetCodebaseQuery {
+    /// When supplied, include the per-branch publish policy resolved
+    /// via this codebase's candidate for the campaign.
+    campaign: Option<Campaign>,
+}
+
+/// `GET /codebases/{name}?campaign=...` -- return a single codebase
+/// row, optionally joined with the per-branch publish policy for a
+/// specific campaign.
+#[utoipa::path(
+    get,
+    path = "/codebases/{name}",
+    params(
+        ("name" = CodebaseName, Path, description = "Codebase name"),
+        GetCodebaseQuery,
+    ),
+    responses(
+        (status = 200, description = "Codebase", body = crate::database::CodebaseDetail),
+        (status = 404, description = "No such codebase", body = ReasonResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    )
+)]
+async fn get_codebase(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<CodebaseName>,
+    Query(params): Query<GetCodebaseQuery>,
+) -> Response {
+    match state
+        .database
+        .get_codebase_detail(&name, params.campaign.as_ref())
+        .await
+    {
+        Ok(Some(detail)) => Json(detail).into_response(),
+        Ok(None) => reason(StatusCode::NOT_FOUND, format!("no such codebase: {}", name)),
+        Err(e) => {
+            log::error!("Failed to get codebase {}: {}", name, e);
+            db_error()
+        }
+    }
+}
+
 /// `GET /codebases/names` -- return the sorted names of all active
 /// codebases as a JSON list.
 #[utoipa::path(
@@ -4662,6 +4706,7 @@ fn private_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(artifact))
         .routes(routes!(get_codebases, update_codebases))
         .routes(routes!(get_codebase_names))
+        .routes(routes!(get_codebase))
         .routes(routes!(get_candidates, upload_candidates))
         .routes(routes!(get_candidate))
         .routes(routes!(delete_candidate))
