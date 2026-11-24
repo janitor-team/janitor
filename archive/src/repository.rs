@@ -177,7 +177,7 @@ pub(crate) fn build_distributions_for(
             let name = select.campaign();
             let campaign = rt.get_campaign(name).ok_or_else(|| {
                 ArchiveError::InvalidConfiguration(format!(
-                    "apt_repository {} selects unknown campaign {:?}",
+                    "apt_repository {} selects unknown campaign {}",
                     repo_config.name, name
                 ))
             })?;
