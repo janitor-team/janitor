@@ -64,6 +64,26 @@ impl From<PublishRequestMode> for janitor::publish::Mode {
     }
 }
 
+/// Response for `POST /{campaign}/{codebase}/publish` without a mode
+/// for a run that a review rejected.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RejectedInReviewResponse {
+    /// Always `Run was rejected in review`.
+    pub error: String,
+    /// The rejected run.
+    pub run_id: RunId,
+}
+
+/// Body of a 400 from `POST /{campaign}/{codebase}/publish`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum PublishBadRequestResponse {
+    /// A review rejected the run.
+    RejectedInReview(RejectedInReviewResponse),
+    /// There is no run to publish, or the mode is invalid.
+    Empty(EmptyResponse),
+}
+
 /// Response for `POST /{campaign}/{codebase}/publish` when there is
 /// nothing to publish.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
