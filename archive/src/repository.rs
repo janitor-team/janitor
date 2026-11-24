@@ -800,6 +800,28 @@ mod tests {
         ));
     }
 
+    /// `select { }` with no `campaign` field set: treated as a
+    /// select of the empty-named campaign, which no real config
+    /// declares, so it errors like any other unknown campaign
+    /// rather than being silently skipped.
+    #[test]
+    fn build_distributions_for_select_without_campaign_fails() {
+        let cfg = janitor::config::read_string(
+            r#"
+                apt_repository {
+                    name: "unstable"
+                    select { }
+                }
+            "#,
+        )
+        .unwrap();
+        let repo = make_repo("unstable", "unstable-suite");
+        assert!(matches!(
+            build_distributions_for(Some(&cfg), &repo),
+            Err(ArchiveError::InvalidConfiguration(_))
+        ));
+    }
+
     /// `debian_build` without `build_distribution`: the runner builds
     /// for a distribution named after the campaign.
     #[test]
