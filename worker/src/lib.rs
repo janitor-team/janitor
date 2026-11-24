@@ -1338,7 +1338,7 @@ check:
                 "dep_server_url": serde_json::Value::Null,
             }),
             HashMap::new(),
-            "sh -c 'echo foo > bar'",
+            "sh -c 'echo foo > bar; echo Add bar'",
             &output_dir,
             &mut metadata,
             &Url::from_directory_path(tmp_path.join("target")).unwrap(),
@@ -1416,9 +1416,9 @@ check:
                 command: Some(vec![
                     "sh".to_owned(),
                     "-c".to_owned(),
-                    "echo foo > bar".to_owned()
+                    "echo foo > bar; echo Add bar".to_owned()
                 ]),
-                description: Some("".to_string()),
+                description: Some("Add bar\n".to_string()),
                 main_branch_revision: Some(old_revid),
                 refreshed: Some(false),
                 remotes: maplit::hashmap! {
@@ -1481,7 +1481,7 @@ check:
                 "dep_server_url": serde_json::Value::Null,
             }),
             HashMap::new(),
-            "sh -c 'echo foo > bar'",
+            "sh -c 'echo foo > bar; echo Add bar'",
             &output_dir,
             &mut metadata,
             &Url::from_directory_path(tmp_path.join("target")).unwrap(),

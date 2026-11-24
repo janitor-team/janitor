@@ -928,30 +928,6 @@ checksum = "36f64beae40a84da1b4b26ff2761a5b895c12adc41dc25aaee1c4f2bbfe97a6e"
 
 [[package]]
 name = "breezyshim"
-version = "0.7.31"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2e741209ad8a1e9bf79995496a7e557a6ece771c6fa2ab0e8ad0640cbd85a60"
-dependencies = [
- "bazaar",
- "chrono",
- "ctor",
- "lazy-regex",
- "lazy_static",
- "log",
- "patchkit",
- "percent-encoding",
- "pyo3",
- "pyo3-filelike",
- "regex",
- "serde",
- "tempfile",
- "url",
- "vcs-graph",
- "whoami 1.6.1",
-]
-
-[[package]]
-name = "breezyshim"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e81a65cf11ef065794bdada1cd5f0fe042057bf7a94a6558ef750d009ce99eca"
@@ -1276,7 +1252,7 @@ dependencies = [
 name = "common-py"
 version = "0.0.0"
 dependencies = [
- "breezyshim 0.8.0",
+ "breezyshim",
  "bytes",
  "chrono",
  "futures",
@@ -1616,7 +1592,7 @@ version = "0.160.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6171e65feff0b9cc2b9c79e43249dd552dae9ab5223e636258203d1af944d610"
 dependencies = [
- "breezyshim 0.8.0",
+ "breezyshim",
  "chrono",
  "configparser",
  "deb822-lossless",
@@ -3213,7 +3189,7 @@ dependencies = [
  "askama 0.16.1",
  "async-compression",
  "async-trait",
- "breezyshim 0.8.0",
+ "breezyshim",
  "bytes",
  "chrono",
  "clap",
@@ -3339,7 +3315,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
- "breezyshim 0.8.0",
+ "breezyshim",
  "bytes",
  "clap",
  "janitor",
@@ -3371,7 +3347,7 @@ name = "janitor-differ"
 version = "0.0.0"
 dependencies = [
  "axum",
- "breezyshim 0.8.0",
+ "breezyshim",
  "clap",
  "debversion",
  "janitor",
@@ -3455,7 +3431,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "axum",
- "breezyshim 0.8.0",
+ "breezyshim",
  "bytes",
  "chrono",
  "clap",
@@ -3496,7 +3472,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
- "breezyshim 0.8.0",
+ "breezyshim",
  "buildlog-consultant",
  "chrono",
  "clap",
@@ -3568,7 +3544,7 @@ dependencies = [
 name = "janitor-types"
 version = "0.1.0"
 dependencies = [
- "breezyshim 0.8.0",
+ "breezyshim",
  "pyo3",
  "serde",
  "serde_json",
@@ -3583,7 +3559,7 @@ dependencies = [
  "askama 0.16.1",
  "axum",
  "backoff",
- "breezyshim 0.8.0",
+ "breezyshim",
  "buildlog-consultant",
  "chrono",
  "clap",
@@ -4031,7 +4007,7 @@ dependencies = [
  "anyhow",
  "askama 0.12.1",
  "axum",
- "breezyshim 0.7.31",
+ "breezyshim",
  "chrono",
  "clap",
  "httpdate",
@@ -4727,7 +4703,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8f600ae365a73c584711cb3f88c1aa50a40139545270f3f51555621f86a8008"
 dependencies = [
  "apt-sources",
- "breezyshim 0.8.0",
+ "breezyshim",
  "buildlog-consultant",
  "chrono",
  "deb822-lossless",
@@ -6651,11 +6627,11 @@ dependencies = [
 
 [[package]]
 name = "silver-platter"
-version = "0.8.7"
+version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e96fa4d9742ce66f630a5624f8b4a7eb5fe2ea653fb7efc9aaef6647533d59f"
+checksum = "f3aea3f8bbdec0cc7863c86741351588c5efd4cdae97e9afb1a56851c611cea6"
 dependencies = [
- "breezyshim 0.8.0",
+ "breezyshim",
  "chrono",
  "clap",
  "debian-analyzer",
