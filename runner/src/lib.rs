@@ -566,6 +566,15 @@ pub struct ResultTarget {
     pub details: serde_json::Value,
 }
 
+impl From<&BuilderResult> for ResultTarget {
+    fn from(builder_result: &BuilderResult) -> Self {
+        ResultTarget {
+            name: builder_result.kind().to_string(),
+            details: builder_result.to_json(),
+        }
+    }
+}
+
 /// Remote repository information for a result.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ResultRemote {

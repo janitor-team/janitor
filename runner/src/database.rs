@@ -256,10 +256,7 @@ impl RunnerDatabase {
         let debian_build = self.get_run_debian_build(&run.id).await?;
 
         let builder_result = debian_build.map(BuilderResult::from);
-        let target = builder_result.as_ref().map(|br| crate::ResultTarget {
-            name: br.kind().to_string(),
-            details: br.to_json(),
-        });
+        let target = builder_result.as_ref().map(crate::ResultTarget::from);
 
         let branch_url = run.branch_url.ok_or_else(|| sqlx::Error::ColumnDecode {
             index: "branch_url".to_string(),
