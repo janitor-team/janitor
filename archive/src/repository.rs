@@ -154,9 +154,8 @@ pub(crate) fn build_distributions_for(
     runtime_config: Option<&janitor::config::Config>,
     repo_config: &AptRepositoryConfig,
 ) -> ArchiveResult<Vec<String>> {
-    let invalid = |msg: String| ArchiveError::InvalidConfiguration(msg);
     let rt = runtime_config.ok_or_else(|| {
-        invalid(format!(
+        ArchiveError::InvalidConfiguration(format!(
             "no janitor.conf loaded to resolve apt_repository {}",
             repo_config.name
         ))
@@ -165,20 +164,25 @@ pub(crate) fn build_distributions_for(
         .apt_repository
         .iter()
         .find(|r| r.name.as_deref() == Some(&repo_config.name))
-        .ok_or_else(|| invalid(format!("unknown apt_repository {}", repo_config.name)))?;
+        .ok_or_else(|| {
+            ArchiveError::InvalidConfiguration(format!(
+                "unknown apt_repository {}",
+                repo_config.name
+            ))
+        })?;
     apt_repo
         .select
         .iter()
         .map(|select| {
             let name = select.campaign();
             let campaign = rt.get_campaign(name).ok_or_else(|| {
-                invalid(format!(
+                ArchiveError::InvalidConfiguration(format!(
                     "apt_repository {} selects unknown campaign {:?}",
                     repo_config.name, name
                 ))
             })?;
             if !campaign.has_debian_build() {
-                return Err(invalid(format!(
+                return Err(ArchiveError::InvalidConfiguration(format!(
                     "apt_repository {} selects campaign {} without debian_build",
                     repo_config.name, name
                 )));
