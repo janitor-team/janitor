@@ -147,9 +147,10 @@ async fn write_by_hash(
 /// feed a given apt_repository. Free function so the mapping can
 /// be unit-tested without constructing a full RepositoryGenerator.
 ///
-/// Every selected campaign must exist and have a `debian_build`
-/// block; a missing `build_distribution` defaults to the campaign
-/// name, as in the runner.
+/// The apt_repository must declare at least one select entry; every
+/// selected campaign must exist and have a `debian_build` block.
+/// A missing `build_distribution` defaults to the campaign name,
+/// as in the runner.
 pub(crate) fn build_distributions_for(
     runtime_config: Option<&janitor::config::Config>,
     repo_config: &AptRepositoryConfig,
@@ -170,6 +171,12 @@ pub(crate) fn build_distributions_for(
                 repo_config.name
             ))
         })?;
+    if apt_repo.select.is_empty() {
+        return Err(ArchiveError::InvalidConfiguration(format!(
+            "apt_repository {} has no select entries",
+            repo_config.name
+        )));
+    }
     apt_repo
         .select
         .iter()
@@ -751,16 +758,16 @@ mod tests {
         ));
     }
 
-    /// No select entries: nothing to publish, rather than guessing
-    /// that the repository name is a build distribution.
+    /// No select entries: treat as misconfiguration rather than
+    /// silently producing an empty repository.
     #[test]
-    fn build_distributions_for_no_selects() {
+    fn build_distributions_for_no_selects_fails() {
         let cfg = janitor::config::read_string(r#"apt_repository { name: "unstable" }"#).unwrap();
         let repo = make_repo("unstable", "unstable-suite");
-        assert_eq!(
-            build_distributions_for(Some(&cfg), &repo).unwrap(),
-            Vec::<String>::new()
-        );
+        assert!(matches!(
+            build_distributions_for(Some(&cfg), &repo),
+            Err(ArchiveError::InvalidConfiguration(_))
+        ));
     }
 
     #[test]
