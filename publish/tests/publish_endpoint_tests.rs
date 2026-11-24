@@ -1411,3 +1411,44 @@ test_with_database! {
         );
     }
 }
+
+test_with_database! {
+    schema = Core;
+    async fn publish_ready_run_without_a_rate_limit_bucket(test_db: TestDatabase) {
+        let pool = test_db.pool();
+        sqlx::raw_sql(
+            "INSERT INTO codebase (name, branch_url, url, vcs_type)
+                 VALUES ('cb-1', 'https://example.invalid/cb-1', 'https://example.invalid/cb-1', 'git');
+             INSERT INTO change_set (id, campaign, state) VALUES ('cs-1', 'lintian-fixes', 'ready');
+             INSERT INTO named_publish_policy (name, per_branch_policy)
+                 VALUES ('nobucket', ARRAY[ROW('main', 'propose', NULL)::branch_publish_policy]);
+             INSERT INTO candidate (campaign, command, publish_policy, codebase, value)
+                 VALUES ('lintian-fixes', 'noop', 'nobucket', 'cb-1', 100);
+             INSERT INTO run (
+                 id, codebase, campaign, command, start_time, finish_time, result_code, branch_url,
+                 main_branch_revision, revision, change_set, logfilenames, vcs_type, publish_status
+             ) VALUES (
+                 'run-1', 'cb-1', 'lintian-fixes', 'noop', NOW(), NOW(), 'success',
+                 'https://example.invalid/cb-1', 'rev-base', 'rev-tip', 'cs-1', ARRAY[]::text[],
+                 'git', 'approved'
+             );
+             INSERT INTO new_result_branch (run_id, role, remote_name, base_revision, revision)
+                 VALUES ('run-1', 'main', 'main', 'rev-base', 'rev-tip');",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let ready = janitor_publish::state::iter_publish_ready(pool, None)
+            .await
+            .unwrap();
+        assert_eq!(ready.len(), 1);
+        let (run, bucket, command, branches) = &ready[0];
+        assert_eq!(run.id.as_str(), "run-1");
+        assert_eq!(bucket, &None);
+        assert_eq!(command, "noop");
+        assert_eq!(branches.len(), 1);
+        assert_eq!(branches[0].role, "main");
+        assert_eq!(branches[0].publish_mode.as_deref(), Some("propose"));
+    }
+}
