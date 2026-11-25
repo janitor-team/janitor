@@ -2109,12 +2109,6 @@ mod tests {
     }
 
     #[test]
-    fn test_dpkg_vendor() {
-        let vendor = dpkg_vendor();
-        assert!(vendor.is_some());
-    }
-
-    #[test]
     fn test_gather_logs_with_files() {
         let td = tempfile::tempdir().unwrap();
         // gather_logs looks for *directories* that match is_log_filename

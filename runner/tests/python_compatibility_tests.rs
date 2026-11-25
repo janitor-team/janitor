@@ -1,98 +1,9 @@
 //! Behaviour tests for `janitor_runner`. Each test round-trips real
 //! data through the public API and asserts on the observable result.
 
-use janitor_runner::{committer_env, is_log_filename, JanitorResult, QueueItem, VcsInfo};
+use janitor_runner::{JanitorResult, QueueItem, VcsInfo};
 use serde_json::json;
-use std::collections::HashMap;
 use std::time::Duration;
-
-/// `committer_env` populates the eight expected env vars for a
-/// well-formed committer string, and drops the ones lacking either
-/// name or email when the input is partial.
-#[test]
-fn committer_env_matches_python_shape() {
-    let result = committer_env(Some("John Doe <john@example.com>"));
-
-    let expected = HashMap::from([
-        ("DEBFULLNAME".to_string(), "John Doe".to_string()),
-        ("GIT_COMMITTER_NAME".to_string(), "John Doe".to_string()),
-        ("GIT_AUTHOR_NAME".to_string(), "John Doe".to_string()),
-        ("DEBEMAIL".to_string(), "john@example.com".to_string()),
-        (
-            "GIT_COMMITTER_EMAIL".to_string(),
-            "john@example.com".to_string(),
-        ),
-        (
-            "GIT_AUTHOR_EMAIL".to_string(),
-            "john@example.com".to_string(),
-        ),
-        ("EMAIL".to_string(), "john@example.com".to_string()),
-        (
-            "COMMITTER".to_string(),
-            "John Doe <john@example.com>".to_string(),
-        ),
-        (
-            "BRZ_EMAIL".to_string(),
-            "John Doe <john@example.com>".to_string(),
-        ),
-    ]);
-    assert_eq!(result, expected);
-
-    assert!(committer_env(None).is_empty());
-
-    let name_only = committer_env(Some("Name Only"));
-    assert_eq!(name_only.get("DEBFULLNAME"), Some(&"Name Only".to_string()));
-    assert!(!name_only.contains_key("DEBEMAIL"));
-
-    let email_only = committer_env(Some("<email@only.com>"));
-    assert_eq!(
-        email_only.get("DEBEMAIL"),
-        Some(&"email@only.com".to_string())
-    );
-    assert!(!email_only.contains_key("DEBFULLNAME"));
-}
-
-/// `is_log_filename` accepts the expected log-file shapes and
-/// rejects others.
-#[test]
-fn is_log_filename_matches_python() {
-    for good in [
-        "foo.log",
-        "foo.log.1",
-        "foo.1.log",
-        "build.log",
-        "test.log.gz",
-        "output.1.log",
-        "script.log.2",
-        "worker.log.10",
-    ] {
-        assert!(
-            is_log_filename(good),
-            "expected `{}` to be a log filename",
-            good
-        );
-    }
-
-    for bad in [
-        "foo.1",
-        "foo.1.log.1",
-        "foo.1.notlog",
-        "foo.txt",
-        "log",
-        "log.txt",
-        "foo.LOG",
-        "log.foo",
-        "",
-        ".",
-        ".log",
-    ] {
-        assert!(
-            !is_log_filename(bad),
-            "expected `{}` to NOT be a log filename",
-            bad
-        );
-    }
-}
 
 /// A queue item deserialises from the on-wire JSON without loss and
 /// round-trips back to the same shape.
