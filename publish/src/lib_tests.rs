@@ -262,3 +262,86 @@ fn classify_forge_rate_limit_past_deadline_is_expired() {
         ForgeRateLimitDecision::Expired,
     );
 }
+
+/// A request for `run_worker_process`. The test children discard it.
+fn worker_request() -> PublishOneRequest {
+    PublishOneRequest {
+        campaign: janitor_types::Campaign::new("lintian-fixes").unwrap(),
+        target_branch_url: url::Url::parse("https://example.com/target").unwrap(),
+        role: "main".to_string(),
+        log_id: RunId::new("run-1").unwrap(),
+        reviewers: None,
+        revision_id: breezyshim::RevisionId::from(b"rev".to_vec()),
+        unchanged_id: None,
+        require_binary_diff: false,
+        differ_url: url::Url::parse("http://localhost:1/").unwrap(),
+        derived_branch_name: "b".to_string(),
+        tags: None,
+        allow_create_proposal: false,
+        source_branch_url: url::Url::parse("https://example.com/source").unwrap(),
+        codemod_result: serde_json::json!({}),
+        commit_message_template: None,
+        title_template: None,
+        existing_mp_url: None,
+        extra_context: None,
+        mode: Mode::Propose,
+        command: "true".to_string(),
+        external_url: None,
+        derived_owner: None,
+        auto_merge: None,
+    }
+}
+
+/// Run `script` with `sh -c` as the publish child after it reads the request. Panic after 5 s.
+async fn run_script(
+    script: &str,
+) -> Result<Result<PublishOneResult, PublishOneError>, WorkerInvalidResponse> {
+    // `cat` ends because `tokio::process::Child::wait` drops the stdin handle first.
+    let script = format!("cat > /dev/null; {}", script);
+    let args = vec!["sh".to_string(), "-c".to_string(), script];
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        run_worker_process(args, worker_request()),
+    )
+    .await
+    .expect("run_worker_process still waits for the child after 5 s")
+}
+
+/// The child's answer, around its branch name.
+const RESULT_START: &str = r#"printf '{"branch_name": "'"#;
+const RESULT_END: &str =
+    r#"printf '", "target_branch_url": "https://example.com/target", "mode": "propose"}'"#;
+
+#[tokio::test]
+async fn run_worker_process_reads_a_large_stderr() {
+    let result = run_script(&format!(
+        "head -c 131072 /dev/zero | tr '\\0' e >&2; echo >&2; {RESULT_START}; printf b; {RESULT_END}"
+    ))
+    .await;
+    assert_eq!(result.unwrap().unwrap().branch_name(), "b");
+}
+
+#[tokio::test]
+async fn run_worker_process_reads_a_large_stdout() {
+    let result = run_script(&format!(
+        "{RESULT_START}; head -c 131072 /dev/zero | tr '\\0' e; {RESULT_END}"
+    ))
+    .await;
+    assert_eq!(
+        result.unwrap().unwrap().branch_name(),
+        "e".repeat(128 * 1024)
+    );
+}
+
+#[tokio::test]
+async fn run_worker_process_failures() {
+    let result = run_script(
+        "echo oops >&2; echo '{\"code\": \"oops\", \"description\": \"it broke\"}'; exit 1",
+    )
+    .await;
+    let error = result.unwrap().unwrap_err();
+    assert_eq!(error.code, "oops");
+    assert_eq!(error.description, "it broke");
+    let result = run_script("printf 'one\\ntwo' >&2; exit 2").await;
+    assert_eq!(result.unwrap_err().to_string(), "Worker error: one\ntwo");
+}
