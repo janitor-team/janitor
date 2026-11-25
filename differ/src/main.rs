@@ -1214,7 +1214,7 @@ async fn listen_to_runner(redis_config: janitor::redis::RedisConfig, state: Arc<
     let subscriber = manager.subscriber();
     let state_arc = state.clone();
     let res = subscriber
-        .subscribe::<ResultMessage, _, _>(move |msg| {
+        .subscribe::<ResultMessage, _, _, std::convert::Infallible>(move |msg| {
             let state = state_arc.clone();
             async move {
                 if msg.code != "success" {

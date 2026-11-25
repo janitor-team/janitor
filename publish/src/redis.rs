@@ -46,13 +46,7 @@ impl RedisPublisher {
         event: &MergeProposalEvent,
     ) -> Result<(), redis::RedisError> {
         let publisher = self.redis_manager.publisher();
-        publisher.publish(event).await.map_err(|e| {
-            redis::RedisError::from((
-                redis::ErrorKind::Io,
-                "Failed to publish merge proposal event",
-                e.to_string(),
-            ))
-        })?;
+        publisher.publish(event).await?;
         debug!("Published merge proposal event for URL '{}'", event.url);
         Ok(())
     }
@@ -139,7 +133,7 @@ impl RedisSubscriber {
 
         let handle = tokio::spawn(async move {
             match subscriber
-                .subscribe::<PublishStatusMessage, _, _>(move |message| {
+                .subscribe::<PublishStatusMessage, _, _, _>(move |message| {
                     let state = state.clone();
                     async move { Self::handle_publish_status_message(&state, message).await }
                 })
@@ -159,7 +153,7 @@ impl RedisSubscriber {
     async fn handle_publish_status_message(
         state: &Arc<crate::AppState>,
         message: PublishStatusMessage,
-    ) -> Result<(), janitor::error::JanitorError> {
+    ) -> Result<(), sqlx::Error> {
         debug!("Received publish-status message: {:?}", message);
 
         if message.publish_status != "approved" {
@@ -168,10 +162,7 @@ impl RedisSubscriber {
 
         if let Err(e) = Self::process_approved_run(state, &message).await {
             error!("Error processing approved run {}: {}", message.run_id, e);
-            return Err(janitor::error::JanitorError::external_service(
-                "publish",
-                format!("Failed to process approved run {}: {}", message.run_id, e),
-            ));
+            return Err(e);
         }
 
         Ok(())
@@ -182,7 +173,7 @@ impl RedisSubscriber {
     async fn process_approved_run(
         state: &Arc<crate::AppState>,
         message: &PublishStatusMessage,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<(), sqlx::Error> {
         // Same gate as the periodic publish loop: don't create proposals
         // until a full merge-proposal scan has refreshed the bucket
         // counts, or the rate limiter would act on an incomplete view of
