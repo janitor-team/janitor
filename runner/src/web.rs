@@ -3258,6 +3258,7 @@ async fn finish_run_multipart_internal(
     });
     janitor_result.failure_details = worker_result.details;
     janitor_result.failure_stage = worker_result.stage;
+    janitor_result.target = builder_result.as_ref().map(crate::ResultTarget::from);
     janitor_result.builder_result = builder_result;
     janitor_result.transient = worker_result.transient;
     janitor_result.target_branch_url = worker_result.target_branch_url;
