@@ -83,8 +83,8 @@ async fn merge_proposal_list(
         Err(e) => {
             log::error!(
                 "Error fetching merge proposals (codebase: {:?}, campaign: {:?}): {}",
-                codebase,
-                campaign,
+                codebase.map(CodebaseName::as_str),
+                campaign.map(Campaign::as_str),
                 e
             );
             db_error()
