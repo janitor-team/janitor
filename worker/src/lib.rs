@@ -110,6 +110,36 @@ pub fn get_build_arch() -> Result<String, DpkgArchitectureError> {
         .map(|s| s.trim().to_owned())
 }
 
+/// Map an ognibuild session error to a worker failure.
+pub fn session_failure(e: ognibuild::session::Error, stage: &[&str]) -> WorkerFailure {
+    use ognibuild::session::{Error, ImageError};
+    let stage = stage.iter().copied();
+    match e {
+        Error::SetupFailure(msg, output) => WorkerFailure::new(
+            "session-setup-failure",
+            format!("Error setting up session: {}", msg),
+            stage,
+        )
+        .with_transient(true)
+        .with_details(serde_json::json!({"output": output})),
+        Error::IoError(e) => {
+            WorkerFailure::new("session-io-error", e.to_string(), stage).with_transient(false)
+        }
+        Error::CalledProcessError(status) => {
+            WorkerFailure::new("session-process-error", status.to_string(), stage)
+                .with_transient(false)
+        }
+        Error::ImageError(e) => {
+            let transient = matches!(e, ImageError::DownloadFailed { .. });
+            WorkerFailure::new("session-image-error", e.to_string(), stage)
+                .with_transient(transient)
+        }
+        e @ Error::MissingBinary { .. } => {
+            WorkerFailure::new("session-missing-binary", e.to_string(), stage).with_transient(false)
+        }
+    }
+}
+
 /// Parse a build configuration, failing the run in `stage` if it is
 /// malformed.
 pub(crate) fn parse_build_config<T: serde::de::DeserializeOwned>(
@@ -1229,6 +1259,79 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::str::FromStr;
     use test_log::test;
+
+    #[test]
+    fn test_session_failure() {
+        use ognibuild::session::{Error, ImageError};
+        use std::os::unix::process::ExitStatusExt;
+
+        let f = session_failure(
+            Error::SetupFailure(
+                "E: sid: Chroot not found".to_string(),
+                "E: sid: Chroot not found\n".to_string(),
+            ),
+            &["build"],
+        );
+        assert_eq!(f.code, "session-setup-failure");
+        assert_eq!(
+            f.description,
+            "Error setting up session: E: sid: Chroot not found"
+        );
+        assert_eq!(
+            f.details,
+            Some(serde_json::json!({"output": "E: sid: Chroot not found\n"}))
+        );
+        assert_eq!(f.stage, vec!["build".to_string()]);
+        assert_eq!(f.transient, Some(true));
+
+        let cases = vec![
+            (
+                Error::IoError(std::io::Error::other("boom")),
+                "session-io-error",
+                false,
+                "boom",
+            ),
+            (
+                Error::CalledProcessError(std::process::ExitStatus::from_raw(1 << 8)),
+                "session-process-error",
+                false,
+                "1",
+            ),
+            (
+                Error::ImageError(ImageError::UnsupportedArchitecture {
+                    arch: "s390x".to_string(),
+                }),
+                "session-image-error",
+                false,
+                "s390x",
+            ),
+            (
+                Error::ImageError(ImageError::DownloadFailed {
+                    url: "https://example.com/sid.tar.xz".to_string(),
+                    error: "timed out".to_string(),
+                }),
+                "session-image-error",
+                true,
+                "https://example.com/sid.tar.xz",
+            ),
+            (
+                Error::MissingBinary {
+                    command: "schroot".to_string(),
+                    source: std::io::ErrorKind::NotFound.into(),
+                },
+                "session-missing-binary",
+                false,
+                "schroot",
+            ),
+        ];
+        for (error, code, transient, text) in cases {
+            let f = session_failure(error, &[]);
+            assert_eq!(f.code, code);
+            assert_eq!(f.transient, Some(transient), "{}", code);
+            assert_eq!(f.details, None, "{}", code);
+            assert!(f.description.contains(text), "{}", f.description);
+        }
+    }
 
     #[test]
     fn test_derive_branch_name() {

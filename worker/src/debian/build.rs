@@ -74,14 +74,7 @@ pub(crate) fn build(
     let session: Box<dyn Session> = if let Some(chroot) = config.chroot.as_ref() {
         Box::new(
             ognibuild::session::schroot::SchrootSession::new(chroot, Some("janitor-worker"))
-                .map_err(|e| match e {
-                    ognibuild::session::Error::SetupFailure(_n, e) => WorkerFailure::new(
-                        "session-setup-failure",
-                        format!("Error setting up schroot session: {}", e),
-                        Vec::<String>::new(),
-                    ),
-                    _e => unreachable!(),
-                })?,
+                .map_err(|e| crate::session_failure(e, &[]))?,
         ) as Box<dyn Session>
     } else {
         Box::new(ognibuild::session::plain::PlainSession::new()) as Box<dyn Session>
