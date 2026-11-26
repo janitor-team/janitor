@@ -1,0 +1,345 @@
+---
+# Rendered by templates/dashboard.json.j2.
+title: 'Janitor: dependency server'
+uid: janitor-ognibuild_dep
+description: ognibuild's dependency server, which finds the Debian packages needed by builds in the generic campaign.
+  It exports no metrics of its own, so this comes from its health check and its service state.
+tags:
+  - janitor
+  - optional
+  - building
+  - control
+  - dependency-server
+panels:
+  - title: Health
+    type: row
+  - title: Health check passes
+    type: stat
+    targets:
+      - expr: max_over_time(probe_success{job="ognibuild_dep"}[2m])
+        legend: health check
+    defaults:
+      mappings:
+        - type: value
+          options:
+            '0':
+              text: 'no'
+              color: red
+              index: 0
+            '1':
+              text: 'yes'
+              color: green
+              index: 1
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 2
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value
+    requires:
+      - enable_blackbox_exporter
+    description: 'no: it does not answer 200. no data: the health checker (blackbox exporter) does not answer, or
+      Prometheus does not answer.'
+    width: 24
+  - title: Service state
+    type: stat
+    targets:
+      - expr: |-
+          sort_by_label(max by (unit, host) (
+            6 * ((janitor_unit_state{state="failed", unit="janitor-ognibuild_dep.service"} or
+          ((last_over_time(janitor_unit_state{state="failed", unit="janitor-ognibuild_dep.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state="failed", unit="janitor-ognibuild_dep.service"})[2m:10s]) >= on (host)
+          group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1)) == 1)
+            or 5 * ((round(increase(janitor_unit_restarts_total{unit="janitor-ognibuild_dep.service"}[15m])) > 2 or
+          round(increase(janitor_unit_restarts_total{unit="janitor-ognibuild_dep.service"}[1h])) > 3) > bool 0) and on (host,
+          unit) (janitor_unit_restarts_total{unit="janitor-ognibuild_dep.service"} or
+          ((last_over_time(janitor_unit_restarts_total{unit="janitor-ognibuild_dep.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_restarts_total{unit="janitor-ognibuild_dep.service"})[2m:10s]) >= on (host)
+          group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1))
+            or 4 * ((janitor_unit_state{state="inactive", unit="janitor-ognibuild_dep.service"} or
+          ((last_over_time(janitor_unit_state{state="inactive", unit="janitor-ognibuild_dep.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state="inactive", unit="janitor-ognibuild_dep.service"})[2m:10s]) >= on
+          (host) group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1)) == 1)
+            or 2 * ((janitor_unit_state{state!~"active|inactive|failed", unit="janitor-ognibuild_dep.service"} or
+          ((last_over_time(janitor_unit_state{state!~"active|inactive|failed", unit="janitor-ognibuild_dep.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state!~"active|inactive|failed",
+          unit="janitor-ognibuild_dep.service"})[2m:10s]) >= on (host) group_left max by (host)
+          (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1)) == 1)
+            or ((increase(janitor_unit_restarts_total{unit="janitor-ognibuild_dep.service"}[1h]) > bool 0) and on (host, unit)
+          (janitor_unit_restarts_total{unit="janitor-ognibuild_dep.service"} or
+          ((last_over_time(janitor_unit_restarts_total{unit="janitor-ognibuild_dep.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_restarts_total{unit="janitor-ognibuild_dep.service"})[2m:10s]) >= on (host)
+          group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1)))
+            or 0 * ((janitor_unit_state{state="active", unit="janitor-ognibuild_dep.service"} or
+          ((last_over_time(janitor_unit_state{state="active", unit="janitor-ognibuild_dep.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_state{state="active", unit="janitor-ognibuild_dep.service"})[2m:10s]) >= on (host)
+          group_left max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host)
+          up{job="node"} == 1)) == 1)
+          ), "host", "unit")
+        legend: '{{unit}} on {{host}}'
+    width: 8
+    height: 5
+    newline: true
+    requires:
+      - enable_node_exporter
+    defaults:
+      mappings:
+        - type: value
+          options:
+            '0':
+              text: up
+              color: green
+              index: 0
+            '1':
+              text: restarted
+              color: yellow
+              index: 1
+            '1.5':
+              text: mail held back
+              color: yellow
+              index: 2
+            '2':
+              text: starting, stopping or reloading
+              color: yellow
+              index: 3
+            '3':
+              text: unreachable
+              color: red
+              index: 4
+            '4':
+              text: stopped
+              color: red
+              index: 5
+            '5':
+              text: restarting in a loop
+              color: red
+              index: 6
+            '5.5':
+              text: mail held back for an hour
+              color: red
+              index: 7
+            '6':
+              text: failed
+              color: red
+              index: 8
+        - type: special
+          options:
+            match: 'null'
+            result:
+              text: no data
+              color: red
+              index: 99
+      color:
+        mode: thresholds
+      thresholds:
+        mode: absolute
+        steps:
+          - color: green
+            value: null
+          - color: yellow
+            value: 1
+          - color: red
+            value: 3
+    options:
+      colorMode: background
+      graphMode: none
+      textMode: value_and_name
+      justifyMode: center
+    description: 'up: running. restarted: systemd restarted it in the last hour. starting, stopping or reloading:
+      systemd is changing its state, or it is in another short-lived state such as maintenance. stopped: not running.
+      restarting in a loop: more than 2 restarts in 15 minutes or more than 3 in an hour. failed: systemd marked
+      it failed. A unit whose service state is gone leaves the tile: the unit was removed, the node exporter of
+      its host has not answered for 2 minutes ("Host metrics" on Hosts), or the service states file of its host
+      is missing or cannot be read. no data means none of its units has a service state. Its value comes from metrics
+      files the hosts write: an old, missing or unreadable file, or a node exporter that does not answer, makes
+      it wrong or empty ("Service state data age" on Janitor: overview shows the files'' age, "Host metrics" on
+      Hosts a node exporter that does not answer).'
+  - title: Last started and stopped
+    type: table
+    width: 16
+    height: 5
+    requires:
+      - enable_node_exporter
+    targets:
+      - expr: 1000 * last_over_time(janitor_unit_active_since_seconds{unit="janitor-ognibuild_dep.service"}[2m])
+        format: table
+        instant: true
+      - expr: 1000 * last_over_time(janitor_unit_inactive_since_seconds{unit="janitor-ognibuild_dep.service"}[2m])
+        format: table
+        instant: true
+      - expr: |-
+          round(increase(janitor_unit_restarts_total{unit="janitor-ognibuild_dep.service"}[24h])) and on (host, unit)
+          last_over_time(janitor_unit_restarts_total{unit="janitor-ognibuild_dep.service"}[2m])
+        format: table
+        instant: true
+      - expr: |-
+          (janitor_unit_result{unit="janitor-ognibuild_dep.service"} or
+          ((last_over_time(janitor_unit_result{unit="janitor-ognibuild_dep.service"}[2m]) and
+          (max_over_time(timestamp(janitor_unit_result{unit="janitor-ognibuild_dep.service"})[2m:10s]) >= on (host) group_left max
+          by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1))
+        format: table
+        instant: true
+    transformations:
+      - id: merge
+        options: {}
+      - id: organize
+        options:
+          excludeByName:
+            Time: true
+            job: true
+            instance: true
+            __name__: true
+            'Value #D': true
+          renameByName:
+            'Value #A': last started
+            'Value #B': last stopped
+            'Value #C': restarts by systemd, 24 hours
+            result: last result
+      - id: sortBy
+        options:
+          sort:
+            - field: restarts by systemd, 24 hours
+              desc: true
+    overrides:
+      - matcher:
+          id: byRegexp
+          options: last (started|stopped)
+        properties:
+          - id: unit
+            value: dateTimeFromNow
+      - matcher:
+          id: byRegexp
+          options: restarts by systemd, 24 hours
+        properties:
+          - id: custom.cellOptions
+            value:
+              type: color-background
+          - id: color
+            value:
+              mode: thresholds
+          - id: thresholds
+            value:
+              mode: absolute
+              steps:
+                - color: green
+                  value: null
+                - color: yellow
+                  value: 1
+                - color: red
+                  value: 5
+          - id: custom.wrapHeaderText
+            value: true
+      - matcher:
+          id: byName
+          options: restarts by systemd, 24 hours
+        properties:
+          - id: mappings
+            value:
+              - type: special
+                options:
+                  match: 'null'
+                  result:
+                    text: no data
+                    color: transparent
+                    index: 9
+      - matcher:
+          id: byName
+          options: host
+        properties:
+          - id: custom.width
+            value: 90
+      - matcher:
+          id: byName
+          options: last started
+        properties:
+          - id: custom.width
+            value: 110
+      - matcher:
+          id: byName
+          options: last stopped
+        properties:
+          - id: custom.width
+            value: 110
+      - matcher:
+          id: byName
+          options: restarts by systemd, 24 hours
+        properties:
+          - id: custom.width
+            value: 120
+      - matcher:
+          id: byName
+          options: last result
+        properties:
+          - id: custom.width
+            value: 100
+      - matcher:
+          id: byName
+          options: last result
+        properties:
+          - id: custom.cellOptions
+            value:
+              type: color-text
+          - id: mappings
+            value:
+              - type: value
+                options:
+                  success:
+                    color: text
+                    index: 0
+              - type: regex
+                options:
+                  pattern: .+
+                  result:
+                    color: red
+                    index: 1
+    description: 'last result: systemd sets it back to success when it starts the unit again. A crash that systemd
+      restarted shows in the restart count, and in last stopped until the next manual restart. The cause is in the
+      unit''s journal. no data: the unit appeared less than a minute ago (the count needs two readings). Its value
+      comes from metrics files the hosts write: an old, missing or unreadable file, or a node exporter that does
+      not answer, makes it wrong or empty ("Service state data age" on Janitor: overview shows the files'' age,
+      "Host metrics" on Hosts a node exporter that does not answer). A unit whose service state is gone leaves the
+      table, for the same causes as on "Service state".'
+  - title: Memory
+    type: timeseries
+    unit: bytes
+    requires:
+      - enable_node_exporter
+    description: 'Memory in use, without file cache. Its lines come from metrics files the hosts write: an old,
+      missing or unreadable file, or a node exporter that does not answer, makes them wrong or leaves gaps ("Service
+      state data age" on Janitor: overview shows the files'' age, "Host metrics" on Hosts a node exporter that does
+      not answer).'
+    targets:
+      - expr: janitor_unit_memory_in_use_bytes{unit="janitor-ognibuild_dep.service"}
+        legend: '{{unit}} on {{host}}'
+  - title: CPU, in cores
+    type: timeseries
+    unit: short
+    requires:
+      - enable_node_exporter
+    defaults:
+      custom:
+        axisSoftMax: 0.01
+    targets:
+      - expr: rate(janitor_unit_cpu_seconds_total{unit="janitor-ognibuild_dep.service"}[5m])
+        legend: '{{unit}} on {{host}}'
+    description: 'Its lines come from metrics files the hosts write: an old, missing or unreadable file, or a node
+      exporter that does not answer, makes them wrong or leaves gaps ("Service state data age" on Janitor: overview
+      shows the files'' age, "Host metrics" on Hosts a node exporter that does not answer).'
+  - title: Health check time
+    type: timeseries
+    unit: s
+    width: 24
+    requires:
+      - enable_blackbox_exporter
+    targets:
+      - expr: probe_duration_seconds{job="ognibuild_dep"}
+        legend: health check

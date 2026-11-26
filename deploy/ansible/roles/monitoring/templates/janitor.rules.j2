@@ -1,0 +1,168 @@
+# Managed by Ansible (roles/monitoring). Prometheus shows these alerts on
+# /alerts and Grafana on its Alerting pages. Nothing sends them on.
+groups:
+  - name: janitor
+    rules:
+      - alert: MetricsUnreachable
+        # A health check job's up is the blackbox exporter's, and the blackbox job checks that.
+        expr: up{job!~"health|worker|ognibuild_dep"} == 0
+        for: 5m
+        annotations:
+          summary: {% raw %}"Prometheus cannot get the metrics of {{ $labels.job }} at {{ $labels.instance }}"{% endraw %}
+
+      - alert: HealthCheckFailing
+        expr: last_over_time(probe_success[2m]) == 0
+        for: 5m
+        annotations:
+          summary: {% raw %}"The health check of {{ if $labels.service }}{{ $labels.service }}{{ else }}{{ $labels.job }}{{ end }}{{ if $labels.host }} on {{ $labels.host }}{{ end }} at {{ $labels.instance }} fails"{% endraw %}
+
+{% if enable_node_exporter | bool %}
+      - alert: ServiceFailed
+        expr: max_over_time(janitor_unit_state{state="failed"}[2m]) == 1
+        for: 5m
+        annotations:
+          summary: {% raw %}"{{ $labels.unit }} failed on {{ $labels.host }}"{% endraw %}
+
+{% set janitor_unit_names = janitor_control_services
+     + (['auto_upload'] if enable_auto_upload | bool else [])
+     + (['ognibuild_dep'] if enable_ognibuild_dep | bool else [])
+     + ['worker(-[0-9]+)?'] %}
+      - alert: ServiceNotActive
+        expr: >-
+          max_over_time(janitor_unit_state{state!~"active|failed",
+            unit=~"(janitor-({{ janitor_unit_names | join('|') }})|gitea|garage|jaeger|prometheus|grafana|caddy|redis-server|postgresql@.+|postfix|janitor-worker-firewall)[.]service|janitor-sbuild-chroot[.]timer"}[2m]) == 1
+        for: 5m
+        annotations:
+          summary: {% raw %}"{{ $labels.unit }} on {{ $labels.host }} is not active (systemd state: {{ $labels.state }})"{% endraw %}
+
+      - alert: ServiceRestartLoop
+        expr: >-
+          round(increase(janitor_unit_restarts_total[15m])) > 2
+          or round(increase(janitor_unit_restarts_total[1h])) > 3
+        annotations:
+          summary: {% raw %}"systemd keeps restarting {{ $labels.unit }} on {{ $labels.host }}: more than 2 times in 15 minutes or more than 3 in an hour"{% endraw %}
+
+      - alert: ServiceStatesMissingOrOld
+        expr: >-
+          time() - ((max_over_time(node_textfile_mtime_seconds{file=~".*(units|runs)[.]prom"}[24h])) and on (instance) up{job="node"}) > 300
+          or last_over_time(node_textfile_scrape_error[2m]) == 1
+          or (max_over_time(up{job="node"}[2m]) == 1 unless on (instance) last_over_time(node_textfile_mtime_seconds{file=~".*units[.]prom"}[2m]))
+          or (max_over_time(up{job="node", host="{{ inventory_hostname }}"}[2m]) == 1 unless on (instance) last_over_time(node_textfile_mtime_seconds{file=~".*runs[.]prom"}[2m]))
+        annotations:
+          summary: {% raw %}"The service states of {{ $labels.host }}, or on the control host its run counts, are missing, or its service states or run counts are older than 5 minutes (an old file, or for up to 24 hours a node exporter that does not answer), or a metrics file on that host cannot be read"{% endraw %}
+
+      - alert: WorkerRunsCrashed
+        expr: last_over_time(janitor_worker_job_panics_last_hour[2m]) > 0
+        annotations:
+          summary: {% raw %}"{{ $value | printf \"%.0f\" }} runs crashed in the worker on {{ $labels.host }} in the last hour and ended without a result (\"job panicked\" in its journal)"{% endraw %}
+
+      - alert: ChrootRebuildStuck
+        expr: max_over_time(janitor_unit_state{unit="janitor-sbuild-chroot.service",state="activating"}[2m]) == 1
+        for: 2h
+        annotations:
+          summary: {% raw %}"The rebuild of the sbuild chroot tarballs on {{ $labels.host }} has not finished for 2 hours (rebuilding, or waiting to retry after a failure)"{% endraw %}
+
+{% if enable_mail_filter | bool %}
+      - alert: MailFilterNotListening
+        expr: >-
+          label_replace(absent_over_time(janitor_unit_state{unit="janitor-mail-filter.socket",state="active"}[2m]), "state", "", "state", ".*")
+          and on () max(max_over_time(up{job="node", host="{{ inventory_hostname }}"}[2m])) == 1
+        for: 3m
+        annotations:
+          summary: "The mail filter does not listen for mail"
+
+      - alert: MailFilterRunsFailed
+        expr: last_over_time(janitor_mail_filter_failed_runs_last_hour[2m]) > 0
+        annotations:
+          summary: {% raw %}"{{ $value | printf \"%.0f\" }} mail filter runs failed in the last hour (\"Failed with result\" in the journal of janitor-mail-filter@*)"{% endraw %}
+
+{% endif %}
+      - alert: DiskAlmostFull
+        expr: >-
+          last_over_time(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs|fuse.*"}[2m])
+          / last_over_time(node_filesystem_size_bytes[2m]) < 0.1
+        for: 15m
+        annotations:
+          summary: {% raw %}"Less than 10% free on {{ $labels.mountpoint }} of {{ $labels.host }}"{% endraw %}
+
+      - alert: DiskFillingUp
+        expr: >-
+          predict_linear(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs|fuse.*"}[6h], 24 * 3600) < 0
+        for: 30m
+        annotations:
+          summary: {% raw %}"{{ $labels.mountpoint }} of {{ $labels.host }} fills up within a day at this rate"{% endraw %}
+
+      - alert: OutOfMemoryKills
+        expr: increase(node_vmstat_oom_kill[1h]) > 0
+        annotations:
+          summary: {% raw %}"The kernel killed {{ $value | printf \"%.0f\" }} processes on {{ $labels.host }} for lack of memory in the last hour"{% endraw %}
+
+      - alert: ResultPushFailing
+        expr: last_over_time(janitor_result_push_failed_runs_last_hour[2m]) > 0
+        annotations:
+          summary: {% raw %}"{{ $value | printf \"%.0f\" }} runs could not push their result branch in the last hour"{% endraw %}
+
+      - alert: RunsEndedEarly
+        expr: last_over_time(janitor_watchdog_ended_runs_last_hour{result_code!="killed"}[2m]) > 0
+        annotations:
+          summary: {% raw %}"{{ $value | printf \"%.0f\" }} runs ended early in the last hour ({{ $labels.result_code }}): took too long or worker lost"{% endraw %}
+
+      - alert: QueueItemsHeld
+        expr: >-
+          sum(last_over_time(janitor_lost_queue_claims[2m])) - sum(last_over_time(janitor_lost_queue_claims[2m] offset 1h)) > 0
+        for: 5m
+        annotations:
+          summary: {% raw %}"{{ $value | printf \"%.0f\" }} more queue items than an hour ago are held by runs that ended without a result. No worker gets them"{% endraw %}
+
+      - alert: QueueAllHeld
+        expr: >-
+          sum(last_over_time(janitor_lost_queue_claims[2m])) > 0
+          and on () sum(max_over_time(janitor_pipeline_items{stage="in the queue (waiting or running)"}[2m])) == 0
+        for: 30m
+        annotations:
+          summary: {% raw %}"All {{ $value | printf \"%.0f\" }} queue items are held by runs that ended without a result. No worker gets any work"{% endraw %}
+
+{% endif %}
+{% if enable_postgres_exporter | bool %}
+      - alert: PostgreSQLUnreachable
+        expr: last_over_time(pg_up[2m]) == 0
+        for: 5m
+        annotations:
+          summary: "The metrics collector cannot connect to PostgreSQL"
+
+{% endif %}
+{% if enable_redis_exporter | bool %}
+      - alert: RedisUnreachable
+        expr: last_over_time(redis_up[2m]) == 0
+        for: 5m
+        annotations:
+          summary: "The metrics collector cannot connect to Redis"
+
+{% endif %}
+{% if enable_postfix_exporter | bool and enable_mta | bool %}
+      - alert: PostfixUnreadable
+        expr: last_over_time(postfix_up[2m]) == 0
+        for: 5m
+        annotations:
+          summary: {% raw %}"The Postfix metrics collector cannot read {{ $labels.path }}"{% endraw %}
+
+      - alert: MailHeldBack
+        expr: sum(last_over_time(postfix_showq_message_size_bytes_count{queue="deferred"}[2m])) > 0
+        for: 1h
+        annotations:
+          summary: {% raw %}"Postfix has had deferred mail for an hour ({{ $value | printf \"%.0f\" }} now), most often because the mail filter fails"{% endraw %}
+
+{% endif %}
+      - alert: RunnerStuck
+        expr: >-
+          sum(max by (worker) (last_over_time(active_runs[2m])) or max by (worker) ((janitor_runs_in_progress or ((last_over_time(janitor_runs_in_progress[2m]) and
+          (max_over_time(timestamp(janitor_runs_in_progress)[2m:10s]) >= on (host) group_left
+          max by (host) (max_over_time(timestamp(node_time_seconds{job="node"})[2m:10s])))) unless on (host) up{job="node"} == 1)))) > 0
+          and on () min_over_time((sum(max by (worker) (max_over_time(active_runs[2m])) or max by (worker) (max_over_time(janitor_runs_in_progress[2m]))) or vector(0))[2h:1m]) > 0
+          and on () max(max_over_time(up{job="runner"}[2m])) == 1
+          and on () ((time() - max(max_over_time(job_last_success_unixtime[2m]) > 0 or max_over_time(janitor_unit_active_since_seconds{unit="janitor-runner.service"}[2m])))
+            or (vector(7200) and on () count_over_time((max_over_time(job_last_success_unixtime[2m]) == 0)[2h:1m]) >= 120)) >= 7200
+          unless on () sum(increase(queue_empty_total[15m])) > 0
+        for: 5m
+        annotations:
+          summary: "The runner has had runs in progress for 2 hours, no result from a worker came in during that time, and no worker found the queue empty in 15 minutes"

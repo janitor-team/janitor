@@ -1,0 +1,177 @@
+---
+# Rendered by templates/dashboard.json.j2.
+title: PostgreSQL and Redis
+uid: janitor-database
+tags: [janitor, core, storage, control, postgresql, redis]
+description: PostgreSQL and Redis.
+panels:
+  - title: Status
+    type: row
+  - title: PostgreSQL answers its metrics collector
+    type: stat
+    unit: short
+    width: 6
+    requires: [enable_postgres_exporter]
+    defaults: &up_down
+      mappings:
+        - type: value
+          options:
+            "0": {text: down, color: red, index: 0}
+            "1": {text: up, color: green, index: 1}
+        - type: special
+          options: {match: "null", result: {text: no data, color: red, index: 9}}
+    options: &background
+      colorMode: background
+      graphMode: none
+    targets:
+      - expr: last_over_time(pg_up[2m])
+        legend: postgresql
+  - title: Redis answers its metrics collector
+    type: stat
+    unit: short
+    width: 6
+    requires: [enable_redis_exporter]
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: last_over_time(redis_up[2m])
+        legend: redis
+  - title: PostgreSQL metrics reachable
+    type: stat
+    unit: short
+    width: 6
+    requires: [enable_postgres_exporter]
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: max_over_time(up{job="postgres"}[2m])
+        legend: metrics
+  - title: Redis metrics reachable
+    type: stat
+    unit: short
+    width: 6
+    requires: [enable_redis_exporter]
+    defaults: *up_down
+    options: *background
+    targets:
+      - expr: max_over_time(up{job="redis"}[2m])
+        legend: metrics
+  - title: PostgreSQL
+    type: row
+    requires: [enable_postgres_exporter]
+  - title: PostgreSQL connections
+    type: timeseries
+    overrides:
+      - matcher: {id: byName, options: connection limit}
+        properties: [{id: color, value: {mode: fixed, fixedColor: text}}]
+    unit: short
+    requires: [enable_postgres_exporter]
+    targets:
+      - expr: sum(pg_stat_database_numbackends)
+        legend: open
+      - expr: pg_settings_max_connections
+        legend: connection limit
+  - title: "Transactions per second, Janitor database"
+    type: timeseries
+    unit: short
+    defaults: {color: {mode: shades, fixedColor: blue}}
+    requires: [enable_postgres_exporter]
+    targets:
+      - expr: rate(pg_stat_database_xact_commit{datname="janitor"}[5m])
+        legend: commit
+      - expr: rate(pg_stat_database_xact_rollback{datname="janitor"}[5m])
+        legend: rollback
+  - title: "Share of reads found in PostgreSQL's cache, Janitor database"
+    type: timeseries
+    defaults: {min: 0, max: 1}
+    unit: percentunit
+    description: >-
+      The share of reads found in PostgreSQL's cache (shared buffers). The other reads come from the kernel's file
+      cache or from disk.
+    requires: [enable_postgres_exporter]
+    targets:
+      - expr: >-
+          rate(pg_stat_database_blks_hit{datname="janitor"}[5m])
+          / (rate(pg_stat_database_blks_hit{datname="janitor"}[5m]) + rate(pg_stat_database_blks_read{datname="janitor"}[5m]))
+        legend: janitor
+  - title: Size of the Janitor database
+    type: timeseries
+    unit: bytes
+    requires: [enable_postgres_exporter]
+    targets:
+      - expr: pg_database_size_bytes{datname="janitor"}
+        legend: janitor
+  - title: "Deadlocks per hour, Janitor database"
+    type: timeseries
+    width: 24
+    unit: short
+    defaults: {color: {mode: shades, fixedColor: red}}
+    requires: [enable_postgres_exporter]
+    targets:
+      - expr: increase(pg_stat_database_deadlocks{datname="janitor"}[1h])
+        legend: janitor
+  - title: Redis
+    type: row
+    requires: [enable_redis_exporter]
+  - title: Redis clients
+    type: timeseries
+    unit: short
+    requires: [enable_redis_exporter]
+    targets:
+      - expr: redis_connected_clients
+        legend: clients
+  - title: Redis memory
+    type: timeseries
+    unit: bytes
+    requires: [enable_redis_exporter]
+    targets:
+      - expr: redis_memory_used_bytes
+        legend: used
+  - title: Redis commands per second
+    type: timeseries
+    unit: ops
+    requires: [enable_redis_exporter]
+    targets:
+      - expr: rate(redis_commands_processed_total[5m])
+        legend: commands
+  - title: Redis channels in use
+    type: timeseries
+    unit: short
+    requires: [enable_redis_exporter]
+    targets:
+      - expr: redis_pubsub_channels
+        legend: channels
+  - title: Redis keys per database
+    type: timeseries
+    width: 24
+    unit: short
+    requires: [enable_redis_exporter]
+    targets:
+      - expr: redis_db_keys
+        legend: "{{db}}"
+  - title: Memory and CPU
+    type: row
+    requires: [enable_node_exporter]
+  - title: PostgreSQL and Redis memory
+    type: timeseries
+    unit: bytes
+    description: >-
+      Memory in use, without file cache. Its lines come from metrics files the hosts write: an old, missing or
+      unreadable file, or a node exporter that does not answer, makes them wrong or leaves gaps ("Service state data
+      age" on Janitor: overview shows the files' age, "Host metrics" on Hosts a node exporter that does not answer).
+    requires: [enable_node_exporter]
+    targets:
+      - expr: janitor_unit_memory_in_use_bytes{unit=~"postgresql@.+[.]service|redis-server[.]service"}
+        legend: "{{unit}}"
+  - title: PostgreSQL and Redis CPU
+    type: timeseries
+    defaults: {custom: {axisSoftMax: 0.01}}
+    unit: percentunit
+    description: >-
+      100% is one core. Its lines come from metrics files the hosts write: an old, missing or unreadable file, or a
+      node exporter that does not answer, makes them wrong or leaves gaps ("Service state data age" on Janitor:
+      overview shows the files' age, "Host metrics" on Hosts a node exporter that does not answer).
+    requires: [enable_node_exporter]
+    targets:
+      - expr: rate(janitor_unit_cpu_seconds_total{unit=~"postgresql@.+[.]service|redis-server[.]service"}[5m])
+        legend: "{{unit}}"
