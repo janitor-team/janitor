@@ -14,13 +14,21 @@ $ make build-all
 
 ## PostgreSQL
 
-The services share a single PostgreSQL database. Before starting anything,
-load the schema:
+The services share a single PostgreSQL database. Create it and start
+`janitor-runner` before the other services: on start, the runner loads
+`schema/state.sql` into an empty database and applies new files from
+`schema/migrations` to an existing one. Migrations change the tables, so the
+role the runner connects as has to own them.
 
 ```console
 $ createdb janitor
-$ cat schema/state.sql | psql janitor
-$ cat schema/debian/debian.sql | psql janitor  # only if using the Debian-specific features
+```
+
+For the Debian-specific features, load their schema once the runner has
+started:
+
+```console
+$ cat schema/debian/debian.sql | psql janitor
 ```
 
 Workers log in to the runner with HTTP Basic Auth. See
