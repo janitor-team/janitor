@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use breezyshim::RevisionId;
-use janitor::publish::Mode;
 use janitor::test_with_database;
-use janitor::vcs::{VcsManager, VcsType};
+use janitor::vcs::VcsManager;
 use janitor_publish::rate_limiter::{NonRateLimiter, RateLimiter};
 use janitor_publish::{publish_and_store, PublishWorker};
-use janitor_types::{Campaign, CodebaseName, RunId};
+use janitor_types::publish::Mode;
+use janitor_types::{Campaign, CodebaseName, RunId, VcsType};
 use sqlx::PgPool;
 
 /// A run with a single result branch for `role`.
@@ -23,7 +23,7 @@ fn make_run(role: &str, revision: Option<&str>) -> janitor::state::Run {
         result: None,
         campaign: Campaign::new("lintian-fixes").unwrap(),
         instigated_context: None,
-        vcs_type: Some(janitor::vcs::VcsType::Git),
+        vcs_type: Some(janitor_types::VcsType::Git),
         branch_url: Some("https://example.invalid/cb-1".to_string()),
         logfilenames: None,
         worker_name: None,

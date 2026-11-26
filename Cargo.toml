@@ -12,7 +12,7 @@ include = ["src/**/*", "schema/state.sql", "schema/debian/debian.sql", "README.m
 
 [dependencies]
 breezyshim = { workspace = true, features = ["sqlx"] }
-janitor-types = { workspace = true, features = ["breezyshim", "pyo3", "sqlx"] }
+janitor-types = { workspace = true, features = ["breezyshim", "debian", "pyo3", "silver-platter", "sqlx"] }
 chrono = { workspace = true, features = ["serde"] }
 env_logger = { workspace = true }
 log = { workspace = true }

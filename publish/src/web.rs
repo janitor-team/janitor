@@ -1,7 +1,3 @@
-use crate::api_types::{
-    AutopublishResponse, EmptyResponse, ErrorResponse, NotFoundResponse, PublishNothingResponse,
-    PublishRequestMode, PublishStartedResponse, SuccessWithUrlResponse,
-};
 use crate::health::{self, HealthCheckHandler};
 use crate::rate_limiter::RateLimitStatus;
 use crate::AppState;
@@ -11,6 +7,10 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
 use axum::Router;
 use breezyshim::error::Error as BrzError;
+use janitor_types::api::publish::{
+    AutopublishResponse, EmptyResponse, ErrorResponse, NotFoundResponse, PublishNothingResponse,
+    PublishRequestMode, PublishStartedResponse, SuccessWithUrlResponse,
+};
 use janitor_types::{Campaign, ChangeSetId, CodebaseName, PublishId, RunId};
 use log::error;
 use sequoia_openpgp::armor;
@@ -2278,7 +2278,7 @@ pub struct BlockerPreviousMpDetails {
     pub url: String,
     /// Status of the merge proposal.
     #[schema(value_type = String)]
-    pub status: janitor::publish::MergeProposalStatus,
+    pub status: janitor_types::publish::MergeProposalStatus,
 }
 
 /// Details of the `propose_rate_limit` blocker when the bucket is not

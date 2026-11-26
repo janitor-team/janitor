@@ -5,7 +5,7 @@ use axum::{
     extract::Path, extract::State, http::HeaderMap, http::StatusCode, response::Json,
     response::Response, routing::get, Router,
 };
-use janitor::api::worker::{Assignment, Metadata};
+use janitor_types::api::worker::{Assignment, Metadata};
 use std::sync::{Arc, RwLock};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -488,25 +488,25 @@ mod tests {
                 campaign: janitor_types::Campaign::new("lintian-fixes").unwrap(),
                 codebase: janitor_types::CodebaseName::new("foo").unwrap(),
                 force_build: true,
-                branch: janitor::api::worker::Branch {
+                branch: janitor_types::api::worker::Branch {
                     cached_url: None,
-                    vcs_type: janitor::vcs::VcsType::Git,
+                    vcs_type: janitor_types::VcsType::Git,
                     url: Some("https://example.com/vcs".parse().unwrap()),
                     subpath: std::path::PathBuf::from(""),
                     additional_colocated_branches: Some(vec![]),
                     default_empty: false,
                 },
                 resume: None,
-                target_repository: janitor::api::worker::TargetRepository {
+                target_repository: janitor_types::api::worker::TargetRepository {
                     url: "https://example.com/".parse().unwrap(),
                 },
                 skip_setup_validation: false,
-                codemod: janitor::api::worker::Codemod {
+                codemod: janitor_types::api::worker::Codemod {
                     command: "echo".to_string(),
                     environment: std::collections::HashMap::new(),
                 },
                 env: std::collections::HashMap::new(),
-                build: janitor::api::worker::Build {
+                build: janitor_types::api::worker::Build {
                     config: serde_json::Value::Null,
                     environment: std::collections::HashMap::new(),
                     target: "test".to_string(),
@@ -553,25 +553,25 @@ mod tests {
                 campaign: janitor_types::Campaign::new("lintian-fixes").unwrap(),
                 codebase: janitor_types::CodebaseName::new("foo").unwrap(),
                 force_build: true,
-                branch: janitor::api::worker::Branch {
+                branch: janitor_types::api::worker::Branch {
                     cached_url: None,
-                    vcs_type: janitor::vcs::VcsType::Git,
+                    vcs_type: janitor_types::VcsType::Git,
                     url: Some("https://example.com/vcs".parse().unwrap()),
                     subpath: std::path::PathBuf::from(""),
                     additional_colocated_branches: Some(vec![]),
                     default_empty: false,
                 },
                 resume: None,
-                target_repository: janitor::api::worker::TargetRepository {
+                target_repository: janitor_types::api::worker::TargetRepository {
                     url: "https://example.com/".parse().unwrap(),
                 },
                 skip_setup_validation: false,
-                codemod: janitor::api::worker::Codemod {
+                codemod: janitor_types::api::worker::Codemod {
                     command: "echo".to_string(),
                     environment: std::collections::HashMap::new(),
                 },
                 env: std::collections::HashMap::new(),
-                build: janitor::api::worker::Build {
+                build: janitor_types::api::worker::Build {
                     config: serde_json::Value::Null,
                     environment: std::collections::HashMap::new(),
                     target: "test".to_string(),
@@ -996,25 +996,25 @@ mod tests {
                 campaign: janitor_types::Campaign::new("lintian-fixes").unwrap(),
                 codebase: janitor_types::CodebaseName::new("foo").unwrap(),
                 force_build: true,
-                branch: janitor::api::worker::Branch {
+                branch: janitor_types::api::worker::Branch {
                     cached_url: None,
-                    vcs_type: janitor::vcs::VcsType::Git,
+                    vcs_type: janitor_types::VcsType::Git,
                     url: Some("https://example.com/vcs".parse().unwrap()),
                     subpath: std::path::PathBuf::from(""),
                     additional_colocated_branches: Some(vec![]),
                     default_empty: false,
                 },
                 resume: None,
-                target_repository: janitor::api::worker::TargetRepository {
+                target_repository: janitor_types::api::worker::TargetRepository {
                     url: "https://example.com/".parse().unwrap(),
                 },
                 skip_setup_validation: false,
-                codemod: janitor::api::worker::Codemod {
+                codemod: janitor_types::api::worker::Codemod {
                     command: "echo".to_string(),
                     environment: std::collections::HashMap::new(),
                 },
                 env: std::collections::HashMap::new(),
-                build: janitor::api::worker::Build {
+                build: janitor_types::api::worker::Build {
                     config: serde_json::Value::Null,
                     environment: std::collections::HashMap::new(),
                     target: "test".to_string(),

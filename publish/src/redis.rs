@@ -5,9 +5,10 @@
 
 use std::sync::Arc;
 
-use janitor::publish::MergeProposalStatus;
-use janitor::redis::{PubSubMessage, RedisManager};
-use janitor_types::{Campaign, CodebaseName, RunId};
+use janitor::redis::RedisManager;
+pub use janitor_types::api::publish::{MergeProposalEvent, PublishStatusMessage};
+#[cfg(test)]
+use janitor_types::RunId;
 use log::{debug, error, info};
 use redis::aio::ConnectionManager;
 use tokio::task::JoinHandle;
@@ -49,56 +50,6 @@ impl RedisPublisher {
         publisher.publish(event).await?;
         debug!("Published merge proposal event for URL '{}'", event.url);
         Ok(())
-    }
-}
-
-/// Event data for merge proposal notifications.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct MergeProposalEvent {
-    /// URL of the merge proposal.
-    pub url: url::Url,
-    /// Web URL of the merge proposal.
-    pub web_url: Option<url::Url>,
-    /// Status of the merge proposal.
-    pub status: MergeProposalStatus,
-    /// The codebase this proposal belongs to.
-    pub codebase: CodebaseName,
-    /// The campaign this proposal belongs to.
-    pub campaign: Campaign,
-    /// The target branch URL.
-    pub target_branch_url: Option<url::Url>,
-    /// Optional target branch web URL.
-    pub target_branch_web_url: Option<url::Url>,
-    /// Timestamp of the event.
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-}
-
-impl PubSubMessage for MergeProposalEvent {
-    fn channel() -> &'static str {
-        "merge-proposal"
-    }
-}
-
-/// Message broadcast by the runner on the `publish-status` channel
-/// when a run's `publish_status` column is updated via the runner's
-/// `POST /runs/{run_id}` endpoint. Shape matches what
-/// `py/janitor/runner.py::handle_update_run` emits, and is what
-/// `py/janitor/publish.py::listen_to_runner` consumes.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PublishStatusMessage {
-    /// Run id the status applies to.
-    pub run_id: RunId,
-    /// New publish_status value. The publisher acts only on `"approved"`.
-    pub publish_status: String,
-    /// Codebase the run belongs to.
-    pub codebase: CodebaseName,
-    /// Campaign (run.campaign) the run belongs to.
-    pub campaign: Campaign,
-}
-
-impl PubSubMessage for PublishStatusMessage {
-    fn channel() -> &'static str {
-        "publish-status"
     }
 }
 

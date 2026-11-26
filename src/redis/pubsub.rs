@@ -1,14 +1,8 @@
 //! Redis pub/sub functionality
 
 use futures::StreamExt;
-use serde::{Deserialize, Serialize};
+pub use janitor_types::api::PubSubMessage;
 use tracing::{debug, error, info, warn};
-
-/// Trait for messages that can be sent via Redis pub/sub
-pub trait PubSubMessage: Serialize + for<'de> Deserialize<'de> + Send + Sync {
-    /// Get the channel name for this message type
-    fn channel() -> &'static str;
-}
 
 /// Publisher for sending messages via Redis pub/sub
 #[derive(Clone)]

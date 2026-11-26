@@ -1,6 +1,5 @@
 //! Git HTTP smart protocol and range-query handlers.
 
-use crate::api_types::{GitPerson, LogEntry, LogResponse, RevisionInfoEntry};
 use crate::error::{GitStoreError, Result};
 use axum::{
     body::Body,
@@ -9,6 +8,7 @@ use axum::{
     response::Response,
 };
 use futures_util::StreamExt;
+use janitor_types::api::git_store::{GitPerson, LogEntry, LogResponse, RevisionInfoEntry};
 use janitor_types::CodebaseName;
 use serde::Deserialize;
 use std::collections::HashMap;

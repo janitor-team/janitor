@@ -3569,10 +3569,14 @@ name = "janitor-types"
 version = "0.1.0"
 dependencies = [
  "breezyshim 0.8.0",
+ "chrono",
+ "debversion",
  "pyo3",
  "serde",
  "serde_json",
+ "silver-platter",
  "sqlx",
+ "url",
  "utoipa",
 ]
 

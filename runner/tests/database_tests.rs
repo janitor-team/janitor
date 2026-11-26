@@ -182,7 +182,7 @@ async fn test_get_run_detail_combines_run_branches_and_debian_build() {
     assert_eq!(detail.row.result_code, "success");
     assert_eq!(detail.row.main_branch_revision.as_ref(), Some(&base_rev));
     assert_eq!(detail.row.revision.as_ref(), Some(&tip_rev));
-    assert_eq!(detail.row.vcs_type, Some(janitor::vcs::VcsType::Git));
+    assert_eq!(detail.row.vcs_type, Some(janitor_types::VcsType::Git));
     assert_eq!(detail.row.worker_name.as_deref(), Some("worker-a"));
     assert_eq!(
         detail.row.worker_link.as_deref(),

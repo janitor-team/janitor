@@ -3,7 +3,8 @@ use breezyshim::error::Error as BrzError;
 use breezyshim::repository::Repository;
 use breezyshim::transport::Transport;
 use breezyshim::RevisionId;
-use janitor::vcs::{sanitise_for_log, VcsType};
+use janitor::vcs::sanitise_for_log;
+use janitor_types::VcsType;
 use janitor_types::{Campaign, RunId};
 use std::collections::HashMap;
 use url::Url;
@@ -307,7 +308,7 @@ fn import_branches_git(
 /// `repo_url`.
 #[allow(clippy::too_many_arguments)]
 pub fn import_branches(
-    vcs_type: janitor::vcs::VcsType,
+    vcs_type: janitor_types::VcsType,
     repo_url: &Url,
     local_branch: &dyn breezyshim::branch::PyBranch,
     campaign: &Campaign,
@@ -318,8 +319,8 @@ pub fn import_branches(
     possible_transports: &mut Option<Vec<Transport>>,
 ) -> Result<(), BrzError> {
     let import = match vcs_type {
-        janitor::vcs::VcsType::Git => import_branches_git,
-        janitor::vcs::VcsType::Bzr => import_branches_bzr,
+        janitor_types::VcsType::Git => import_branches_git,
+        janitor_types::VcsType::Bzr => import_branches_bzr,
         other => {
             return Err(BrzError::UnsupportedVcs(other.to_string()));
         }
@@ -425,7 +426,7 @@ mod tests {
         .unwrap();
         target.create_repository(Some(true)).unwrap();
         import_branches(
-            janitor::vcs::VcsType::Bzr,
+            janitor_types::VcsType::Bzr,
             &target_url,
             &source_tree.branch(),
             &Campaign::new("campaign").unwrap(),
@@ -485,7 +486,7 @@ mod tests {
         )
         .unwrap();
         import_branches(
-            janitor::vcs::VcsType::Git,
+            janitor_types::VcsType::Git,
             &target_url,
             &source_tree.branch(),
             &Campaign::new("campaign").unwrap(),

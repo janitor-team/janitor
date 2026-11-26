@@ -325,7 +325,9 @@ impl Backchannel for PollingBackchannel {
 
         let response = session
             .post(url)
-            .json(&serde_json::json!({ "log_id": log_id }))
+            .json(&janitor_types::api::worker::TerminateRequest {
+                log_id: log_id.clone(),
+            })
             .send()
             .await
             .map_err(Error::IntermediaryFailure)?;

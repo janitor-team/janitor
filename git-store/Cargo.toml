@@ -19,7 +19,7 @@ futures-util = "0.3"
 git2 = "0.18"
 http = "1.1"
 janitor = { path = "..", features = ["otlp"] }
-janitor-types = { workspace = true, features = ["pyo3", "sqlx", "utoipa"] }
+janitor-types = { workspace = true, features = ["breezyshim", "pyo3", "sqlx", "utoipa"] }
 janitor-service = { workspace = true }
 nix = { workspace = true, features = ["signal"] }
 metrics = { workspace = true }

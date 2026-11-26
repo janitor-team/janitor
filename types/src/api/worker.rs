@@ -1,11 +1,22 @@
 //! API for the worker to communicate with the runner.
 
 use crate::vcs::VcsType;
-use breezyshim::RevisionId;
-use janitor_types::{Campaign, CodebaseName, RunId};
+use crate::{Campaign, CodebaseName, RunId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use url::Url;
+
+/// Request body for the worker's `POST /terminate` endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminateRequest {
+    /// Run that should be terminated.
+    pub log_id: RunId,
+}
+
+#[cfg(feature = "breezyshim")]
+type RevisionId = breezyshim::RevisionId;
+#[cfg(not(feature = "breezyshim"))]
+type RevisionId = Vec<u8>;
 
 /// Build metadata as produced by the worker.
 #[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq, Eq)]

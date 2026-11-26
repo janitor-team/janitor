@@ -11,8 +11,9 @@ use janitor_types::CodebaseName;
 /// worker assignments, and system monitoring.
 pub use janitor::vcs::{
     BranchOpenFailure, LocalBzrVcsManager, LocalGitVcsManager, RemoteBzrVcsManager,
-    RemoteGitVcsManager, RevisionInfo, VcsManager, VcsType,
+    RemoteGitVcsManager, RevisionInfo, VcsManager,
 };
+pub use janitor_types::VcsType;
 
 /// VCS manager used by the runner: dispatches to the per-`VcsType`
 /// [`janitor::vcs::VcsManager`] and records timing/error metrics

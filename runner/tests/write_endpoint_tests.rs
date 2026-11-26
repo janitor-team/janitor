@@ -9,13 +9,13 @@ use axum::body::{to_bytes, Body};
 use axum::http::{Method, Request, StatusCode};
 use chrono::Utc;
 use futures::TryStreamExt;
-use janitor::api::worker::{Build, Codemod};
-use janitor::queue::VcsInfo;
-use janitor_runner::api_types::{
-    CandidateUpload, ReasonResponse, ScheduledCandidate, UploadCandidatesResponse,
-};
 use janitor_runner::database::{CodebaseRow, CodebaseUpload};
 use janitor_runner::{test_utils, ActiveRun, AppState, Backchannel};
+use janitor_types::api::runner::{
+    CandidateUpload, ReasonResponse, ScheduledCandidate, UploadCandidatesResponse,
+};
+use janitor_types::api::worker::{Build, Codemod};
+use janitor_types::api::VcsInfo;
 use janitor_types::{Campaign, ChangeSetId, CodebaseName};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -2276,10 +2276,10 @@ async fn assign_keeps_colocated_branches_when_vcs_manager_has_no_resume() {
     // Point the runner's VCS manager at an empty directory so the
     // fallback `<campaign>/main` lookup hits `Ok(None)` (no branch).
     let empty_vcs_root = tempfile::tempdir().unwrap();
-    let mut managers: HashMap<janitor::vcs::VcsType, Box<dyn janitor::vcs::VcsManager>> =
+    let mut managers: HashMap<janitor_types::VcsType, Box<dyn janitor::vcs::VcsManager>> =
         HashMap::new();
     managers.insert(
-        janitor::vcs::VcsType::Git,
+        janitor_types::VcsType::Git,
         Box::new(janitor::vcs::LocalGitVcsManager::new(
             empty_vcs_root.path().to_path_buf(),
         )),

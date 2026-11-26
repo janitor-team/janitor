@@ -4,7 +4,7 @@ use crate::{BuilderResult, JanitorResult};
 use breezyshim::RevisionId;
 use chrono::{DateTime, Duration, Utc};
 use janitor::state::ResultTag;
-use janitor::vcs::VcsType;
+use janitor_types::VcsType;
 use janitor_types::{Campaign, ChangeSetId, CodebaseName, LogFilename, Role, RunId};
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
@@ -146,7 +146,7 @@ impl QueueRowJoined {
                 change_set: self.change_set,
                 codebase: self.codebase,
             },
-            vcs_info: janitor::queue::VcsInfo {
+            vcs_info: janitor_types::api::VcsInfo {
                 vcs_type: self.vcs_type,
                 branch_url: self.branch_url,
                 subpath: self.subpath,
@@ -374,7 +374,7 @@ impl RunnerDatabase {
     pub async fn get_run_reviews(
         &self,
         run_id: &RunId,
-    ) -> Result<Vec<crate::api_types::ReviewEntry>, sqlx::Error> {
+    ) -> Result<Vec<janitor_types::api::runner::ReviewEntry>, sqlx::Error> {
         sqlx::query_as(
             "SELECT run_id, \
                     verdict, \

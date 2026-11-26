@@ -2,7 +2,7 @@ use breezyshim::branch::Branch;
 use breezyshim::repository::Repository;
 use breezyshim::tree::{Tree, WorkingTree};
 use breezyshim::workingtree::PyWorkingTree;
-use janitor::api::worker::{DebianBuildConfig, WorkerFailure};
+use janitor_types::api::worker::{DebianBuildConfig, WorkerFailure};
 use ognibuild::debian::build::{BuildOnceError, BuildOnceResult};
 use ognibuild::debian::context::Phase;
 use ognibuild::debian::fix_build::IterateBuildError;

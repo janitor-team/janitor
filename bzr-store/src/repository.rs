@@ -18,9 +18,9 @@ use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tracing::{debug, info, warn};
 
-use crate::api_types::RemoteInfo;
 use crate::database::DatabaseManager;
 use crate::error::{BzrError, Result};
+use janitor_types::api::bzr_store::RemoteInfo;
 
 /// Repository path identifying a codebase with an optional
 /// campaign/role transport sub-path within the codebase's bzr shared

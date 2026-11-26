@@ -5,7 +5,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use thiserror::Error;
 
-use crate::api_types::ErrorResponse;
+use janitor_types::api::bzr_store::ErrorResponse;
 
 /// Main error type for the BZR Store service
 #[derive(Debug, Error)]

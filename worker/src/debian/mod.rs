@@ -4,7 +4,7 @@ pub mod lintian;
 use crate::{convert_codemod_script_failed, WorkerFailure};
 use breezyshim::tree::{PyTree, Tree, WorkingTree};
 use breezyshim::workingtree::PyWorkingTree;
-use janitor::api::worker::DebianBuildConfig;
+use janitor_types::api::worker::DebianBuildConfig;
 use silver_platter::debian::codemod::{
     script_runner as debian_script_runner, CommandResult as DebianCommandResult,
     Error as DebianCodemodError,

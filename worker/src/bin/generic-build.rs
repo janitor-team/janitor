@@ -18,7 +18,7 @@ fn main() {
     let (wt, subpath) =
         breezyshim::workingtree::open_containing(std::path::Path::new(".")).unwrap();
 
-    let config: janitor::api::worker::GenericBuildConfig = if let Some(config) = args.config {
+    let config: janitor_types::api::worker::GenericBuildConfig = if let Some(config) = args.config {
         let config = std::fs::read_to_string(config).unwrap();
         serde_json::from_str(&config).unwrap()
     } else {

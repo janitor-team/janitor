@@ -1188,20 +1188,7 @@ fn spawn_precache(state: &Arc<AppState>, old_id: RunId, new_id: RunId, trigger: 
     });
 }
 
-#[derive(Debug, Deserialize, serde::Serialize)]
-struct ResultMessage {
-    code: String,
-    log_id: RunId,
-    revision: String,
-    main_branch_revision: String,
-    codebase: CodebaseName,
-}
-
-impl janitor::redis::PubSubMessage for ResultMessage {
-    fn channel() -> &'static str {
-        "result"
-    }
-}
+use janitor_types::api::differ::ResultMessage;
 
 async fn listen_to_runner(redis_config: janitor::redis::RedisConfig, state: Arc<AppState>) {
     let manager = match janitor::redis::RedisManager::new(redis_config) {
