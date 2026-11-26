@@ -18,6 +18,11 @@ struct Args {
     /// Schroot to use
     schroot: Option<String>,
 
+    #[cfg(target_os = "linux")]
+    #[clap(long)]
+    /// Session to use, in ognibuild's syntax (e.g. `unshare:<suite>`)
+    session: Option<String>,
+
     #[clap(short, long, default_value = "..")]
     /// Directory to write to
     target_dir: PathBuf,
@@ -97,14 +102,9 @@ fn main() -> Result<(), i32> {
     let subdir = package.unwrap_or_else(|| "package".to_owned());
 
     #[cfg(target_os = "linux")]
-    let mut session: Box<dyn Session> = if let Some(schroot) = args.schroot {
-        match ognibuild::session::schroot::SchrootSession::new(&schroot, None) {
-            Ok(session) => Box::new(session),
-            Err(e) => report_session_failure(e),
-        }
-    } else {
-        Box::new(ognibuild::session::plain::PlainSession::new())
-    };
+    let mut session: Box<dyn Session> =
+        janitor_worker::open_session(args.session.as_deref(), args.schroot.as_deref(), None, &[])
+            .unwrap_or_else(|f| report_failure(&f.code, &f.description));
 
     #[cfg(not(target_os = "linux"))]
     let mut session: Box<dyn Session> = Box::new(ognibuild::session::plain::PlainSession::new());

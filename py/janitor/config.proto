@@ -14,6 +14,9 @@ message Distribution {
 
   repeated string chroot_alias = 12;
 
+  // Worker session in ognibuild's syntax, e.g. "unshare:sid"; used instead of chroot.
+  optional string session = 13;
+
   repeated string component = 4;
 
   optional string lintian_profile = 6;
@@ -123,6 +126,9 @@ message DebianBuild {
 
   // Optional chroot, if different from that of base_distribution
   optional string chroot = 4;
+
+  // Optional worker session in ognibuild's syntax; set this or chroot.
+  optional string session = 9;
 
   // Distribution to target when building
   optional string build_distribution = 6;
