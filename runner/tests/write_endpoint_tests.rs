@@ -3994,7 +3994,7 @@ async fn assign_aborts_unknown_campaign_as_requesting_worker() {
         .create_worker("abort-worker", "abort-pw", None)
         .await
         .expect("create worker");
-    sqlx::query("INSERT INTO queue (codebase, suite, command) VALUES ($1, $2, 'true')")
+    sqlx::query("INSERT INTO queue (codebase, campaign, command) VALUES ($1, $2, 'true')")
         .bind("unknown-campaign-cb")
         .bind("no-such-campaign")
         .execute(&pool)
