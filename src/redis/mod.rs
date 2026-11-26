@@ -1,6 +1,5 @@
 //! Redis connection management and pub/sub helpers for the Janitor platform.
 
-use crate::error::JanitorError;
 use redis::{
     aio::{ConnectionManager, ConnectionManagerConfig},
     Client,
@@ -58,7 +57,7 @@ pub struct RedisManager {
 
 impl RedisManager {
     /// Create a new Redis manager from configuration
-    pub fn new(config: RedisConfig) -> Result<Self, JanitorError> {
+    pub fn new(config: RedisConfig) -> Result<Self, redis::RedisError> {
         let client = Client::open(config.url.as_str())?;
 
         Ok(Self {
@@ -69,7 +68,7 @@ impl RedisManager {
     }
 
     /// Get the shared connection manager, connecting on first use
-    pub async fn get_connection_manager(&self) -> Result<ConnectionManager, JanitorError> {
+    pub async fn get_connection_manager(&self) -> Result<ConnectionManager, redis::RedisError> {
         let conn = self
             .connection
             .get_or_try_init(|| async {
@@ -93,7 +92,7 @@ impl RedisManager {
     }
 
     /// Perform a health check
-    pub async fn health_check(&self) -> Result<(), JanitorError> {
+    pub async fn health_check(&self) -> Result<(), redis::RedisError> {
         let mut conn = self.get_connection_manager().await?;
         redis::cmd("PING").query_async::<String>(&mut conn).await?;
         Ok(())
@@ -115,7 +114,7 @@ impl RedisManager {
     }
 
     /// Execute a Redis command, retrying on connection failure
-    pub async fn execute<T>(&self, cmd: &mut redis::Cmd) -> Result<T, JanitorError>
+    pub async fn execute<T>(&self, cmd: &mut redis::Cmd) -> Result<T, redis::RedisError>
     where
         T: redis::FromRedisValue,
     {
@@ -127,11 +126,7 @@ impl RedisManager {
             let mut conn = match self.get_connection_manager().await {
                 Ok(conn) => conn,
                 Err(e) => {
-                    last_error = Some(redis::RedisError::from((
-                        redis::ErrorKind::Io,
-                        "Connection pool error",
-                        e.to_string(),
-                    )));
+                    last_error = Some(e);
                     continue;
                 }
             };
@@ -141,16 +136,20 @@ impl RedisManager {
                     warn!("Redis connection error, will retry: {}", e);
                     last_error = Some(e);
                 }
-                Err(e) => return Err(e.into()),
+                Err(e) => return Err(e),
             }
         }
 
-        Err(JanitorError::redis_msg(format!(
-            "Command failed after {} retries: {}",
-            self.config.retry_attempts,
-            last_error
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "Unknown error".to_string())
+        Err(redis::RedisError::from((
+            redis::ErrorKind::Io,
+            "Redis operation failed",
+            format!(
+                "Command failed after {} retries: {}",
+                self.config.retry_attempts,
+                last_error
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "Unknown error".to_string())
+            ),
         )))
     }
 

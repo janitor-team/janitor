@@ -117,7 +117,7 @@ impl RedisSubscriber {
                         let gm = gm.clone();
                         async move {
                             Self::handle_runner_result(&gm, &payload).await;
-                            Ok(())
+                            Ok::<_, std::convert::Infallible>(())
                         }
                     })
                     .await;

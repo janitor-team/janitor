@@ -3,7 +3,6 @@ pub mod artifacts;
 pub mod config;
 pub mod database;
 pub mod debdiff;
-pub mod error;
 pub mod logging;
 pub mod logs;
 pub mod migrate_logs;

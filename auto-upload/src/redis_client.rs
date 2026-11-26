@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 use tracing::{error, info};
 
-use crate::error::Result;
+use crate::error::{Result, UploadError};
 
 /// Wraps the shared [`RedisManager`] and dispatches messages to a handler.
 pub struct RedisClient {
@@ -94,16 +94,13 @@ impl RedisClient {
 
         let handle = tokio::spawn(async move {
             let result = subscriber
-                .subscribe::<BuildResultMessage, _, _>(move |message| {
+                .subscribe::<BuildResultMessage, _, _, UploadError>(move |message| {
                     let handler = handler.clone();
                     async move {
                         if let Err(e) = handler(message).await {
                             metrics::counter!(crate::RESULT_HANDLING_FAILED_COUNT).increment(1);
                             error!("error handling result: {}", e);
-                            return Err(janitor::error::JanitorError::external_service(
-                                "auto-upload",
-                                format!("Handler error: {}", e),
-                            ));
+                            return Err(e);
                         }
                         Ok(())
                     }

@@ -65,10 +65,6 @@ pub enum UploadError {
     #[error("Redis error: {0}")]
     Redis(#[from] redis::RedisError),
 
-    /// Error from the shared janitor libraries (redis manager, etc).
-    #[error(transparent)]
-    Janitor(#[from] janitor::error::JanitorError),
-
     /// I/O error.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

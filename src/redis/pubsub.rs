@@ -1,6 +1,5 @@
 //! Redis pub/sub functionality
 
-use crate::error::JanitorError;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
@@ -24,10 +23,15 @@ impl Publisher {
     }
 
     /// Publish a message to its channel
-    pub async fn publish<T: PubSubMessage>(&self, message: &T) -> Result<(), JanitorError> {
+    pub async fn publish<T: PubSubMessage>(&self, message: &T) -> Result<(), redis::RedisError> {
         let channel = T::channel();
-        let payload = serde_json::to_string(message)
-            .map_err(|e| JanitorError::redis_msg(format!("Failed to serialize message: {}", e)))?;
+        let payload = serde_json::to_string(message).map_err(|e| {
+            redis::RedisError::from((
+                redis::ErrorKind::Io,
+                "Failed to serialize message",
+                e.to_string(),
+            ))
+        })?;
 
         let mut cmd = redis::cmd("PUBLISH");
         cmd.arg(channel).arg(&payload);
@@ -47,7 +51,7 @@ impl Publisher {
         &self,
         channel: &str,
         message: &str,
-    ) -> Result<i32, JanitorError> {
+    ) -> Result<i32, redis::RedisError> {
         let mut cmd = redis::cmd("PUBLISH");
         cmd.arg(channel).arg(message);
 
@@ -73,12 +77,14 @@ impl Subscriber {
         Self { manager }
     }
 
-    /// Subscribe to a message type and process messages
-    pub async fn subscribe<T, F, Fut>(&self, handler: F) -> Result<(), JanitorError>
+    /// Subscribe to a message type and process messages. Handler errors
+    /// are logged and the subscription continues.
+    pub async fn subscribe<T, F, Fut, E>(&self, handler: F) -> Result<(), redis::RedisError>
     where
         T: PubSubMessage,
         F: Fn(T) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Result<(), JanitorError>> + Send,
+        Fut: std::future::Future<Output = Result<(), E>> + Send,
+        E: std::fmt::Display,
     {
         let channel = T::channel();
         let handler = std::sync::Arc::new(handler);
@@ -87,7 +93,7 @@ impl Subscriber {
             let handler = handler.clone();
             async move {
                 match serde_json::from_str::<T>(&payload) {
-                    Ok(message) => handler(message).await,
+                    Ok(message) => handler(message).await.map_err(|e| e.to_string()),
                     Err(e) => {
                         error!(
                             "Failed to deserialize message from channel '{}': {}",
@@ -101,15 +107,17 @@ impl Subscriber {
         .await
     }
 
-    /// Subscribe to a specific channel and process raw messages
-    pub async fn subscribe_to_channel<F, Fut>(
+    /// Subscribe to a specific channel and process raw messages. Handler
+    /// errors are logged and the subscription continues.
+    pub async fn subscribe_to_channel<F, Fut, E>(
         &self,
         channel: &str,
         mut handler: F,
-    ) -> Result<(), JanitorError>
+    ) -> Result<(), redis::RedisError>
     where
         F: FnMut(String) -> Fut + Send,
-        Fut: std::future::Future<Output = Result<(), JanitorError>> + Send,
+        Fut: std::future::Future<Output = Result<(), E>> + Send,
+        E: std::fmt::Display,
     {
         info!("Subscribing to Redis channel: {}", channel);
 
