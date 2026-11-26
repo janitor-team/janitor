@@ -73,7 +73,7 @@ cd {{ codebase }}
                     var contents = $("#issue_description").attr("value");
                     contents += "\n\n```\n";
                     $("{{ verbatim_id }}").children('span').each(function(i, l) {
-                        contents += l.innerText + '\n';
+                        contents += l.innerText;
                     });
                     contents += "```\n";
                     $("#issue_description").attr("value", contents);
