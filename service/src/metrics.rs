@@ -8,7 +8,7 @@ use axum::{
     http::{header, StatusCode},
     response::{IntoResponse, Response},
 };
-use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
+use metrics_exporter_prometheus::{BuildError, Matcher, PrometheusBuilder, PrometheusHandle};
 use reqwest::Client;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -88,6 +88,31 @@ pub fn install(buckets: BucketOverrides) {
     );
 }
 
+/// Install the global Prometheus recorder, configured by [`builder`], and
+/// push its metrics to the push gateway at `gateway` every `interval`,
+/// grouped by `job` and `grouping_key`.
+///
+/// Must be called from within a Tokio runtime.
+pub fn install_with_push_gateway(
+    buckets: BucketOverrides,
+    gateway: &Url,
+    job: &str,
+    grouping_key: &HashMap<&str, &str>,
+    interval: Duration,
+) -> Result<(), BuildError> {
+    // The exporter's HTTP client takes the process-wide rustls provider.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    builder(buckets)
+        .with_push_gateway(
+            push_url(gateway, job, grouping_key),
+            interval,
+            None,
+            None,
+            false,
+        )?
+        .install()
+}
+
 /// Render all recorded metrics in the Prometheus text format.
 ///
 /// Panics if [`install`] hasn't been called.
@@ -112,7 +137,7 @@ pub async fn metrics_handler() -> Response {
 fn push_url(gateway: &Url, job: &str, grouping_key: &HashMap<&str, &str>) -> Url {
     let mut url = gateway.join("/metrics/job/").unwrap().join(job).unwrap();
     for (k, v) in grouping_key {
-        url.query_pairs_mut().append_pair(k, v);
+        url.path_segments_mut().unwrap().push(k).push(v);
     }
     url
 }
@@ -195,7 +220,7 @@ mod tests {
         let grouping_key = HashMap::from([("instance", "test_instance")]);
         assert_eq!(
             push_url(&base_url, "test_job", &grouping_key).as_str(),
-            "http://localhost:9091/metrics/job/test_job?instance=test_instance"
+            "http://localhost:9091/metrics/job/test_job/instance/test_instance"
         );
     }
 
