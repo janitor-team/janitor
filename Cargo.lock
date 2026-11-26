@@ -3213,6 +3213,8 @@ dependencies = [
  "askama 0.16.1",
  "async-compression",
  "async-trait",
+ "axum",
+ "base64 0.22.1",
  "breezyshim 0.8.0",
  "bytes",
  "chrono",
@@ -3398,6 +3400,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "bytes",
  "clap",
  "futures-util",
