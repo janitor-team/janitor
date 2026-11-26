@@ -490,7 +490,7 @@ mod tests {
                 force_build: true,
                 branch: janitor::api::worker::Branch {
                     cached_url: None,
-                    vcs_type: janitor::vcs::VcsType::Git,
+                    vcs_type: Some(janitor::vcs::VcsType::Git),
                     url: Some("https://example.com/vcs".parse().unwrap()),
                     subpath: std::path::PathBuf::from(""),
                     additional_colocated_branches: Some(vec![]),
@@ -498,7 +498,7 @@ mod tests {
                 },
                 resume: None,
                 target_repository: janitor::api::worker::TargetRepository {
-                    url: "https://example.com/".parse().unwrap(),
+                    url: Some("https://example.com/".parse().unwrap()),
                 },
                 skip_setup_validation: false,
                 codemod: janitor::api::worker::Codemod {
@@ -555,7 +555,7 @@ mod tests {
                 force_build: true,
                 branch: janitor::api::worker::Branch {
                     cached_url: None,
-                    vcs_type: janitor::vcs::VcsType::Git,
+                    vcs_type: Some(janitor::vcs::VcsType::Git),
                     url: Some("https://example.com/vcs".parse().unwrap()),
                     subpath: std::path::PathBuf::from(""),
                     additional_colocated_branches: Some(vec![]),
@@ -563,7 +563,7 @@ mod tests {
                 },
                 resume: None,
                 target_repository: janitor::api::worker::TargetRepository {
-                    url: "https://example.com/".parse().unwrap(),
+                    url: Some("https://example.com/".parse().unwrap()),
                 },
                 skip_setup_validation: false,
                 codemod: janitor::api::worker::Codemod {
@@ -998,7 +998,7 @@ mod tests {
                 force_build: true,
                 branch: janitor::api::worker::Branch {
                     cached_url: None,
-                    vcs_type: janitor::vcs::VcsType::Git,
+                    vcs_type: Some(janitor::vcs::VcsType::Git),
                     url: Some("https://example.com/vcs".parse().unwrap()),
                     subpath: std::path::PathBuf::from(""),
                     additional_colocated_branches: Some(vec![]),
@@ -1006,7 +1006,7 @@ mod tests {
                 },
                 resume: None,
                 target_repository: janitor::api::worker::TargetRepository {
-                    url: "https://example.com/".parse().unwrap(),
+                    url: Some("https://example.com/".parse().unwrap()),
                 },
                 skip_setup_validation: false,
                 codemod: janitor::api::worker::Codemod {
