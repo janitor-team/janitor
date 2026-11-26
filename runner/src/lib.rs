@@ -1590,15 +1590,22 @@ pub struct ComponentHealth {
 }
 
 impl ComponentHealth {
-    fn from_result<E: std::fmt::Display>(name: &str, result: Result<(), E>) -> Self {
-        let (status, error) = match result {
-            Ok(()) => (ServiceHealthStatus::Healthy, None),
-            Err(e) => (ServiceHealthStatus::Unhealthy, Some(e.to_string())),
-        };
+    fn healthy(name: &str) -> Self {
         Self {
             name: name.to_string(),
-            status,
-            error,
+            status: ServiceHealthStatus::Healthy,
+            error: None,
+        }
+    }
+
+    fn from_result<E: std::fmt::Display>(name: &str, result: Result<(), E>) -> Self {
+        match result {
+            Ok(()) => Self::healthy(name),
+            Err(e) => Self {
+                name: name.to_string(),
+                status: ServiceHealthStatus::Unhealthy,
+                error: Some(e.to_string()),
+            },
         }
     }
 }
@@ -1644,9 +1651,9 @@ impl HealthChecker {
         let db = janitor::database::health_check(self.database.pool()).await;
         let checks = vec![
             ComponentHealth::from_result("database", db),
-            ComponentHealth::from_result("vcs", Ok::<(), String>(())),
+            ComponentHealth::healthy("vcs"),
             ComponentHealth::from_result("logs", self.log_manager.health_check().await),
-            ComponentHealth::from_result("artifacts", Ok::<(), String>(())),
+            ComponentHealth::healthy("artifacts"),
         ];
         let overall = if checks
             .iter()
