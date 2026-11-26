@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-// Re-export VcsInfo from the main crate to avoid duplication
+// Re-export logs and VcsInfo to avoid duplication
+pub use janitor::logs;
 pub use janitor_types::api::VcsInfo;
 
 // Re-export builder types
@@ -46,9 +47,6 @@ pub mod backchannel;
 pub mod builder;
 /// Database operations.
 pub mod database;
-/// Error tracking and logging.
-/// Module for log file management.
-pub use janitor::logs;
 /// Module for Prometheus metrics collection.
 pub mod metrics;
 /// Reanalysis of the logs of finished runs.
