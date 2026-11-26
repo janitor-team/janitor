@@ -213,26 +213,6 @@ pub fn deb_package_name_from_filename(filename: &str) -> Option<String> {
     }
 }
 
-/// Record a field of the current changes file in `previous`, failing
-/// if it disagrees with the value from the changes files seen so far.
-#[allow(clippy::result_large_err)]
-fn record_consistent<T: PartialEq>(
-    previous: &mut Option<T>,
-    found: Option<T>,
-    field: &'static str,
-    names: &[String],
-    inconsistent: fn(Vec<String>, T, T) -> FindChangesError,
-) -> Result<(), FindChangesError> {
-    if let Some(expected) = previous.take() {
-        if found.as_ref() != Some(&expected) {
-            let found = found.ok_or(FindChangesError::MissingChangesFileFields(field))?;
-            return Err(inconsistent(names.to_vec(), found, expected));
-        }
-    }
-    *previous = found;
-    Ok(())
-}
-
 /// Find and parse Debian changes files in a directory.
 ///
 /// # Arguments
@@ -269,27 +249,45 @@ pub fn find_changes(path: &Path) -> Result<ChangesSummary, FindChangesError> {
         let changes = debian_control::changes::Changes::read(&f)
             .map_err(|e| FindChangesError::ParseError(file_path, e.into()))?;
         names.push(entry.file_name().to_string_lossy().to_string());
-        record_consistent(
-            &mut version,
-            changes.version(),
-            "Version",
-            &names,
-            FindChangesError::InconsistentVersion,
-        )?;
-        record_consistent(
-            &mut source,
-            changes.source(),
-            "Source",
-            &names,
-            FindChangesError::InconsistentSource,
-        )?;
-        record_consistent(
-            &mut distribution,
-            changes.distribution(),
-            "Distribution",
-            &names,
-            FindChangesError::InconsistentDistribution,
-        )?;
+        if let Some(version) = &version {
+            if changes.version().as_ref() != Some(version) {
+                let found_version = changes
+                    .version()
+                    .ok_or(FindChangesError::MissingChangesFileFields("Version"))?;
+                return Err(FindChangesError::InconsistentVersion(
+                    names,
+                    found_version,
+                    version.clone(),
+                ));
+            }
+        }
+        version = changes.version();
+        if let Some(source) = &source {
+            if changes.source().as_ref() != Some(source) {
+                let found_source = changes
+                    .source()
+                    .ok_or(FindChangesError::MissingChangesFileFields("Source"))?;
+                return Err(FindChangesError::InconsistentSource(
+                    names,
+                    found_source,
+                    source.to_string(),
+                ));
+            }
+        }
+        source = changes.source();
+        if let Some(distribution) = &distribution {
+            if changes.distribution().as_ref() != Some(distribution) {
+                let found_distribution = changes
+                    .distribution()
+                    .ok_or(FindChangesError::MissingChangesFileFields("Distribution"))?;
+                return Err(FindChangesError::InconsistentDistribution(
+                    names,
+                    found_distribution,
+                    distribution.to_string(),
+                ));
+            }
+        }
+        distribution = changes.distribution();
 
         binary_packages.extend(
             changes
