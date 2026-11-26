@@ -148,6 +148,11 @@ mod tests {
     }
 
     #[test]
+    fn test_read_string_invalid() {
+        assert!(read_string("this is not valid protobuf {{{").is_err());
+    }
+
+    #[test]
     fn test_example_config_campaigns() {
         let config = read_file(std::path::Path::new("janitor.conf.example")).unwrap();
 
