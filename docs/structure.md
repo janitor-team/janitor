@@ -1,6 +1,5 @@
 # Tools and scripts
 
-- `./reschedule.py` - a tool for users of the janitor and can be run by anybody locally
 - `./helpers/*` - all need to run inside of a janitor deployment (and talk to the database, etc) by an admin.
 - `sieve/` - a Sieve filter and notes for passing notification mail to `janitor-mail-filter`, so that a merge proposal's status is refreshed as soon as a merge proposal changes.
 - `examples/janitor.rules` - Prometheus alerting rules for the services.
@@ -10,7 +9,9 @@
   - `worker delete <name>` - remove a worker
   - `reschedule --run-id <id> [--refresh] [--offset <secs>]` - reschedule a single run
   - `reschedule --result-code <code> [--description-re <re>] [--campaign <name>] [--rejected] [--min-age <days>] [--include-transient] [--refresh] [--offset <secs>]` - mass-reschedule runs matching the given result code
+  - `reprocess-logs` - reprocess the build logs of finished runs, picked by run id or by filters
   - `queue list [--limit <n>]` - show queue items, default limit 100
   - `run list` - list active runs
   - `run kill <run-id>` - kill an active run
+  - `run reprocess-logs <run-id>` - reprocess the build log of a single run
   - `logs <run-id> <name>` - print a log file of a run, e.g. `worker.log`
