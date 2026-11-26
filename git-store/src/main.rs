@@ -80,22 +80,18 @@ async fn main() -> Result<()> {
         janitor_config.zipkin_address.as_deref(),
     )?;
 
-    // CLI flags override env/TOML; the janitor.conf database_location
-    // is the last-resort fallback.
-    let mut config = Config::from_env().unwrap_or_else(|_| Config::default());
+    let mut config = Config::default();
     config.git.local_path = vcs_path;
     config.git.host = cli.listen_address.to_string();
     let public_listen_address = cli.public_listen_address.unwrap_or(cli.listen_address);
     config.git.admin_port = cli.port;
     config.git.public_port = cli.public_port;
 
-    if config.base.database.is_none() {
-        if let Some(db_url) = janitor_config.database_location.as_ref() {
-            config.base.database = Some(janitor::shared_config::DatabaseConfig {
-                url: db_url.clone(),
-                ..janitor::shared_config::DatabaseConfig::default()
-            });
-        }
+    if let Some(db_url) = janitor_config.database_location.as_ref() {
+        config.database = Some(janitor::shared_config::DatabaseConfig {
+            url: db_url.clone(),
+            ..janitor::shared_config::DatabaseConfig::default()
+        });
     }
 
     let config = Arc::new(config);
@@ -124,7 +120,6 @@ async fn main() -> Result<()> {
     let repo_manager = Arc::new(RepositoryManager::new(config.git.local_path.clone()));
 
     let database_url = config
-        .base
         .database
         .as_ref()
         .ok_or_else(|| anyhow!("No database configuration found"))?

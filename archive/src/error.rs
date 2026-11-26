@@ -52,11 +52,6 @@ pub enum ArchiveError {
 
     #[error("Resource not found: {0}")]
     NotFound(String),
-
-    /// Wraps `shared_config::ConfigError` directly rather than
-    /// stringifying, so callers can match on `ParseError`/`IoError`/etc.
-    #[error("Configuration error: {0}")]
-    Config(#[from] janitor::shared_config::ConfigError),
 }
 
 #[allow(missing_docs)]
