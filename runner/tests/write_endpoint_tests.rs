@@ -2739,6 +2739,93 @@ async fn assign_prefers_higher_success_chance_within_same_priority() {
     );
 }
 
+/// A forge that rate-limits the branch lookup with a `Retry-After`
+/// that is not a valid duration gets a 502 naming the host, and the
+/// run is recorded as `resume-rate-limited` with the 30 minute default.
+#[tokio::test]
+async fn assign_reports_an_invalid_retry_after_from_the_forge() {
+    let Some((app, state)) = setup_with_campaign().await else {
+        eprintln!("skipping: no test resources");
+        return;
+    };
+
+    // The forge answers every request with 429 and `Retry-After: inf`.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind forge");
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        while let Ok((mut socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut request = [0u8; 4096];
+                let _ = socket.read(&mut request).await;
+                let _ = socket
+                    .write_all(
+                        b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: inf\r\n\
+                          Content-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await;
+            });
+        }
+    });
+
+    let pool = state.database.pool().clone();
+    sqlx::query(
+        "INSERT INTO codebase (name, branch_url, url, vcs_type)
+         VALUES ('forge-cb', $1, $1, 'git')",
+    )
+    .bind(format!("http://127.0.0.1:{port}/forge-cb"))
+    .execute(&pool)
+    .await
+    .expect("codebase insert");
+    sqlx::query(
+        "INSERT INTO queue (codebase, campaign, command)
+         VALUES ('forge-cb', 'test-campaign', 'true')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert queue row");
+    state
+        .auth_service
+        .create_worker("forge-worker", "pw", None)
+        .await
+        .expect("create worker");
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/active-runs")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"worker": "forge-worker"}).to_string()))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(
+        get_body(response).await,
+        json!({
+            "error": "invalid Retry-After from forge",
+            "host": "127.0.0.1",
+            "retry_after": "inf",
+        })
+    );
+    let result_code: String =
+        sqlx::query_scalar("SELECT result_code FROM run WHERE codebase = 'forge-cb'")
+            .fetch_one(&pool)
+            .await
+            .expect("run row");
+    assert_eq!(result_code, "resume-rate-limited");
+    let description: String =
+        sqlx::query_scalar("SELECT description FROM run WHERE codebase = 'forge-cb'")
+            .fetch_one(&pool)
+            .await
+            .expect("run row");
+    assert_eq!(
+        description,
+        "Forge 127.0.0.1 rate-limited us with an invalid Retry-After (inf); retry after 1800s"
+    );
+}
+
 /// Redis HSETNX-backed claim on `assign_queue_item` is atomic: if
 /// two callers race to claim the same queue_id, exactly one gets
 /// Ok and the other gets an `already assigned` error. Exercises
