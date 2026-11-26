@@ -1,7 +1,7 @@
 use crate::get_build_arch;
 use backoff::ExponentialBackoff;
-use janitor::api::worker::{Assignment, Metadata};
 use janitor_types::api::runner::FinishResponse;
+use janitor_types::api::worker::{Assignment, Metadata};
 use janitor_types::{Campaign, CodebaseName, RunId};
 use reqwest::multipart::{Form, Part};
 use reqwest::{Error as ReqwestError, Response, StatusCode, Url};
@@ -45,11 +45,7 @@ struct AssignmentRequest<'a> {
     campaign: Option<&'a Campaign>,
 }
 
-/// Error body returned by the runner.
-#[derive(Debug, Deserialize)]
-struct ErrorResponse {
-    reason: Option<String>,
-}
+use janitor_types::api::runner::ReasonResponse;
 
 /// Get an assignment from the queue.
 pub async fn get_assignment_raw(
@@ -112,13 +108,13 @@ pub async fn get_assignment_raw(
                     })?;
                     Ok(data)
                 } else if resp.status().as_u16() == 503 {
-                    let body = resp.json::<ErrorResponse>().await.map_err(|e| {
+                    let body = resp.json::<ReasonResponse>().await.map_err(|e| {
                         backoff::Error::Permanent(AssignmentError::Failure(format!(
                             "Failed to parse assignment response: {}",
                             e
                         )))
                     })?;
-                    if body.reason.as_deref() == Some("queue empty") {
+                    if body.reason == "queue empty" {
                         Err(backoff::Error::Permanent(AssignmentError::EmptyQueue))
                     } else {
                         Err(backoff::Error::transient(AssignmentError::Failure(
@@ -501,16 +497,13 @@ where
 
         match response.status() {
             StatusCode::NOT_FOUND => {
-                let body = response.json::<ErrorResponse>().await.map_err(|e| {
+                let body = response.json::<ReasonResponse>().await.map_err(|e| {
                     backoff::Error::permanent(UploadFailure(format!(
                         "Error parsing 404 response: {}",
                         e
                     )))
                 })?;
-                let reason = body
-                    .reason
-                    .unwrap_or_else(|| "Runner returned 404".to_string());
-                Err(backoff::Error::permanent(UploadFailure(reason)))
+                Err(backoff::Error::permanent(UploadFailure(body.reason)))
             }
             StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE => {
                 let status = response.status();

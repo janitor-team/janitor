@@ -1,12 +1,10 @@
 //! API response types for the bzr-store service.
-//!
-//! This module contains struct definitions for all API responses, replacing
-//! the use of `serde_json::json!()` macros with type-safe structures.
 
 use serde::{Deserialize, Serialize};
 
 /// Response for repository creation operations.
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RepositoryCreatedResponse {
     /// Status of the operation.
     pub status: String,
@@ -17,7 +15,8 @@ pub struct RepositoryCreatedResponse {
 }
 
 /// Response for remote configuration operations.
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RemoteConfiguredResponse {
     /// Status of the operation.
     pub status: String,
@@ -26,7 +25,8 @@ pub struct RemoteConfiguredResponse {
 }
 
 /// Information about a remote repository.
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RemoteInfo {
     /// Name of the remote.
     pub name: String,
@@ -35,7 +35,8 @@ pub struct RemoteInfo {
 }
 
 /// Response for listing remotes.
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RemotesListResponse {
     /// Repository path.
     pub repository: String,
@@ -44,7 +45,8 @@ pub struct RemotesListResponse {
 }
 
 /// Body of an error response.
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ErrorResponse {
     /// Short description of the kind of error.
     pub error: String,

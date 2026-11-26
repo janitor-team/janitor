@@ -1,5 +1,5 @@
 use crate::{convert_codemod_script_failed, WorkerFailure};
-use janitor::api::worker::GenericBuildConfig;
+use janitor_types::api::worker::GenericBuildConfig;
 use ognibuild::analyze::AnalyzedError;
 use ognibuild::installer::Error as InstallerError;
 use silver_platter::codemod::{

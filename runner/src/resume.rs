@@ -2,44 +2,10 @@ use crate::database::RunnerDatabase;
 use breezyshim::branch::{Branch, GenericBranch};
 use breezyshim::error::Error as BrzError;
 use breezyshim::forge::get_forge;
+pub use janitor_types::api::runner::ResumeInfo;
 use janitor_types::{Campaign, CodebaseName, RunId};
-use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt;
-
-/// Information about a run that can be resumed from.
-///
-/// The resume lookup is keyed on `(campaign, revision)` -- the revision
-/// of the resume branch's tip -- not on a per-run branch name. The
-/// `branch_name` field is kept for backwards-compatible
-/// serialization, populated from `new_result_branch.remote_name` for
-/// the `main` role rather than from a (nonexistent) `run.branch_name`
-/// column.
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct ResumeInfo {
-    /// ID of the run to resume from.
-    pub run_id: RunId,
-    /// Campaign that produced the run.
-    pub campaign: Campaign,
-    /// Codebase the run targeted.
-    pub codebase: CodebaseName,
-    /// Remote branch name from the `main` role of the resumed run's
-    /// result branches, if any. May be empty for legacy runs.
-    pub branch_name: String,
-    /// Result code of the completed run.
-    pub result_code: String,
-    /// Revision ID if available.
-    pub revision: Option<String>,
-    /// The completed run's `result` JSON blob (Python calls this
-    /// `codemod_result`). Included in the assign response's `resume`
-    /// field so the worker can rehydrate the previous run's output.
-    #[schema(value_type = Option<Object>)]
-    pub result: Option<serde_json::Value>,
-    /// Per-role result branches for the completed run.
-    /// Each tuple is `(role, remote_name, base_revision, revision)`.
-    #[schema(value_type = Vec<Vec<Option<String>>>)]
-    pub result_branches: Vec<(String, Option<String>, Option<String>, Option<String>)>,
-}
 
 /// Errors that can occur during resume operations.
 #[derive(Debug)]

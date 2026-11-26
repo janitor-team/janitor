@@ -1,7 +1,7 @@
 use breezyshim::forge::MergeProposal;
 use breezyshim::RevisionId;
 use chrono::{DateTime, Utc};
-use janitor::publish::MergeProposalStatus;
+use janitor_types::publish::MergeProposalStatus;
 use janitor_types::{Campaign, CodebaseName};
 use redis::AsyncCommands;
 use sqlx::PgPool;
@@ -313,7 +313,7 @@ impl ProposalInfoManager {
             redis
                 .publish::<_, _, i32>(
                     "merge-proposal",
-                    serde_json::to_string(&janitor::api::publish::MergeProposalUpdate {
+                    serde_json::to_string(&janitor_types::api::publish::MergeProposalUpdate {
                         url,
                         target_branch_url: target_branch_url.clone(),
                         rate_limit_bucket: rate_limit_bucket.map(|s| s.to_string()),

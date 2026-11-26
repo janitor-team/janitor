@@ -620,7 +620,7 @@ pub async fn get_previous_mp_status(
     conn: &PgPool,
     codebase: &CodebaseName,
     campaign: &Campaign,
-) -> Result<Vec<(String, janitor::publish::MergeProposalStatus)>, sqlx::Error> {
+) -> Result<Vec<(String, janitor_types::publish::MergeProposalStatus)>, sqlx::Error> {
     sqlx::query_as(
         r#"
 WITH per_run_mps AS (

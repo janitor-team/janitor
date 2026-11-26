@@ -14,10 +14,10 @@ use breezyshim::tree::{MutableTree, WorkingTree};
 use common::*;
 use janitor::test_with_database;
 use janitor_bzr_store::{
-    api_types::RemoteConfiguredResponse,
     repository::{RepositoryInfo, RevisionInfo},
     web::create_applications,
 };
+use janitor_types::api::bzr_store::RemoteConfiguredResponse;
 use tempfile::TempDir;
 
 /// Build a bzr branch with two commits at `branch_path` and return

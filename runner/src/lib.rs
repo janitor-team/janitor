@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 // Re-export VcsInfo from the main crate to avoid duplication
-pub use janitor::queue::VcsInfo;
+pub use janitor_types::api::VcsInfo;
 
 // Re-export builder types
 pub use builder::{
@@ -36,7 +36,6 @@ pub use watchdog::{RunHealthStatus, TerminationReason, Watchdog, WatchdogConfig,
 pub mod active_runs;
 
 /// API types for runner service.
-pub mod api_types;
 /// Module for application initialization and orchestration.
 pub mod application;
 /// Module for worker authentication and security.
@@ -653,7 +652,7 @@ pub struct WorkerResult {
     /// into a `BuilderResult` so `debian_build` rows actually get
     /// inserted on successful runs.
     #[serde(default)]
-    pub target: Option<janitor::api::worker::TargetDetails>,
+    pub target: Option<janitor_types::api::worker::TargetDetails>,
     /// Start time.
     pub start_time: Option<DateTime<Utc>>,
     /// Finish time.
@@ -783,8 +782,8 @@ impl ActiveRun {
     }
 
     /// Representation of this run in API responses.
-    pub fn to_response(&self) -> api_types::ActiveRunResponse {
-        api_types::ActiveRunResponse {
+    pub fn to_response(&self) -> janitor_types::api::runner::ActiveRunResponse {
+        janitor_types::api::runner::ActiveRunResponse {
             queue_id: self.queue_id,
             id: self.log_id.clone(),
             codebase: self.codebase.clone(),
@@ -1419,7 +1418,7 @@ pub struct DebianTargetDetails {
 
 impl BuilderResult {
     /// Build a `BuilderResult` from the worker's wire-shape
-    /// [`janitor::api::worker::TargetDetails`].
+    /// [`janitor_types::api::worker::TargetDetails`].
     ///
     /// The worker emits build metadata as
     /// `{"target": {"name": "debian", "details": {"lintian": …}}}`
@@ -1437,7 +1436,7 @@ impl BuilderResult {
     /// This function only handles the wire-only fields; it leaves
     /// the directory-derived fields as `None` for the caller to
     /// fill in. Returns `None` for unknown target kinds.
-    pub fn from_target_details(td: &janitor::api::worker::TargetDetails) -> Option<Self> {
+    pub fn from_target_details(td: &janitor_types::api::worker::TargetDetails) -> Option<Self> {
         match td.name.as_str() {
             "generic" => Some(BuilderResult::Generic),
             "debian" => {
@@ -1569,8 +1568,8 @@ pub struct QueueItem {
 
 impl QueueItem {
     /// Representation of this queue item in API responses.
-    pub fn to_response(&self) -> api_types::QueueItemResponse {
-        api_types::QueueItemResponse {
+    pub fn to_response(&self) -> janitor_types::api::runner::QueueItemResponse {
+        janitor_types::api::runner::QueueItemResponse {
             id: self.id,
             context: self.context.clone(),
             command: self.command.clone(),
@@ -1633,7 +1632,8 @@ pub struct AppState {
     pub public_apt_archive_location: Option<String>,
     /// VCS stores as seen by workers -- supplied via
     /// `--public-vcs-location`.
-    pub public_vcs_managers: Arc<HashMap<janitor::vcs::VcsType, Box<dyn janitor::vcs::VcsManager>>>,
+    pub public_vcs_managers:
+        Arc<HashMap<janitor_types::VcsType, Box<dyn janitor::vcs::VcsManager>>>,
     /// URL of the dependency server handed to workers -- supplied
     /// via `--public-dep-server-url`.
     pub public_dep_server_url: Option<String>,
@@ -1972,7 +1972,7 @@ mod tests {
     /// produce a build".
     #[test]
     fn test_builder_result_from_target_details_debian() {
-        let td = janitor::api::worker::TargetDetails {
+        let td = janitor_types::api::worker::TargetDetails {
             name: "debian".to_string(),
             details: serde_json::json!({
                 "source": "okio",
@@ -2015,7 +2015,7 @@ mod tests {
 
     #[test]
     fn test_builder_result_from_target_details_generic_and_unknown() {
-        let generic = janitor::api::worker::TargetDetails {
+        let generic = janitor_types::api::worker::TargetDetails {
             name: "generic".to_string(),
             details: serde_json::json!({}),
         };
@@ -2023,7 +2023,7 @@ mod tests {
             BuilderResult::from_target_details(&generic),
             Some(BuilderResult::Generic)
         ));
-        let unknown = janitor::api::worker::TargetDetails {
+        let unknown = janitor_types::api::worker::TargetDetails {
             name: "ocaml-future".to_string(),
             details: serde_json::Value::Null,
         };

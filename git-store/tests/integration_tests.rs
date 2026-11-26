@@ -17,13 +17,13 @@ use axum::response::Response;
 use axum::Router;
 use base64::Engine;
 use janitor_git_store::{
-    api_types::{LogResponse, RevisionInfoEntry},
     config::Config,
     database::DatabaseManager,
     repository::RepositoryManager,
     web::{self, AppRole, AppState},
     web_utils::HealthChecker,
 };
+use janitor_types::api::git_store::{LogResponse, RevisionInfoEntry};
 use sqlx::PgPool;
 use tempfile::TempDir;
 use testcontainers_modules::{

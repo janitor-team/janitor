@@ -22,9 +22,6 @@ use tera::{Context, Tera};
 use tokio::fs;
 use tracing::warn;
 
-use crate::api_types::{
-    ErrorResponse, RemoteConfiguredResponse, RemotesListResponse, RepositoryCreatedResponse,
-};
 use crate::bzr_browse::BrowseRouters;
 use crate::config::Config;
 use crate::database::DatabaseManager;
@@ -37,6 +34,9 @@ use crate::smart_protocol::{
     smart_protocol_role_handler,
 };
 use crate::web_utils::{apply_standard_middleware, HealthChecker};
+use janitor_types::api::bzr_store::{
+    ErrorResponse, RemoteConfiguredResponse, RemotesListResponse, RepositoryCreatedResponse,
+};
 use utoipa::openapi::OpenApi;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;

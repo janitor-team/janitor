@@ -3,7 +3,6 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use janitor::publish::MergeProposalStatus;
 use janitor::{test_utils::TestDatabase, test_with_database};
 use janitor_publish::rate_limiter::{FixedRateLimiter, RateLimiter};
 use janitor_publish::web::{
@@ -13,6 +12,7 @@ use janitor_publish::web::{
     BlockerSuccessDetails, ReviewSummary,
 };
 use janitor_publish::{AppState, PublishWorker};
+use janitor_types::publish::MergeProposalStatus;
 use janitor_types::{Campaign, ChangeSetId, CodebaseName};
 use sqlx::PgPool;
 use tower::ServiceExt;
@@ -663,7 +663,7 @@ test_with_database! {
             status,
             vec![(
                 "https://example.invalid/mp/1".to_string(),
-                janitor::publish::MergeProposalStatus::Closed
+                janitor_types::publish::MergeProposalStatus::Closed
             )]
         );
     }

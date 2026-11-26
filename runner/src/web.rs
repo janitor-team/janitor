@@ -1,18 +1,3 @@
-use crate::api_types::CandidateUpload;
-use crate::api_types::{
-    ActiveRunResponse, AssignRejectedResponse, AssignmentBranch, AssignmentBuild,
-    AssignmentCodemod, AssignmentResponse, AssignmentTargetRepository, BuildAssignmentConfig,
-    CleanupRunsResponse, CurrentStageResponse, DebianBuildAssignment, EmptyResponse, ErrorResponse,
-    FinishConflictResponse, GenericBuildAssignment, MessageResponse, PeekResponse,
-    PublishStatusUpdate, QueueEntry, QueuePositionResponse, QueueStatsResponse,
-    RateLimitedResponse, ReasonResponse, ReprocessLogsRequest, ReprocessRunLogsRequest,
-    ReprocessRunLogsResponse, ReprocessingRun, ResultBranchEntry, ResumeAssignment,
-    ResumeChainResponse, ResumeCheckResponse, ResumeDescendantsResponse, ResumeValidationResponse,
-    RunDetailResponse, RunFollowup, RunFollowupsResponse, RunHealthSummary, RunListResponse,
-    RunReviewsResponse, RunSummary, ScheduleControlResponse, ScheduleResponse, ScheduledCandidate,
-    StatusResponse, UploadCandidatesResponse, WatchdogHealthResponse, WorkerInfo,
-    WorkerListResponse, WorkerSummary,
-};
 use crate::{
     get_builder, metrics::MetricsCollector, ActiveRun, AppState, Backchannel, BuilderResult,
     CampaignConfig, QueueItem,
@@ -26,7 +11,22 @@ use axum::{
     Extension, Json, Router,
 };
 use chrono::Utc;
+use janitor_types::api::runner::CandidateUpload;
 use janitor_types::api::runner::FinishResponse;
+use janitor_types::api::runner::{
+    ActiveRunResponse, AssignRejectedResponse, AssignmentBranch, AssignmentBuild,
+    AssignmentCodemod, AssignmentResponse, AssignmentTargetRepository, BuildAssignmentConfig,
+    CleanupRunsResponse, CurrentStageResponse, DebianBuildAssignment, EmptyResponse, ErrorResponse,
+    FinishConflictResponse, GenericBuildAssignment, MessageResponse, PeekResponse,
+    PublishStatusUpdate, QueueEntry, QueuePositionResponse, QueueStatsResponse,
+    RateLimitedResponse, ReasonResponse, ReprocessLogsRequest, ReprocessRunLogsRequest,
+    ReprocessRunLogsResponse, ReprocessingRun, ResultBranchEntry, ResumeAssignment,
+    ResumeChainResponse, ResumeCheckResponse, ResumeDescendantsResponse, ResumeValidationResponse,
+    RunDetailResponse, RunFollowup, RunFollowupsResponse, RunHealthSummary, RunListResponse,
+    RunReviewsResponse, RunSummary, ScheduleControlResponse, ScheduleResponse, ScheduledCandidate,
+    StatusResponse, UploadCandidatesResponse, WatchdogHealthResponse, WorkerInfo,
+    WorkerListResponse, WorkerSummary,
+};
 use janitor_types::{ArtifactName, Campaign, ChangeSetId, CodebaseName, LogFilename, RunId};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
@@ -42,80 +42,9 @@ use uuid::Uuid;
 ///
 /// `worker` is only honoured by the unauthenticated `/active-runs`
 /// route on the private (intra-cluster) app. The authenticated
-/// public app's `/active-runs` route (workers reach it via the ingress
-/// `/runner/(.*)` -> `/$2`) ignores this field entirely and reads
-/// the worker name from the credentials extension instead.
-#[derive(Debug, Deserialize, ToSchema)]
-struct AssignRequest {
-    /// Worker name (private/admin path only). The Rust worker sends
-    /// this as `node`; older Python workers sent `worker`.
-    #[serde(alias = "node")]
-    worker: Option<String>,
-    /// Worker link.
-    worker_link: Option<String>,
-    /// Backchannel configuration.
-    backchannel: Option<serde_json::Value>,
-    /// Specific codebase to work on.
-    codebase: Option<CodebaseName>,
-    /// Specific campaign to work on.
-    campaign: Option<Campaign>,
-    /// Hosts the worker is temporarily rate-limited on; the queue
-    /// filter unions these with the runner-wide `avoid_hosts` and the
-    /// Redis `rate-limit-hosts` set so the worker doesn't get handed
-    /// an item it would just bounce back on.
-    #[serde(default)]
-    exclude_hosts: Option<Vec<String>>,
-}
-
-/// Request for updating run publish status.
-#[derive(Debug, Deserialize, ToSchema)]
-struct UpdateRunRequest {
-    /// New publish status.
-    publish_status: String,
-}
-
-/// Request for resume information.
-#[derive(Debug, Deserialize, ToSchema)]
-struct ResumeInfoRequest {
-    /// Campaign name.
-    campaign: Campaign,
-    /// Revision id of the resume branch's tip. Used together with
-    /// `campaign` to form the `(campaign, revision)` resume lookup key.
-    resume_revision: String,
-}
-
-/// JSON body for `POST /schedule`. Callers may send either a `run_id`
-/// (in which case campaign+codebase are derived from the run row) or
-/// an explicit (campaign, codebase) pair, plus optional scheduling
-/// knobs.
-#[derive(Debug, Deserialize, ToSchema)]
-struct ScheduleRequest {
-    run_id: Option<RunId>,
-    campaign: Option<Campaign>,
-    codebase: Option<CodebaseName>,
-    refresh: Option<bool>,
-    change_set: Option<ChangeSetId>,
-    requester: Option<String>,
-    bucket: Option<String>,
-    offset: Option<f64>,
-    /// Estimated duration in seconds.
-    estimated_duration: Option<f64>,
-}
-
-/// JSON body for `POST /schedule-control`.
-#[derive(Debug, Deserialize, ToSchema)]
-struct ScheduleControlRequest {
-    run_id: Option<RunId>,
-    codebase: Option<CodebaseName>,
-    main_branch_revision: Option<String>,
-    change_set: Option<ChangeSetId>,
-    offset: Option<f64>,
-    requester: Option<String>,
-    refresh: Option<bool>,
-    bucket: Option<String>,
-    /// Estimated duration in seconds.
-    estimated_duration: Option<f64>,
-}
+use janitor_types::api::runner::{
+    AssignRequest, ResumeInfoRequest, ScheduleControlRequest, ScheduleRequest, UpdateRunRequest,
+};
 
 /// Look up an active run, or build the 404 response for a missing one.
 async fn current_run(state: &AppState, id: &RunId) -> Result<ActiveRun, Response> {
@@ -1146,13 +1075,13 @@ fn cache_branch_name(
 /// worker, from the public VCS store for the codebase's VCS type.
 /// Both are None when the store doesn't serve that VCS.
 fn worker_vcs_urls(
-    managers: &HashMap<janitor::vcs::VcsType, Box<dyn janitor::vcs::VcsManager>>,
+    managers: &HashMap<janitor_types::VcsType, Box<dyn janitor::vcs::VcsManager>>,
     vcs_type: Option<&str>,
     codebase: &CodebaseName,
     cache_branch_name: Option<&str>,
 ) -> (Option<String>, Option<String>) {
     let Some(manager) = vcs_type
-        .and_then(|t| t.parse::<janitor::vcs::VcsType>().ok())
+        .and_then(|t| t.parse::<janitor_types::VcsType>().ok())
         .and_then(|t| managers.get(&t))
     else {
         return (None, None);
@@ -1740,7 +1669,7 @@ fn run_detail_to_response(detail: crate::database::RunDetail) -> RunDetailRespon
         resume_from: row.resume_from,
         result_tags: row.result_tags.map(|tags| {
             tags.into_iter()
-                .map(|t| crate::api_types::RunResultTag {
+                .map(|t| janitor_types::api::runner::RunResultTag {
                     actual_name: t.actual_name,
                     revision: t.revision,
                 })
@@ -1755,7 +1684,7 @@ fn run_detail_to_response(detail: crate::database::RunDetail) -> RunDetailRespon
                 revision: b.revision,
             })
             .collect(),
-        debian_build: debian_build.map(|db| crate::api_types::RunDebianBuild {
+        debian_build: debian_build.map(|db| janitor_types::api::runner::RunDebianBuild {
             version: db.version,
             distribution: db.distribution,
             lintian_result: db.lintian_result,
@@ -4249,7 +4178,7 @@ async fn assign_work_internal(
     // this Rust port stood up has hit that path.
     //
     // The fields of `DebianBuildAssignment` match
-    // `janitor::api::worker::DebianBuildConfig`'s serde-renamed names so
+    // `janitor_types::api::worker::DebianBuildConfig`'s serde-renamed names so
     // the JSON the worker sees deserialises directly.
     let (build_target, build_cfg) = if let Some(dcfg) = campaign_config.debian_build.as_ref() {
         let dist = state

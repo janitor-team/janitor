@@ -2,7 +2,7 @@
 //!
 //! This module provides rate limiting functionality for merge proposals.
 
-use janitor::publish::MergeProposalStatus;
+use janitor_types::publish::MergeProposalStatus;
 use std::collections::HashMap;
 
 #[cfg(test)]

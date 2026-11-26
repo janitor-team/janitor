@@ -10,9 +10,9 @@ use std::collections::HashMap;
 
 use dns_lookup::{getaddrinfo, LookupErrorKind};
 
-use janitor::api::worker::{Metadata, TargetDetails, WorkerFailure};
-use janitor::vcs::VcsType;
 use janitor_service::metrics::push_to_gateway;
+use janitor_types::api::worker::{Metadata, TargetDetails, WorkerFailure};
+use janitor_types::VcsType;
 use janitor_types::{Campaign, CodebaseName, RunId};
 
 use url::Url;
@@ -35,7 +35,7 @@ mod tee;
 #[derive(Clone, Default)]
 pub struct AppState {
     pub output_directory: Option<std::path::PathBuf>,
-    pub assignment: Option<janitor::api::worker::Assignment>,
+    pub assignment: Option<janitor_types::api::worker::Assignment>,
     pub metadata: Option<Metadata>,
 }
 
@@ -1254,7 +1254,7 @@ mod tests {
     use super::*;
     use crate::WorkerFailure;
     use breezyshim::controldir;
-    use janitor::api::worker::*;
+    use janitor_types::api::worker::*;
     use serial_test::serial;
     use std::path::{Path, PathBuf};
     use std::str::FromStr;
@@ -1532,7 +1532,7 @@ check:
                 revision: Some(b.last_revision()),
                 subpath: Some("".to_string()),
                 tags: vec![],
-                target: Some(janitor::api::worker::TargetDetails {
+                target: Some(janitor_types::api::worker::TargetDetails {
                     name: "generic".to_string(),
                     details: serde_json::json!({}),
                 }),

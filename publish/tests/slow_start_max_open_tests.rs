@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use janitor::publish::MergeProposalStatus;
 use janitor_publish::rate_limiter::{RateLimitStatus, RateLimiter, SlowStartRateLimiter};
+use janitor_types::publish::MergeProposalStatus;
 
 /// A limiter that has seen one open and `merged` merged proposals in `bucket`.
 fn scanned(max: Option<usize>, merged: usize) -> SlowStartRateLimiter {

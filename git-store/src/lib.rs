@@ -1,6 +1,5 @@
 //! Git repository store for the janitor.
 
-pub mod api_types;
 pub mod config;
 pub mod database;
 pub mod error;

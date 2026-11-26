@@ -1,14 +1,22 @@
+//! Review-related types.
+
 use serde::{Deserialize, Serialize};
 
-#[derive(
-    Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy, std::hash::Hash, sqlx::Type,
+/// Reviewer's verdict on a run.
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy, std::hash::Hash)]
+#[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
+#[cfg_attr(
+    feature = "sqlx",
+    sqlx(type_name = "verdict", rename_all = "lowercase")
 )]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-#[sqlx(type_name = "verdict", rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum Verdict {
+    /// Approved for publishing.
     Approved,
+    /// Rejected; the run should not be published.
     Rejected,
+    /// The reviewer abstained.
     Abstained,
 }
 

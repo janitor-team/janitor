@@ -1,18 +1,30 @@
-use janitor_types::{Campaign, CodebaseName};
+//! Publish-related types.
+
+use crate::{Campaign, CodebaseName};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-#[derive(
-    Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy, std::hash::Hash, sqlx::Type,
-)]
+/// Status of a merge proposal.
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy, std::hash::Hash)]
 #[serde(rename_all = "lowercase")]
-#[sqlx(type_name = "merge_proposal_status", rename_all = "lowercase")]
+#[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
+#[cfg_attr(
+    feature = "sqlx",
+    sqlx(type_name = "merge_proposal_status", rename_all = "lowercase")
+)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub enum MergeProposalStatus {
+    /// The proposal is open.
     Open,
+    /// The proposal has been merged.
     Merged,
+    /// The proposal has been applied.
     Applied,
+    /// The proposal has been closed.
     Closed,
+    /// The proposal has been abandoned.
     Abandoned,
+    /// The proposal has been rejected.
     Rejected,
 }
 
@@ -45,6 +57,7 @@ impl std::str::FromStr for MergeProposalStatus {
     }
 }
 
+#[cfg(feature = "breezyshim")]
 impl From<breezyshim::forge::MergeProposalStatus> for MergeProposalStatus {
     fn from(status: breezyshim::forge::MergeProposalStatus) -> Self {
         match status {
@@ -56,16 +69,29 @@ impl From<breezyshim::forge::MergeProposalStatus> for MergeProposalStatus {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy, sqlx::Type)]
+/// How the publisher should handle a run.
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
 #[serde(rename_all = "kebab-case")]
-#[sqlx(type_name = "publish_mode", rename_all = "kebab-case")]
+#[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
+#[cfg_attr(
+    feature = "sqlx",
+    sqlx(type_name = "publish_mode", rename_all = "kebab-case")
+)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub enum Mode {
+    /// Do not publish.
     Skip,
+    /// Build only, do not publish.
     BuildOnly,
+    /// Push the branch.
     Push,
+    /// Push to a derived branch.
     PushDerived,
+    /// Propose a merge proposal.
     Propose,
+    /// Attempt to push; fall back to proposing.
     AttemptPush,
+    /// File a Debian bug.
     Bts,
 }
 
@@ -100,6 +126,7 @@ impl std::str::FromStr for Mode {
     }
 }
 
+#[cfg(feature = "silver-platter")]
 impl TryFrom<Mode> for silver_platter::Mode {
     type Error = String;
 
@@ -116,18 +143,30 @@ impl TryFrom<Mode> for silver_platter::Mode {
     }
 }
 
+/// Notification published when a merge proposal changes.
 #[derive(Serialize, Deserialize)]
 pub struct MergeProposalNotification {
+    /// URL of the merge proposal.
     pub url: Url,
+    /// Web URL of the merge proposal.
     pub web_url: Option<Url>,
+    /// Rate limit bucket.
     pub rate_limit_bucket: Option<String>,
+    /// Status of the merge proposal.
     pub status: MergeProposalStatus,
+    /// User who merged the proposal.
     pub merged_by: Option<String>,
+    /// URL of the user who merged the proposal.
     pub merged_by_url: Option<Url>,
+    /// Timestamp of the merge.
     pub merged_at: Option<String>,
+    /// Codebase.
     pub codebase: CodebaseName,
+    /// Campaign.
     pub campaign: Campaign,
+    /// Target branch URL.
     pub target_branch_url: Url,
+    /// Target branch web URL.
     pub target_branch_web_url: Option<Url>,
 }
 
@@ -184,6 +223,7 @@ mod tests {
         assert!("invalid".parse::<MergeProposalStatus>().is_err());
     }
 
+    #[cfg(feature = "silver-platter")]
     #[test]
     fn test_mode_try_into_silver_platter() {
         assert_eq!(
@@ -207,6 +247,7 @@ mod tests {
         assert!(silver_platter::Mode::try_from(Mode::Bts).is_err());
     }
 
+    #[cfg(feature = "breezyshim")]
     #[test]
     fn test_merge_proposal_status_from_breezyshim() {
         assert_eq!(

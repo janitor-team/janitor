@@ -11,17 +11,16 @@ use breezyshim::forge::Forge;
 use breezyshim::RevisionId;
 use chrono::{DateTime, Utc};
 use janitor::config::Campaign;
-use janitor::publish::{MergeProposalStatus, Mode};
 use janitor::state::Run;
-use janitor::vcs::{VcsManager, VcsType};
-use janitor_types::{CodebaseName, PublishId, RunId};
+use janitor::vcs::VcsManager;
+use janitor_types::publish::{MergeProposalStatus, Mode};
+use janitor_types::{CodebaseName, PublishId, RunId, VcsType};
 use serde::ser::SerializeStruct;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 /// Request and response types for the HTTP API.
-pub mod api_types;
 /// Types and axum handlers for the `/health` and `/ready` endpoints.
 pub mod health;
 /// Prometheus metrics.
@@ -920,7 +919,7 @@ impl PublishWorker {
                         .clone()
                         .expect("proposal_url just checked to be Some"),
                     web_url: result.proposal_web_url.clone(),
-                    status: janitor::publish::MergeProposalStatus::Open,
+                    status: janitor_types::publish::MergeProposalStatus::Open,
                     codebase: codebase.clone(),
                     campaign: campaign.clone(),
                     target_branch_url: Some(result.target_branch_url.clone()),
@@ -1226,8 +1225,10 @@ pub async fn publish_pending_ready(
 /// # Returns
 /// Ok(()) if successful, or a sqlx::Error
 pub async fn refresh_bucket_mp_counts(state: Arc<AppState>) -> Result<(), sqlx::Error> {
-    let mut per_bucket: HashMap<janitor::publish::MergeProposalStatus, HashMap<String, usize>> =
-        HashMap::new();
+    let mut per_bucket: HashMap<
+        janitor_types::publish::MergeProposalStatus,
+        HashMap<String, usize>,
+    > = HashMap::new();
 
     let rows = sqlx::query_as::<_, (String, String, i64)>(
         r#"
@@ -1334,7 +1335,7 @@ pub async fn post_comment_and_close(
 pub async fn close_mp(
     proposal_info_manager: &mut proposal_info::ProposalInfoManager,
     mp: &breezyshim::forge::MergeProposal,
-    status: janitor::publish::MergeProposalStatus,
+    status: janitor_types::publish::MergeProposalStatus,
     revision: &RevisionId,
     codebase: Option<&CodebaseName>,
     target_branch_url: &str,
@@ -2688,7 +2689,7 @@ pub async fn publish_from_policy(
     };
 
     if let Some(manager) = redis_manager {
-        let entry = janitor::api::publish::PublishedEntry {
+        let entry = janitor_types::api::publish::PublishedEntry {
             id: publish_id.clone(),
             codebase: run.codebase.clone(),
             campaign: run.campaign.clone(),
@@ -2865,7 +2866,7 @@ pub async fn publish_and_store(
             .await?;
 
             if let Some(manager) = redis_manager {
-                let entry = janitor::api::publish::PublishFailedEntry {
+                let entry = janitor_types::api::publish::PublishFailedEntry {
                     id: publish_id.clone(),
                     mode,
                     result_code: code.clone(),
@@ -2934,7 +2935,7 @@ pub async fn publish_and_store(
             ::metrics::histogram!(crate::metrics::PUBLISH_LATENCY).record(publish_delay_secs);
 
             if let Some(manager) = redis_manager {
-                let entry = janitor::api::publish::PublishedEntry {
+                let entry = janitor_types::api::publish::PublishedEntry {
                     id: publish_id.clone(),
                     campaign: run.campaign.clone(),
                     proposal_url: publish_result.proposal_url().cloned(),
@@ -2984,7 +2985,7 @@ async fn check_existing_mp(
     bucket_rate_limiter: &Mutex<Box<dyn crate::rate_limiter::RateLimiter>>,
     check_only: bool,
     mps_per_bucket: Option<
-        &mut HashMap<janitor::publish::MergeProposalStatus, HashMap<String, usize>>,
+        &mut HashMap<janitor_types::publish::MergeProposalStatus, HashMap<String, usize>>,
     >,
     mut possible_transports: Option<&mut Vec<breezyshim::transport::Transport>>,
 ) -> Result<bool, CheckMpError> {
@@ -3037,8 +3038,8 @@ async fn check_existing_mp(
             // rejected such rows, but keep the parse infallible).
             let effective_status = info
                 .status
-                .parse::<janitor::publish::MergeProposalStatus>()
-                .unwrap_or(janitor::publish::MergeProposalStatus::Open);
+                .parse::<janitor_types::publish::MergeProposalStatus>()
+                .unwrap_or(janitor_types::publish::MergeProposalStatus::Open);
             return finish_check_existing_mp_no_action(
                 status,
                 effective_status,
@@ -3217,21 +3218,28 @@ async fn check_existing_mp(
     // enum, then promote it back to whatever publisher-level status
     // we had previously persisted (abandoned / applied / rejected)
     // when the forge has merely told us the proposal is closed.
-    let mut effective_status: janitor::publish::MergeProposalStatus = match status {
-        breezyshim::forge::MergeProposalStatus::Open => janitor::publish::MergeProposalStatus::Open,
+    let mut effective_status: janitor_types::publish::MergeProposalStatus = match status {
+        breezyshim::forge::MergeProposalStatus::Open => {
+            janitor_types::publish::MergeProposalStatus::Open
+        }
         breezyshim::forge::MergeProposalStatus::Merged => {
-            janitor::publish::MergeProposalStatus::Merged
+            janitor_types::publish::MergeProposalStatus::Merged
         }
         breezyshim::forge::MergeProposalStatus::Closed => {
-            janitor::publish::MergeProposalStatus::Closed
+            janitor_types::publish::MergeProposalStatus::Closed
         }
-        breezyshim::forge::MergeProposalStatus::All => janitor::publish::MergeProposalStatus::Open,
+        breezyshim::forge::MergeProposalStatus::All => {
+            janitor_types::publish::MergeProposalStatus::Open
+        }
     };
     if let Some(info) = &old_proposal_info {
-        if effective_status == janitor::publish::MergeProposalStatus::Closed
+        if effective_status == janitor_types::publish::MergeProposalStatus::Closed
             && matches!(info.status.as_str(), "abandoned" | "applied" | "rejected")
         {
-            if let Ok(richer) = info.status.parse::<janitor::publish::MergeProposalStatus>() {
+            if let Ok(richer) = info
+                .status
+                .parse::<janitor_types::publish::MergeProposalStatus>()
+            {
                 effective_status = richer;
             }
         }
@@ -3514,7 +3522,7 @@ async fn check_existing_mp(
                 &mut proposal_info_manager,
                 mp,
                 &mp_url,
-                janitor::publish::MergeProposalStatus::Applied,
+                janitor_types::publish::MergeProposalStatus::Applied,
                 rev,
                 &mp_run.codebase,
                 target,
@@ -3601,7 +3609,7 @@ async fn check_existing_mp(
                 &mut proposal_info_manager,
                 mp,
                 &mp_url,
-                janitor::publish::MergeProposalStatus::Abandoned,
+                janitor_types::publish::MergeProposalStatus::Abandoned,
                 rev,
                 &mp_run.codebase,
                 target,
@@ -3689,7 +3697,7 @@ async fn check_existing_mp(
                         &mut proposal_info_manager,
                         mp,
                         &mp_url,
-                        janitor::publish::MergeProposalStatus::Abandoned,
+                        janitor_types::publish::MergeProposalStatus::Abandoned,
                         rev,
                         &mp_run.codebase,
                         target,
@@ -3928,7 +3936,7 @@ async fn check_existing_mp(
                         match close_mp(
                             &mut proposal_info_manager,
                             mp,
-                            janitor::publish::MergeProposalStatus::Applied,
+                            janitor_types::publish::MergeProposalStatus::Applied,
                             rev,
                             codebase.as_ref(),
                             target_branch_url_for_publish.as_str(),
@@ -4037,7 +4045,7 @@ async fn try_close_mp(
     proposal_info_manager: &mut proposal_info::ProposalInfoManager,
     mp: &breezyshim::forge::MergeProposal,
     mp_url: &url::Url,
-    status: janitor::publish::MergeProposalStatus,
+    status: janitor_types::publish::MergeProposalStatus,
     revision: &RevisionId,
     codebase: &CodebaseName,
     target_branch_url: &url::Url,
@@ -4160,10 +4168,10 @@ pub(crate) fn check_existing_mp_should_skip_per_mp_fetch(
 /// "no action taken" success flag.
 fn finish_check_existing_mp_no_action(
     status: breezyshim::forge::MergeProposalStatus,
-    effective_status: janitor::publish::MergeProposalStatus,
+    effective_status: janitor_types::publish::MergeProposalStatus,
     rate_limit_bucket: Option<&str>,
     mps_per_bucket: Option<
-        &mut HashMap<janitor::publish::MergeProposalStatus, HashMap<String, usize>>,
+        &mut HashMap<janitor_types::publish::MergeProposalStatus, HashMap<String, usize>>,
     >,
     check_only: bool,
 ) -> Result<bool, CheckMpError> {
@@ -4533,7 +4541,8 @@ async fn check_existing(
                 .set(total_for_status as f64);
         }
         let mut total_open = 0usize;
-        if let Some(open_buckets) = mps_per_bucket.get(&janitor::publish::MergeProposalStatus::Open)
+        if let Some(open_buckets) =
+            mps_per_bucket.get(&janitor_types::publish::MergeProposalStatus::Open)
         {
             for (bucket, count) in open_buckets {
                 total_open += count;

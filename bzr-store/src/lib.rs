@@ -11,7 +11,6 @@
 
 #![deny(missing_docs)]
 
-pub mod api_types;
 pub mod bzr_browse;
 pub mod config;
 pub mod database;
