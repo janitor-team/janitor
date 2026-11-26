@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use janitor_types::CodebaseName;
 
-pub use janitor_types::VcsType;
 use janitor::vcs::{BranchOpenFailure, VcsManager};
+pub use janitor_types::VcsType;
 
 /// VCS manager used by the runner: dispatches to the per-`VcsType`
 /// [`janitor::vcs::VcsManager`] and records timing/error metrics
