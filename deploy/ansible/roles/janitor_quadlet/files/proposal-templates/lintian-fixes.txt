@@ -1,0 +1,11 @@
+{% extends "base.txt" %}
+{% block codemod %}
+{% if applied|length > 1 -%}
+Fix some issues reported by lintian
+{% endif %}
+{% for entry in applied %}
+{% if applied|length > 1 %}* {% endif -%}
+{{ entry.summary }}{% if entry.fixed_lintian_tags %} ({% for tag in entry.fixed_lintian_tags %}{{ tag }}{% if not loop.last %}, {% endif %}{% endfor %}){% endif %}
+
+{% endfor -%}
+{% endblock %}
