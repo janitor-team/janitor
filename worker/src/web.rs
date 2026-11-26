@@ -115,6 +115,15 @@ async fn assignment(State(state): State<Arc<RwLock<AppState>>>) -> Json<Option<A
 
 #[utoipa::path(
     get,
+    path = "/intermediate-result",
+    responses((status = 200, description = "Metadata of the current run so far; null when there is none", body = Option<Metadata>))
+)]
+async fn intermediate_result(State(state): State<Arc<RwLock<AppState>>>) -> Json<Option<Metadata>> {
+    Json(state.read().unwrap().metadata.clone())
+}
+
+#[utoipa::path(
+    get,
     path = "/logs",
     responses(
         (status = 200, description = "Names of the log files; JSON when requested with `Accept: application/json`, HTML otherwise",
@@ -361,6 +370,7 @@ fn routes() -> OpenApiRouter<Arc<RwLock<AppState>>> {
         .routes(routes!(health))
         .routes(routes!(kill))
         .routes(routes!(assignment))
+        .routes(routes!(intermediate_result))
         .routes(routes!(get_logs))
         .routes(routes!(get_log_file))
         .routes(routes!(get_log_id))
@@ -526,6 +536,32 @@ mod tests {
         let body: Assignment = serde_json::from_str(&get_body(response).await).unwrap();
         assert_eq!(body.id, "test");
         assert_eq!(body.queue_id, 1);
+    }
+
+    #[tokio::test]
+    async fn test_intermediate_result() {
+        let state = Arc::new(RwLock::new(AppState::default()));
+        let request = Request::builder()
+            .uri("/intermediate-result")
+            .body(Body::empty())
+            .unwrap();
+        let response = app(state.clone()).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(get_body(response).await, "null");
+
+        let metadata = Metadata {
+            description: Some("Add bar".to_string()),
+            ..Metadata::default()
+        };
+        state.write().unwrap().metadata = Some(metadata.clone());
+        let request = Request::builder()
+            .uri("/intermediate-result")
+            .body(Body::empty())
+            .unwrap();
+        let response = app(state).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+        let body: Metadata = serde_json::from_str(&get_body(response).await).unwrap();
+        assert_eq!(body, metadata);
     }
 
     #[tokio::test]
