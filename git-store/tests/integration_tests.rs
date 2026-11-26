@@ -1358,18 +1358,32 @@ db_test! {
             commits.push((name, message, commit));
         }
 
-        let state = build_state(&tmp, &test_db, AppRole::Public).await;
-        let app = web::create_public_app(state, 0);
-        for (name, message, commit) in commits.iter().chain(commits.iter()) {
-            let resp = call(&app, browser_get(&format!("/git/{}/tree/main/", name))).await;
+        for prefix in ["/git", "/janitor/git", ""] {
+            let mut state = build_state(&tmp, &test_db, AppRole::Public).await;
+            let mut config = (*state.config).clone();
+            config.git.path_prefix = prefix.to_string();
+            state.config = Arc::new(config);
+            let app = web::create_public_app(state, 0);
+
+            let resp = call(&app, browser_get(&format!("{}/", prefix))).await;
             assert_eq!(resp.status(), 200);
             let body = body_text(resp).await;
-            assert!(body.contains(message.as_str()), "{} page: {}", name, body);
-            let link = format!("/git/{}/commit/{}/", name, commit);
-            assert!(body.contains(&link), "{} page lacks {}: {}", name, link, body);
-            for (other, other_message, _) in &commits {
-                if other != name {
-                    assert!(!body.contains(other_message.as_str()), "{} page: {}", name, body);
+            let link = format!("href=\"{}/alpha/\"", prefix);
+            assert!(body.contains(&link), "list lacks {}: {}", link, body);
+
+            for (name, message, commit) in commits.iter().chain(commits.iter()) {
+                let resp = call(&app, browser_get(&format!("{}/{}/tree/main/", prefix, name))).await;
+                assert_eq!(resp.status(), 200);
+                let body = body_text(resp).await;
+                assert!(body.contains(message.as_str()), "{} page: {}", name, body);
+                let link = format!("{}/{}/commit/{}/", prefix, name, commit);
+                assert!(body.contains(&link), "{} page lacks {}: {}", name, link, body);
+                let static_link = format!("\"{}/_static/", prefix);
+                assert!(body.contains(&static_link), "{} page lacks {}: {}", name, static_link, body);
+                for (other, other_message, _) in &commits {
+                    if other != name {
+                        assert!(!body.contains(other_message.as_str()), "{} page: {}", name, body);
+                    }
                 }
             }
         }
