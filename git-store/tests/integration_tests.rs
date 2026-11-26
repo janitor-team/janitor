@@ -554,11 +554,7 @@ db_test! {
         std::fs::write(tmp.path().join("dumb/info/refs"), "refs\n").unwrap();
 
         let state = build_state(&tmp, &test_db, AppRole::Public).await;
-        let (addr, handle) = spawn(web::create_public_app(state, 0)).await;
-        let client = reqwest::Client::builder()
-            .user_agent("git/2.47.3")
-            .build()
-            .unwrap();
+        let app = web::create_public_app(state, 0);
         let mut answers = Vec::new();
         for path in [
             "HEAD".to_string(),
@@ -567,18 +563,20 @@ db_test! {
             "info/refs?x&service=git-upload-pack".to_string(),
             "info/refs?service=git-upload-pack".to_string(),
         ] {
-            let resp = client
-                .get(format!("http://{}/git/dumb/{}", addr, path))
-                .send()
-                .await
-                .unwrap();
+            let resp = call(
+                &app,
+                Request::get(format!("/git/dumb/{}", path))
+                    .header("User-Agent", "git/2.47.3")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
             let content_type = resp
                 .headers()
                 .get("content-type")
                 .map(|v| v.to_str().unwrap().to_string());
             answers.push((path, resp.status().as_u16(), content_type));
         }
-        handle.abort();
 
         let smart = Some("application/x-git-upload-pack-advertisement".to_string());
         assert_eq!(
