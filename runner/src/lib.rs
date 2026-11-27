@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-// Re-export VcsInfo from the main crate to avoid duplication
+// Re-export logs and VcsInfo to avoid duplication
+pub use janitor::logs;
 pub use janitor_types::api::VcsInfo;
 
 // Re-export builder types
@@ -46,9 +47,6 @@ pub mod backchannel;
 pub mod builder;
 /// Database operations.
 pub mod database;
-/// Error tracking and logging.
-/// Module for log file management.
-pub mod logs;
 /// Module for Prometheus metrics collection.
 pub mod metrics;
 /// Reanalysis of the logs of finished runs.
@@ -68,6 +66,7 @@ pub mod watchdog;
 pub mod web;
 
 /// Test utilities for the runner module.
+#[cfg(any(test, feature = "testing"))]
 pub mod test_utils;
 
 /// Test helpers for database-dependent tests
@@ -254,7 +253,7 @@ pub fn find_changes(path: &Path) -> Result<ChangesSummary, FindChangesError> {
             if changes.version().as_ref() != Some(version) {
                 let found_version = changes
                     .version()
-                    .ok_or_else(|| FindChangesError::MissingChangesFileFields("Version"))?;
+                    .ok_or(FindChangesError::MissingChangesFileFields("Version"))?;
                 return Err(FindChangesError::InconsistentVersion(
                     names,
                     found_version,
@@ -267,7 +266,7 @@ pub fn find_changes(path: &Path) -> Result<ChangesSummary, FindChangesError> {
             if changes.source().as_ref() != Some(source) {
                 let found_source = changes
                     .source()
-                    .ok_or_else(|| FindChangesError::MissingChangesFileFields("Source"))?;
+                    .ok_or(FindChangesError::MissingChangesFileFields("Source"))?;
                 return Err(FindChangesError::InconsistentSource(
                     names,
                     found_source,
@@ -276,12 +275,11 @@ pub fn find_changes(path: &Path) -> Result<ChangesSummary, FindChangesError> {
             }
         }
         source = changes.source();
-
         if let Some(distribution) = &distribution {
             if changes.distribution().as_ref() != Some(distribution) {
                 let found_distribution = changes
                     .distribution()
-                    .ok_or_else(|| FindChangesError::MissingChangesFileFields("Distribution"))?;
+                    .ok_or(FindChangesError::MissingChangesFileFields("Distribution"))?;
                 return Err(FindChangesError::InconsistentDistribution(
                     names,
                     found_distribution,
@@ -385,38 +383,6 @@ pub fn dpkg_vendor() -> Option<String> {
             log::warn!("Failed to determine dpkg vendor");
             Some(String::new())
         })
-}
-
-/// Scan a directory for log files.
-///
-/// # Arguments
-/// * `output_directory` - Directory to scan
-///
-/// # Returns
-/// An iterator over log file directory entries, or an empty iterator if the directory cannot be read
-pub fn gather_logs(output_directory: &std::path::Path) -> impl Iterator<Item = std::fs::DirEntry> {
-    match std::fs::read_dir(output_directory) {
-        Ok(entries) => {
-            let logs: Vec<_> = entries
-                .filter_map(|entry| {
-                    let entry = entry.ok()?;
-                    let file_type = entry.file_type().ok()?;
-                    let file_name = entry.file_name();
-                    let file_name_str = file_name.to_str()?;
-                    if file_type.is_dir() && is_log_filename(file_name_str) {
-                        Some(entry)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            logs.into_iter()
-        }
-        Err(e) => {
-            log::error!("Failed to read directory {:?}: {}", output_directory, e);
-            Vec::new().into_iter()
-        }
-    }
 }
 
 /// Result of a Janitor run.
@@ -599,8 +565,6 @@ pub struct WorkerResult {
     pub code: String,
     /// Human-readable description.
     pub description: Option<String>,
-    /// Context information.
-    pub context: Option<serde_json::Value>,
     /// Codemod result.
     pub codemod: Option<serde_json::Value>,
     /// Main branch revision ID.
@@ -638,8 +602,8 @@ pub struct WorkerResult {
     /// `TargetDetails { name, details }` shape). This field stays
     /// for code paths that already populate it directly (mostly
     /// tests and the in-process resume path); production worker
-    /// uploads materialise it via [`Self::resolved_builder_result`]
-    /// from the `target` payload.
+    /// uploads materialise it from the `target` payload via
+    /// [`BuilderResult::from_target_details`].
     #[serde(default)]
     pub builder_result: Option<BuilderResult>,
     /// Wire-shape build metadata as the worker actually emits it
@@ -648,29 +612,10 @@ pub struct WorkerResult {
     /// `worker/src/lib.rs` where `metadata.target` is set right
     /// after `build_target.build(...)`). Renamed-field deserialise
     /// fallback for [`Self::builder_result`]; the finish-run path
-    /// calls [`Self::resolved_builder_result`] to fold this back
-    /// into a `BuilderResult` so `debian_build` rows actually get
-    /// inserted on successful runs.
+    /// folds this back into a `BuilderResult` so `debian_build` rows
+    /// actually get inserted on successful runs.
     #[serde(default)]
     pub target: Option<janitor_types::api::worker::TargetDetails>,
-    /// Start time.
-    pub start_time: Option<DateTime<Utc>>,
-    /// Finish time.
-    pub finish_time: Option<DateTime<Utc>>,
-    /// Queue ID.
-    pub queue_id: Option<i64>,
-    /// Worker name.
-    pub worker_name: Option<String>,
-    /// Whether the run was refreshed.
-    ///
-    /// Worker emits `null` for runs where "refreshed" isn't
-    /// meaningful (see worker/src/lib.rs where some code-paths
-    /// serialise `"refreshed": False` and others leave the option
-    /// unset). Accepting `Option<bool>` here matches the wire shape;
-    /// callers that previously compared `refreshed == true` should
-    /// do `refreshed.unwrap_or(false)`.
-    #[serde(default)]
-    pub refreshed: Option<bool>,
     /// Target branch URL.
     pub target_branch_url: Option<String>,
     /// Branch URL.
@@ -681,8 +626,6 @@ pub struct WorkerResult {
     pub subpath: Option<String>,
     /// Whether the result is transient.
     pub transient: Option<bool>,
-    /// Codebase name.
-    pub codebase: Option<CodebaseName>,
 }
 
 /// Information about an active run.
@@ -698,8 +641,6 @@ pub struct ActiveRun {
     pub log_id: RunId,
     /// Start time.
     pub start_time: DateTime<Utc>,
-    /// Optional finish time.
-    pub finish_time: Option<DateTime<Utc>>,
     /// Optional estimated duration.
     #[serde(with = "serde_with::As::<Option<serde_with::DurationSeconds<f64>>>")]
     pub estimated_duration: Option<Duration>,
@@ -727,21 +668,6 @@ impl ActiveRun {
         let now = Utc::now();
         let duration = now - self.start_time;
         Duration::from_secs(duration.num_seconds().max(0) as u64)
-    }
-
-    /// Get VCS type.
-    pub fn vcs_type(&self) -> Option<&str> {
-        self.vcs_info.vcs_type.as_deref()
-    }
-
-    /// Get main branch URL.
-    pub fn main_branch_url(&self) -> Option<&str> {
-        self.vcs_info.branch_url.as_deref()
-    }
-
-    /// Get subpath.
-    pub fn subpath(&self) -> Option<&str> {
-        self.vcs_info.subpath.as_deref()
     }
 
     /// Create a JanitorResult from this active run.
@@ -1492,16 +1418,6 @@ impl BuilderResult {
             }),
         }
     }
-
-    /// Get artifact filenames.
-    pub fn artifact_filenames(&self) -> Vec<String> {
-        match self {
-            BuilderResult::Generic => vec![],
-            BuilderResult::Debian {
-                changes_filenames, ..
-            } => changes_filenames.clone().unwrap_or_default(),
-        }
-    }
 }
 
 /// Ping failure types.
@@ -1673,6 +1589,27 @@ pub struct ComponentHealth {
     pub error: Option<String>,
 }
 
+impl ComponentHealth {
+    fn healthy(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            status: ServiceHealthStatus::Healthy,
+            error: None,
+        }
+    }
+
+    fn from_result<E: std::fmt::Display>(name: &str, result: Result<(), E>) -> Self {
+        match result {
+            Ok(()) => Self::healthy(name),
+            Err(e) => Self {
+                name: name.to_string(),
+                status: ServiceHealthStatus::Unhealthy,
+                error: Some(e.to_string()),
+            },
+        }
+    }
+}
+
 /// Aggregated health report as returned by `/health`.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct HealthReport {
@@ -1695,66 +1632,29 @@ pub struct HealthReport {
 pub struct HealthChecker {
     database: Arc<database::RunnerDatabase>,
     log_manager: Arc<logs::LogFileManager>,
-    _vcs_manager: Arc<vcs::RunnerVcsManager>,
-    _artifact_manager: Arc<janitor::artifacts::ArtifactManager>,
 }
 
 impl HealthChecker {
     /// Build a health checker wired to the runner's collaborators.
     pub fn new(
         database: Arc<database::RunnerDatabase>,
-        vcs_manager: Arc<vcs::RunnerVcsManager>,
         log_manager: Arc<logs::LogFileManager>,
-        artifact_manager: Arc<janitor::artifacts::ArtifactManager>,
     ) -> Self {
         Self {
             database,
             log_manager,
-            _vcs_manager: vcs_manager,
-            _artifact_manager: artifact_manager,
         }
     }
 
     /// Full report across every component.
     pub async fn report(&self) -> HealthReport {
-        let db = match janitor::database::health_check(self.database.pool()).await {
-            Ok(_) => ComponentHealth {
-                name: "database".to_string(),
-                status: ServiceHealthStatus::Healthy,
-                error: None,
-            },
-            Err(e) => ComponentHealth {
-                name: "database".to_string(),
-                status: ServiceHealthStatus::Unhealthy,
-                error: Some(e.to_string()),
-            },
-        };
-
-        let logs = match self.log_manager.health_check().await {
-            Ok(()) => ComponentHealth {
-                name: "logs".to_string(),
-                status: ServiceHealthStatus::Healthy,
-                error: None,
-            },
-            Err(e) => ComponentHealth {
-                name: "logs".to_string(),
-                status: ServiceHealthStatus::Unhealthy,
-                error: Some(e.to_string()),
-            },
-        };
-
-        let vcs = ComponentHealth {
-            name: "vcs".to_string(),
-            status: ServiceHealthStatus::Healthy,
-            error: None,
-        };
-        let artifacts = ComponentHealth {
-            name: "artifacts".to_string(),
-            status: ServiceHealthStatus::Healthy,
-            error: None,
-        };
-
-        let checks = vec![db, vcs, logs, artifacts];
+        let db = janitor::database::health_check(self.database.pool()).await;
+        let checks = vec![
+            ComponentHealth::from_result("database", db),
+            ComponentHealth::healthy("vcs"),
+            ComponentHealth::from_result("logs", self.log_manager.health_check().await),
+            ComponentHealth::healthy("artifacts"),
+        ];
         let overall = if checks
             .iter()
             .any(|c| c.status == ServiceHealthStatus::Unhealthy)
@@ -1918,7 +1818,6 @@ mod tests {
             queue_id: 123,
             log_id: RunId::new("log-456").unwrap(),
             start_time: Utc::now(),
-            finish_time: None,
             estimated_duration: Some(Duration::from_secs(300)),
             campaign: Campaign::new("test-campaign").unwrap(),
             change_set: None,
@@ -1930,36 +1829,11 @@ mod tests {
             resume_from: None,
         };
 
-        assert_eq!(active_run.vcs_type(), Some("git"));
-        assert_eq!(
-            active_run.main_branch_url(),
-            Some("https://github.com/example/repo.git")
-        );
-
         let result =
             active_run.create_result("success".to_string(), Some("Test completed".to_string()));
         assert_eq!(result.code, "success");
         assert_eq!(result.description, Some("Test completed".to_string()));
         assert_eq!(result.codebase, "test-codebase");
-    }
-
-    #[test]
-    fn test_builder_result_serialization() {
-        let generic = BuilderResult::Generic;
-        assert_eq!(generic.kind(), "generic");
-        assert_eq!(generic.artifact_filenames(), Vec::<String>::new());
-
-        let debian = BuilderResult::Debian {
-            source: Some("test-package".to_string()),
-            build_version: Some("1.0.0".to_string()),
-            build_distribution: Some("bullseye".to_string()),
-            changes_filenames: Some(vec!["test.changes".to_string()]),
-            lintian_result: None,
-            binary_packages: Some(vec!["test-bin".to_string()]),
-        };
-
-        assert_eq!(debian.kind(), "debian");
-        assert_eq!(debian.artifact_filenames(), vec!["test.changes"]);
     }
 
     /// Regression for the wire-format mismatch between worker
@@ -2214,32 +2088,6 @@ mod tests {
     }
 
     #[test]
-    fn test_gather_logs_with_files() {
-        let td = tempfile::tempdir().unwrap();
-        // gather_logs looks for *directories* that match is_log_filename
-        std::fs::create_dir(td.path().join("build.log")).unwrap();
-        std::fs::create_dir(td.path().join("worker.log")).unwrap();
-        std::fs::create_dir(td.path().join("not-a-log")).unwrap();
-        // Regular file should be ignored
-        std::fs::write(td.path().join("output.log"), "content").unwrap();
-
-        let logs: Vec<_> = gather_logs(td.path()).collect();
-        let mut names: Vec<String> = logs
-            .iter()
-            .map(|e| e.file_name().to_string_lossy().to_string())
-            .collect();
-        names.sort();
-        assert_eq!(names, vec!["build.log", "worker.log"]);
-    }
-
-    #[test]
-    fn test_gather_logs_empty_directory() {
-        let td = tempfile::tempdir().unwrap();
-        let logs: Vec<_> = gather_logs(td.path()).collect();
-        assert_eq!(logs.len(), 0);
-    }
-
-    #[test]
     fn test_janitor_result_serde() {
         let result = JanitorResult {
             log_id: RunId::new("log-123").unwrap(),
@@ -2384,10 +2232,9 @@ mod tests {
         assert_eq!(err.to_string(), "Missing field Source in changes files");
     }
 
-    // The worker emits `stage` as a single string and either omits
-    // `refreshed` entirely or sends `null`. Earlier the runner declared
-    // `stage: Option<Vec<String>>` and required `refreshed: bool`,
-    // which made every /finish upload silently fail to parse.
+    // The worker emits `stage` as a single string. Earlier the runner
+    // declared `stage: Option<Vec<String>>`, which made every /finish
+    // upload silently fail to parse.
     #[test]
     fn test_worker_result_accepts_string_stage() {
         let payload = serde_json::json!({
@@ -2405,32 +2252,23 @@ mod tests {
         assert_eq!(wr.code, "success");
     }
 
+    // Workers in the field still send `refreshed`, `context`, `start_time`,
+    // `finish_time`, `queue_id`, `worker_name` and `codebase` on finish-run
+    // uploads even though the runner no longer reads them. The /finish endpoint
+    // must keep accepting those payloads instead of 400'ing the worker.
     #[test]
-    fn test_worker_result_accepts_missing_refreshed() {
-        let payload = serde_json::json!({
-            "code": "success",
-        });
-        let wr: WorkerResult = serde_json::from_value(payload).unwrap();
-        assert_eq!(wr.refreshed, None);
-    }
-
-    #[test]
-    fn test_worker_result_accepts_null_refreshed() {
-        let payload = serde_json::json!({
-            "code": "success",
-            "refreshed": null,
-        });
-        let wr: WorkerResult = serde_json::from_value(payload).unwrap();
-        assert_eq!(wr.refreshed, None);
-    }
-
-    #[test]
-    fn test_worker_result_accepts_explicit_refreshed() {
+    fn test_worker_result_accepts_legacy_fields() {
         let payload = serde_json::json!({
             "code": "success",
             "refreshed": true,
+            "context": {"from": "test"},
+            "start_time": "2024-01-01T00:00:00Z",
+            "finish_time": "2024-01-01T00:05:00Z",
+            "queue_id": 42,
+            "worker_name": "worker-1",
+            "codebase": "mycodebase",
         });
         let wr: WorkerResult = serde_json::from_value(payload).unwrap();
-        assert_eq!(wr.refreshed, Some(true));
+        assert_eq!(wr.code, "success");
     }
 }
