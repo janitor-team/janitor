@@ -882,9 +882,9 @@ db_test! {
 
 db_test! {
     async fn test_admin_diff_missing_commit_500(test_db: TestDatabase) {
-        // No precheck for revision presence anymore -- git itself
-        // errors out, which surfaces as 500 "git diff failed: ..."
-        // matching Python exactly.
+        // There is no precheck for revision presence; the diff itself
+        // fails, which surfaces as 500 "git diff failed: ..." matching
+        // Python.
         seed_codebase(test_db.pool(), "codebase").await;
 
         let tmp = TempDir::new().unwrap();
@@ -994,6 +994,117 @@ db_test! {
         assert_eq!(commits[0].sha, c2.to_string());
         assert_eq!(commits[0].author.name, "Alice");
         assert_eq!(commits[0].author.email, "alice@example.com");
+    }
+}
+
+/// Commit a tree containing `files` on top of `parents` in `repo`.
+fn commit_files(
+    repo: &git2::Repository,
+    files: &[(&str, &str)],
+    message: &str,
+    parents: &[git2::Oid],
+) -> git2::Oid {
+    let sig = git2::Signature::now("Alice", "alice@example.com").unwrap();
+    let mut tb = repo.treebuilder(None).unwrap();
+    for (name, content) in files {
+        let blob = repo.blob(content.as_bytes()).unwrap();
+        tb.insert(name, blob, 0o100644).unwrap();
+    }
+    let tree = repo.find_tree(tb.write().unwrap()).unwrap();
+    let parents: Vec<git2::Commit> = parents
+        .iter()
+        .map(|oid| repo.find_commit(*oid).unwrap())
+        .collect();
+    let parents: Vec<&git2::Commit> = parents.iter().collect();
+    repo.commit(None, &sig, &sig, message, &tree, &parents)
+        .unwrap()
+}
+
+db_test! {
+    async fn test_admin_diff_matches_git_cli_output(test_db: TestDatabase) {
+        seed_codebase(test_db.pool(), "codebase").await;
+
+        let tmp = TempDir::new().unwrap();
+        let repo = git2::Repository::init_bare(tmp.path().join("codebase")).unwrap();
+        let c1 = commit_files(
+            &repo,
+            &[
+                ("a.txt", "one\ntwo\nthree\n"),
+                ("b.txt", "line1\nline2\nline3\nline4\nline5\n"),
+                ("e.txt", "x"),
+            ],
+            "first",
+            &[],
+        );
+        let c2 = commit_files(
+            &repo,
+            &[
+                ("a.txt", "one\n2\nthree\n"),
+                ("c.txt", "line1\nline2\nline3\nline4\nline5\n"),
+                ("d.txt", "new\n"),
+                ("e.txt", "y"),
+            ],
+            "second",
+            &[c1],
+        );
+
+        let state = build_state(&tmp, &test_db, AppRole::Admin).await;
+        let app = web::create_admin_app(state, 0);
+
+        let resp = get(&app, &format!("/codebase/diff?old={}&new={}", c1, c2)).await;
+        assert_eq!(resp.status(), 200);
+        // Output of `git diff` for the same trees.
+        assert_eq!(
+            body_text(resp).await,
+            "diff --git a/a.txt b/a.txt
+index 4cb29ea..f04eb26 100644
+--- a/a.txt
++++ b/a.txt
+@@ -1,3 +1,3 @@
+ one
+-two
++2
+ three
+diff --git a/b.txt b/c.txt
+similarity index 100%
+rename from b.txt
+rename to c.txt
+diff --git a/d.txt b/d.txt
+new file mode 100644
+index 0000000..3e75765
+--- /dev/null
++++ b/d.txt
+@@ -0,0 +1 @@
++new
+diff --git a/e.txt b/e.txt
+index c1b0730..e25f181 100644
+--- a/e.txt
++++ b/e.txt
+@@ -1 +1 @@
+-x
+\\ No newline at end of file
++y
+\\ No newline at end of file
+"
+        );
+
+        let resp = get(
+            &app,
+            &format!("/codebase/diff?old={}&new={}&path=d.txt", c1, c2),
+        )
+        .await;
+        assert_eq!(resp.status(), 200);
+        assert_eq!(
+            body_text(resp).await,
+            "diff --git a/d.txt b/d.txt
+new file mode 100644
+index 0000000..3e75765
+--- /dev/null
++++ b/d.txt
+@@ -0,0 +1 @@
++new
+"
+        );
     }
 }
 

@@ -79,116 +79,97 @@ pub async fn git_diff(
         ));
     }
 
-    let mut cmd = Command::new("git");
-    cmd.arg("diff")
-        .arg(&old)
-        .arg(&new)
-        .current_dir(&repo_path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+    // The diff is generated on a blocking thread and handed over in
+    // chunks so large diffs stream rather than being buffered whole.
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    let path = params.path;
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = write_diff(&repo_path, &old, &new, path.as_deref(), &tx) {
+            warn!("git diff failed: {}", e);
+            // A send failure means the client has gone away.
+            let _ = tx.blocking_send(Err(e));
+        }
+    });
 
-    if let Some(path) = params.path {
-        cmd.arg("--").arg(path);
-    }
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| GitStoreError::Other(anyhow::anyhow!("spawn git diff: {}", e)))?;
-
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| GitStoreError::Other(anyhow::anyhow!("no stdout on git diff")))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| GitStoreError::Other(anyhow::anyhow!("no stderr on git diff")))?;
-
-    // Peek the first chunk before writing headers so an immediate
+    // Wait for the first chunk before writing headers so an immediate
     // failure (bad object, broken repo) still surfaces as 500 rather
     // than a 200 with a truncated/empty body.
     let timeout = std::time::Duration::from_secs(state.config.git.git_timeout);
-    let mut first_chunk = vec![0u8; 8192];
-    let n = match tokio::time::timeout(timeout, stdout.read(&mut first_chunk)).await {
-        Ok(Ok(n)) => n,
-        Ok(Err(e)) => {
-            let _ = child.kill().await;
-            return Err(GitStoreError::Other(anyhow::anyhow!(
-                "read git diff stdout: {}",
-                e
-            )));
+    let first_chunk = match tokio::time::timeout(timeout, rx.recv()).await {
+        Err(_) => return Err(GitStoreError::DiffTimeout),
+        // Empty diff is legitimate (identical trees).
+        Ok(None) => bytes::Bytes::new(),
+        Ok(Some(Err(e))) => {
+            return Err(GitStoreError::GitDiffFailed(e.message().to_string()));
         }
-        Err(_) => {
-            let _ = child.kill().await;
-            return Err(GitStoreError::DiffTimeout);
-        }
+        Ok(Some(Ok(chunk))) => chunk,
     };
-    first_chunk.truncate(n);
 
-    if n == 0 {
-        // No output: wait for exit so we can report an accurate error.
-        match tokio::time::timeout(timeout, child.wait()).await {
-            Ok(Ok(status)) if status.success() => {
-                // Empty diff is legitimate (identical trees).
-                return Response::builder()
-                    .status(StatusCode::OK)
-                    .header(header::CONTENT_TYPE, "text/x-diff")
-                    .body(Body::empty())
-                    .map_err(GitStoreError::HttpLibError);
-            }
-            Ok(Ok(_)) => {
-                let msg = read_stderr_lossy(stderr).await;
-                warn!("git diff failed: {}", msg);
-                return Err(GitStoreError::GitDiffFailed(msg));
-            }
-            Ok(Err(e)) => {
-                return Err(GitStoreError::Other(anyhow::anyhow!(
-                    "wait git diff: {}",
-                    e
-                )));
-            }
-            Err(_) => {
-                let _ = child.kill().await;
-                return Err(GitStoreError::DiffTimeout);
-            }
-        }
-    }
-
-    // Stream the rest. A child whose stdout/wait tasks live past the
-    // handler needs to be reaped by someone, so spawn a reaper that
-    // drains stderr for logging and awaits exit.
-    tokio::spawn(async move {
-        let msg = read_stderr_lossy(stderr).await;
-        match child.wait().await {
-            Ok(status) if !status.success() => {
-                warn!("git diff exited non-zero: {}", msg);
-            }
-            Err(e) => warn!("git diff wait failed: {}", e),
-            _ => {}
-        }
+    let first = futures_util::stream::once(async move { Ok(first_chunk) });
+    let rest = futures_util::stream::unfold(rx, |mut rx| async move {
+        let item = rx.recv().await?;
+        Some((item.map_err(std::io::Error::other), rx))
     });
-
-    let first = futures_util::stream::once(async move {
-        Ok::<_, std::io::Error>(bytes::Bytes::from(first_chunk))
-    });
-    let rest = tokio_util::io::ReaderStream::new(stdout);
-    let combined = first.chain(rest);
 
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/x-diff")
-        .body(Body::from_stream(combined))
+        .body(Body::from_stream(first.chain(rest)))
         .map_err(GitStoreError::HttpLibError)
 }
 
-/// Drain git's stderr for logging; silently ignores read errors so a
-/// best-effort message is better than none.
-async fn read_stderr_lossy<R: tokio::io::AsyncRead + Unpin>(mut reader: R) -> String {
-    let mut buf = Vec::new();
-    let _ = tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut buf).await;
-    String::from_utf8_lossy(&buf).into_owned()
+type DiffChunk = std::result::Result<bytes::Bytes, git2::Error>;
+
+/// Write a unified diff between the trees of `old` and `new` to `tx`,
+/// in chunks of roughly `DIFF_CHUNK_SIZE` bytes.
+fn write_diff(
+    repo_path: &std::path::Path,
+    old: &str,
+    new: &str,
+    path: Option<&str>,
+    tx: &tokio::sync::mpsc::Sender<DiffChunk>,
+) -> std::result::Result<(), git2::Error> {
+    const DIFF_CHUNK_SIZE: usize = 8192;
+
+    let repo = git2::Repository::open(repo_path)?;
+    let old_tree = repo
+        .find_object(git2::Oid::from_str(old)?, None)?
+        .peel_to_tree()?;
+    let new_tree = repo
+        .find_object(git2::Oid::from_str(new)?, None)?
+        .peel_to_tree()?;
+    let mut opts = git2::DiffOptions::new();
+    if let Some(path) = path {
+        opts.pathspec(path);
+    }
+    let mut diff = repo.diff_tree_to_tree(Some(&old_tree), Some(&new_tree), Some(&mut opts))?;
+    diff.find_similar(None)?;
+
+    let mut buf = Vec::with_capacity(DIFF_CHUNK_SIZE);
+    let mut client_gone = false;
+    let result = diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+        if matches!(line.origin(), '+' | '-' | ' ') {
+            buf.push(line.origin() as u8);
+        }
+        buf.extend_from_slice(line.content());
+        if buf.len() >= DIFF_CHUNK_SIZE
+            && tx
+                .blocking_send(Ok(std::mem::take(&mut buf).into()))
+                .is_err()
+        {
+            client_gone = true;
+            return false;
+        }
+        true
+    });
+    if client_gone {
+        return Ok(());
+    }
+    result?;
+    if !buf.is_empty() {
+        let _ = tx.blocking_send(Ok(buf.into()));
+    }
+    Ok(())
 }
 
 /// True for a 40-char lowercase or uppercase hex string. Matches
