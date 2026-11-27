@@ -664,36 +664,44 @@ db_test! {
         let (addr, handle) = spawn(app).await;
 
         // Build a source repo with one commit in a scratch dir and
-        // push it. Using the `git` CLI keeps the test independent of
-        // libgit2's HTTP transport.
+        // push it.
         let src = TempDir::new().unwrap();
-        let src_path = src.path();
-        let run_git = |args: &[&str]| -> std::process::Output {
-            std::process::Command::new("git")
-                .args(args)
-                .current_dir(src_path)
-                .env("GIT_TERMINAL_PROMPT", "0")
-                .env("GIT_AUTHOR_NAME", "Test")
-                .env("GIT_AUTHOR_EMAIL", "test@example.com")
-                .env("GIT_COMMITTER_NAME", "Test")
-                .env("GIT_COMMITTER_EMAIL", "test@example.com")
-                .output()
-                .expect("failed to run git")
-        };
+        let src_repo = git2::Repository::init(src.path()).unwrap();
+        std::fs::write(src.path().join("hello.txt"), "hi\n").unwrap();
+        let mut index = src_repo.index().unwrap();
+        index.add_path(std::path::Path::new("hello.txt")).unwrap();
+        let tree = src_repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        src_repo
+            .commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
 
-        assert!(run_git(&["init", "-q", "-b", "main"]).status.success());
-        std::fs::write(src_path.join("hello.txt"), "hi\n").unwrap();
-        assert!(run_git(&["add", "hello.txt"]).status.success());
-        assert!(run_git(&["commit", "-q", "-m", "init"]).status.success());
-
+        // libgit2 blocks on the network, so keep it off the runtime
+        // threads serving the request.
         let remote_url = format!("http://{}/pushtest", addr);
-        let push = run_git(&["push", &remote_url, "main:refs/heads/main"]);
-        assert!(
-            push.status.success(),
-            "git push failed: stdout={} stderr={}",
-            String::from_utf8_lossy(&push.stdout),
-            String::from_utf8_lossy(&push.stderr)
-        );
+        let src_path = src.path().to_path_buf();
+        let rejections = tokio::task::spawn_blocking(move || {
+            let repo = git2::Repository::open(&src_path).unwrap();
+            let mut remote = repo.remote_anonymous(&remote_url).unwrap();
+            let mut rejections = Vec::new();
+            let mut callbacks = git2::RemoteCallbacks::new();
+            callbacks.push_update_reference(|refname, status| {
+                if let Some(status) = status {
+                    rejections.push(format!("{}: {}", refname, status));
+                }
+                Ok(())
+            });
+            let mut opts = git2::PushOptions::new();
+            opts.remote_callbacks(callbacks);
+            remote
+                .push(&["refs/heads/main:refs/heads/main"], Some(&mut opts))
+                .unwrap();
+            drop(opts);
+            rejections
+        })
+        .await
+        .unwrap();
+        assert_eq!(rejections, Vec::<String>::new());
 
         // Verify server-side: the pushed ref should now be present.
         let server_repo = git2::Repository::open_bare(&bare).unwrap();
