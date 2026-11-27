@@ -42,6 +42,37 @@ async fn setup_with_campaign() -> Option<(axum::Router, Arc<AppState>)> {
         .expect("test app setup should either succeed or return None cleanly")
 }
 
+/// Return the value of a setup future, or skip the test when it
+/// yields `None` because no database or Redis is available.
+macro_rules! require_setup {
+    ($setup:expr) => {
+        match $setup.await {
+            Some(v) => v,
+            None => {
+                eprintln!("skipping: no test resources");
+                return;
+            }
+        }
+    };
+}
+
+/// Send a request with an optional JSON body through `app`.
+async fn send(
+    app: &axum::Router,
+    method: Method,
+    uri: &str,
+    body: Option<&Value>,
+) -> axum::response::Response {
+    let req = Request::builder().method(method).uri(uri);
+    let req = match body {
+        Some(body) => req
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string())),
+        None => req.body(Body::empty()),
+    };
+    app.clone().oneshot(req.unwrap()).await.unwrap()
+}
+
 async fn get_body(response: axum::response::Response) -> Value {
     let bytes = to_bytes(response.into_body(), usize::MAX)
         .await
@@ -51,25 +82,6 @@ async fn get_body(response: axum::response::Response) -> Value {
     } else {
         serde_json::from_slice(&bytes).expect("response body should be JSON")
     }
-}
-
-/// Insert a codebase row directly against the test pool. Callers use
-/// this to build the referenced state that a write endpoint expects.
-///
-/// The `codebase` table's check constraint requires
-/// `(branch_url IS NULL) = (url IS NULL)`, so set both.
-async fn insert_codebase(pool: &sqlx::PgPool, name: &str) {
-    let url = format!("https://example.invalid/{name}");
-    sqlx::query(
-        "INSERT INTO codebase (name, branch_url, url, vcs_type)
-         VALUES ($1, $2, $2, 'git')
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(name)
-    .bind(&url)
-    .execute(pool)
-    .await
-    .expect("codebase insert");
 }
 
 /// POST `codebases` to `/codebases` and return the status and JSON body.
@@ -89,17 +101,9 @@ async fn post_codebases(app: &axum::Router, codebases: &[CodebaseUpload]) -> (St
 /// 400. Verifies the parse-guard before we ever touch the DB.
 #[tokio::test]
 async fn delete_candidate_rejects_non_numeric_id() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, _state) = require_setup!(setup());
 
-    let req = Request::builder()
-        .method(Method::DELETE)
-        .uri("/candidates/not-a-number")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::DELETE, "/candidates/not-a-number", None).await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = get_body(response).await;
@@ -110,17 +114,9 @@ async fn delete_candidate_rejects_non_numeric_id() {
 /// `{reason}` body.
 #[tokio::test]
 async fn delete_candidate_missing_returns_404() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, _state) = require_setup!(setup());
 
-    let req = Request::builder()
-        .method(Method::DELETE)
-        .uri("/candidates/999999")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::DELETE, "/candidates/999999", None).await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let body = get_body(response).await;
@@ -132,10 +128,7 @@ async fn delete_candidate_missing_returns_404() {
 /// visible side-effect through the database.
 #[tokio::test]
 async fn post_codebases_upserts_and_is_visible_via_get() {
-    let Some((app, state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, state) = require_setup!(setup());
 
     let body = json!([
         {
@@ -150,13 +143,7 @@ async fn post_codebases_upserts_and_is_visible_via_get() {
         }
     ]);
 
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/codebases")
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    let response = app.clone().oneshot(req).await.unwrap();
+    let response = send(&app, Method::POST, "/codebases", Some(&body)).await;
     assert_eq!(response.status(), StatusCode::OK);
 
     // Confirm the rows landed via a direct query, not via
@@ -346,19 +333,10 @@ async fn post_codebases_rejects_javascript_web_url() {
 /// `{reason}` body.
 #[tokio::test]
 async fn post_schedule_with_missing_run_returns_404() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, _state) = require_setup!(setup());
 
     let body = json!({"run_id": "no-such-run"});
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/schedule")
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::POST, "/schedule", Some(&body)).await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let body = get_body(response).await;
@@ -370,10 +348,7 @@ async fn post_schedule_with_missing_run_returns_404() {
 /// gates on `campaign` first when no `run_id` is provided.
 #[tokio::test]
 async fn post_schedule_missing_campaign_returns_400() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, _state) = require_setup!(setup());
 
     let req = Request::builder()
         .method(Method::POST)
@@ -392,19 +367,10 @@ async fn post_schedule_missing_campaign_returns_400() {
 /// `{reason}` body.
 #[tokio::test]
 async fn post_update_run_missing_returns_404() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, _state) = require_setup!(setup());
 
     let body = json!({"publish_status": "approved"});
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/runs/no-such-run")
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::POST, "/runs/no-such-run", Some(&body)).await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let body = get_body(response).await;
@@ -422,15 +388,12 @@ async fn post_update_run_missing_returns_404() {
 /// query that the row was actually mutated.
 #[tokio::test]
 async fn post_update_run_persists_publish_status() {
-    let Some((app, state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, state) = require_setup!(setup());
 
     let pool = state.database.pool().clone();
 
     // Seed: one codebase, one change_set, one run row.
-    insert_codebase(&pool, "update-run-codebase").await;
+    test_utils::insert_codebase(&pool, "update-run-codebase").await;
     sqlx::query("INSERT INTO change_set (id, campaign) VALUES ($1, $2)")
         .bind("cs-upd")
         .bind("test-campaign")
@@ -458,13 +421,7 @@ async fn post_update_run_persists_publish_status() {
     .expect("insert run");
 
     let body = json!({"publish_status": "approved"});
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/runs/run-upd-1")
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::POST, "/runs/run-upd-1", Some(&body)).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = get_body(response).await;
@@ -487,17 +444,9 @@ async fn post_update_run_persists_publish_status() {
 /// `{reason}` body.
 #[tokio::test]
 async fn post_kill_missing_returns_404() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, _state) = require_setup!(setup());
 
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/kill/no-such-run")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::POST, "/kill/no-such-run", None).await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let body = get_body(response).await;
@@ -514,10 +463,7 @@ async fn post_kill_missing_returns_404() {
 /// with the `{reason}` shape Python emits.
 #[tokio::test]
 async fn post_finish_missing_returns_404() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, _state) = require_setup!(setup());
 
     // Real `/finish` expects multipart; a plain empty body reaches the
     // "no such run" branch first because the run-id lookup happens
@@ -546,10 +492,7 @@ async fn post_finish_missing_returns_404() {
 /// shape and the response envelope.
 #[tokio::test]
 async fn post_candidates_empty_list_returns_success_envelope() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, _state) = require_setup!(setup());
 
     let req = Request::builder()
         .method(Method::POST)
@@ -577,26 +520,17 @@ async fn post_candidates_empty_list_returns_success_envelope() {
 /// records it in `unknown_campaigns` and skips it.
 #[tokio::test]
 async fn post_candidates_records_unknown_campaign() {
-    let Some((app, state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, state) = require_setup!(setup());
 
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "cand-unk-campaign-cb").await;
+    test_utils::insert_codebase(&pool, "cand-unk-campaign-cb").await;
 
     let body = json!([{
         "codebase": "cand-unk-campaign-cb",
         "campaign": "not-a-real-campaign",
         "command": "true",
     }]);
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/candidates")
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::POST, "/candidates", Some(&body)).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = get_body(response).await;
@@ -615,22 +549,13 @@ async fn post_candidates_records_unknown_campaign() {
 /// Rust-side gate so we do not regress silently.
 #[tokio::test]
 async fn post_candidates_missing_codebase_field_is_unprocessable() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, _state) = require_setup!(setup());
 
     let body = json!([{
         "campaign": "any-campaign",
         "command": "true",
     }]);
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/candidates")
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::POST, "/candidates", Some(&body)).await;
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
@@ -639,25 +564,16 @@ async fn post_candidates_missing_codebase_field_is_unprocessable() {
 /// before anything is written, including the candidates before it.
 #[tokio::test]
 async fn post_candidates_wrong_field_type_is_unprocessable() {
-    let Some((app, state)) = setup_with_campaign().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, state) = require_setup!(setup_with_campaign());
 
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "cand-type-cb").await;
+    test_utils::insert_codebase(&pool, "cand-type-cb").await;
 
     let body = json!([
         {"codebase": "cand-type-cb", "campaign": "test-campaign"},
         {"codebase": "cand-type-cb", "campaign": "test-campaign", "value": "5"},
     ]);
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/candidates")
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::POST, "/candidates", Some(&body)).await;
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let candidates: i64 =
@@ -672,13 +588,10 @@ async fn post_candidates_wrong_field_type_is_unprocessable() {
 /// publish_status}`.
 #[tokio::test]
 async fn get_run_returns_codebase_campaign_publish_status() {
-    let Some((app, state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, state) = require_setup!(setup());
 
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "get-run-cb").await;
+    test_utils::insert_codebase(&pool, "get-run-cb").await;
     sqlx::query("INSERT INTO change_set (id, campaign) VALUES ($1, $2)")
         .bind("cs-get")
         .bind("test-campaign")
@@ -702,12 +615,7 @@ async fn get_run_returns_codebase_campaign_publish_status() {
     .await
     .expect("insert run");
 
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/runs/run-get-1")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::GET, "/runs/run-get-1", None).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = get_body(response).await;
@@ -733,7 +641,7 @@ async fn get_run_returns_run_detail_with_result_branches() {
     };
 
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "get-run-detail-cb").await;
+    test_utils::insert_codebase(&pool, "get-run-detail-cb").await;
     sqlx::query("INSERT INTO change_set (id, campaign) VALUES ($1, $2)")
         .bind("cs-detail")
         .bind("test-campaign")
@@ -811,17 +719,9 @@ async fn get_run_returns_run_detail_with_result_branches() {
 /// `{reason}` body.
 #[tokio::test]
 async fn get_run_missing_returns_404() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, _state) = require_setup!(setup());
 
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/runs/no-such-run")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::GET, "/runs/no-such-run", None).await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let body = get_body(response).await;
@@ -888,8 +788,8 @@ async fn list_runs_filters_by_codebase_and_campaign() {
     };
     let pool = state.database.pool().clone();
 
-    insert_codebase(&pool, "alpha").await;
-    insert_codebase(&pool, "beta").await;
+    test_utils::insert_codebase(&pool, "alpha").await;
+    test_utils::insert_codebase(&pool, "beta").await;
     sqlx::query(
         "INSERT INTO change_set (id, campaign) VALUES \
          ('cs-list-a', 'test-campaign'), ('cs-list-b', 'other-campaign')",
@@ -986,7 +886,7 @@ async fn list_runs_finds_unchanged_baseline() {
     };
     let pool = state.database.pool().clone();
 
-    insert_codebase(&pool, "cb").await;
+    test_utils::insert_codebase(&pool, "cb").await;
     sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs-base', 'test-campaign')")
         .execute(&pool)
         .await
@@ -1053,7 +953,7 @@ async fn list_runs_paginates_with_offset() {
     };
     let pool = state.database.pool().clone();
 
-    insert_codebase(&pool, "cb").await;
+    test_utils::insert_codebase(&pool, "cb").await;
     sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs-page', 'test-campaign')")
         .execute(&pool)
         .await
@@ -1093,17 +993,9 @@ async fn list_runs_paginates_with_offset() {
 /// active-runs set and no env overrides, all three come back empty.
 #[tokio::test]
 async fn get_status_returns_python_shape() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, _state) = require_setup!(setup());
 
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/status")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::GET, "/status", None).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = get_body(response).await;
@@ -1121,13 +1013,10 @@ async fn get_status_returns_python_shape() {
 /// `GET /queue` returns the entries currently in the queue table.
 #[tokio::test]
 async fn get_queue_returns_scheduled_entries() {
-    let Some((app, state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, state) = require_setup!(setup());
 
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "queue-listing-cb").await;
+    test_utils::insert_codebase(&pool, "queue-listing-cb").await;
     sqlx::query(
         "INSERT INTO queue (codebase, campaign, command, context)
          VALUES ($1, $2, $3, $4)",
@@ -1140,12 +1029,7 @@ async fn get_queue_returns_scheduled_entries() {
     .await
     .expect("insert queue row");
 
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/queue")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::GET, "/queue", None).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = get_body(response).await;
@@ -1164,10 +1048,7 @@ async fn get_queue_returns_scheduled_entries() {
 /// `PingError::NotSupported`.
 #[tokio::test]
 async fn post_kill_jenkins_run_returns_501() {
-    let Some((app, state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, state) = require_setup!(setup());
 
     let active_run = ActiveRun {
         worker_name: "jenkins-worker".to_string(),
@@ -1175,7 +1056,6 @@ async fn post_kill_jenkins_run_returns_501() {
         queue_id: 1,
         log_id: janitor_types::RunId::new("run-kill-not-supported").unwrap(),
         start_time: Utc::now(),
-        finish_time: None,
         estimated_duration: None,
         campaign: janitor_types::Campaign::new("test-campaign").unwrap(),
         change_set: None,
@@ -1191,12 +1071,7 @@ async fn post_kill_jenkins_run_returns_501() {
     };
     state.active_runs.store(active_run).await;
 
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/kill/run-kill-not-supported")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::POST, "/kill/run-kill-not-supported", None).await;
 
     assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
     let body = get_body(response).await;
@@ -1217,17 +1092,9 @@ async fn post_kill_jenkins_run_returns_501() {
 /// `GET /active-runs` returns the empty list when no run is active.
 #[tokio::test]
 async fn get_active_runs_returns_empty_array_when_idle() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, _state) = require_setup!(setup());
 
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/active-runs")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::GET, "/active-runs", None).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = get_body(response).await;
@@ -1241,13 +1108,10 @@ async fn get_active_runs_returns_empty_array_when_idle() {
 /// `queue_wait_time`.
 #[tokio::test]
 async fn post_schedule_returns_queue_position() {
-    let Some((app, state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, state) = require_setup!(setup());
 
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "sched-pos-cb").await;
+    test_utils::insert_codebase(&pool, "sched-pos-cb").await;
     sqlx::query(
         "INSERT INTO candidate (codebase, campaign, command)
          VALUES ($1, $2, $3)",
@@ -1263,13 +1127,7 @@ async fn post_schedule_returns_queue_position() {
         "codebase": "sched-pos-cb",
         "campaign": "test-campaign",
     });
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/schedule")
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::POST, "/schedule", Some(&body)).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = get_body(response).await;
@@ -1294,25 +1152,16 @@ async fn post_schedule_returns_queue_position() {
 /// lands in the `success` bucket and writes a `queue` row.
 #[tokio::test]
 async fn post_candidates_success_path_writes_queue_row() {
-    let Some((app, state)) = setup_with_campaign().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, state) = require_setup!(setup_with_campaign());
 
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "cand-ok-cb").await;
+    test_utils::insert_codebase(&pool, "cand-ok-cb").await;
 
     let body = json!([{
         "codebase": "cand-ok-cb",
         "campaign": "test-campaign",
     }]);
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/candidates")
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::POST, "/candidates", Some(&body)).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = get_body(response).await;
@@ -1348,26 +1197,17 @@ async fn post_candidates_success_path_writes_queue_row() {
 /// `invalid_value` and does not queue it.
 #[tokio::test]
 async fn post_candidates_records_invalid_value() {
-    let Some((app, state)) = setup_with_campaign().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, state) = require_setup!(setup_with_campaign());
 
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "cand-invalid-cb").await;
+    test_utils::insert_codebase(&pool, "cand-invalid-cb").await;
 
     let body = json!([{
         "codebase": "cand-invalid-cb",
         "campaign": "test-campaign",
         "value": 0,
     }]);
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/candidates")
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::POST, "/candidates", Some(&body)).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = get_body(response).await;
@@ -1392,26 +1232,17 @@ async fn post_candidates_records_invalid_value() {
 /// branch).
 #[tokio::test]
 async fn post_candidates_records_unknown_publish_policy() {
-    let Some((app, state)) = setup_with_campaign().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, state) = require_setup!(setup_with_campaign());
 
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "cand-unk-pp-cb").await;
+    test_utils::insert_codebase(&pool, "cand-unk-pp-cb").await;
 
     let body = json!([{
         "codebase": "cand-unk-pp-cb",
         "campaign": "test-campaign",
         "publish-policy": "no-such-policy",
     }]);
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/candidates")
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::POST, "/candidates", Some(&body)).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = get_body(response).await;
@@ -1428,23 +1259,14 @@ async fn post_candidates_records_unknown_publish_policy() {
 /// `unknown_codebases` via the FK-violation branch.
 #[tokio::test]
 async fn post_candidates_records_unknown_codebase_via_fk_violation() {
-    let Some((app, _state)) = setup_with_campaign().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, _state) = require_setup!(setup_with_campaign());
 
     // Note: no insert_codebase() -- we WANT the FK to fail.
     let body = json!([{
         "codebase": "codebase-that-does-not-exist",
         "campaign": "test-campaign",
     }]);
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/candidates")
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::POST, "/candidates", Some(&body)).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = get_body(response).await;
@@ -1466,7 +1288,7 @@ async fn post_candidates_records_unknowns() {
 
     let pool = state.database.pool().clone();
     for codebase in ["cand-unk-a", "cand-unk-b", "cand-unk-c"] {
-        insert_codebase(&pool, codebase).await;
+        test_utils::insert_codebase(&pool, codebase).await;
     }
     sqlx::query(
         "INSERT INTO change_set (id, campaign) VALUES ($1, $2)
@@ -1558,17 +1380,9 @@ async fn post_candidates_records_unknowns() {
 /// `status`. Rust-side probe -- Python's /health returns plain "ok".
 #[tokio::test]
 async fn get_health_returns_component_report() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, _state) = require_setup!(setup());
 
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/health")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::GET, "/health", None).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = get_body(response).await;
@@ -1590,17 +1404,9 @@ async fn get_health_returns_component_report() {
 /// `GET /health/live` is a cheap liveness probe: 200 + "alive" text.
 #[tokio::test]
 async fn get_health_live_returns_alive() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, _state) = require_setup!(setup());
 
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/health/live")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::GET, "/health/live", None).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
@@ -1612,17 +1418,9 @@ async fn get_health_live_returns_alive() {
 /// healthy in tests, so this should be the expected state.
 #[tokio::test]
 async fn get_health_ready_returns_ready_when_healthy() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, _state) = require_setup!(setup());
 
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/health/ready")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::GET, "/health/ready", None).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
@@ -1663,12 +1461,7 @@ async fn get_public_queue_stats_returns_expected_fields() {
         return;
     };
 
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/queue/stats")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::GET, "/queue/stats", None).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = get_body(response).await;
@@ -1698,12 +1491,7 @@ async fn get_public_watchdog_health_returns_empty_when_idle() {
         return;
     };
 
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/watchdog/health")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::GET, "/watchdog/health", None).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = get_body(response).await;
@@ -1725,12 +1513,7 @@ async fn public_authed_route_without_auth_header_returns_401() {
         return;
     };
 
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/active-runs/any-id")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::GET, "/active-runs/any-id", None).await;
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
@@ -1795,7 +1578,6 @@ async fn public_finish_returns_403_when_worker_does_not_own_run() {
         queue_id: 1,
         log_id: janitor_types::RunId::new("run-owned-by-alice").unwrap(),
         start_time: Utc::now(),
-        finish_time: None,
         estimated_duration: None,
         campaign: janitor_types::Campaign::new("test-campaign").unwrap(),
         change_set: None,
@@ -1847,13 +1629,10 @@ async fn public_finish_returns_403_when_worker_does_not_own_run() {
 /// Python's `test_runner.py`.
 #[tokio::test]
 async fn end_to_end_assignment_lifecycle() {
-    let Some((app, state)) = setup_with_campaign().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, state) = require_setup!(setup_with_campaign());
 
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "e2e-cb").await;
+    test_utils::insert_codebase(&pool, "e2e-cb").await;
     state
         .auth_service
         .create_worker("e2e-worker", "e2e-pw", None)
@@ -1865,13 +1644,7 @@ async fn end_to_end_assignment_lifecycle() {
         "codebase": "e2e-cb",
         "campaign": "test-campaign",
     }]);
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/candidates")
-        .header("content-type", "application/json")
-        .body(Body::from(candidate_body.to_string()))
-        .unwrap();
-    let response = app.clone().oneshot(req).await.unwrap();
+    let response = send(&app, Method::POST, "/candidates", Some(&candidate_body)).await;
     let status = response.status();
     let body = get_body(response).await;
     assert_eq!(
@@ -1883,13 +1656,7 @@ async fn end_to_end_assignment_lifecycle() {
     // Step 2: POST /active-runs (private route) pulls the queue item
     // and hands the worker an assignment envelope.
     let assign_body = json!({"worker": "e2e-worker"});
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/active-runs")
-        .header("content-type", "application/json")
-        .body(Body::from(assign_body.to_string()))
-        .unwrap();
-    let response = app.clone().oneshot(req).await.unwrap();
+    let response = send(&app, Method::POST, "/active-runs", Some(&assign_body)).await;
     assert_eq!(
         response.status(),
         StatusCode::CREATED,
@@ -1985,7 +1752,7 @@ async fn end_to_end_assignment_lifecycle() {
 /// shape of the assign response without caring about the finish half.
 async fn assign_one(app: axum::Router, state: &Arc<AppState>, codebase: &str) -> Value {
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, codebase).await;
+    test_utils::insert_codebase(&pool, codebase).await;
     state
         .auth_service
         .create_worker("envelope-worker", "envelope-pw", None)
@@ -1993,23 +1760,11 @@ async fn assign_one(app: axum::Router, state: &Arc<AppState>, codebase: &str) ->
         .expect("create worker");
 
     let candidate_body = json!([{ "codebase": codebase, "campaign": "test-campaign" }]);
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/candidates")
-        .header("content-type", "application/json")
-        .body(Body::from(candidate_body.to_string()))
-        .unwrap();
-    let response = app.clone().oneshot(req).await.unwrap();
+    let response = send(&app, Method::POST, "/candidates", Some(&candidate_body)).await;
     assert_eq!(response.status(), StatusCode::OK);
 
     let assign_body = json!({"worker": "envelope-worker"});
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/active-runs")
-        .header("content-type", "application/json")
-        .body(Body::from(assign_body.to_string()))
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::POST, "/active-runs", Some(&assign_body)).await;
     assert_eq!(response.status(), StatusCode::CREATED);
     let location = response
         .headers()
@@ -2033,10 +1788,7 @@ async fn assign_one(app: axum::Router, state: &Arc<AppState>, codebase: &str) ->
 /// field is renamed or dropped the worker breaks silently.
 #[tokio::test]
 async fn assign_response_envelope_has_all_documented_fields() {
-    let Some((app, state)) = setup_with_campaign().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, state) = require_setup!(setup_with_campaign());
 
     let assignment = assign_one(app, &state, "assign-envelope-cb").await;
 
@@ -2157,10 +1909,7 @@ async fn assign_sends_campaign_skip_setup_validation() {
 /// without a trailing slash.
 #[tokio::test]
 async fn assign_sends_opened_branch_url() {
-    let Some((app, state)) = setup_with_campaign().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, state) = require_setup!(setup_with_campaign());
 
     let td = tempfile::tempdir().unwrap();
     let path = td.path().join("main");
@@ -2358,13 +2107,10 @@ async fn assign_sends_no_colocated_branches_for_unopenable_branch() {
 /// or wire up a worker.
 #[tokio::test]
 async fn peek_returns_queue_item_shape_when_available() {
-    let Some((app, state)) = setup_with_campaign().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, state) = require_setup!(setup_with_campaign());
 
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "peek-cb").await;
+    test_utils::insert_codebase(&pool, "peek-cb").await;
     // Enqueue via POST /candidates so the queue row + campaign
     // config are wired the same way an assign would see them.
     let body = json!([{ "codebase": "peek-cb", "campaign": "test-campaign" }]);
@@ -2379,12 +2125,7 @@ async fn peek_returns_queue_item_shape_when_available() {
         StatusCode::OK
     );
 
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/active-runs/+peek")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::GET, "/active-runs/+peek", None).await;
 
     assert_eq!(response.status(), StatusCode::CREATED);
     let body = get_body(response).await;
@@ -2407,17 +2148,9 @@ async fn peek_returns_queue_item_shape_when_available() {
 
 #[tokio::test]
 async fn peek_returns_503_when_queue_empty() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, _state) = require_setup!(setup());
 
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/active-runs/+peek")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::GET, "/active-runs/+peek", None).await;
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body = get_body(response).await;
@@ -2434,7 +2167,6 @@ async fn seed_active_run_for_finish(state: &Arc<AppState>, log_id: &str) {
         queue_id: 1,
         log_id: janitor_types::RunId::new(log_id).unwrap(),
         start_time: Utc::now(),
-        finish_time: None,
         estimated_duration: None,
         campaign: janitor_types::Campaign::new("test-campaign").unwrap(),
         change_set: None,
@@ -2453,12 +2185,9 @@ async fn seed_active_run_for_finish(state: &Arc<AppState>, log_id: &str) {
 /// upload-processor `Missing worker_result field` validation branch.
 #[tokio::test]
 async fn finish_multipart_without_metadata_returns_400() {
-    let Some((app, state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, state) = require_setup!(setup());
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "finish-neg-cb").await;
+    test_utils::insert_codebase(&pool, "finish-neg-cb").await;
     seed_active_run_for_finish(&state, "run-no-metadata").await;
 
     // Multipart with a single unrelated `file` part -- no `metadata`
@@ -2501,7 +2230,7 @@ async fn finish_multipart_without_metadata_returns_400() {
 async fn finish_result_target(run_id: &str, worker_result: &str) -> Option<Value> {
     let (app, state) = setup_with_campaign().await?;
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "finish-neg-cb").await;
+    test_utils::insert_codebase(&pool, "finish-neg-cb").await;
     state
         .auth_service
         .create_worker("finish-worker", "pw", None)
@@ -2558,12 +2287,9 @@ async fn finish_result_without_build_target_sends_null_target() {
 /// a 400 with the multipart-parse error, not a 500 or a hang.
 #[tokio::test]
 async fn finish_malformed_multipart_returns_400() {
-    let Some((app, state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, state) = require_setup!(setup());
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "finish-neg-cb").await;
+    test_utils::insert_codebase(&pool, "finish-neg-cb").await;
     seed_active_run_for_finish(&state, "run-malformed").await;
 
     // Boundary declared but body doesn't contain it -- axum's
@@ -2593,12 +2319,9 @@ async fn finish_malformed_multipart_returns_400() {
 /// processor's `Field missing name` branch.
 #[tokio::test]
 async fn finish_multipart_field_without_name_returns_400() {
-    let Some((app, state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, state) = require_setup!(setup());
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "finish-neg-cb").await;
+    test_utils::insert_codebase(&pool, "finish-neg-cb").await;
     seed_active_run_for_finish(&state, "run-no-field-name").await;
 
     // Content-Disposition without a `name=` attribute -- axum returns
@@ -2635,15 +2358,12 @@ async fn finish_multipart_field_without_name_returns_400() {
 /// ASC`). Guards the SQL scoring in `next_queue_item_with_scoring`.
 #[tokio::test]
 async fn assign_picks_lowest_priority_first() {
-    let Some((app, state)) = setup_with_campaign().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, state) = require_setup!(setup_with_campaign());
 
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "prio-a").await;
-    insert_codebase(&pool, "prio-b").await;
-    insert_codebase(&pool, "prio-c").await;
+    test_utils::insert_codebase(&pool, "prio-a").await;
+    test_utils::insert_codebase(&pool, "prio-b").await;
+    test_utils::insert_codebase(&pool, "prio-c").await;
     state
         .auth_service
         .create_worker("prio-worker", "pw", None)
@@ -2665,13 +2385,7 @@ async fn assign_picks_lowest_priority_first() {
     }
 
     let assign_body = json!({"worker": "prio-worker"});
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/active-runs")
-        .header("content-type", "application/json")
-        .body(Body::from(assign_body.to_string()))
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::POST, "/active-runs", Some(&assign_body)).await;
     assert_eq!(response.status(), StatusCode::CREATED);
     let assignment = get_body(response).await;
     assert_eq!(
@@ -2686,14 +2400,11 @@ async fn assign_picks_lowest_priority_first() {
 /// success_chance wins. Guards the scoring join.
 #[tokio::test]
 async fn assign_prefers_higher_success_chance_within_same_priority() {
-    let Some((app, state)) = setup_with_campaign().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, state) = require_setup!(setup_with_campaign());
 
     let pool = state.database.pool().clone();
     for cb in ["score-a", "score-b", "score-c"] {
-        insert_codebase(&pool, cb).await;
+        test_utils::insert_codebase(&pool, cb).await;
     }
     state
         .auth_service
@@ -2724,13 +2435,7 @@ async fn assign_prefers_higher_success_chance_within_same_priority() {
     }
 
     let assign_body = json!({"worker": "score-worker"});
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/active-runs")
-        .header("content-type", "application/json")
-        .body(Body::from(assign_body.to_string()))
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::POST, "/active-runs", Some(&assign_body)).await;
     assert_eq!(response.status(), StatusCode::CREATED);
     let assignment = get_body(response).await;
     assert_eq!(
@@ -2828,13 +2533,10 @@ async fn concurrent_assign_queue_item_never_double_claims() {
 /// subscriber so it's listening before the publish fires.
 #[tokio::test]
 async fn post_update_run_publishes_publish_status_event() {
-    let Some((app, state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, state) = require_setup!(setup());
 
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "pubsub-cb").await;
+    test_utils::insert_codebase(&pool, "pubsub-cb").await;
     sqlx::query("INSERT INTO change_set (id, campaign) VALUES ('cs-pubsub', 'test-campaign')")
         .execute(&pool)
         .await
@@ -2887,13 +2589,7 @@ async fn post_update_run_publishes_publish_status_event() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let body = json!({"publish_status": "rejected"});
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/runs/run-pubsub-1")
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::POST, "/runs/run-pubsub-1", Some(&body)).await;
     assert_eq!(response.status(), StatusCode::OK);
 
     let payload = rx
@@ -2912,16 +2608,8 @@ async fn post_update_run_publishes_publish_status_event() {
 /// tests, which retrieve the newly-stored run via this endpoint.
 #[tokio::test]
 async fn get_active_run_returns_404_for_unknown_id() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/active-runs/does-not-exist")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let (app, _state) = require_setup!(setup());
+    let response = send(&app, Method::GET, "/active-runs/does-not-exist", None).await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let body = get_body(response).await;
     assert!(body["reason"]
@@ -2935,16 +2623,14 @@ async fn get_active_run_returns_404_for_unknown_id() {
 /// nailing the shape now so future callers can rely on it.
 #[tokio::test]
 async fn current_stage_returns_404_for_unknown_id() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/active-runs/does-not-exist/current-stage")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let (app, _state) = require_setup!(setup());
+    let response = send(
+        &app,
+        Method::GET,
+        "/active-runs/does-not-exist/current-stage",
+        None,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let body = get_body(response).await;
     assert!(body["reason"]
@@ -2960,20 +2646,18 @@ async fn current_stage_returns_404_for_unknown_id() {
 /// that only Polling backchannels can hit.
 #[tokio::test]
 async fn current_stage_returns_null_for_none_backchannel() {
-    let Some((app, state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, state) = require_setup!(setup());
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "finish-neg-cb").await;
+    test_utils::insert_codebase(&pool, "finish-neg-cb").await;
     seed_active_run_for_finish(&state, "run-current-stage").await;
 
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/active-runs/run-current-stage/current-stage")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(
+        &app,
+        Method::GET,
+        "/active-runs/run-current-stage/current-stage",
+        None,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = get_body(response).await;
     assert!(body["current_stage"].is_null());
@@ -2988,16 +2672,8 @@ async fn current_stage_returns_null_for_none_backchannel() {
 /// idle_workers:0, summary:{...}, timestamp}`.
 #[tokio::test]
 async fn get_workers_returns_summary_envelope_when_empty() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/workers")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let (app, _state) = require_setup!(setup());
+    let response = send(&app, Method::GET, "/workers", None).await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = get_body(response).await;
     assert!(body["workers"].is_array());
@@ -3024,7 +2700,7 @@ async fn get_workers_reports_run_count_per_worker() {
     };
 
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "worker-count-cb").await;
+    test_utils::insert_codebase(&pool, "worker-count-cb").await;
     sqlx::query("INSERT INTO change_set (id, campaign) VALUES ($1, $2)")
         .bind("cs-worker-count")
         .bind("test-campaign")
@@ -3088,22 +2764,13 @@ async fn get_workers_reports_run_count_per_worker() {
 /// `{resume_available: false, message: ...}`.
 #[tokio::test]
 async fn resume_check_returns_not_available_for_unknown_revision() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, _state) = require_setup!(setup());
     let body = json!({
         "campaign": "nonexistent-campaign",
         "resume_revision": "rev-does-not-exist",
         "codebase": "any",
     });
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/resume/check")
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::POST, "/resume/check", Some(&body)).await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = get_body(response).await;
     assert_eq!(body["resume_available"], false);
@@ -3113,45 +2780,11 @@ async fn resume_check_returns_not_available_for_unknown_revision() {
 /// `GET /resume/validate` on a fresh empty DB reports `consistent`.
 #[tokio::test]
 async fn resume_validate_returns_consistent_on_empty_db() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/resume/validate")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let (app, _state) = require_setup!(setup());
+    let response = send(&app, Method::GET, "/resume/validate", None).await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = get_body(response).await;
     assert_eq!(body["status"], "consistent");
-}
-
-/// `GET /resume/chain/{run_id}` on an unknown run should return a
-/// well-formed JSON object with `run_id` echoed back and either an
-/// empty chain or an error field. This is a Rust-only endpoint so
-/// there's no Python behavior to match -- pin the shape.
-#[tokio::test]
-async fn resume_chain_returns_shape_for_unknown_run() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/resume/chain/unknown-run")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = get_body(response).await;
-    assert!(body.is_object());
-    // Either the run_id echoes back with an (empty) chain, or the
-    // handler reports an error field. Both are valid outputs.
-    let has_run_id = body["run_id"].as_str() == Some("unknown-run");
-    let has_error = body["error"].is_string();
-    assert!(has_run_id || has_error, "unexpected body shape: {body}");
 }
 
 /// `POST /admin/runs/cleanup?result_code=X&dry_run=1` on an empty DB
@@ -3160,16 +2793,14 @@ async fn resume_chain_returns_shape_for_unknown_run() {
 /// shape.
 #[tokio::test]
 async fn admin_cleanup_runs_dry_run_returns_empty_matches() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/admin/runs/cleanup?result_code=lintian&dry_run=1")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let (app, _state) = require_setup!(setup());
+    let response = send(
+        &app,
+        Method::POST,
+        "/admin/runs/cleanup?result_code=lintian&dry_run=1",
+        None,
+    )
+    .await;
     // Handler should succeed (2xx). Exact shape is up to the impl,
     // but the response must be JSON.
     assert!(
@@ -3181,40 +2812,15 @@ async fn admin_cleanup_runs_dry_run_returns_empty_matches() {
     assert!(body.is_object(), "expected JSON object, got {body}");
 }
 
-/// `POST /admin/runs/cleanup` without the required `result_code`
-/// query param must be rejected as 4xx (axum's Query extractor
-/// rejects when the required field is missing).
-#[tokio::test]
-async fn admin_cleanup_runs_missing_result_code_is_bad_request() {
-    let Some((app, _state)) = setup().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/admin/runs/cleanup")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
-    assert!(
-        response.status().is_client_error(),
-        "expected 4xx, got {}",
-        response.status()
-    );
-}
-
 /// The caller sends `exclude_hosts` containing the only candidate's
 /// host; the queue filter must skip the candidate and the response
 /// must be 503 (queue empty).
 #[tokio::test]
 async fn post_active_runs_honours_client_exclude_hosts() {
-    let Some((app, state)) = setup_with_campaign().await else {
-        eprintln!("skipping: no test resources");
-        return;
-    };
+    let (app, state) = require_setup!(setup_with_campaign());
 
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "excl-host-cb").await;
+    test_utils::insert_codebase(&pool, "excl-host-cb").await;
     state
         .auth_service
         .create_worker("excl-worker", "excl-pw", None)
@@ -3240,13 +2846,7 @@ async fn post_active_runs_honours_client_exclude_hosts() {
         "worker": "excl-worker",
         "exclude_hosts": ["example.invalid"],
     });
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/active-runs")
-        .header("content-type", "application/json")
-        .body(Body::from(assign_body.to_string()))
-        .unwrap();
-    let response = app.oneshot(req).await.unwrap();
+    let response = send(&app, Method::POST, "/active-runs", Some(&assign_body)).await;
     assert_eq!(
         response.status(),
         StatusCode::SERVICE_UNAVAILABLE,
@@ -3264,7 +2864,7 @@ async fn finish_with_artifact(
     worker: &str,
 ) -> (StatusCode, Value) {
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, codebase).await;
+    test_utils::insert_codebase(&pool, codebase).await;
     state
         .auth_service
         .create_worker(worker, "pw", None)
@@ -3278,7 +2878,6 @@ async fn finish_with_artifact(
             queue_id: 1,
             log_id: janitor_types::RunId::new(run_id).unwrap(),
             start_time: Utc::now(),
-            finish_time: None,
             estimated_duration: None,
             campaign: janitor_types::Campaign::new("test-campaign").unwrap(),
             change_set: None,
@@ -3460,7 +3059,7 @@ async fn get_candidate_returns_row_or_404() {
     };
 
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "cand-cb").await;
+    test_utils::insert_codebase(&pool, "cand-cb").await;
     sqlx::query(
         "INSERT INTO candidate (codebase, campaign, command, context, value, success_chance)
          VALUES ($1, $2, $3, $4, $5, $6)",
@@ -3519,7 +3118,7 @@ async fn get_codebase_detail_returns_row_and_policy() {
     };
 
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "cb-detail").await;
+    test_utils::insert_codebase(&pool, "cb-detail").await;
     sqlx::query(
         "INSERT INTO named_publish_policy (name, per_branch_policy) \
          VALUES ('policy-a', ARRAY[\
@@ -3603,7 +3202,7 @@ async fn get_run_followups_returns_candidate_pairs() {
 
     let pool = state.database.pool().clone();
     for cb in ["alpha", "beta", "gamma"] {
-        insert_codebase(&pool, cb).await;
+        test_utils::insert_codebase(&pool, cb).await;
     }
     sqlx::query(
         "INSERT INTO change_set (id, campaign) VALUES \
@@ -3723,7 +3322,7 @@ async fn get_run_reviews_returns_rows_in_order() {
     };
 
     let pool = state.database.pool().clone();
-    insert_codebase(&pool, "alpha").await;
+    test_utils::insert_codebase(&pool, "alpha").await;
     sqlx::query("INSERT INTO change_set (id, campaign) VALUES ($1, $2)")
         .bind("cs-review")
         .bind("test-campaign")
@@ -3810,7 +3409,7 @@ async fn get_candidates_filters_by_codebase_and_campaign() {
 
     let pool = state.database.pool().clone();
     for cb in ["alpha", "beta", "gamma"] {
-        insert_codebase(&pool, cb).await;
+        test_utils::insert_codebase(&pool, cb).await;
     }
     for (cb, campaign) in [
         ("alpha", "test-campaign"),
