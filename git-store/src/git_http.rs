@@ -178,32 +178,57 @@ fn is_valid_hexsha(s: &str) -> bool {
     s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-/// `git cat-file -e <rev>`: exits 0 if the object is reachable.
-async fn ensure_revision_present(
-    repo_path: &std::path::Path,
+/// Run blocking git2 work on the blocking pool, bounded by `timeout_secs`.
+async fn run_blocking<T, F>(timeout_secs: u64, f: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T> + Send + 'static,
+{
+    tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        tokio::task::spawn_blocking(f),
+    )
+    .await
+    .map_err(|_| GitStoreError::Timeout)?
+    .map_err(|e| GitStoreError::Other(e.into()))?
+}
+
+fn ensure_revision_present(
+    repo: &git2::Repository,
     codebase: &CodebaseName,
-    revision: &str,
-    timeout_secs: u64,
+    revision: git2::Oid,
 ) -> Result<()> {
-    let mut cmd = Command::new("git");
-    cmd.arg("cat-file")
-        .arg("-e")
-        .arg(revision)
-        .current_dir(repo_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    let status = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.status())
-        .await
-        .map_err(|_| GitStoreError::Timeout)??;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(GitStoreError::RevisionNotFound {
+    match repo.find_object(revision, None) {
+        Ok(_) => Ok(()),
+        Err(e) if e.code() == git2::ErrorCode::NotFound => Err(GitStoreError::RevisionNotFound {
             codebase: codebase.clone(),
             revision: revision.to_string(),
-        })
+        }),
+        Err(e) => Err(e.into()),
     }
+}
+
+/// Commits reachable from `new` but not from `old`, ordered like
+/// `git log` (newest first) unless `sorting` says otherwise.
+fn walk_range(
+    repo: &git2::Repository,
+    old: Option<git2::Oid>,
+    new: git2::Oid,
+    sorting: git2::Sort,
+) -> std::result::Result<Vec<git2::Commit<'_>>, git2::Error> {
+    let mut walk = repo.revwalk()?;
+    walk.set_sorting(sorting)?;
+    walk.push(new)?;
+    if let Some(old) = old {
+        walk.hide(old)?;
+    }
+    walk.map(|oid| repo.find_commit(oid?)).collect()
+}
+
+fn commit_message(commit: &git2::Commit) -> String {
+    String::from_utf8_lossy(commit.message_bytes())
+        .trim()
+        .to_string()
 }
 
 /// `old` and `new` are validated manually so missing values give a
@@ -261,20 +286,38 @@ pub async fn revision_info(
         ));
     }
 
+    let result = run_blocking(state.config.git.git_timeout, move || {
+        let repo = git2::Repository::open(&repo_path)?;
+        let new = git2::Oid::from_str(&new)?;
+        ensure_revision_present(&repo, &codebase, new)?;
+        let old = if old == ZERO_SHA {
+            None
+        } else {
+            let old = git2::Oid::from_str(&old)?;
+            ensure_revision_present(&repo, &codebase, old)?;
+            Some(old)
+        };
+        let entries = walk_range(&repo, old, new, git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?
+            .into_iter()
+            .map(|commit| {
+                let sha = commit.id().to_string();
+                RevisionInfoEntry {
+                    revision_id: format!("git-v1:{}", sha),
+                    link: format!("/git/{}/commit/{}/", codebase, sha),
+                    message: commit_message(&commit),
+                    commit_id: sha,
+                }
+            })
+            .collect::<Vec<_>>();
+        Ok(entries)
+    })
+    .await;
+
     // Mirror Python's `MissingCommitError` branch: on a missing commit
     // return 404 with a JSON body of `{}` so callers can `.json()` the
     // response uniformly.
-    let precheck: Result<()> = async {
-        ensure_revision_present(&repo_path, &codebase, &new, state.config.git.git_timeout).await?;
-        if old != ZERO_SHA {
-            ensure_revision_present(&repo_path, &codebase, &old, state.config.git.git_timeout)
-                .await?;
-        }
-        Ok(())
-    }
-    .await;
-    match precheck {
-        Ok(()) => {}
+    let entries = match result {
+        Ok(entries) => entries,
         Err(GitStoreError::RevisionNotFound { .. }) => {
             return Response::builder()
                 .status(StatusCode::NOT_FOUND)
@@ -283,55 +326,7 @@ pub async fn revision_info(
                 .map_err(GitStoreError::HttpLibError);
         }
         Err(e) => return Err(e),
-    }
-
-    // NUL-separated records where each record is `sha\n<message>` so
-    // commit messages can contain any characters without ambiguating
-    // the parse. Direction: newest-first (git log default), matching
-    // Python's dulwich walker.
-    const SEP: u8 = 0;
-    let mut cmd = Command::new("git");
-    cmd.arg("log").arg("--format=%H%n%B%x00");
-    let range = if old == ZERO_SHA {
-        new.clone()
-    } else {
-        format!("{}..{}", old, new)
     };
-    cmd.arg(&range).current_dir(&repo_path).kill_on_drop(true);
-
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(state.config.git.git_timeout),
-        cmd.output(),
-    )
-    .await
-    .map_err(|_| GitStoreError::Timeout)??;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        warn!("git log {}: {}", range, stderr);
-        return Err(GitStoreError::GitError(git2::Error::from_str(&stderr)));
-    }
-
-    let mut entries: Vec<RevisionInfoEntry> = Vec::new();
-    for chunk in output.stdout.split(|b| *b == SEP) {
-        if chunk.iter().all(|b| b.is_ascii_whitespace()) {
-            continue;
-        }
-        let s = String::from_utf8_lossy(chunk);
-        let trimmed = s.trim_start();
-        let mut lines = trimmed.lines();
-        let sha = match lines.next() {
-            Some(l) if !l.is_empty() => l.to_string(),
-            _ => continue,
-        };
-        let message = lines.collect::<Vec<_>>().join("\n").trim().to_string();
-        entries.push(RevisionInfoEntry {
-            commit_id: sha.clone(),
-            revision_id: format!("git-v1:{}", sha),
-            link: format!("/git/{}/commit/{}/", codebase, sha),
-            message,
-        });
-    }
 
     Response::builder()
         .status(StatusCode::OK)
@@ -351,8 +346,8 @@ pub struct LogQuery {
     new: String,
 }
 
-/// `git log old..new` (or `git log new` when `old` is absent),
-/// oldest first, with author info and message.
+/// Commits in `old..new` (or everything reachable from `new` when
+/// `old` is absent), oldest first, with author info and message.
 #[utoipa::path(
     get,
     path = "/{codebase}/log",
@@ -371,71 +366,45 @@ pub async fn git_log(
     Query(params): Query<LogQuery>,
 ) -> Result<Response> {
     crate::repository::RepositoryManager::validate_sha(&params.new)?;
-    if let Some(old) = params.old.as_deref() {
-        if !old.is_empty() {
+    let old = match params.old.as_deref() {
+        Some(old) if !old.is_empty() => {
             crate::repository::RepositoryManager::validate_sha(old)?;
+            Some(git2::Oid::from_str(old)?)
         }
-    }
+        _ => None,
+    };
+    let new = git2::Oid::from_str(&params.new)?;
 
     let repo_path = state.repo_manager.repo_path(&codebase);
     if !repo_path.exists() {
         return Err(GitStoreError::LocalRepositoryUnavailable(codebase));
     }
 
-    // NUL-terminated record format so commit messages can contain
-    // anything (including blank lines) without ambiguating the parse.
-    const SEP: u8 = 0;
-    let mut cmd = Command::new("git");
-    cmd.arg("log")
-        .arg("--reverse")
-        .arg("--format=%H%n%an%n%ae%n%at%n%B%x00");
-    let range = match params.old.as_deref() {
-        Some(old) if !old.is_empty() => format!("{}..{}", old, params.new),
-        _ => params.new.clone(),
-    };
-    cmd.arg(&range).current_dir(&repo_path).kill_on_drop(true);
-
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(state.config.git.git_timeout),
-        cmd.output(),
-    )
-    .await
-    .map_err(|_| GitStoreError::Timeout)??;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        warn!("git log {}: {}", range, stderr);
-        return Err(GitStoreError::GitError(git2::Error::from_str(&stderr)));
-    }
-
-    let mut commits = Vec::new();
-    for chunk in output.stdout.split(|b| *b == SEP) {
-        if chunk.iter().all(|b| b.is_ascii_whitespace()) {
-            continue;
-        }
-        // git appends '\n' after each record, so chunks 2..N start
-        // with a bridging newline; trim before reading the SHA.
-        let s = String::from_utf8_lossy(chunk);
-        let trimmed = s.trim_start();
-        let mut lines = trimmed.lines();
-        let sha = match lines.next() {
-            Some(l) if !l.is_empty() => l.to_string(),
-            _ => continue,
-        };
-        let author_name = lines.next().unwrap_or("").to_string();
-        let author_email = lines.next().unwrap_or("").to_string();
-        let author_ts: i64 = lines.next().and_then(|l| l.parse().ok()).unwrap_or(0);
-        let message = lines.collect::<Vec<_>>().join("\n").trim().to_string();
-        commits.push(LogEntry {
-            sha,
-            author: GitPerson {
-                name: author_name,
-                email: author_email,
-                timestamp: author_ts,
-            },
-            message,
-        });
-    }
+    let commits = run_blocking(state.config.git.git_timeout, move || {
+        let repo = git2::Repository::open(&repo_path)?;
+        let commits = walk_range(
+            &repo,
+            old,
+            new,
+            git2::Sort::TOPOLOGICAL | git2::Sort::TIME | git2::Sort::REVERSE,
+        )?
+        .into_iter()
+        .map(|commit| {
+            let author = commit.author();
+            LogEntry {
+                sha: commit.id().to_string(),
+                author: GitPerson {
+                    name: String::from_utf8_lossy(author.name_bytes()).into_owned(),
+                    email: String::from_utf8_lossy(author.email_bytes()).into_owned(),
+                    timestamp: author.when().seconds(),
+                },
+                message: commit_message(&commit),
+            }
+        })
+        .collect();
+        Ok(commits)
+    })
+    .await?;
 
     let body = LogResponse { commits };
     Response::builder()

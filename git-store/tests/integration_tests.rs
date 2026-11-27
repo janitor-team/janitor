@@ -1109,6 +1109,73 @@ index 0000000..3e75765
 }
 
 db_test! {
+    async fn test_admin_log_and_revision_info_ordering(test_db: TestDatabase) {
+        seed_codebase(test_db.pool(), "codebase").await;
+
+        let tmp = TempDir::new().unwrap();
+        let repo = git2::Repository::init_bare(tmp.path().join("codebase")).unwrap();
+        let c1 = commit_files(&repo, &[("a", "1\n")], "first", &[]);
+        let c2 = commit_files(&repo, &[("a", "2\n")], "second\n\nwith a body\n", &[c1]);
+        let c3 = commit_files(&repo, &[("a", "3\n")], "third", &[c2]);
+
+        let state = build_state(&tmp, &test_db, AppRole::Admin).await;
+        let app = web::create_admin_app(state, 0);
+
+        let resp = get(&app, &format!("/codebase/log?new={}", c3)).await;
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = body_json(resp).await;
+        let summary: Vec<(String, String)> = body["commits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| {
+                (
+                    c["sha"].as_str().unwrap().to_string(),
+                    c["message"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                (c1.to_string(), "first".to_string()),
+                (c2.to_string(), "second\n\nwith a body".to_string()),
+                (c3.to_string(), "third".to_string()),
+            ]
+        );
+
+        let resp = get(
+            &app,
+            &format!("/codebase/revision-info?old={}&new={}", c1, c3),
+        )
+        .await;
+        assert_eq!(resp.status(), 200);
+        let body: Vec<serde_json::Value> = body_json(resp).await;
+        let ids: Vec<&str> = body
+            .iter()
+            .map(|e| e["commit-id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec![c3.to_string(), c2.to_string()]);
+
+        let resp = get(
+            &app,
+            &format!(
+                "/codebase/revision-info?old=0000000000000000000000000000000000000000&new={}",
+                c2
+            ),
+        )
+        .await;
+        assert_eq!(resp.status(), 200);
+        let body: Vec<serde_json::Value> = body_json(resp).await;
+        let ids: Vec<&str> = body
+            .iter()
+            .map(|e| e["commit-id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec![c2.to_string(), c1.to_string()]);
+    }
+}
+
+db_test! {
     async fn test_admin_set_remote_writes_config(test_db: TestDatabase) {
         seed_codebase(test_db.pool(), "codebase").await;
 
