@@ -17,6 +17,7 @@
 """OpenID support."""
 
 import asyncio
+import contextlib
 import logging
 import os
 import uuid
@@ -24,10 +25,15 @@ from typing import Optional
 
 import aiohttp
 from aiohttp import web
+from aiohttp_openmetrics import Gauge
 from yarl import URL
 
 # Seconds a user has to log in at the provider before the state cookie is gone.
 LOGIN_STATE_MAX_AGE = 10 * 60
+
+openid_discovery_pending = Gauge(
+    "openid_discovery_pending", "Whether the OpenID discovery has yet to succeed"
+)
 
 
 @web.middleware
@@ -142,20 +148,38 @@ async def discover_openid_config(app, oauth2_provider_base_url):
     try:
         async with app["http_client_session"].get(url) as resp:
             if resp.status != 200:
-                # TODO(jelmer): Fail? Set flag?
                 logging.warning(
                     "Unable to find openid configuration (%s): %s",
                     resp.status,
                     await resp.read(),
                 )
-                return
-            app["openid_config"] = await resp.json()
+                return False
+            try:
+                config = await resp.json()
+            except ValueError:
+                logging.warning(
+                    "Invalid openid configuration at %s", url, exc_info=True
+                )
+                return False
+            if not isinstance(config, dict) or not config:
+                logging.warning("Invalid openid configuration at %s: %r", url, config)
+                return False
+            app["openid_config"].update(config)
+            openid_discovery_pending.set(0)
+            app["openid_ready"].set()
+            return True
     except (aiohttp.ClientError, asyncio.TimeoutError):
-        # Unlike a non-200 response, a connection failure raises instead
-        # of returning - uncaught, it would abort the whole site's startup.
         logging.warning(
             "Unable to reach openid configuration at %s", url, exc_info=True
         )
+        return False
+
+
+async def retry_openid_discovery(app, oauth2_provider_base_url):
+    delay = 1
+    while not await discover_openid_config(app, oauth2_provider_base_url):
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, 300)
 
 
 async def handle_logout(request):
@@ -208,7 +232,22 @@ def setup_openid(app, oauth2_provider_base_url: Optional[str]):
     app.router.add_post("/logout", handle_logout, name="logout")
     app.router.add_get("/oauth/callback", handle_oauth_callback, name="oauth2-callback")
     app["openid_config"] = None
-    if oauth2_provider_base_url:
-        app.on_startup.append(
-            lambda app: discover_openid_config(app, oauth2_provider_base_url)
+    # Set once login works, or right away when login is disabled.
+    app["openid_ready"] = asyncio.Event()
+    if not oauth2_provider_base_url:
+        app["openid_ready"].set()
+        return
+    # Filled in place, since the app is frozen once it has started.
+    app["openid_config"] = {}
+    openid_discovery_pending.set(1)
+
+    async def openid_discovery(app):
+        task = asyncio.create_task(
+            retry_openid_discovery(app, oauth2_provider_base_url)
         )
+        yield
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    app.cleanup_ctx.append(openid_discovery)
