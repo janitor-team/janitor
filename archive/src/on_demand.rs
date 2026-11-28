@@ -291,9 +291,16 @@ impl AsyncPackageProvider for PrecomputedPackageProvider {
             while let Some(result) = stream.next().await {
                 match result {
                     Ok(pkg) => file.add_package(pkg),
-                    Err(e) => {
-                        warn!("Failed to scan package from build {}: {}", build.id, e);
+                    // Builds with missing artifacts are left out of the indices;
+                    // any other scan error fails the whole publish.
+                    Err(ArchiveError::ArtifactsMissing { .. }) => {
+                        warn!(
+                            "Artifacts missing for {} ({}), skipping",
+                            build.source_package, build.run_id
+                        );
+                        break;
                     }
+                    Err(e) => return Err(AptRepositoryError::Provider(Box::new(e))),
                 }
             }
         }
@@ -324,9 +331,16 @@ impl AsyncSourceProvider for PrecomputedSourceProvider {
             while let Some(result) = stream.next().await {
                 match result {
                     Ok(src) => file.add_source(src),
-                    Err(e) => {
-                        warn!("Failed to scan source from build {}: {}", build.id, e);
+                    // Builds with missing artifacts are left out of the indices;
+                    // any other scan error fails the whole publish.
+                    Err(ArchiveError::ArtifactsMissing { .. }) => {
+                        warn!(
+                            "Artifacts missing for {} ({}), skipping",
+                            build.source_package, build.run_id
+                        );
+                        break;
                     }
+                    Err(e) => return Err(AptRepositoryError::Provider(Box::new(e))),
                 }
             }
         }
@@ -446,7 +460,16 @@ pub async fn refresh_on_demand_dists(
     async_repo
         .generate_repository(&base_path, &pkg_provider, &src_provider)
         .await
-        .map_err(|e| ArchiveError::RepositoryGeneration(e.to_string()))?;
+        .map_err(|e| match e {
+            // The providers wrap our own ArchiveError in Provider; recover
+            // it so callers see the original typed error rather than a
+            // stringified version.
+            AptRepositoryError::Provider(inner) => match inner.downcast::<ArchiveError>() {
+                Ok(archive_err) => *archive_err,
+                Err(other) => ArchiveError::RepositoryGeneration(other.to_string()),
+            },
+            other => ArchiveError::RepositoryGeneration(other.to_string()),
+        })?;
     crate::repository::generate_contents(&async_repo, &scanner, &base_path, &build_infos).await?;
 
     if let Some(gpg_cfg) = gpg {
@@ -478,6 +501,84 @@ pub async fn read_on_demand_file(base: &Path, relative: &[&str]) -> ArchiveResul
 mod tests {
     use super::*;
     use std::time::{Duration, SystemTime};
+
+    fn build_info(run_id: &str) -> BuildInfo {
+        BuildInfo {
+            id: format!("{}/hello", run_id),
+            run_id: RunId::new(run_id).unwrap(),
+            codebase: CodebaseName::new("hello").unwrap(),
+            source_package: "hello".to_string(),
+            suite: "lintian-fixes".to_string(),
+            campaign: "lintian-fixes".to_string(),
+            architecture: "amd64".to_string(),
+            component: "main".to_string(),
+            binary_files: vec![],
+            source_files: vec![],
+        }
+    }
+
+    /// True when 0o000-permission tricks are useless (typical for root
+    /// in CI containers). The permission bits are advisory for root,
+    /// so skip tests that rely on reads failing because of them.
+    fn mode_000_is_bypassed() -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let probe = tmp.path().join("probe");
+        std::fs::write(&probe, b"").unwrap();
+        std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o000)).unwrap();
+        std::fs::read(&probe).is_ok()
+    }
+
+    /// Artifact store with no artifacts for `missing` and an artifact
+    /// for `broken` that cannot be retrieved because it is unreadable.
+    async fn scanner_with_broken_run() -> (Arc<PackageScanner>, tempfile::TempDir) {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let artifact = tmp.path().join("broken/hello_1.0_amd64.deb");
+        std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        std::fs::write(&artifact, b"").unwrap();
+        std::fs::set_permissions(&artifact, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let scanner = PackageScanner::new(tmp.path().to_str().unwrap())
+            .await
+            .unwrap();
+        (Arc::new(scanner), tmp)
+    }
+
+    #[tokio::test]
+    async fn test_precomputed_providers_skip_missing_artifacts() {
+        let (scanner, _tmp) = scanner_with_broken_run().await;
+        let builds = vec![build_info("missing")];
+        let packages = PrecomputedPackageProvider::new(scanner.clone(), builds.clone())
+            .get_packages("lintian-fixes", "main", "amd64")
+            .await
+            .unwrap();
+        assert_eq!(packages.to_string(), "");
+        let sources = PrecomputedSourceProvider::new(scanner, builds)
+            .get_sources("lintian-fixes", "main")
+            .await
+            .unwrap();
+        assert_eq!(sources.to_string(), "");
+    }
+
+    #[tokio::test]
+    async fn test_precomputed_providers_fail_on_other_errors() {
+        if mode_000_is_bypassed() {
+            eprintln!("skipping: running as root, 0o000 permissions are ignored");
+            return;
+        }
+        let (scanner, _tmp) = scanner_with_broken_run().await;
+        let builds = vec![build_info("missing"), build_info("broken")];
+        assert!(
+            PrecomputedPackageProvider::new(scanner.clone(), builds.clone())
+                .get_packages("lintian-fixes", "main", "amd64")
+                .await
+                .is_err()
+        );
+        assert!(PrecomputedSourceProvider::new(scanner, builds)
+            .get_sources("lintian-fixes", "main")
+            .await
+            .is_err());
+    }
 
     #[test]
     fn test_parse_kind_run() {
