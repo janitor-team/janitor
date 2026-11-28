@@ -12,7 +12,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use clap::Parser;
 use janitor_bzr_store::{
-    config::{BzrConfig, BzrStoreConfig, Config},
+    config::{BzrConfig, BzrStoreConfig},
     web::create_applications,
 };
 use tracing::info;
@@ -83,13 +83,7 @@ async fn main() -> Result<()> {
             .map_err(|e| anyhow!("Failed to read janitor config {:?}: {}", cli.config, e))?,
     );
 
-    // Build the BzrStoreConfig. Environment variables and any config
-    // file at $BZR_CONFIG_PATH still work; the CLI flags supersede the
-    // admin/public bind addresses and the on-disk repository path so
-    // the Python deployment contract is preserved.
-    let mut config: Config = BzrStoreConfig::load()
-        .await
-        .unwrap_or_else(|_| BzrStoreConfig::default());
+    let mut config = BzrStoreConfig::default();
 
     let public_listen_address = cli.public_listen_address.unwrap_or(cli.listen_address);
     let admin_addr = SocketAddr::new(cli.listen_address, cli.port);
@@ -103,17 +97,16 @@ async fn main() -> Result<()> {
         request_timeout: config.bzr.request_timeout,
     };
 
-    // Use janitor.conf's database_location if the BzrStoreConfig
-    // didn't get one from env / toml. This matches Python, where the
-    // single janitor.conf carries the DB URL.
-    if config.base.database.is_none() {
-        if let Some(db_url) = janitor_config.database_location.as_ref() {
-            config.base.database = Some(janitor::shared_config::DatabaseConfig {
-                url: db_url.clone(),
-                ..janitor::shared_config::DatabaseConfig::default()
-            });
-        }
+    if let Some(db_url) = janitor_config.database_location.as_ref() {
+        config.database = Some(janitor::shared_config::DatabaseConfig {
+            url: db_url.clone(),
+            ..janitor::shared_config::DatabaseConfig::default()
+        });
     }
+
+    config
+        .validate()
+        .map_err(|e| anyhow!("Config validation failed: {}", e))?;
 
     info!("Starting BZR Store service");
     info!("Admin interface:  {}:{}", cli.listen_address, cli.port);

@@ -34,7 +34,7 @@ pub fn build_config(tmp_dir: &std::path::Path, database_url: String) -> Config {
         python_path: None,
         request_timeout: cfg.bzr.request_timeout,
     };
-    cfg.base.database = Some(janitor::shared_config::DatabaseConfig {
+    cfg.database = Some(janitor::shared_config::DatabaseConfig {
         url: database_url,
         ..janitor::shared_config::DatabaseConfig::default()
     });

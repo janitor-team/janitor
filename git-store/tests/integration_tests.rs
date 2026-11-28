@@ -191,7 +191,7 @@ fn replace_db(url: &str, name: &str) -> String {
 fn build_config(tmp_dir: &std::path::Path, database_url: String) -> Config {
     let mut cfg = Config::default();
     cfg.git.local_path = tmp_dir.to_path_buf();
-    cfg.base.database = Some(janitor::shared_config::DatabaseConfig {
+    cfg.database = Some(janitor::shared_config::DatabaseConfig {
         url: database_url,
         ..janitor::shared_config::DatabaseConfig::default()
     });
@@ -204,7 +204,7 @@ async fn build_state(tmp: &TempDir, test_db: &TestDatabase, role: AppRole) -> Ap
 
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(3)
-        .connect(&cfg.base.database.as_ref().unwrap().url)
+        .connect(&cfg.database.as_ref().unwrap().url)
         .await
         .unwrap();
     let db_manager = Arc::new(DatabaseManager::new(pool));
