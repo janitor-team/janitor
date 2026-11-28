@@ -126,6 +126,10 @@ async fn run_scan_loop(
 ) {
     loop {
         let cycle_start = Utc::now();
+        if let Err(e) = crate::metrics::refresh_review_metrics(&state.conn).await {
+            log::warn!("Error counting reviews: {}", e);
+        }
+
         log::debug!("Checking existing merge proposals");
         let completed = crate::check_existing(
             state.conn.clone(),
