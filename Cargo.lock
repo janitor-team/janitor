@@ -3577,6 +3577,7 @@ dependencies = [
  "pyo3",
  "serde",
  "serde_json",
+ "serde_with",
  "silver-platter",
  "sqlx",
  "url",
