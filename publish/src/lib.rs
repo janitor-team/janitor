@@ -700,6 +700,59 @@ impl std::fmt::Display for WorkerInvalidResponse {
 
 impl std::error::Error for WorkerInvalidResponse {}
 
+/// How long a dropped `janitor-publish-one` gets to exit after SIGTERM
+/// before it is sent SIGKILL.
+const PUBLISH_ONE_TERM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const PUBLISH_ONE_REAP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Scope guard: on drop, SIGTERM the publish child if it is still
+/// running, wait up to `PUBLISH_ONE_TERM_TIMEOUT`, then SIGKILL it and
+/// wait up to `PUBLISH_ONE_REAP_TIMEOUT`. The SIGTERM is sent before
+/// the wait is spawned, so it is not lost if the runtime shuts down.
+struct PublishOneReaper(Option<tokio::process::Child>);
+
+impl Drop for PublishOneReaper {
+    fn drop(&mut self) {
+        let Some(mut child) = self.0.take() else {
+            return;
+        };
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        if let Some(raw_pid) = child.id() {
+            use nix::sys::signal::{kill, Signal};
+            match kill(nix::unistd::Pid::from_raw(raw_pid as i32), Signal::SIGTERM) {
+                Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
+                Err(e) => log::warn!("janitor-publish-one: failed to SIGTERM {}: {}", raw_pid, e),
+            }
+        }
+        tokio::spawn(async move { reap_publish_one(child).await });
+    }
+}
+
+async fn reap_publish_one(mut child: tokio::process::Child) {
+    let Some(raw_pid) = child.id() else {
+        return;
+    };
+    if tokio::time::timeout(PUBLISH_ONE_TERM_TIMEOUT, child.wait())
+        .await
+        .is_ok()
+    {
+        return;
+    }
+    let _ = child.start_kill();
+    if tokio::time::timeout(PUBLISH_ONE_REAP_TIMEOUT, child.wait())
+        .await
+        .is_err()
+    {
+        log::warn!(
+            "janitor-publish-one {} still alive {}s after SIGKILL",
+            raw_pid,
+            PUBLISH_ONE_REAP_TIMEOUT.as_secs()
+        );
+    }
+}
+
 /// Run a worker process with the given arguments and request.
 ///
 /// # Arguments
@@ -713,12 +766,14 @@ async fn run_worker_process(
     args: Vec<String>,
     request: PublishOneRequest,
 ) -> Result<Result<PublishOneResult, PublishOneError>, WorkerInvalidResponse> {
-    let mut p = tokio::process::Command::new(&args[0])
+    let child = tokio::process::Command::new(&args[0])
         .args(&args[1..])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()?;
+    let mut reaper = PublishOneReaper(Some(child));
+    let p = reaper.0.as_mut().expect("child was just spawned");
 
     use tokio::io::AsyncWriteExt;
     if let Some(stdin) = p.stdin.as_mut() {
@@ -1572,6 +1627,102 @@ mod tests {
         let roundtripped: PublishOneError = serde_json::from_str(&json).unwrap();
         assert_eq!(roundtripped.code, "merge-conflict");
         assert_eq!(roundtripped.description, "Could not merge");
+    }
+
+    /// Run `script` as the publish child, drop it after 1 s and return
+    /// the pid it wrote to `dir/pid`.
+    async fn drop_publish_child(dir: &std::path::Path, script: &str) -> nix::unistd::Pid {
+        let request = PublishOneRequest {
+            campaign: janitor_types::Campaign::new("lintian-fixes").unwrap(),
+            target_branch_url: url::Url::parse("https://example.com/foo").unwrap(),
+            role: "main".to_string(),
+            log_id: RunId::new("log-123").unwrap(),
+            reviewers: None,
+            revision_id: breezyshim::RevisionId::from(b"rev-1".to_vec()),
+            unchanged_id: None,
+            require_binary_diff: false,
+            differ_url: url::Url::parse("https://differ.example.com").unwrap(),
+            derived_branch_name: "lintian-fixes".to_string(),
+            tags: None,
+            allow_create_proposal: true,
+            source_branch_url: url::Url::parse("https://example.com/fork/foo").unwrap(),
+            codemod_result: serde_json::Value::Null,
+            commit_message_template: None,
+            title_template: None,
+            existing_mp_url: None,
+            extra_context: None,
+            mode: Mode::Propose,
+            command: "true".to_string(),
+            external_url: None,
+            derived_owner: None,
+            auto_merge: None,
+        };
+        let args = vec!["sh".to_string(), "-c".to_string(), script.to_string()];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            run_worker_process(args, request),
+        )
+        .await
+        .expect_err("the child exited by itself");
+        let pid = std::fs::read_to_string(dir.join("pid")).unwrap();
+        nix::unistd::Pid::from_raw(pid.trim().parse().expect("the child wrote no pid"))
+    }
+
+    /// Wait up to `limit` for `pid` to be gone. SIGKILL it if it is not.
+    async fn child_gone_within(pid: nix::unistd::Pid, limit: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + limit;
+        while std::time::Instant::now() < deadline {
+            if nix::sys::signal::kill(pid, None).is_err() {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGKILL);
+        false
+    }
+
+    #[tokio::test]
+    async fn test_dropped_worker_process_gets_sigterm() {
+        let dir = std::env::temp_dir().join(format!("publish-one-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let script = format!(
+            "cd '{}'; trap 'echo term > term; exit 0' TERM; echo $$ > pid; \
+             while :; do sleep 0.1; done",
+            dir.display()
+        );
+        let pid = drop_publish_child(&dir, &script).await;
+        let gone = child_gone_within(pid, PUBLISH_ONE_TERM_TIMEOUT / 2).await;
+        let term = std::fs::read_to_string(dir.join("term")).ok();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(
+            gone,
+            "the child is still running after its future was dropped"
+        );
+        assert_eq!(
+            term.as_deref(),
+            Some("term\n"),
+            "the child never got SIGTERM"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dropped_worker_process_ignoring_sigterm_is_killed() {
+        let dir = std::env::temp_dir().join(format!("publish-one-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let script = format!(
+            "cd '{}'; trap '' TERM; echo $$ > pid; exec sleep 30",
+            dir.display()
+        );
+        let pid = drop_publish_child(&dir, &script).await;
+        std::fs::remove_dir_all(&dir).unwrap();
+        tokio::time::sleep(PUBLISH_ONE_TERM_TIMEOUT - std::time::Duration::from_secs(1)).await;
+        let alive_in_grace = nix::sys::signal::kill(pid, None).is_ok();
+        let gone = child_gone_within(pid, std::time::Duration::from_secs(3)).await;
+        assert!(
+            alive_in_grace,
+            "the child was killed before the grace period ended"
+        );
+        assert!(gone, "the child is still running after the grace period");
     }
 
     #[test]

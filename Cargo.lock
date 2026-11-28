@@ -3472,6 +3472,7 @@ dependencies = [
  "maplit",
  "metrics",
  "minijinja",
+ "nix",
  "protobuf 3.7.2",
  "pyo3",
  "redis 1.7.0",

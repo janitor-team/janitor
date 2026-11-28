@@ -27,6 +27,7 @@ janitor-types = { workspace = true, features = ["breezyshim", "pyo3", "silver-pl
 janitor-service = { workspace = true }
 log.workspace = true
 minijinja = { version = "2", features = ["loader"] }
+nix = { workspace = true, features = ["signal"] }
 redis = { workspace = true, features = ["tokio-comp", "json", "connection-manager"] }
 rslock = { workspace = true, default-features = false, features = ["tokio-comp"] }
 reqwest.workspace = true
