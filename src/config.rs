@@ -53,14 +53,6 @@ impl Config {
         }
         None
     }
-
-    pub async fn pg_pool(&self) -> std::result::Result<sqlx::PgPool, sqlx::Error> {
-        if let Some(db_location) = self.database_location.as_ref() {
-            sqlx::postgres::PgPool::connect(db_location.as_str()).await
-        } else {
-            sqlx::postgres::PgPool::connect_with(sqlx::postgres::PgConnectOptions::new()).await
-        }
-    }
 }
 
 #[cfg(test)]
