@@ -1,9 +1,7 @@
 # Not installed automatically anywhere - copy to ~/.sbuildrc on any host
 # that runs sbuild directly (outside a janitor worker container) if you
 # want its defaults applied without passing them on the command line
-# every time. janitor.conf.example's build_command already passes
-# --no-clean-source explicitly, so $clean_source below is redundant
-# there, but still relevant for a bare sbuild invocation.
+# every time.
 
 $build_arch_all = 1;
 $apt_update = 1;
