@@ -414,21 +414,22 @@ fn tree_set_changelog_version(
     tree: &breezyshim::workingtree::GenericWorkingTree,
     build_version: &debversion::Version,
     subpath: &Path,
-) -> Result<(), debian_analyzer::editor::EditorError> {
+) -> Result<(), String> {
     use debian_analyzer::editor::{Editor, MutableTreeEdit};
-    let editor = tree.edit_file::<debian_changelog::ChangeLog>(
-        &subpath.join("debian/changelog"),
-        true,
-        true,
-    )?;
+    let editor = tree
+        .edit_file::<debian_changelog::ChangeLog>(&subpath.join("debian/changelog"), true, true)
+        .map_err(|e| e.to_string())?;
     if let Some(mut entry) = editor.iter().next() {
-        let version: debversion::Version =
-            format!("{}~", entry.version().unwrap()).parse().unwrap();
+        let version: debversion::Version = entry
+            .try_version()
+            .ok_or("the top changelog entry has no version")?
+            .and_then(|v| format!("{}~", v).parse())
+            .map_err(|e| format!("invalid version in the top changelog entry: {}", e))?;
         if version > *build_version {
             return Ok(());
         }
         entry.set_version(build_version);
-        editor.commit()?;
+        editor.commit().map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -799,5 +800,65 @@ mod tests {
         assert_eq!(failure.code, "build-config-parse-failure");
         assert_eq!(failure.stage, vec!["build".to_string()]);
         assert_eq!(failure.transient, Some(false));
+    }
+
+    #[test]
+    fn test_tree_set_changelog_version() {
+        let changelog = |header: &str| {
+            format!(
+                r#"{}
+
+  * Initial release.
+
+ -- Joe Example <joe@example.com>  Mon, 01 Jan 2001 00:00:00 +0000
+"#,
+                header
+            )
+        };
+        let set_version = |header: &str| {
+            let td = tempfile::tempdir().unwrap();
+            let tree = empty_tree(&td);
+            tree.mkdir(std::path::Path::new("debian")).unwrap();
+            tree.put_file_bytes_non_atomic(
+                std::path::Path::new("debian/changelog"),
+                changelog(header).as_bytes(),
+            )
+            .unwrap();
+            tree.add(&[std::path::Path::new("debian/changelog")])
+                .unwrap();
+            let result = tree_set_changelog_version(
+                &tree,
+                &"1.0-1".parse().unwrap(),
+                std::path::Path::new(""),
+            );
+            let after = tree
+                .get_file_text(std::path::Path::new("debian/changelog"))
+                .unwrap();
+            (result, String::from_utf8(after).unwrap())
+        };
+
+        let (result, after) = set_version("foo (0.9-1) unstable; urgency=low");
+        assert_eq!(result, Ok(()));
+        assert_eq!(after, changelog("foo (1.0-1) unstable; urgency=low"));
+
+        let (result, after) = set_version("foo (2.0-1) unstable; urgency=low");
+        assert_eq!(result, Ok(()));
+        assert_eq!(after, changelog("foo (2.0-1) unstable; urgency=low"));
+
+        let (result, after) = set_version("foo (1_0) unstable; urgency=low");
+        let description = result.unwrap_err();
+        assert!(
+            description.starts_with("invalid version in the top changelog entry: "),
+            "unexpected description: {}",
+            description
+        );
+        assert_eq!(after, changelog("foo (1_0) unstable; urgency=low"));
+
+        let (result, after) = set_version("foo unstable; urgency=low");
+        assert_eq!(
+            result,
+            Err("the top changelog entry has no version".to_string())
+        );
+        assert_eq!(after, changelog("foo unstable; urgency=low"));
     }
 }
