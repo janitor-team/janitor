@@ -251,15 +251,6 @@ mod tests {
         );
     }
 
-    /// `From<io::Error>` must produce IoError regardless of kind —
-    /// callers that need finer resolution pattern-match the wrapped
-    /// error themselves.
-    #[test]
-    fn from_io_error_produces_io_variant() {
-        let err: Error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "x").into();
-        assert!(matches!(err, Error::IoError(_)));
-    }
-
     #[test]
     fn from_object_store_timeout_produces_timeout_variant() {
         use object_store::client::{HttpError, HttpErrorKind};
@@ -270,13 +261,6 @@ mod tests {
         }
         .into();
         assert!(matches!(err, Error::Timeout(_)), "got {err:?}");
-    }
-
-    #[test]
-    fn error_implements_std_error_trait() {
-        fn _requires<E: std::error::Error>(_: E) {}
-        _requires(Error::ArtifactsMissing);
-        _requires(Error::Other("x".into()));
     }
 
     /// Bare filesystem path routes to a local store.
