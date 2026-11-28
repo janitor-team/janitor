@@ -22,6 +22,19 @@ from janitor.site import (
 )
 
 
+def page_links(url: URL, limit: int, offset: int, count: int) -> dict[str, Any]:
+    """Links to the pages before and after; count comes from fetching limit + 1."""
+    previous_url = next_url = None
+    if offset > 0 and limit > 0:
+        if offset > limit:
+            previous_url = str(url.update_query(offset=offset - limit))
+        else:
+            previous_url = str(url.without_query_params("offset"))
+    if limit > 0 and count > limit:
+        next_url = str(url.update_query(offset=offset + limit))
+    return {"offset": offset, "previous_url": previous_url, "next_url": next_url}
+
+
 async def get_previous_runs(client, runner_url: str, codebase: str, campaign: str):
     url = URL(runner_url) / "runs"
     async with client.get(
