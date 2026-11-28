@@ -8,6 +8,7 @@
 {% block body %}
     <div class="section" id="review">
         <h1>Review</h1>
+        <p id="review-status" role="status"></p>
         <p>
             <a href="{{ url_for('cupboard-run', codebase=codebase, run_id=run_id) }}" id="full-run-link">Full run</a>
             <span id="run-of">of <span id="run-campaign">{{ campaign }}</span> for <a href="{{ url_for('cupboard-codebase', codebase=codebase) }}" id="run-codebase">{{ codebase }}</a>.</span>
@@ -82,6 +83,7 @@
                     $('#options').remove();
                     $('#full-run-link').remove();
                     $('#run-of').remove();
+                    $('#review-status').text('');
                 }
             }
 
@@ -127,11 +129,14 @@
                        },
                        200: function() {
                            $('#review-comment').val('');
+                           var saved = {'approved': 'Approved', 'rejected': 'Rejected', 'reschedule': 'Rescheduled', 'abstained': 'Abstained on'};
+                           $('#review-status').text(saved[verdict] + ' ' + codebase + '.');
                            if (todo.length == 0) {
                                 refreshData(loadNewJob);
                            } else {
                                 loadNewJob();
                            }
+                           document.getElementById('review').scrollIntoView();
                        },
                        500: function(response) {
 			   alert('500 error submitting review: ' + response.responseText);
