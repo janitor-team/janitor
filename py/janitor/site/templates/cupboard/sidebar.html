@@ -71,7 +71,7 @@
         </ul>
         <p>
             <label for="sidebar-codebase">See the status for a specific codebase:</label>
-            <div class="sidebar-packages" style="width:300px;">
+            <div class="sidebar-packages">
                 <form autocomplete="off" action="{{ url_for('cupboard-codebase-query-redirect') }}">
                     {{ codebase_input(name="codebase") }}
                     <input type="submit" style="display: none" />
