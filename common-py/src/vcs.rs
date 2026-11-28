@@ -64,7 +64,10 @@ impl VcsManager {
     ) -> PyResult<Bound<'a, PyAny>> {
         let z = self.0.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let diff = z.get_diff(&codebase, &old_revid, &new_revid).await;
+            let diff = z
+                .get_diff(&codebase, &old_revid, &new_revid)
+                .await
+                .map_err(|e| DiffUnavailable::new_err(e.to_string()))?;
             Ok(Python::attach(|py| PyBytes::new(py, &diff).unbind()))
         })
     }
@@ -314,6 +317,7 @@ create_exception!(
     pyo3::exceptions::PyException
 );
 create_exception!(janitor.vcs, UnsupportedVcs, pyo3::exceptions::PyException);
+create_exception!(janitor.vcs, DiffUnavailable, pyo3::exceptions::PyException);
 
 #[pyfunction]
 #[pyo3(signature = (vcs_url, possible_transports=None, probers=None))]
@@ -355,5 +359,6 @@ pub(crate) fn init(py: Python, module: &Bound<PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(open_branch_ext, module)?)?;
     module.add("BranchOpenFailure", py.get_type::<BranchOpenFailure>())?;
     module.add("UnsupportedVcs", py.get_type::<UnsupportedVcs>())?;
+    module.add("DiffUnavailable", py.get_type::<DiffUnavailable>())?;
     Ok(())
 }

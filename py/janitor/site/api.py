@@ -25,7 +25,6 @@ import mimeparse
 from aiohttp import (
     ClientConnectorError,
     ClientOSError,
-    ClientResponseError,
     ClientSession,
     ContentTypeError,
     ServerDisconnectedError,
@@ -47,7 +46,7 @@ from yarl import URL
 from janitor import version_string
 from janitor.config import Config
 
-from ..vcs import VcsManager
+from ..vcs import DiffUnavailable, VcsManager
 from . import (
     BuildDiffUnavailable,
     DebdiffRetrievalError,
@@ -464,12 +463,13 @@ async def serve_run_diff(request, run_id):
                     else NULL_REVISION,
                     branch["revision"].encode("utf-8"),
                 )
-        except ClientResponseError as e:
-            return web.Response(status=e.status, text="Unable to retrieve diff")
         except NotImplementedError as e:
             raise web.HTTPBadRequest(
                 text="unsupported vcs {}".format(run["vcs_type"])
             ) from e
+        except DiffUnavailable as e:
+            logging.warning("Unable to retrieve diff: %s", e)
+            return web.Response(status=502, text="Unable to retrieve diff")
 
         best_match = mimeparse.best_match(
             ["text/x-diff", "text/plain", "text/html"],
