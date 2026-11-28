@@ -67,7 +67,7 @@ distribution {
   lintian_suppress_tag: "distribution-and-changes-mismatch"
   # Build command for campaigns whose base_distribution is this one. A
   # campaign's debian_build build_command overrides it. Optional.
-  build_command: "sbuild -Asv --no-clean-source"
+  build_command: "sbuild -Asv"
   vendor: "debian"
   # Extra suites to add as apt sources when creating the sbuild chroot.
   # Optional.
@@ -85,7 +85,7 @@ campaign {
     build_distribution: "lintian-fixes"
     build_suffix: "jan+lint"
     base_distribution: "unstable"
-    build_command: "sbuild -Asv --no-clean-source"
+    build_command: "sbuild -Asv"
     # Extra distributions to pull packages from when building. Optional;
     # can be specified more than once.
     # extra_build_distribution: "experimental"
