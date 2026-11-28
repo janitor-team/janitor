@@ -234,8 +234,8 @@ async def get_archive_diff(
         raise DebdiffRetrievalError(str(e)) from e
 
 
-async def serve_run_log(request: web.Request, run_id: str, filename: str):
-    """Serve a log file of a run, as retrieved from the runner."""
+async def read_run_log(request: web.Request, run_id: str, filename: str) -> bytes:
+    """Read a log file of a run from the runner."""
     if request.app["runner_url"] is None:
         raise web.HTTPServiceUnavailable(text="no runner configured")
     url = URL(request.app["runner_url"]) / "log" / run_id / filename
@@ -260,6 +260,12 @@ async def serve_run_log(request: web.Request, run_id: str, filename: str):
             "Unable to contact runner for log %s/%s: %s", run_id, filename, e
         )
         raise web.HTTPBadGateway(text="unable to contact runner") from e
+    return body
+
+
+async def serve_run_log(request: web.Request, run_id: str, filename: str):
+    """Serve a log file of a run, as retrieved from the runner."""
+    body = await read_run_log(request, run_id, filename)
     return web.Response(content_type="text/plain", charset="utf-8", body=body)
 
 
