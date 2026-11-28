@@ -298,8 +298,7 @@ impl ProposalInfoManager {
         tx.commit().await?;
 
         // The change_set `state` column is driven by the
-        // `new_result_branch_trigger_refresh_change_set_state` trigger
-        // (schema/state.sql:306-335), which calls
+        // `new_result_branch_refresh` trigger (schema/state.sql), which calls
         // `refresh_change_set_state` and transitions to 'done' once all
         // branches are absorbed. The UPDATE above on `new_result_branch`
         // fires that trigger, so there is nothing to do manually here -
