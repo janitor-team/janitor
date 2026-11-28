@@ -17,6 +17,7 @@ pub mod state;
 pub mod test_utils;
 pub mod utils;
 pub mod vcs;
+pub mod web;
 
 /// Open the object store at `url`, rooted at `prefix`, with `scheme` and
 /// `prefix` as returned by `ObjectStoreScheme::parse`.
