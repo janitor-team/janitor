@@ -1903,6 +1903,7 @@ async fn scan(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             &state.vcs_managers,
             state.modify_mp_limit,
             state.unexpected_mp_limit,
+            &state.http_client,
         )
         .await;
     }
@@ -1988,6 +1989,7 @@ async fn refresh_status(
             false,
             None,
             None,
+            &state.http_client,
         )
         .await
         {
