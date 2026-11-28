@@ -1,22 +1,7 @@
-//! Health, metrics and middleware helpers.
+//! Health and metrics handlers.
 
-use axum::{
-    extract::{Request, State},
-    http::StatusCode,
-    middleware::Next,
-    response::{IntoResponse, Response},
-    Router,
-};
-use janitor::shared_config::WebConfig;
+use axum::{extract::State, http::StatusCode, response::IntoResponse};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tower_http::{
-    compression::CompressionLayer,
-    cors::{Any, CorsLayer},
-    limit::RequestBodyLimitLayer,
-    timeout::TimeoutLayer,
-    trace::TraceLayer,
-};
 
 /// Per-request counter labelled by method / route / status. Mirrors
 /// what `aiohttp_openmetrics.metrics_middleware` produces so
@@ -41,37 +26,6 @@ pub fn install_metrics() {
         HTTP_REQUEST_DURATION_SECONDS,
         "HTTP request duration in seconds"
     );
-}
-
-/// axum middleware that records request-count and latency metrics.
-///
-/// The path label uses `MatchedPath` when available so `/foo/{id}`
-/// buckets identically for every `id`; otherwise falls back to the
-/// raw URI path.
-pub async fn record_http_metrics(req: Request, next: Next) -> Response {
-    let method = req.method().as_str().to_string();
-    let path = req
-        .extensions()
-        .get::<axum::extract::MatchedPath>()
-        .map(|p| p.as_str().to_string())
-        .unwrap_or_else(|| req.uri().path().to_string());
-
-    let started = Instant::now();
-    let response = next.run(req).await;
-    let elapsed = started.elapsed().as_secs_f64();
-
-    let status = response.status().as_u16().to_string();
-    metrics::counter!(
-        HTTP_REQUESTS_TOTAL,
-        "method" => method.clone(),
-        "path" => path.clone(),
-        "status" => status
-    )
-    .increment(1);
-    metrics::histogram!(HTTP_REQUEST_DURATION_SECONDS, "method" => method, "path" => path)
-        .record(elapsed);
-
-    response
 }
 
 /// Backs `/health` and `/ready`. `/ready` runs `SELECT 1` when a pool
@@ -133,75 +87,13 @@ pub async fn metrics_handler() -> axum::response::Response {
     janitor_service::metrics::metrics_handler().await
 }
 
-pub fn apply_standard_middleware<S: Clone + Send + Sync + 'static>(
-    router: Router<S>,
-    config: &WebConfig,
-) -> Router<S> {
-    let mut router = router;
-
-    // Prometheus metrics: every request contributes to
-    // http_requests_total / http_request_duration_seconds.
-    router = router.layer(axum::middleware::from_fn(record_http_metrics));
-
-    router = router.layer(RequestBodyLimitLayer::new(config.max_request_size_bytes));
-    router = router.layer(TimeoutLayer::new(Duration::from_secs(
-        config.request_timeout_seconds,
-    )));
-
-    if config.enable_compression {
-        router = router.layer(CompressionLayer::new());
-    }
-
-    if config.enable_cors {
-        let cors = CorsLayer::new()
-            .allow_methods(Any)
-            .allow_origin(Any)
-            .allow_headers(Any);
-        router = router.layer(cors);
-    }
-
-    if config.enable_request_logging {
-        router = router.layer(TraceLayer::new_for_http());
-    }
-
-    router
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{body::Body, http::Request, routing::get, Router};
-    use janitor_service::testing::{capture_async, Value};
-    use tower::ServiceExt;
 
     #[tokio::test]
     async fn ready_without_db_is_ok() {
         let c = HealthChecker::new();
         assert!(c.is_ready().await);
-    }
-
-    #[test]
-    fn record_http_metrics_records_request() {
-        let (status, snapshot) = capture_async(async {
-            let app = Router::new()
-                .route("/x/{id}", get(|| async { "hi" }))
-                .layer(axum::middleware::from_fn(record_http_metrics));
-            app.oneshot(Request::builder().uri("/x/1").body(Body::empty()).unwrap())
-                .await
-                .unwrap()
-                .status()
-        });
-        assert_eq!(status, 200);
-        let duration_key = r#"http_request_duration_seconds{method="GET",path="/x/{id}"}"#;
-        let count_key = r#"http_requests_total{method="GET",path="/x/{id}",status="200"}"#;
-        assert_eq!(
-            snapshot.keys().collect::<Vec<_>>(),
-            vec![duration_key, count_key]
-        );
-        assert_eq!(snapshot[count_key], Value::Counter(1));
-        let Value::Histogram(durations) = &snapshot[duration_key] else {
-            panic!("expected histogram, got {:?}", snapshot[duration_key]);
-        };
-        assert_eq!(durations.len(), 1);
     }
 }

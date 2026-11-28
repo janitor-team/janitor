@@ -4,7 +4,7 @@
 //! app is mounted under `/git/` and requires HTTP Basic worker
 //! credentials for writes.
 
-use crate::web_utils::{apply_standard_middleware, HealthChecker};
+use crate::web_utils::HealthChecker;
 use crate::{
     database::DatabaseManager,
     error::{GitStoreError, Result},
@@ -14,13 +14,12 @@ use crate::{
 };
 use axum::{
     extract::{DefaultBodyLimit, Path, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{header, StatusCode},
     response::{Html, IntoResponse, Json, Response},
     routing::{get, post},
     Router,
 };
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine;
+use janitor::web::apply_standard_middleware;
 use janitor_types::CodebaseName;
 use std::sync::Arc;
 use tera::Tera;
@@ -79,39 +78,6 @@ pub fn admin_openapi() -> OpenApi {
     let mut openapi = admin_routes().into_openapi();
     openapi.merge(health_routes().into_openapi());
     openapi
-}
-
-/// Decode HTTP Basic auth and check it against the `worker` table.
-/// `None` for missing/malformed/invalid credentials.
-pub(crate) async fn is_worker_request(
-    database: &DatabaseManager,
-    headers: &HeaderMap,
-) -> Result<Option<String>> {
-    let auth_header = match headers.get(header::AUTHORIZATION) {
-        Some(h) => h,
-        None => return Ok(None),
-    };
-    let auth_str = match auth_header.to_str() {
-        Ok(s) => s,
-        Err(_) => return Ok(None),
-    };
-    let encoded = match auth_str.strip_prefix("Basic ") {
-        Some(e) => e,
-        None => return Ok(None),
-    };
-    let decoded = match BASE64.decode(encoded) {
-        Ok(d) => d,
-        Err(_) => return Ok(None),
-    };
-    let creds = match std::str::from_utf8(&decoded) {
-        Ok(s) => s,
-        Err(_) => return Ok(None),
-    };
-    let (username, password) = match creds.split_once(':') {
-        Some(pair) => pair,
-        None => return Ok(None),
-    };
-    database.is_worker(username, password).await
 }
 
 /// Admin app: unauthenticated, mounted at the repo root.
