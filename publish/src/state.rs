@@ -520,6 +520,28 @@ LIMIT 1
     .await
 }
 
+/// The columns `janitor::state::Run` is decoded from, for a query on
+/// `run` or a view with the same columns.
+///
+/// The schema's start/finish times are TIMESTAMP (no TZ), but `Run`
+/// decodes them as `DateTime<Utc>` (TIMESTAMPTZ), so they are cast with
+/// `AT TIME ZONE 'UTC'`.
+macro_rules! run_columns {
+    () => {
+        "SELECT id, command, \
+         (start_time AT TIME ZONE 'UTC') AS start_time, \
+         (finish_time AT TIME ZONE 'UTC') AS finish_time, \
+         description, result_code, \
+         value, main_branch_revision, revision, context, result, campaign, \
+         instigated_context, vcs_type, branch_url, logfilenames, \
+         worker, \
+         array(SELECT row(role, remote_name, base_revision, revision) \
+               FROM new_result_branch WHERE run_id = id) AS result_branches, \
+         result_tags, target_branch_url, change_set, \
+         failure_transient, failure_stage, failure_details, codebase "
+    };
+}
+
 /// Fetch the most recent effective run (`success` or
 /// `nothing-new-to-do`) for the given codebase + campaign from the
 /// `last_effective_runs` view.
@@ -528,33 +550,10 @@ pub async fn get_last_effective_run(
     codebase: &CodebaseName,
     campaign: &Campaign,
 ) -> Result<Option<janitor::state::Run>, sqlx::Error> {
-    sqlx::query_as(
-        r#"
-SELECT
-    id, command,
-    -- Schema columns are TIMESTAMP (no TZ); the `Run` struct
-    -- decodes them as `DateTime<Utc>` (TIMESTAMPTZ). Cast both to
-    -- TIMESTAMPTZ via `AT TIME ZONE 'UTC'` so sqlx FromRow doesn't
-    -- error with "mismatched types ... is not compatible with SQL
-    -- type TIMESTAMP". Same pattern used elsewhere
-    -- (`get_run_details`, schedule.rs, etc.).
-    (start_time AT TIME ZONE 'UTC') AS start_time,
-    (finish_time AT TIME ZONE 'UTC') AS finish_time,
-    description,
-    result_code,
-    value, main_branch_revision, revision, context, result, campaign,
-    instigated_context, vcs_type, branch_url, logfilenames,
-    worker,
-    array(SELECT row(role, remote_name, base_revision,
-     revision) FROM new_result_branch WHERE run_id = id) AS result_branches,
-    result_tags, target_branch_url, change_set AS change_set,
-    failure_transient, failure_stage, failure_details, codebase
-FROM
-    last_effective_runs
-WHERE codebase = $1 AND campaign = $2
-LIMIT 1
-"#,
-    )
+    sqlx::query_as(concat!(
+        run_columns!(),
+        "FROM last_effective_runs WHERE codebase = $1 AND campaign = $2 LIMIT 1"
+    ))
     .bind(codebase)
     .bind(campaign)
     .fetch_optional(conn)
@@ -569,35 +568,10 @@ pub async fn get_run(
     conn: &PgPool,
     run_id: &RunId,
 ) -> Result<Option<janitor::state::Run>, sqlx::Error> {
-    sqlx::query_as(
-        r#"
-SELECT
-    id, command,
-    -- Schema columns are TIMESTAMP (no TZ); the `Run` struct
-    -- decodes them as `DateTime<Utc>` (TIMESTAMPTZ). Cast both to
-    -- TIMESTAMPTZ via `AT TIME ZONE 'UTC'` so sqlx FromRow doesn't
-    -- error with "mismatched types ... is not compatible with SQL
-    -- type TIMESTAMP". Same pattern used elsewhere
-    -- (`get_run_details`, schedule.rs, etc.).
-    (start_time AT TIME ZONE 'UTC') AS start_time,
-    (finish_time AT TIME ZONE 'UTC') AS finish_time,
-    description,
-    result_code,
-    value, main_branch_revision, revision, context, result, campaign,
-    instigated_context, vcs_type, branch_url, logfilenames,
-    worker,
-    array(SELECT row(role, remote_name, base_revision,
-     revision) FROM new_result_branch WHERE run_id = id) AS result_branches,
-    result_tags, target_branch_url, change_set AS change_set,
-    failure_transient, failure_stage, failure_details, codebase
-FROM
-    run
-WHERE id = $1
-"#,
-    )
-    .bind(run_id)
-    .fetch_optional(conn)
-    .await
+    sqlx::query_as(concat!(run_columns!(), "FROM run WHERE id = $1"))
+        .bind(run_id)
+        .fetch_optional(conn)
+        .await
 }
 
 /// Count the number of publish attempts for a specific revision, excluding those with transient result codes.
@@ -697,8 +671,7 @@ pub async fn iter_publish_ready(
     )>,
     sqlx::Error,
 > {
-    // Explicit column list with the same casts the other Run-returning
-    // queries (`get_last_effective_run`, `get_run`) apply: TIMESTAMPTZ
+    // Explicit column list with the same casts as `run_columns!`: TIMESTAMPTZ
     // for start/finish_time, since `janitor::state::Run` decodes
     // those as `DateTime<Utc>`.
     // Two type adapters needed to keep `janitor::state::Run::FromRow`
