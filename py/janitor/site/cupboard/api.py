@@ -191,6 +191,9 @@ AND """
 
 class NeedsReviewQuerySchema(Schema):
     reviewer = fields.Str(metadata={"description": "defaults to the current user"})
+    campaign = fields.List(
+        fields.Str(), metadata={"description": "only these campaigns"}
+    )
     publishable_only = fields.Str(load_default="true")
     required_only = fields.Str()
     limit = fields.Int(load_default=200)
@@ -209,7 +212,13 @@ class NeedsReviewSchema(Schema):
 async def handle_needs_review(request):
     from . import iter_needs_review
 
-    requested_campaign = request.match_info.get("campaign")
+    campaigns = request.query.getall("campaign", None)
+    if "campaign" in request.match_info:
+        if campaigns is not None:
+            raise web.HTTPBadRequest(
+                text="use either a campaign in the path or campaign arguments"
+            )
+        campaigns = [request.match_info["campaign"]]
     reviewer = request.query.get("reviewer")
     if reviewer is None and request.get("user"):
         reviewer = request["user"].get("email")
@@ -229,7 +238,7 @@ async def handle_needs_review(request):
         with span.new_child("sql:needs-review"):
             for run_id, codebase, campaign in await iter_needs_review(
                 conn,
-                campaigns=([requested_campaign] if requested_campaign else None),
+                campaigns=campaigns,
                 required_only=required_only,
                 publishable_only=publishable_only,
                 reviewer=reviewer,
