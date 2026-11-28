@@ -29,6 +29,19 @@ const UPKEEP_INTERVAL: Duration = Duration::from_secs(5);
 /// Per-metric histogram bucket overrides, as passed to [`install`].
 pub type BucketOverrides = &'static [(&'static str, &'static [f64])];
 
+/// `N` histogram buckets, starting at `start`, each `factor` times the one before.
+pub const fn exponential_buckets<const N: usize>(start: f64, factor: f64) -> [f64; N] {
+    let mut buckets = [0.0; N];
+    let mut bound = start;
+    let mut i = 0;
+    while i < N {
+        buckets[i] = bound;
+        bound *= factor;
+        i += 1;
+    }
+    buckets
+}
+
 struct Installed {
     handle: PrometheusHandle,
     process: metrics_process::Collector,

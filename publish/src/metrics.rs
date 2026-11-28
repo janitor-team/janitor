@@ -8,6 +8,7 @@
 //! "metric not found"; the call-site wiring is a follow-up task.
 
 use ::metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge};
+use janitor_service::metrics::{exponential_buckets, BucketOverrides};
 
 /// Delay between a build finishing and its result being published.
 pub const PUBLISH_LATENCY: &str = "publish_latency";
@@ -65,6 +66,13 @@ pub const FORGE_RATE_LIMITED_COUNT: &str = "forge_rate_limited_count";
 
 /// Unexpected HTTP responses during checks of existing proposals.
 pub const UNEXPECTED_HTTP_RESPONSE_COUNT: &str = "unexpected_http_response_count";
+
+/// Histogram bucket overrides for the publisher.
+pub const BUCKETS: BucketOverrides = &[
+    // One minute up to about six weeks: runs are published minutes to
+    // weeks after their build finished.
+    (PUBLISH_LATENCY, &exponential_buckets::<17>(60.0, 2.0)),
+];
 
 fn describe() {
     describe_histogram!(PUBLISH_LATENCY, "Delay between build finish and publish.");
@@ -128,7 +136,7 @@ fn describe() {
 
 /// Install the metrics recorder and register the publisher's metrics.
 pub fn install() {
-    janitor_service::metrics::install(&[]);
+    janitor_service::metrics::install(BUCKETS);
     register();
 }
 

@@ -1,7 +1,7 @@
 //! Prometheus metrics for the runner.
 
 use ::metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
-use janitor_service::metrics::BucketOverrides;
+use janitor_service::metrics::{exponential_buckets, BucketOverrides};
 
 const HTTP_REQUESTS_TOTAL: &str = "janitor_runner_http_requests_total";
 const HTTP_REQUEST_DURATION: &str = "janitor_runner_http_request_duration_seconds";
@@ -36,19 +36,11 @@ const ARTIFACT_UPLOAD_FAILED_COUNT: &str = "artifact_upload_failed_total";
 pub const BUCKETS: BucketOverrides = &[
     (
         VCS_OPERATION_DURATION,
-        &[
-            0.001, 0.002, 0.004, 0.008, 0.016, 0.032, 0.064, 0.128, 0.256, 0.512, 1.024, 2.048,
-            4.096, 8.192, 16.384,
-        ],
+        &exponential_buckets::<15>(0.001, 2.0),
     ),
     // 15 seconds up to about 8.5 hours. Builds take minutes to hours,
     // so the default buckets (max 10s) say little about how they spread.
-    (
-        BUILD_DURATION,
-        &[
-            15.0, 30.0, 60.0, 120.0, 240.0, 480.0, 960.0, 1920.0, 3840.0, 7680.0, 15360.0, 30720.0,
-        ],
-    ),
+    (BUILD_DURATION, &exponential_buckets::<12>(15.0, 2.0)),
 ];
 
 fn describe() {
