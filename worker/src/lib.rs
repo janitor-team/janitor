@@ -985,6 +985,15 @@ impl From<client::UploadFailure> for SingleItemError {
     }
 }
 
+/// Clears the assignment in the state when the run ends, however it ends.
+struct ClearAssignmentOnDrop(std::sync::Arc<std::sync::RwLock<AppState>>);
+
+impl Drop for ClearAssignmentOnDrop {
+    fn drop(&mut self) {
+        self.0.write().unwrap_or_else(|e| e.into_inner()).assignment = None;
+    }
+}
+
 pub async fn process_single_item(
     client: &crate::client::Client,
     my_url: Option<&Url>,
@@ -1002,6 +1011,7 @@ pub async fn process_single_item(
         .await?;
 
     state.write().unwrap().assignment = Some(assignment.clone());
+    let _assignment = ClearAssignmentOnDrop(state);
 
     log::debug!("Got back assignment: {:?}", &assignment);
 
