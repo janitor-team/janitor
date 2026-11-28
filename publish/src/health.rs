@@ -47,25 +47,6 @@ pub struct ComponentHealth {
     pub details: Option<serde_json::Value>,
 }
 
-/// Trait implemented by things that can answer health / liveness / readiness
-/// questions on behalf of a service.
-#[async_trait]
-pub trait HealthCheckHandler: Send + Sync {
-    /// Return the full health report.
-    async fn check_health(&self) -> HealthCheck;
-
-    /// Liveness probe. Defaults to `true`: if the handler is still responding,
-    /// the process is at least alive.
-    async fn check_liveness(&self) -> bool {
-        true
-    }
-
-    /// Readiness probe. Defaults to "ready when healthy".
-    async fn check_readiness(&self) -> bool {
-        matches!(self.check_health().await.status, HealthStatus::Healthy)
-    }
-}
-
 /// Trait for checking an individual component.
 #[async_trait]
 pub trait ComponentChecker: Send + Sync {
@@ -93,18 +74,15 @@ impl BasicHealthChecker {
         }
     }
 
-    /// Register a component checker; results are aggregated by [`check_health`].
-    ///
-    /// [`check_health`]: HealthCheckHandler::check_health
+    /// Register a component checker; results are aggregated by
+    /// [`Self::check_health`].
     pub fn add_component_check(mut self, checker: Arc<dyn ComponentChecker>) -> Self {
         self.component_checks.push(checker);
         self
     }
-}
 
-#[async_trait]
-impl HealthCheckHandler for BasicHealthChecker {
-    async fn check_health(&self) -> HealthCheck {
+    /// Return the full health report.
+    pub async fn check_health(&self) -> HealthCheck {
         let mut checks = Vec::with_capacity(self.component_checks.len());
         let mut overall = HealthStatus::Healthy;
 
@@ -127,6 +105,11 @@ impl HealthCheckHandler for BasicHealthChecker {
             checks,
             timestamp: chrono::Utc::now(),
         }
+    }
+
+    /// Readiness probe: ready when healthy.
+    pub async fn check_readiness(&self) -> bool {
+        matches!(self.check_health().await.status, HealthStatus::Healthy)
     }
 }
 
@@ -189,31 +172,19 @@ impl ComponentChecker for RedisHealthChecker {
 
     async fn check(&self) -> ComponentHealth {
         // The async client has default connect and reply timeouts; the blocking one has none.
-        match self.client.get_multiplexed_async_connection().await {
-            Ok(mut conn) => {
-                let result: Result<String, redis::RedisError> =
-                    redis::cmd("PING").query_async(&mut conn).await;
-                match result {
-                    Ok(_) => ComponentHealth {
-                        name: self.name().to_string(),
-                        status: HealthStatus::Healthy,
-                        error: None,
-                        details: None,
-                    },
-                    Err(e) => ComponentHealth {
-                        name: self.name().to_string(),
-                        status: HealthStatus::Unhealthy,
-                        error: Some(e.to_string()),
-                        details: None,
-                    },
-                }
-            }
-            Err(e) => ComponentHealth {
-                name: self.name().to_string(),
-                status: HealthStatus::Unhealthy,
-                error: Some(e.to_string()),
-                details: None,
+        let result = match self.client.get_multiplexed_async_connection().await {
+            Ok(mut conn) => redis::cmd("PING").query_async::<String>(&mut conn).await,
+            Err(e) => Err(e),
+        };
+        ComponentHealth {
+            name: self.name().to_string(),
+            status: if result.is_ok() {
+                HealthStatus::Healthy
+            } else {
+                HealthStatus::Unhealthy
             },
+            error: result.err().map(|e| e.to_string()),
+            details: None,
         }
     }
 }
