@@ -2532,7 +2532,7 @@ pub async fn publish_from_policy(
             .collect()
     });
     let codemod_result = run.result.clone().unwrap_or(serde_json::Value::Null);
-    let extra_context = serde_json::json!({});
+    let extra_context = serde_json::json!({"codebase": run.codebase});
 
     log::info!(
         "Publishing {} / {:?} / {} (mode: {})",
@@ -2803,7 +2803,7 @@ pub async fn publish_and_store(
     });
 
     let codemod_result = run.result.clone().unwrap_or(serde_json::Value::Null);
-    let extra_context = serde_json::json!({});
+    let extra_context = serde_json::json!({"codebase": run.codebase});
 
     // Don't pass the bucket_rate_limiter through publish_one: its
     // std::sync::Mutex guard is !Send and can't be held across the
@@ -3839,7 +3839,7 @@ async fn check_existing_mp(
             });
 
         let codemod_result = last_run.result.clone().unwrap_or(serde_json::Value::Null);
-        let extra_context = serde_json::json!({});
+        let extra_context = serde_json::json!({"codebase": last_run.codebase});
 
         // Don't pass the bucket_rate_limiter through publish_one
         // here: the std::sync::Mutex guard around it is !Send and

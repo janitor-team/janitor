@@ -44,3 +44,15 @@ fn test_drop_env_with_equals_in_arg() {
     drop_env(&mut args);
     assert_eq!(args, vec!["command", "--option=value"]);
 }
+
+#[test]
+fn test_template_context() {
+    let context = template_context(
+        &serde_json::json!({"fixed": 2, "value": "codemod"}),
+        Some(&serde_json::json!({"codebase": "hello", "value": "extra"})),
+    );
+    assert_eq!(
+        serde_json::Value::Object(context),
+        serde_json::json!({"codebase": "hello", "fixed": 2, "value": "codemod"})
+    );
+}
