@@ -509,7 +509,7 @@ pub async fn bulk_add_to_queue(
     refresh: bool,
 ) -> Result<(), Error> {
     let bucket = bucket.unwrap_or("default");
-    let mut codebase_values = sqlx::query_as::<_, (String, f64)>(
+    let codebase_values = sqlx::query_as::<_, (String, f64)>(
         "SELECT name, coalesce(value, 0)::float8 FROM codebase WHERE name IS NOT NULL",
     )
     .fetch_all(conn)
@@ -518,8 +518,8 @@ pub async fn bulk_add_to_queue(
     .collect::<HashMap<_, _>>();
     let max_codebase_value = if !codebase_values.is_empty() {
         codebase_values
-            .clone()
-            .into_values()
+            .values()
+            .copied()
             .max_by(|a, b| a.partial_cmp(b).unwrap())
     } else {
         None
@@ -531,7 +531,11 @@ pub async fn bulk_add_to_queue(
     for req in todo {
         let normalized_codebase_value = if let Some(max_codebase_value) = max_codebase_value {
             std::cmp::min_by(
-                codebase_values.remove(req.codebase.as_str()).unwrap_or(0.0) / max_codebase_value,
+                codebase_values
+                    .get(req.codebase.as_str())
+                    .copied()
+                    .unwrap_or(0.0)
+                    / max_codebase_value,
                 1.0,
                 |a, b| a.partial_cmp(b).unwrap(),
             )
@@ -964,20 +968,25 @@ mod tests {
         };
         let pool = db.pool();
         sqlx::raw_sql(
-            "INSERT INTO codebase (name) VALUES ('other');
+            "INSERT INTO codebase (name, branch_url, url, vcs_type)
+             VALUES ('other', 'https://example.invalid/other', 'https://example.invalid/other', 'git');
              INSERT INTO named_publish_policy (name, per_branch_policy) VALUES
              ('default', ARRAY[ROW('main', 'propose', NULL)::branch_publish_policy]);
              INSERT INTO candidate (campaign, command, codebase, value, context, success_chance,
                                     publish_policy)
-             VALUES ('lintian-fixes', 'lintian-brush', 'cb', 5, 'ctx', 0.5, 'default')",
+             VALUES ('lintian-fixes', 'lintian-brush', 'cb', 5, 'ctx', 0.5, 'default'),
+                    ('fresh-releases', 'lintian-brush', 'cb', 5, 'ctx', 0.5, 'default'),
+                    ('lintian-fixes', 'lintian-brush', 'other', 5, 'ctx', 0.5, 'default')",
         )
         .execute(pool)
         .await
         .unwrap();
-        let todo: Vec<ScheduleRequest> = iter_schedule_requests_from_candidates(pool, None, None)
-            .await
-            .unwrap()
-            .collect();
+        let mut todo: Vec<ScheduleRequest> =
+            iter_schedule_requests_from_candidates(pool, None, None)
+                .await
+                .unwrap()
+                .collect();
+        todo.sort_by(|a, b| (&a.codebase, &a.campaign).cmp(&(&b.codebase, &b.campaign)));
 
         let mut queues = vec![];
         // No codebase has a value yet, then cb has half the maximum.
@@ -989,15 +998,22 @@ mod tests {
             bulk_add_to_queue(pool, &todo, false, 0.0, None, None, false)
                 .await
                 .unwrap();
-            let queue: Vec<(String, String, i64)> =
-                sqlx::query_as("SELECT codebase, campaign, priority FROM queue")
-                    .fetch_all(pool)
-                    .await
-                    .unwrap();
+            let queue: Vec<(String, String, i64)> = sqlx::query_as(
+                "SELECT codebase, campaign, priority FROM queue ORDER BY codebase, campaign",
+            )
+            .fetch_all(pool)
+            .await
+            .unwrap();
             queues.push(queue);
         }
-        let row = |priority| vec![("cb".to_string(), "lintian-fixes".to_string(), priority)];
-        assert_eq!(queues, vec![row(69), row(138)]);
+        let rows = |first, second, third| {
+            vec![
+                ("cb".to_string(), "fresh-releases".to_string(), first),
+                ("cb".to_string(), "lintian-fixes".to_string(), second),
+                ("other".to_string(), "lintian-fixes".to_string(), third),
+            ]
+        };
+        assert_eq!(queues, vec![rows(69, 138, 138), rows(138, 276, 207)]);
     }
 
     #[cfg(feature = "testing")]
