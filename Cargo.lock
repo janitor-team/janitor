@@ -3214,6 +3214,7 @@ dependencies = [
  "async-compression",
  "async-trait",
  "breezyshim 0.8.0",
+ "buildlog-consultant",
  "bytes",
  "chrono",
  "clap",
