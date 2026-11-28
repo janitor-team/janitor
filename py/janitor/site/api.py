@@ -40,7 +40,7 @@ from aiohttp_apispec import (
     setup_aiohttp_apispec,
 )
 from breezy.revision import NULL_REVISION
-from marshmallow import Schema, fields, validate
+from marshmallow import Schema, ValidationError, fields, validate
 from webargs.aiohttpparser import use_kwargs
 from yarl import URL
 
@@ -111,6 +111,13 @@ class PublishResultSchema(Schema):
     description = fields.Str()
 
 
+def _requester(request):
+    try:
+        return request["user"]["email"]
+    except KeyError:
+        return request["user"]["name"]
+
+
 @docs(summary="Publish the last run for a codebase")
 @form_schema(PublishRequestSchema())
 @response_schema(PublishResultSchema(), 202, description="publish started")
@@ -129,14 +136,7 @@ async def handle_publish(request):
     if mode not in (None, "push-derived", "push", "propose", "attempt-push"):
         return web.json_response({"error": "Invalid mode", "mode": mode}, status=400)
     url = URL(publisher_url) / campaign / codebase / "publish"
-    if request["user"]:
-        try:
-            requester = request["user"]["email"]
-        except KeyError:
-            requester = request["user"]["name"]
-    else:
-        requester = "user from web UI"
-    data = {"requester": requester}
+    data = {"requester": _requester(request)}
     if mode:
         data["mode"] = mode
     try:
@@ -154,8 +154,14 @@ async def handle_publish(request):
 
 
 class ScheduleRequestSchema(Schema):
-    offset = fields.Int(metadata={"description": "offset from top of queue"})
-    refresh = fields.Int(metadata={"description": "1 to start from scratch"})
+    offset = fields.Float(
+        allow_nan=False,
+        load_default=None,
+        metadata={"description": "offset from top of queue"},
+    )
+    refresh = fields.Boolean(
+        load_default=False, metadata={"description": "1 to start from scratch"}
+    )
 
 
 class ScheduleResultSchema(Schema):
@@ -163,7 +169,7 @@ class ScheduleResultSchema(Schema):
     campaign = fields.Str(metadata={"description": "campaign"})
     bucket = fields.Str(metadata={"description": "queue bucket"})
     queue_id = fields.Int(metadata={"description": "queue item identifier"})
-    offset = fields.Int(metadata={"description": "offset from top of queue"})
+    offset = fields.Float(metadata={"description": "offset from top of queue"})
     estimated_duration_seconds = fields.Float(
         metadata={"description": "estimated duration in seconds"}
     )
@@ -173,33 +179,13 @@ class ScheduleResultSchema(Schema):
     )
 
 
-@docs(summary="Reschedule a run")
-@form_schema(ScheduleRequestSchema())
-@response_schema(ScheduleResultSchema())
-@routes.post("/run/{run_id}/reschedule", name="run-reschedule")
-async def handle_run_reschedule(request):
-    check_logged_in(request)
-    run_id = request.match_info["run_id"]
-    post = await request.post()
-    offset = post.get("offset")
-    try:
-        refresh = bool(int(post.get("refresh", "0")))
-    except ValueError:
-        return web.json_response({"error": "invalid boolean for refresh"}, status=400)
-    if request["user"]:
-        try:
-            requester = request["user"]["email"]
-        except KeyError:
-            requester = request["user"]["name"]
-    else:
-        requester = "user from web UI"
-    json = {
-        "run_id": run_id,
-        "refresh": refresh,
-        "requester": requester,
-        "bucket": "manual",
-        "offset": offset,
-    }
+async def _load_schedule_form(request):
+    form = ScheduleRequestSchema().load(dict(await request.post()))
+    form["requester"] = _requester(request)
+    return form
+
+
+async def _post_schedule(request, json):
     url = URL(request.app["runner_url"]) / "schedule"
     try:
         async with request.app["http_client_session"].post(url, json=json) as resp:
@@ -215,6 +201,37 @@ async def handle_run_reschedule(request):
     return web.json_response(ret)
 
 
+@docs(summary="Schedule a codebase")
+@form_schema(ScheduleRequestSchema())
+@response_schema(ScheduleResultSchema())
+@routes.post("/{campaign}/c/{codebase}/schedule", name="codebase-schedule")
+async def handle_codebase_schedule(request):
+    check_logged_in(request)
+    codebase = request.match_info["codebase"]
+    campaign = request.match_info["campaign"]
+    try:
+        form = await _load_schedule_form(request)
+    except ValidationError as e:
+        return web.json_response(e.messages, status=400)
+    json = {"campaign": campaign, "codebase": codebase, "bucket": "manual", **form}
+    return await _post_schedule(request, json)
+
+
+@docs(summary="Reschedule a run")
+@form_schema(ScheduleRequestSchema())
+@response_schema(ScheduleResultSchema())
+@routes.post("/run/{run_id}/reschedule", name="run-reschedule")
+async def handle_run_reschedule(request):
+    check_logged_in(request)
+    run_id = request.match_info["run_id"]
+    try:
+        form = await _load_schedule_form(request)
+    except ValidationError as e:
+        return web.json_response(e.messages, status=400)
+    json = {"run_id": run_id, "bucket": "manual", **form}
+    return await _post_schedule(request, json)
+
+
 @docs(summary="Schedule a control run for a run")
 @form_schema(ScheduleRequestSchema())
 @response_schema(ScheduleResultSchema())
@@ -222,40 +239,28 @@ async def handle_run_reschedule(request):
 async def handle_schedule_control(request):
     check_logged_in(request)
     run_id = request.match_info["run_id"]
-    post = await request.post()
-    offset = post.get("offset")
     try:
-        refresh = bool(int(post.get("refresh", "0")))
-    except ValueError:
-        return web.json_response({"error": "invalid boolean for refresh"}, status=400)
-    if request["user"]:
-        try:
-            requester = request["user"]["email"]
-        except KeyError:
-            requester = request["user"]["name"]
-    else:
-        requester = "user from web UI"
-
-    json = {
-        "run_id": run_id,
-        "offset": offset,
-        "refresh": refresh,
-        "requester": requester,
-    }
+        form = await _load_schedule_form(request)
+    except ValidationError as e:
+        return web.json_response(e.messages, status=400)
+    json = {"run_id": run_id, **form}
 
     schedule_url = URL(request.app["runner_url"]) / "schedule-control"
     queue_position_url = URL(request.app["runner_url"]) / "queue" / "position"
     try:
         async with request.app["http_client_session"].post(
-            schedule_url, json=json, raise_for_status=True
+            schedule_url, json=json
         ) as resp:
             ret = await resp.json()
+            if resp.status >= 400:
+                return web.json_response(ret, status=resp.status)
         async with request.app["http_client_session"].get(
             queue_position_url,
             params={"campaign": ret["campaign"], "codebase": ret["codebase"]},
-            raise_for_status=True,
         ) as resp:
             queue_position = await resp.json()
+            if resp.status >= 400:
+                return web.json_response(queue_position, status=resp.status)
     except ContentTypeError as e:
         return web.json_response(
             {"error": f"runner returned error {e.code}"}, status=400
