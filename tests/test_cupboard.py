@@ -45,6 +45,7 @@ from janitor.site.cupboard import (
 )
 from janitor.site.cupboard.api import create_app as create_api_app
 from janitor.site.pkg import read_log
+from janitor.vcs import RemoteGitVcsManager
 
 from .conftest import _insert_codebase, _insert_run
 
@@ -146,22 +147,37 @@ def test_render_merge_proposal():
     )
 
 
-def test_render_run():
+@pytest.mark.parametrize(
+    "publish_successful_only,result_code,offered",
+    [
+        ("false", "build-failed", True),
+        ("true", "build-failed", False),
+        ("true", "success", True),
+    ],
+)
+def test_render_run(publish_successful_only, result_code, offered):
     env = _cupboard_env()
     template = env.get_template("cupboard/run.html")
-    config = read_config_string("""\
-campaign {
+    config = read_config_string(f"""\
+campaign {{
   name: "some-fixes"
-}
+  publish_successful_only: {publish_successful_only}
+}}
 """)
     campaign = config.campaign[0]
-    template.render(
+    html = template.render(
         worker_link_is_global=worker_link_is_global,
         run={
             "start_time": utcnow(),
             "finish_time": utcnow(),
             "change_set": "some-change-set",
+            "codebase": "foo",
+            "result_branches": [("main", "master", "base", "tip")],
         },
+        result_code=result_code,
+        campaign_name="some-fixes",
+        vcs_type="git",
+        git_vcs_manager=RemoteGitVcsManager("https://example.com/git/"),
         success_probability=0.2,
         classify_result_code=classify_result_code,
         show_debdiff=lambda: "",
@@ -171,6 +187,13 @@ campaign {
         format_timestamp=format_timestamp,
         format_duration=format_duration,
     )
+    pulls = [
+        pre.get_text()
+        for pre in BeautifulSoup(html, "html.parser").find_all("pre")
+        if pre.get_text().startswith("git pull")
+    ]
+    expected = "git pull https://example.com/git/foo some-fixes/main"
+    assert pulls == ([expected] if offered else [])
 
 
 def test_classify_result_code_debian_validate():
