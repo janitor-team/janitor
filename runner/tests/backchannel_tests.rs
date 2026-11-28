@@ -29,6 +29,7 @@ fn health_status_round_trip() {
         status: "healthy".to_string(),
         last_ping: Some(Utc::now()),
         uptime: Some(std::time::Duration::from_secs(3600)),
+        current_stage: Some("build".to_string()),
     };
 
     let json = serde_json::to_string(&original).unwrap();
@@ -39,6 +40,7 @@ fn health_status_round_trip() {
     assert_eq!(parsed.status, original.status);
     assert_eq!(parsed.last_ping, original.last_ping);
     assert_eq!(parsed.uptime, original.uptime);
+    assert_eq!(parsed.current_stage, original.current_stage);
 }
 
 /// A polling backchannel pointed at a non-routable IP should time out

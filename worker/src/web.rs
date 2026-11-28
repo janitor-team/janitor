@@ -352,6 +352,20 @@ async fn get_artifact_file(
     (StatusCode::OK, headers, body).into_response()
 }
 
+#[utoipa::path(
+    get,
+    path = "/status",
+    responses((status = 200, description = "Whether the worker is alive, and its current run and stage", body = Object))
+)]
+async fn status(State(state): State<Arc<RwLock<AppState>>>) -> Json<serde_json::Value> {
+    let state = state.read().unwrap();
+    Json(serde_json::json!({
+        "alive": true,
+        "current_run_id": state.assignment.as_ref().map(|a| a.id.to_string()),
+        "current_stage": state.current_stage,
+    }))
+}
+
 #[derive(utoipa::OpenApi)]
 struct WorkerApi;
 
@@ -364,6 +378,7 @@ fn routes() -> OpenApiRouter<Arc<RwLock<AppState>>> {
         .routes(routes!(get_logs))
         .routes(routes!(get_log_file))
         .routes(routes!(get_log_id))
+        .routes(routes!(status))
         .routes(routes!(get_artifacts))
         .routes(routes!(get_artifact_file))
 }
@@ -526,6 +541,30 @@ mod tests {
         let body: Assignment = serde_json::from_str(&get_body(response).await).unwrap();
         assert_eq!(body.id, "test");
         assert_eq!(body.queue_id, 1);
+    }
+
+    #[tokio::test]
+    async fn test_status() {
+        let state = Arc::new(RwLock::new(AppState::default()));
+        let get_status = |state| async move {
+            let request = Request::builder()
+                .uri("/status")
+                .body(Body::empty())
+                .unwrap();
+            let response = app(state).oneshot(request).await.unwrap();
+            assert_eq!(response.status(), 200);
+            serde_json::from_str::<serde_json::Value>(&get_body(response).await).unwrap()
+        };
+        assert_eq!(
+            get_status(state.clone()).await,
+            serde_json::json!({"alive": true, "current_run_id": null, "current_stage": null})
+        );
+
+        state.write().unwrap().current_stage = Some("codemod".to_string());
+        assert_eq!(
+            get_status(state.clone()).await,
+            serde_json::json!({"alive": true, "current_run_id": null, "current_stage": "codemod"})
+        );
     }
 
     #[tokio::test]
