@@ -28,7 +28,7 @@ import asyncpg
 from aiohttp import ClientSession, web
 from aiohttp.web_middlewares import normalize_path_middleware
 from jinja2 import select_autoescape
-from marshmallow import Schema, fields, validate
+from marshmallow import Schema, fields, pre_load, validate
 from webargs.aiohttpparser import use_kwargs
 from yarl import URL
 
@@ -39,6 +39,7 @@ from janitor.site import template_loader
 from janitor.vcs import get_vcs_managers_from_config
 
 from .. import (
+    TRANSIENT_ERROR_RESULT_CODES,
     check_admin,
     check_logged_in,
     is_admin,
@@ -62,21 +63,123 @@ async def handle_rejected(request):
         return await generate_rejected(conn, request.app["config"], campaign=campaign)
 
 
-@routes.get("/cupboard/history", name="history")
-@html_template("cupboard/history.html", headers={"Vary": "Cookie"})
-async def handle_history(request):
-    limit = int(request.query.get("limit", "100"))
-    offset = int(request.query.get("offset", "0"))
+# Sort key: (SQL expression, order of the first click on its header)
+HISTORY_SORT_COLUMNS = {
+    "finish_time": ("finish_time", "desc"),
+    "codebase": ("codebase", "asc"),
+    "campaign": ("campaign", "asc"),
+    "duration": ("finish_time - start_time", "desc"),
+    "result_code": ("result_code", "asc"),
+}
+
+HISTORY_FILTERS = [
+    "campaign",
+    "result_code",
+    "codebase",
+    "worker",
+    "transient",
+    "hide_success",
+]
+
+
+class HistoryQuerySchema(Schema):
+    limit = fields.Int(load_default=100)
+    offset = fields.Int(load_default=0)
+    sort = fields.Str(
+        load_default="finish_time", validate=validate.OneOf(HISTORY_SORT_COLUMNS)
+    )
+    order = fields.Str(validate=validate.OneOf(["asc", "desc"]))
+    campaign = fields.Str()
+    result_code = fields.Str()
+    codebase = fields.Str()
+    worker = fields.Str()
+    transient = fields.Bool()
+    hide_success = fields.Bool()
+
+    @pre_load
+    def drop_empty_filters(self, data, **kwargs):
+        # The filter form sends empty fields, so an empty value is no filter.
+        return {k: v for k, v in data.items() if v or k in ("limit", "offset")}
+
+
+async def generate_history(conn, url: URL, params: dict[str, Any]):
+    sort = params["sort"]
+    sort_expr, first_order = HISTORY_SORT_COLUMNS[sort]
+    order = params.get("order", first_order)
+
+    conditions = []
+    args: list[Any] = []
+    for name, column in [
+        ("campaign", "campaign"),
+        ("result_code", "result_code"),
+        ("codebase", "codebase"),
+        ("worker", "worker"),
+    ]:
+        if name in params:
+            args.append(params[name])
+            conditions.append(f"{column} = ${len(args)}")
+    if "transient" in params:
+        # With no transient flag, fall back to the codes classify_result_code uses.
+        args.append(TRANSIENT_ERROR_RESULT_CODES)
+        transient = (
+            "(failure_transient IS TRUE OR (failure_transient IS NULL"
+            f" AND result_code = ANY(${len(args)}::text[])))"
+        )
+        conditions.append(transient if params["transient"] else f"NOT {transient}")
+    if params.get("hide_success"):
+        conditions.append(
+            "result_code NOT IN ('success', 'nothing-to-do', 'nothing-new-to-do')"
+        )
+    order_by = [f"{sort_expr} {order.upper()}"]
+    if sort != "finish_time":
+        order_by.append("finish_time DESC")
 
     query = """\
 SELECT finish_time, codebase, campaign, worker.link AS worker_link,
 worker as worker_name, finish_time - start_time AS duration,
 result_code, id, description, failure_transient FROM run
-LEFT JOIN worker ON worker.name = run.worker
-ORDER BY finish_time DESC LIMIT $1 OFFSET $2"""
+LEFT JOIN worker ON worker.name = run.worker"""
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    args.extend([params["limit"], params["offset"]])
+    query += (
+        f" ORDER BY {', '.join(order_by)} LIMIT ${len(args) - 1} OFFSET ${len(args)}"
+    )
+    runs = await conn.fetch(query, *args)
+
+    unset = [name for name in HISTORY_FILTERS if name not in params]
+    sort_url = url.without_query_params("offset", *unset)
+    sort_links = {}
+    for name, (_expr, first) in HISTORY_SORT_COLUMNS.items():
+        if name == sort:
+            next_order = "asc" if order == "desc" else "desc"
+        else:
+            next_order = first
+        sort_links[name] = {
+            "url": str(sort_url.update_query(sort=name, order=next_order)),
+            "order": order if name == sort else None,
+        }
+    return {
+        "count": params["limit"],
+        "history": runs,
+        "newest_first": sort == "finish_time" and order == "desc",
+        "filters": {name: params.get(name) for name in HISTORY_FILTERS},
+        "kept_params": {
+            name: url.query[name]
+            for name in ["sort", "order", "limit"]
+            if name in url.query
+        },
+        "clear_filters_url": str(url.without_query_params("offset", *HISTORY_FILTERS)),
+        "sort_links": sort_links,
+    }
+
+
+@routes.get("/cupboard/history", name="history")
+@html_template("cupboard/history.html", headers={"Vary": "Cookie"})
+@use_kwargs(HistoryQuerySchema(), locations=("query",))
+async def handle_history(request, **params):
     async with request.app["pool"].acquire() as conn:
-        runs = await conn.fetch(query, limit, offset)
-    return {"count": limit, "history": runs}
+        return await generate_history(conn, request.rel_url, params)
 
 
 @routes.get("/cupboard/reprocess-logs", name="reprocess-logs")
