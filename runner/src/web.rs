@@ -1,6 +1,6 @@
 use crate::{
-    get_builder, metrics::MetricsCollector, ActiveRun, AppState, Backchannel, BuilderResult,
-    CampaignConfig, QueueItem,
+    metrics::MetricsCollector, ActiveRun, AppState, Backchannel, BuilderResult, CampaignConfig,
+    QueueItem,
 };
 use axum::{
     extract::{DefaultBodyLimit, Multipart, Path, Query, State},
@@ -129,21 +129,7 @@ fn create_campaign_config(
             None
         };
 
-        let generic_build = if config.has_generic_build() {
-            let gb_config = config.generic_build();
-            Some(crate::GenericBuildConfig {
-                chroot: if gb_config.chroot().is_empty() {
-                    None
-                } else {
-                    Some(gb_config.chroot().to_string())
-                },
-            })
-        } else {
-            None
-        };
-
         CampaignConfig {
-            generic_build,
             debian_build,
             force_build: config.force_build(),
             default_empty: config.default_empty(),
@@ -155,7 +141,6 @@ fn create_campaign_config(
             queue_item.campaign
         );
         CampaignConfig {
-            generic_build: Some(crate::GenericBuildConfig { chroot: None }),
             debian_build: None,
             force_build: false,
             default_empty: false,
@@ -1988,12 +1973,10 @@ async fn peek_active_run(State(state): State<Arc<AppState>>) -> Response {
     {
         Ok(Some(assignment)) => {
             let campaign_config = create_campaign_config(&assignment.queue_item, &state.config);
-            let build_config = match get_builder(&campaign_config, None, None) {
-                Ok(builder) => {
-                    BTreeMap::from([("builder_kind".to_string(), builder.kind().to_string())])
-                }
-                Err(_) => BTreeMap::new(),
-            };
+            let build_config = BTreeMap::from([(
+                "builder_kind".to_string(),
+                campaign_config.builder_kind().to_string(),
+            )]);
 
             (
                 StatusCode::CREATED,
@@ -3648,17 +3631,7 @@ async fn compute_resume_from(
         url: String,
         additional_colocated_branches: Vec<String>,
     }
-    let builder = match get_builder(
-        &create_campaign_config(&assignment.queue_item, &state.config),
-        None,
-        None,
-    ) {
-        Ok(builder) => builder,
-        Err(e) => {
-            log::warn!("Failed to create builder for colocated branches: {}", e);
-            return ResumeOutcome::default();
-        }
-    };
+    let campaign_config = create_campaign_config(&assignment.queue_item, &state.config);
     let open_fut = tokio::task::spawn_blocking(move || {
         use silver_platter::vcs::BranchOpenError;
         let main_branch = match silver_platter::vcs::open_branch(&open_url, None, None, None) {
@@ -3689,16 +3662,10 @@ async fn compute_resume_from(
             .to_string()
             .trim_end_matches('/')
             .to_string();
-        // The worker wants a list of names rather than Python's
-        // name => role dict; sort them since HashMap order is random.
-        let mut colocated: Vec<String> = builder
-            .additional_colocated_branches(&main_branch)
-            .into_keys()
-            .collect();
-        colocated.sort();
         let opened = OpenedMainBranch {
             url: main_branch_url,
-            additional_colocated_branches: colocated,
+            additional_colocated_branches: campaign_config
+                .additional_colocated_branches(&main_branch),
         };
         let result = match crate::resume::open_resume_branch(
             &main_branch,
@@ -4850,7 +4817,6 @@ distribution {
         )
         .unwrap();
         let generic = CampaignConfig {
-            generic_build: None,
             debian_build: None,
             force_build: false,
             default_empty: false,
