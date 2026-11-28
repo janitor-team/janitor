@@ -108,7 +108,8 @@ jobs:
           set -x
           tag="$( echo ${{ env.TAGS }} | awk '{print $1}' )"
           suffix="${{ matrix.dockerfile_suffix }}"
-          podman run "${{ env.IMAGE_BASE }}/${suffix}:${tag}" --help
+          container-tests/startup-check.sh "${suffix}" \
+            "${{ env.IMAGE_BASE }}/${suffix}:${tag}"
 
       - name: >
           Push ${{ env.container }} image to
