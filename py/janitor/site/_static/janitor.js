@@ -64,3 +64,17 @@ window.chartColors = {
    purple: 'rgb(153, 102, 255)',
    grey: 'rgb(201, 203, 207)'
 };
+
+// Swap an action button for its result. If the button still has the focus,
+// the focus moves to the result, otherwise #action-status reads it out.
+replaceWithStatus = function(selector, text) {
+  var button = $(selector);
+  var result = $('<span tabindex="-1"></span>').text(text);
+  var focused = button.is(':focus');
+  button.replaceWith(result);
+  if (focused) {
+    result.focus();
+  } else {
+    $('#action-status').text(text);
+  }
+};
